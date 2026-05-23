@@ -268,6 +268,10 @@ class TestRunAutomation(unittest.TestCase):
                         side_effect=_fake_artifact_options_to_lists)
         self._add_patch(f"{_ENGINE}.compute_hashes",
                         return_value=dict(FAKE_HASHES))
+        self._add_patch(
+            f"{_ENGINE}.verify_hash",
+            return_value=(True, FAKE_HASHES["sha256"]),
+        )
 
         # CaseManager mock.
         self.mock_cm = MagicMock()
@@ -363,12 +367,127 @@ class TestRunAutomation(unittest.TestCase):
         defaults.update(overrides)
         return AutomationRequest(**defaults)
 
+    def _capture_json_report_kwargs(self) -> dict[str, Any]:
+        """Capture JSON report export kwargs while still writing a stub file."""
+        captured: dict[str, Any] = {}
+
+        def _capture_export(**kwargs: Any) -> Path:
+            captured.update(kwargs)
+            out = Path(kwargs["output_path"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text('{"case_id":"case-001"}', encoding="utf-8")
+            return out
+
+        self.mocks["export_json_report"].side_effect = _capture_export
+        return captured
+
     def test_successful_single_file_run(self) -> None:
         """Single evidence file processes through full pipeline."""
         result = run_automation(self._make_request())
         self.assertTrue(result.success)
         self.assertEqual(result.case_id, "case-001")
         self.assertEqual(len(result.errors), 0)
+
+    def test_pre_report_hash_verification_pass(self) -> None:
+        """File evidence is re-verified before report export."""
+        captured = self._capture_json_report_kwargs()
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        self.mocks["verify_hash"].assert_called_once_with(
+            self.evidence_file,
+            FAKE_HASHES["sha256"],
+            return_computed=True,
+        )
+        hashes = captured["evidence_hashes"][0]
+        self.assertEqual(hashes["verification_status"], "PASS")
+        self.assertTrue(hashes["hash_verified"])
+        self.assertEqual(hashes["expected_sha256"], FAKE_HASHES["sha256"])
+        self.assertEqual(hashes["reverified_sha256"], FAKE_HASHES["sha256"])
+
+        audit_entries = self.mocks["AuditLogger"].return_value.entries
+        hash_events = [e for e in audit_entries if e[0] == "hash_verification"]
+        self.assertEqual(len(hash_events), 1)
+        self.assertTrue(hash_events[0][1]["match"])
+        self.assertEqual(
+            hash_events[0][1]["verified_files"][0]["status"],
+            "PASS",
+        )
+
+    def test_pre_report_hash_verification_fail(self) -> None:
+        """Mismatched pre-report SHA-256 is reported as FAIL."""
+        captured = self._capture_json_report_kwargs()
+        self.mocks["verify_hash"].return_value = (False, "f" * 64)
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        hashes = captured["evidence_hashes"][0]
+        self.assertEqual(hashes["verification_status"], "FAIL")
+        self.assertFalse(hashes["hash_verified"])
+        self.assertEqual(hashes["expected_sha256"], FAKE_HASHES["sha256"])
+        self.assertEqual(hashes["reverified_sha256"], "f" * 64)
+
+        audit_entries = self.mocks["AuditLogger"].return_value.entries
+        hash_event = [e for e in audit_entries if e[0] == "hash_verification"][-1]
+        self.assertFalse(hash_event[1]["match"])
+        self.assertEqual(hash_event[1]["verified_files"][0]["status"], "FAIL")
+
+    def test_pre_report_hash_verification_skipped(self) -> None:
+        """Skipped intake hashing remains SKIPPED and is not re-verified."""
+        captured = self._capture_json_report_kwargs()
+
+        result = run_automation(self._make_request(skip_hashing=True))
+
+        self.assertTrue(result.success)
+        self.mocks["compute_hashes"].assert_not_called()
+        self.mocks["verify_hash"].assert_not_called()
+        hashes = captured["evidence_hashes"][0]
+        self.assertEqual(hashes["sha256"], "N/A (skipped)")
+        self.assertEqual(hashes["md5"], "N/A (skipped)")
+        self.assertEqual(hashes["verification_status"], "SKIPPED")
+        self.assertEqual(hashes["hash_verified"], "skipped")
+
+        audit_entries = self.mocks["AuditLogger"].return_value.entries
+        hash_event = [e for e in audit_entries if e[0] == "hash_verification"][-1]
+        self.assertTrue(hash_event[1]["skipped"])
+        self.assertEqual(hash_event[1]["verified_files"][0]["status"], "SKIPPED")
+
+    def test_pre_report_hash_verification_missing_evidence_unavailable(self) -> None:
+        """Evidence removed before reporting is marked UNAVAILABLE."""
+        captured = self._capture_json_report_kwargs()
+        evidence_file = self.evidence_file
+
+        def _deleting_analyzer(**kwargs: Any) -> _EngineTestAnalyzer:
+            analyzer = _EngineTestAnalyzer(**kwargs)
+            original_run = analyzer.run_full_analysis
+
+            def _run_and_delete(*args: Any, **run_kwargs: Any) -> dict[str, object]:
+                evidence_file.unlink()
+                return original_run(*args, **run_kwargs)
+
+            analyzer.run_full_analysis = _run_and_delete  # type: ignore[method-assign]
+            return analyzer
+
+        self.mocks["ForensicAnalyzer"].side_effect = _deleting_analyzer
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        self.mocks["verify_hash"].assert_not_called()
+        hashes = captured["evidence_hashes"][0]
+        self.assertEqual(hashes["verification_status"], "UNAVAILABLE")
+        self.assertEqual(hashes["hash_verified"], "unavailable")
+        self.assertEqual(hashes["reverified_sha256"], "FILE_MISSING")
+
+        audit_entries = self.mocks["AuditLogger"].return_value.entries
+        hash_event = [e for e in audit_entries if e[0] == "hash_verification"][-1]
+        self.assertFalse(hash_event[1]["match"])
+        self.assertEqual(
+            hash_event[1]["verified_files"][0]["reason"],
+            "file_missing",
+        )
 
     def test_parser_context_manager_closes_success_and_parse_failure(self) -> None:
         """Automation closes the parser on success and parser-loop failure."""

@@ -17,13 +17,16 @@ from __future__ import annotations
 
 from hashlib import md5, sha256
 from pathlib import Path
-from typing import Callable, Protocol, TypedDict
+from typing import Any, Callable, Mapping, MutableMapping, Protocol, Sequence, TypedDict
 
 __all__ = [
     "compute_hashes",
     "compute_hashes_multi",
+    "apply_hash_verification_result",
     "verify_hash",
+    "verify_hashes_for_report",
     "verify_hashes_multi",
+    "summarize_hash_verification_results",
 ]
 
 CHUNK_SIZE = 4 * 1024 * 1024
@@ -150,6 +153,261 @@ def verify_hash(
     if return_computed:
         return matches, computed_sha256
     return matches
+
+
+def apply_hash_verification_result(
+    hashes: MutableMapping[str, Any],
+    *,
+    status: str,
+    expected_sha256: str = "",
+    computed_sha256: str = "",
+    detail: str = "",
+) -> None:
+    """Populate report-facing hash verification fields on one hash dict."""
+    normalized = status.upper()
+    hashes["verification_status"] = normalized
+    hashes["status"] = normalized
+
+    if expected_sha256:
+        hashes["expected_sha256"] = expected_sha256
+    if computed_sha256:
+        hashes["reverified_sha256"] = computed_sha256
+        hashes["computed_sha256"] = computed_sha256
+    if detail:
+        hashes["verification_detail"] = detail
+
+    if normalized == "PASS":
+        hashes["hash_verified"] = True
+    elif normalized == "FAIL":
+        hashes["hash_verified"] = False
+    elif normalized == "SKIPPED":
+        hashes["hash_verified"] = "skipped"
+    else:
+        hashes["hash_verified"] = "unavailable"
+
+
+def _verification_message(status: str) -> str:
+    """Return the standard report detail for a verification status."""
+    if status == "PASS":
+        return "Re-verified SHA-256 matches intake hash."
+    if status == "FAIL":
+        return "Re-verified SHA-256 does not match intake hash."
+    if status == "SKIPPED":
+        return "Hash computation was skipped at user request during evidence intake."
+    return "Hash verification is unavailable."
+
+
+def _status_from_details(details: Sequence[Mapping[str, Any]]) -> str:
+    """Resolve one overall status from per-file verification details."""
+    statuses = [str(detail.get("status", "")) for detail in details]
+    if not statuses:
+        return "UNAVAILABLE"
+    if "FAIL" in statuses:
+        return "FAIL"
+    if "UNAVAILABLE" in statuses:
+        return "UNAVAILABLE"
+    if all(status == "SKIPPED" for status in statuses):
+        return "SKIPPED"
+    if all(status == "PASS" for status in statuses):
+        return "PASS"
+    return "UNAVAILABLE"
+
+
+def _verify_one_report_file(
+    path: str | Path,
+    expected_sha256: str,
+    verifier: Callable[..., bool | tuple[bool, str]],
+) -> dict[str, Any]:
+    """Verify a single file path and return audit/report detail."""
+    fpath = Path(path)
+    detail: dict[str, Any] = {
+        "path": str(fpath),
+        "expected": expected_sha256,
+    }
+
+    if not expected_sha256:
+        detail.update({
+            "status": "UNAVAILABLE",
+            "computed": "INTEGRITY_DATA_MISSING",
+            "match": None,
+            "reason": "missing_intake_hash",
+        })
+        return detail
+
+    if not fpath.exists():
+        detail.update({
+            "status": "UNAVAILABLE",
+            "computed": "FILE_MISSING",
+            "match": False,
+            "reason": "file_missing",
+        })
+        return detail
+
+    if not fpath.is_file():
+        detail.update({
+            "status": "UNAVAILABLE",
+            "computed": "NOT_A_FILE",
+            "match": None,
+            "reason": "not_a_file",
+        })
+        return detail
+
+    try:
+        result = verifier(fpath, expected_sha256, return_computed=True)
+    except FileNotFoundError:
+        detail.update({
+            "status": "UNAVAILABLE",
+            "computed": "FILE_MISSING",
+            "match": False,
+            "reason": "file_missing",
+        })
+        return detail
+    except Exception as exc:
+        detail.update({
+            "status": "UNAVAILABLE",
+            "computed": f"ERROR: {exc}",
+            "match": False,
+            "reason": "verification_error",
+        })
+        return detail
+
+    if isinstance(result, tuple):
+        hash_ok, computed_sha256 = result
+    else:
+        hash_ok = bool(result)
+        computed_sha256 = ""
+
+    detail.update({
+        "status": "PASS" if hash_ok else "FAIL",
+        "computed": computed_sha256,
+        "match": bool(hash_ok),
+    })
+    return detail
+
+
+def verify_hashes_for_report(
+    hashes: MutableMapping[str, Any],
+    file_hash_entries: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    fallback_path: str | Path | None = None,
+    verifier: Callable[..., bool | tuple[bool, str]] = verify_hash,
+) -> dict[str, Any]:
+    """Re-verify intake hashes and annotate a report hash dictionary.
+
+    This helper is shared by the GUI and automation report paths.  It
+    mutates *hashes* with ``verification_status``, ``hash_verified``,
+    ``expected_sha256`` and recomputed SHA fields, and returns an audit
+    summary for the caller to log as ``hash_verification``.
+    """
+    intake_sha256 = str(hashes.get("sha256", "")).strip()
+    entries = list(file_hash_entries or [])
+
+    if intake_sha256 == "N/A (skipped)":
+        details = [{
+            "path": str(hashes.get("_source_path") or hashes.get("path") or ""),
+            "filename": str(hashes.get("filename") or ""),
+            "expected": intake_sha256,
+            "computed": intake_sha256,
+            "status": "SKIPPED",
+            "match": None,
+            "skipped": True,
+        }]
+    elif intake_sha256.startswith("N/A"):
+        details = [{
+            "path": str(hashes.get("_source_path") or hashes.get("path") or ""),
+            "filename": str(hashes.get("filename") or ""),
+            "expected": intake_sha256,
+            "computed": intake_sha256,
+            "status": "UNAVAILABLE",
+            "match": None,
+            "reason": "directory_or_non_file_evidence",
+        }]
+    elif entries:
+        details = []
+        for entry in entries:
+            expected = str(entry.get("sha256", "")).strip()
+            path = str(entry.get("path", "")).strip()
+            detail = _verify_one_report_file(path, expected, verifier)
+            detail["filename"] = str(entry.get("filename") or Path(path).name)
+            details.append(detail)
+    else:
+        source_path = fallback_path or hashes.get("_source_path") or hashes.get("path")
+        if source_path:
+            detail = _verify_one_report_file(source_path, intake_sha256, verifier)
+            detail["filename"] = str(hashes.get("filename") or Path(source_path).name)
+            details = [detail]
+        else:
+            details = [{
+                "path": "",
+                "filename": str(hashes.get("filename") or ""),
+                "expected": intake_sha256,
+                "computed": "INTEGRITY_DATA_MISSING",
+                "status": "UNAVAILABLE",
+                "match": None,
+                "reason": "missing_evidence_path",
+            }]
+
+    status = _status_from_details(details)
+    expected_summary = (
+        intake_sha256
+        or (str(details[0].get("expected", "")) if details else "")
+    )
+    computed_summary = (
+        str(details[0].get("computed", ""))
+        if len(details) == 1
+        else "; ".join(str(detail.get("computed", "")) for detail in details)
+    )
+    apply_hash_verification_result(
+        hashes,
+        status=status,
+        expected_sha256=expected_summary,
+        computed_sha256=computed_summary,
+        detail=_verification_message(status),
+    )
+
+    return {
+        "status": status,
+        "expected_sha256": expected_summary,
+        "computed_sha256": computed_summary,
+        "match": status in {"PASS", "SKIPPED"},
+        "skipped": status == "SKIPPED",
+        "verified_files": details,
+    }
+
+
+def summarize_hash_verification_results(
+    results: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Combine per-image hash verification results for audit logging."""
+    verified_files: list[dict[str, Any]] = []
+    for result in results:
+        files = result.get("verified_files", [])
+        if isinstance(files, Sequence) and not isinstance(files, (str, bytes, bytearray)):
+            verified_files.extend(
+                dict(item) for item in files if isinstance(item, Mapping)
+            )
+
+    statuses = [
+        str(result.get("status", ""))
+        for result in results
+        if str(result.get("status", ""))
+    ]
+    status = _status_from_details([{"status": item} for item in statuses])
+    expected_summary = str(results[0].get("expected_sha256", "")) if results else ""
+    computed_summary = (
+        "; ".join(str(result.get("computed_sha256", "")) for result in results)
+        if results
+        else ""
+    )
+
+    return {
+        "expected_sha256": expected_summary,
+        "computed_sha256": computed_summary,
+        "verification_status": status,
+        "match": status in {"PASS", "SKIPPED"},
+        "skipped": status == "SKIPPED",
+        "verified_files": verified_files,
+    }
 
 
 def compute_hashes_multi(

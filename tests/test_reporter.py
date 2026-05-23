@@ -566,6 +566,23 @@ class TestResolveHashVerification(unittest.TestCase):
         result = self.gen._resolve_hash_verification({"verified": False})
         self.assertFalse(result["passed"])
 
+    def test_verification_status_values(self) -> None:
+        """Report generator accepts canonical verification_status values."""
+        cases = [
+            ("PASS", True, False),
+            ("FAIL", False, False),
+            ("SKIPPED", True, True),
+            ("UNAVAILABLE", True, True),
+        ]
+        for status, passed, skipped in cases:
+            with self.subTest(status=status):
+                result = self.gen._resolve_hash_verification({
+                    "verification_status": status,
+                })
+                self.assertEqual(result["label"], status)
+                self.assertEqual(result["passed"], passed)
+                self.assertEqual(bool(result.get("skipped")), skipped)
+
     def test_string_pass_variants(self) -> None:
         for val in ["true", "pass", "PASSED", "ok", "yes"]:
             result = self.gen._resolve_hash_verification({"hash_verified": val})

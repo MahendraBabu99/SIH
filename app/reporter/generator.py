@@ -619,6 +619,32 @@ class ReportGenerator:
             Dictionary with ``passed`` (bool), ``label`` (``"PASS"`` or
             ``"FAIL"``), and ``detail`` (human-readable explanation).
         """
+        status_raw = self._stringify(
+            hashes.get("verification_status") or hashes.get("status"),
+            default="",
+        ).strip().upper()
+        if status_raw in {"PASS", "FAIL", "SKIPPED", "UNAVAILABLE"}:
+            details = {
+                "PASS": "Re-verified SHA-256 matches intake hash.",
+                "FAIL": "Re-verified SHA-256 does not match intake hash.",
+                "SKIPPED": "Hash computation was skipped at user request during evidence intake.",
+                "UNAVAILABLE": "No hash verification data was provided.",
+            }
+            detail = self._stringify(
+                hashes.get("verification_detail"),
+                default=details[status_raw],
+            )
+            if status_raw == "PASS":
+                return {"passed": True, "label": "PASS", "detail": detail}
+            if status_raw == "FAIL":
+                return {"passed": False, "label": "FAIL", "detail": detail}
+            return {
+                "passed": True,
+                "skipped": True,
+                "label": status_raw,
+                "detail": detail,
+            }
+
         explicit = hashes.get("hash_verified")
         if explicit is None:
             explicit = hashes.get("verification_passed")

@@ -28,7 +28,13 @@ from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.case_manager import CaseManager
 from app.config import load_config
-from app.hasher import compute_hashes
+from app.hasher import (
+    apply_hash_verification_result,
+    compute_hashes,
+    summarize_hash_verification_results,
+    verify_hash,
+    verify_hashes_for_report,
+)
 from app.parser.core import ForensicParser
 from app.reporter.generator import ReportGenerator
 from app.routes.artifacts import (
@@ -248,6 +254,31 @@ def _generate_report_basename(case_id: str) -> str:
     return f"AIFT_report_{case_id}_{ts}"
 
 
+def _verify_hashes_before_report(
+    hashes_list: list[dict[str, Any]],
+    audit_logger: AuditLogger,
+) -> None:
+    """Re-verify file evidence hashes immediately before report generation."""
+    results = [
+        verify_hashes_for_report(
+            hashes,
+            fallback_path=hashes.get("_source_path") or hashes.get("path"),
+            verifier=verify_hash,
+        )
+        for hashes in hashes_list
+    ]
+    audit_details = summarize_hash_verification_results(results)
+
+    audit_logger.log(
+        "hash_verification",
+        {
+            **audit_details,
+            "multi_image": len(hashes_list) > 1,
+            "image_count": len(hashes_list),
+        },
+    )
+
+
 def run_automation(
     request: AutomationRequest,
     progress_callback: Callable[[str, str, float], None] | None = None,
@@ -420,12 +451,36 @@ def run_automation(
 
                 # Hash evidence.
                 hashes_entry: dict[str, Any] = {
-                    "sha256": "",
-                    "md5": "",
+                    "filename": ev_file.name,
+                    "_source_path": str(ev_file),
+                    "sha256": "N/A (skipped)" if request.skip_hashing else "",
+                    "md5": "N/A (skipped)" if request.skip_hashing else "",
                     "size_bytes": 0,
-                    "verification_status": "SKIPPED",
+                    "verification_status": "SKIPPED" if request.skip_hashing else "UNAVAILABLE",
                 }
-                if not request.skip_hashing:
+                if request.skip_hashing:
+                    apply_hash_verification_result(
+                        hashes_entry,
+                        status="SKIPPED",
+                        expected_sha256="N/A (skipped)",
+                        computed_sha256="N/A (skipped)",
+                        detail=(
+                            "Hash computation was skipped at user request "
+                            "during evidence intake."
+                        ),
+                    )
+                elif ev_file.is_dir():
+                    hashes_entry.update({
+                        "sha256": "N/A (directory)",
+                        "md5": "N/A (directory)",
+                    })
+                    apply_hash_verification_result(
+                        hashes_entry,
+                        status="UNAVAILABLE",
+                        expected_sha256="N/A (directory)",
+                        detail="Hash verification is unavailable for directory evidence.",
+                    )
+                else:
                     _notify(
                         progress_callback,
                         "hashing",
@@ -435,10 +490,12 @@ def run_automation(
                     try:
                         h = compute_hashes(ev_file)
                         hashes_entry = {
+                            "filename": ev_file.name,
+                            "_source_path": str(ev_file),
                             "sha256": h["sha256"],
                             "md5": h["md5"],
                             "size_bytes": h["size_bytes"],
-                            "verification_status": "PASS",
+                            "verification_status": "UNAVAILABLE",
                         }
                         audit_logger.log("evidence_intake", {
                             "file": str(ev_file),
@@ -450,7 +507,11 @@ def run_automation(
                         msg = f"Hashing failed for {img_label}: {exc}"
                         LOGGER.warning(msg)
                         result.warnings.append(msg)
-                        hashes_entry["verification_status"] = "UNAVAILABLE"
+                        apply_hash_verification_result(
+                            hashes_entry,
+                            status="UNAVAILABLE",
+                            detail=f"Hash computation failed during intake: {exc}",
+                        )
 
                 # Intersect profile artifact keys with available parser entries.
                 available_keys = _available_artifact_keys(available)
@@ -583,7 +644,10 @@ def run_automation(
     _notify(progress_callback, "analysis", "Analysis complete.", 100.0)
 
     # --- 8 & 9. Report generation ---
-    _notify(progress_callback, "reporting", "Generating reports...", 0.0)
+    _notify(progress_callback, "reporting", "Verifying evidence hashes...", 0.0)
+    _verify_hashes_before_report(all_hashes, audit_logger)
+
+    _notify(progress_callback, "reporting", "Generating reports...", 10.0)
     audit_entries = _read_audit_log(case_dir)
     basename = _generate_report_basename(case_id)
 
