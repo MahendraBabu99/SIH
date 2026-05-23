@@ -14,7 +14,6 @@ Attributes:
 from __future__ import annotations
 
 import logging
-import re
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +22,12 @@ from typing import Any
 from flask import current_app, request
 from werkzeug.utils import secure_filename
 
+from ..evidence_segments import (
+    EWF_SEGMENT_RE,
+    SPLIT_RAW_SEGMENT_RE,
+    collect_segment_group_paths,
+    segment_identity,
+)
 from .evidence_archive import extract_zip, extract_tar, extract_7z
 from .state import safe_name
 
@@ -42,9 +47,6 @@ __all__ = [
     "make_extract_dir",
     "resolve_evidence_payload",
 ]
-
-EWF_SEGMENT_RE = re.compile(r"^(?P<base>.+)\.(?:e|ex|s|l)(?P<segment>\d{2})$", re.IGNORECASE)
-SPLIT_RAW_SEGMENT_RE = re.compile(r"^(?P<base>.+)\.(?P<segment>\d{3})$")
 
 SAVE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB
 
@@ -124,63 +126,6 @@ def unique_destination(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
-
-
-def segment_identity(path_or_name: Path | str) -> tuple[str, str, int] | None:
-    """Parse split-image segment identity from a filename.
-
-    Args:
-        path_or_name: Path or filename to inspect.
-
-    Returns:
-        ``(kind, base_name, segment_number)`` for known split-image naming
-        schemes, or ``None`` if the name is not a recognized segment.
-    """
-    name = Path(path_or_name).name if isinstance(path_or_name, Path) else str(path_or_name)
-    for kind, pattern in (("ewf", EWF_SEGMENT_RE), ("raw", SPLIT_RAW_SEGMENT_RE)):
-        match = pattern.match(name)
-        if match is not None:
-            return kind, match.group("base").lower(), int(match.group("segment"))
-    return None
-
-
-def collect_segment_group_paths(source_path: Path) -> list[Path]:
-    """Collect all sibling segment paths for a split-image source file.
-
-    Args:
-        source_path: Candidate source evidence file.
-
-    Returns:
-        Sorted list of sibling segment paths for the same split-image set, or
-        an empty list when the path is not a recognized split-image segment.
-    """
-    if not source_path.is_file():
-        return []
-
-    identity = segment_identity(source_path)
-    if identity is None:
-        return []
-
-    kind, base_name, _segment_number = identity
-    segment_paths: list[tuple[int, Path]] = []
-    try:
-        siblings = source_path.parent.iterdir()
-    except OSError:
-        return [source_path]
-
-    for sibling in siblings:
-        if not sibling.is_file():
-            continue
-        sibling_identity = segment_identity(sibling)
-        if sibling_identity is None:
-            continue
-        sibling_kind, sibling_base_name, sibling_segment_number = sibling_identity
-        if sibling_kind == kind and sibling_base_name == base_name:
-            segment_paths.append((sibling_segment_number, sibling))
-
-    if not segment_paths:
-        return [source_path]
-    return [path for _segment_number, path in sorted(segment_paths, key=lambda item: item[0])]
 
 
 def resolve_uploaded_dissect_path(uploaded_paths: list[Path]) -> Path:

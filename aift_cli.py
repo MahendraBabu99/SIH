@@ -266,7 +266,7 @@ def _list_profiles() -> None:
     Raises:
         SystemExit: Always exits with code 0 after printing.
     """
-    from app.routes.artifacts import load_profiles_from_directory
+    from app.artifact_profiles import load_profiles_from_directory
 
     profiles_root = _PROJECT_ROOT / "profile"
     profiles = load_profiles_from_directory(profiles_root)

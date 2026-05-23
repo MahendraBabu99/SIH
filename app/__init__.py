@@ -17,22 +17,48 @@ from __future__ import annotations
 
 import secrets
 from pathlib import Path
+from typing import Any, TYPE_CHECKING
 
 from runtime_compat import assert_supported_python_version
 
 assert_supported_python_version()
 
-from flask import Flask, jsonify, request
-
-from .config import PROJECT_ROOT, load_config
-from .routes import register_routes
+if TYPE_CHECKING:
+    from flask import Flask
 
 __all__ = [
     "create_app",
+    "load_config",
+    "register_routes",
 ]
 
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def load_config(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Load AIFT config via the real config module.
+
+    Kept as an app-level binding so existing tests and callers can patch
+    ``app.load_config`` without forcing route/Flask imports at package import.
+    """
+    from .config import load_config as _load_config
+
+    return _load_config(*args, **kwargs)
+
+
+def register_routes(app: Flask) -> None:
+    """Register Flask routes lazily to keep ``import app`` Flask-free."""
+    from .routes import register_routes as _register_routes
+
+    _register_routes(app)
+
+
+def _project_root() -> Path:
+    """Return the project root without importing config at module import time."""
+    from .config import PROJECT_ROOT
+
+    return PROJECT_ROOT
 
 
 def create_app(
@@ -57,10 +83,16 @@ def create_app(
     Returns:
         A fully configured :class:`~flask.Flask` application instance.
     """
+    from flask import Flask
+
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     aift_config = config if config is not None else load_config(config_path)
     # Store the resolved absolute path so all downstream code uses it consistently.
-    resolved_config_path = str(Path(config_path).resolve()) if config_path is not None else str(PROJECT_ROOT / "config.yaml")
+    resolved_config_path = (
+        str(Path(config_path).resolve())
+        if config_path is not None
+        else str(_project_root() / "config.yaml")
+    )
     app.config["AIFT_CONFIG"] = aift_config
     app.config["AIFT_CONFIG_PATH"] = resolved_config_path
 
@@ -94,6 +126,7 @@ def _register_csrf_protection(app: Flask) -> None:
     Args:
         app: The Flask application to attach the hook to.
     """
+    from flask import jsonify, request
 
     @app.before_request
     def _enforce_csrf() -> tuple | None:

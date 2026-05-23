@@ -37,7 +37,7 @@ from app.hasher import (
 )
 from app.parser.core import ForensicParser
 from app.reporter.generator import ReportGenerator
-from app.routes.artifacts import (
+from app.artifact_profiles import (
     artifact_options_to_lists,
     load_profiles_from_directory,
 )

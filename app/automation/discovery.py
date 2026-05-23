@@ -14,8 +14,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from app.routes.state import DISSECT_EVIDENCE_EXTENSIONS
-from app.routes.evidence_upload import segment_identity
+from app.evidence_constants import DISSECT_EVIDENCE_EXTENSIONS
+from app.evidence_segments import segment_identity
 
 LOGGER = logging.getLogger(__name__)
 
