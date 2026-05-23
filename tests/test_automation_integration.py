@@ -71,6 +71,29 @@ class _IntegrationAnalyzer(FakeAnalyzer):
         last_artifact_keys: Class-level tracker for the most recent call.
     """
 
+    last_full_metadata: dict[str, object] | None = None
+    last_multi_date_range: tuple[str, str] | None = None
+
+    def run_full_analysis(
+        self,
+        artifact_keys: list[str],
+        investigation_context: str,
+        metadata: dict[str, object] | None,
+        progress_callback: object | None = None,
+        cancel_check: object | None = None,
+    ) -> dict[str, object]:
+        """Record metadata passed into single-image analysis."""
+        _IntegrationAnalyzer.last_full_metadata = (
+            dict(metadata) if metadata is not None else None
+        )
+        return super().run_full_analysis(
+            artifact_keys=artifact_keys,
+            investigation_context=investigation_context,
+            metadata=metadata,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+
     def run_multi_image_analysis(
         self,
         images: list[dict[str, Any]],
@@ -91,7 +114,8 @@ class _IntegrationAnalyzer(FakeAnalyzer):
         Returns:
             Multi-image analysis result dict with images and cross-summary.
         """
-        del investigation_context, progress_callback, cancel_check, analysis_date_range
+        _IntegrationAnalyzer.last_multi_date_range = analysis_date_range
+        del investigation_context, progress_callback, cancel_check
         image_results: dict[str, dict[str, object]] = {}
         for desc in images:
             iid = desc["image_id"]
@@ -278,6 +302,8 @@ class _IntegrationTestBase(unittest.TestCase):
         self.mocks: dict[str, MagicMock] = {}
         for p in self.patches:
             self.mocks[p.attribute] = p.start()
+        _IntegrationAnalyzer.last_full_metadata = None
+        _IntegrationAnalyzer.last_multi_date_range = None
 
     def _add_patch(self, target: str, **kwargs: Any) -> None:
         """Register a patch.
@@ -443,10 +469,17 @@ class TestFullPipelineIntegration(_IntegrationTestBase):
         run_automation(self._make_request(case_name="My Custom Case"))
         self.mock_cm.create_case.assert_called_once_with(case_name="My Custom Case")
 
-    def test_date_range_does_not_break_pipeline(self) -> None:
-        """Supplying date_range completes without error."""
+    def test_date_range_reaches_single_image_analyzer(self) -> None:
+        """Supplying date_range passes analysis_date_range metadata."""
         result = run_automation(self._make_request(date_range=("2026-04-01", "2026-04-15")))
         self.assertTrue(result.success)
+        self.assertIsNotNone(_IntegrationAnalyzer.last_full_metadata)
+        metadata = _IntegrationAnalyzer.last_full_metadata
+        assert metadata is not None
+        self.assertEqual(
+            metadata["analysis_date_range"],
+            {"start_date": "2026-04-01", "end_date": "2026-04-15"},
+        )
 
     def test_progress_callback_receives_all_phases(self) -> None:
         """Progress callback is called with discovery, reporting phases."""

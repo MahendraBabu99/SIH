@@ -525,10 +525,16 @@ def run_automation(
                 artifact_csv_paths=desc["csv_paths"],
                 os_type=desc["os_type"],
             )
+            metadata = dict(desc["metadata"])
+            if request.date_range is not None:
+                metadata["analysis_date_range"] = {
+                    "start_date": request.date_range[0],
+                    "end_date": request.date_range[1],
+                }
             analysis_results = analyzer.run_full_analysis(
                 artifact_keys=desc["artifact_keys"],
                 investigation_context=prompt,
-                metadata=desc["metadata"],
+                metadata=metadata,
             )
         else:
             # Multi-image: use first image's csv_paths for constructor,

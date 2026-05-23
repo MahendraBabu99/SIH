@@ -30,6 +30,29 @@ from tests.conftest import (
 class _EngineTestAnalyzer(FakeAnalyzer):
     """Analyzer stub that also supports multi-image analysis."""
 
+    last_full_metadata: dict[str, object] | None = None
+    last_multi_date_range: tuple[str, str] | None = None
+
+    def run_full_analysis(
+        self,
+        artifact_keys: list[str],
+        investigation_context: str,
+        metadata: dict[str, object] | None,
+        progress_callback: object | None = None,
+        cancel_check: object | None = None,
+    ) -> dict[str, object]:
+        """Record metadata passed into single-image analysis."""
+        _EngineTestAnalyzer.last_full_metadata = (
+            dict(metadata) if metadata is not None else None
+        )
+        return super().run_full_analysis(
+            artifact_keys=artifact_keys,
+            investigation_context=investigation_context,
+            metadata=metadata,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
+
     def run_multi_image_analysis(
         self,
         images: list[dict[str, Any]],
@@ -50,7 +73,8 @@ class _EngineTestAnalyzer(FakeAnalyzer):
         Returns:
             Multi-image analysis result dict.
         """
-        del investigation_context, progress_callback, cancel_check, analysis_date_range
+        _EngineTestAnalyzer.last_multi_date_range = analysis_date_range
+        del investigation_context, progress_callback, cancel_check
         image_results: dict[str, dict[str, object]] = {}
         for desc in images:
             iid = desc["image_id"]
@@ -304,6 +328,8 @@ class TestRunAutomation(unittest.TestCase):
         self.mocks: dict[str, MagicMock] = {}
         for p in self.patches:
             self.mocks[p.attribute] = p.start()
+        _EngineTestAnalyzer.last_full_metadata = None
+        _EngineTestAnalyzer.last_multi_date_range = None
 
     def _add_patch(self, target: str, **kwargs: Any) -> None:
         """Register a patch to be started in setUp.
@@ -555,12 +581,40 @@ class TestRunAutomation(unittest.TestCase):
 
     def test_date_range_passed_to_analyzer(self) -> None:
         """Date range from request reaches the analyzer."""
-        # The date_range is passed to the request but is used by the analyzer
-        # via investigation_context. We verify it doesn't cause errors.
         result = run_automation(self._make_request(
             date_range=("2026-04-01", "2026-04-15"),
         ))
         self.assertTrue(result.success)
+        self.assertIsNotNone(_EngineTestAnalyzer.last_full_metadata)
+        metadata = _EngineTestAnalyzer.last_full_metadata
+        assert metadata is not None
+        self.assertEqual(
+            metadata["analysis_date_range"],
+            {"start_date": "2026-04-01", "end_date": "2026-04-15"},
+        )
+
+    def test_multi_image_date_range_passed_to_analyzer(self) -> None:
+        """Date range from request reaches multi-image analyzer keyword."""
+        ev2 = self.root / "disk2.vmdk"
+        ev2.write_bytes(b"\x00" * 16)
+        self.mocks["discover_evidence"].return_value = [self.evidence_file, ev2]
+        self.mock_cm.add_image.side_effect = ["img-001", "img-002"]
+        img_dir2 = self.cases_dir / "case-001" / "images" / "img-002"
+        img_dir2.mkdir(parents=True, exist_ok=True)
+        self.mock_cm.get_image_dir.side_effect = [
+            self.cases_dir / "case-001" / "images" / "img-001",
+            img_dir2,
+        ]
+
+        result = run_automation(self._make_request(
+            date_range=("2026-04-01", "2026-04-15"),
+        ))
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            _EngineTestAnalyzer.last_multi_date_range,
+            ("2026-04-01", "2026-04-15"),
+        )
 
     def test_output_dir_created(self) -> None:
         """Output directory is created if it doesn't exist."""
