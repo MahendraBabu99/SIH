@@ -175,26 +175,39 @@ def _run_automation_thread(
 
     try:
         result: AutomationResult = run_automation(
-            automation_request, progress_callback=_progress,
+            automation_request,
+            progress_callback=_progress,
+            cancel_check=cancel_event,
         )
     except Exception as exc:
         LOGGER.exception("Automation run %s raised an unexpected exception", run_id)
         with RUNS_LOCK:
             run = AUTOMATION_RUNS.get(run_id)
-            if run is not None and run["status"] != "cancelled":
-                run["status"] = "failed"
-                run["phase"] = "error"
-                run["message"] = f"Unexpected error: {exc}"
-                run["errors"] = [str(exc)]
+            if run is None:
+                return
+            if run["status"] == "cancelled" or cancel_event.is_set():
+                run["status"] = "cancelled"
+                run["message"] = run.get("message") or "Run cancelled by user"
                 run["elapsed_seconds"] = _elapsed(run)
                 run["_finished_mono"] = time.monotonic()
+                return
+            run["status"] = "failed"
+            run["phase"] = "error"
+            run["message"] = f"Unexpected error: {exc}"
+            run["errors"] = [str(exc)]
+            run["elapsed_seconds"] = _elapsed(run)
+            run["_finished_mono"] = time.monotonic()
         return
 
     with RUNS_LOCK:
         run = AUTOMATION_RUNS.get(run_id)
         if run is None:
             return
-        if run["status"] == "cancelled":
+        if run["status"] == "cancelled" or cancel_event.is_set():
+            run["status"] = "cancelled"
+            run["message"] = run.get("message") or "Run cancelled by user"
+            run["elapsed_seconds"] = _elapsed(run)
+            run["_finished_mono"] = time.monotonic()
             return  # User cancelled; don't overwrite status.
 
         run["case_id"] = result.case_id

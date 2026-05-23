@@ -631,8 +631,9 @@ class TestBackgroundThread(AutomationRoutesTestBase):
     def test_cancelled_run_not_overwritten(self, mock_run: MagicMock) -> None:
         """If user cancels before engine finishes, status stays cancelled."""
 
-        def _slow_run(req, progress_callback=None):
+        def _slow_run(req, progress_callback=None, cancel_check=None):
             """Simulate a slow run that checks for cancel."""
+            del req, progress_callback, cancel_check
             time.sleep(0.3)
             return _make_successful_result()
 
@@ -655,6 +656,56 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         run = automation_mod.AUTOMATION_RUNS.get(run_id)
         self.assertEqual(run["status"], "cancelled")
 
+    @patch("app.routes.automation.run_automation")
+    def test_cancel_during_long_run_signals_engine(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Cancel endpoint signals the event passed into the engine."""
+        engine_started = threading.Event()
+        engine_saw_cancel = threading.Event()
+
+        def _long_run(req, progress_callback=None, cancel_check=None):
+            """Wait until the cancel event passed by the route is set."""
+            del req
+            engine_started.set()
+            if progress_callback is not None:
+                progress_callback("parsing", "Parsing evidence", 25.0)
+
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                is_set = getattr(cancel_check, "is_set", None)
+                cancelled = bool(is_set()) if callable(is_set) else False
+                if cancelled:
+                    engine_saw_cancel.set()
+                    return _make_successful_result("case-after-cancel")
+                time.sleep(0.01)
+            return _make_successful_result("case-timeout")
+
+        mock_run.side_effect = _long_run
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {"evidence_path": "/fake/path.E01", "prompt": "test"},
+        )
+        run_id = resp.get_json()["run_id"]
+
+        self.assertTrue(engine_started.wait(timeout=1.0))
+        call_kwargs = mock_run.call_args.kwargs
+        self.assertIn("cancel_check", call_kwargs)
+        self.assertTrue(hasattr(call_kwargs["cancel_check"], "is_set"))
+
+        cancel_resp = self._post_json(f"/api/automation/run/{run_id}/cancel", {})
+        self.assertEqual(cancel_resp.status_code, 200)
+        self.assertTrue(engine_saw_cancel.wait(timeout=2.0))
+
+        time.sleep(0.2)
+        run = automation_mod.AUTOMATION_RUNS.get(run_id)
+        self.assertIsNotNone(run)
+        self.assertEqual(run["status"], "cancelled")
+        self.assertNotEqual(run.get("case_id"), "case-after-cancel")
+        self.assertIsNone(run.get("result"))
+
 
 class TestProgressCallback(AutomationRoutesTestBase):
     """Tests for progress callback updating run state."""
@@ -664,8 +715,9 @@ class TestProgressCallback(AutomationRoutesTestBase):
         """Progress callback updates phase, message, and percentage."""
         callback_holder: list = []
 
-        def _capture_run(req, progress_callback=None):
+        def _capture_run(req, progress_callback=None, cancel_check=None):
             """Capture and invoke the progress callback."""
+            del req, cancel_check
             if progress_callback:
                 callback_holder.append(progress_callback)
                 progress_callback("hashing", "Hashing evidence.E01", 50.0)

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.analyzer.core import ForensicAnalyzer
+from app.analyzer.core import AnalysisCancelledError, ForensicAnalyzer
 from app.audit import AuditLogger
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
@@ -126,6 +126,69 @@ def _notify(
             callback(phase, message, percentage)
         except Exception:
             LOGGER.debug("Progress callback raised; ignoring.", exc_info=True)
+
+
+def _normalize_cancel_check(
+    cancel_check: object | None,
+) -> Callable[[], bool] | None:
+    """Return a callable cancellation probe for callbacks or event objects.
+
+    Args:
+        cancel_check: Optional callable returning ``True`` when cancellation
+            was requested, or an event-like object exposing ``is_set()``.
+
+    Returns:
+        A zero-argument callable, or ``None`` when cancellation is disabled.
+    """
+    if cancel_check is None:
+        return None
+    if callable(cancel_check):
+        return lambda: bool(cancel_check())
+
+    is_set = getattr(cancel_check, "is_set", None)
+    if callable(is_set):
+        return lambda: bool(is_set())
+
+    LOGGER.debug(
+        "Ignoring unsupported cancellation object of type %s",
+        type(cancel_check).__name__,
+    )
+    return None
+
+
+def _cancel_requested(cancel_check: Callable[[], bool] | None) -> bool:
+    """Evaluate a cancellation probe without letting callback errors escape."""
+    if cancel_check is None:
+        return False
+    try:
+        return bool(cancel_check())
+    except Exception:
+        LOGGER.debug("Cancellation check raised; ignoring.", exc_info=True)
+        return False
+
+
+def _cancelled_result(
+    result: AutomationResult,
+    start_time: float,
+    audit_logger: AuditLogger | None = None,
+) -> AutomationResult:
+    """Mark an automation result as cancelled and return it."""
+    message = "Automation cancelled by user."
+    if message not in result.errors:
+        result.errors.append(message)
+    result.success = False
+    result.duration_seconds = time.monotonic() - start_time
+
+    if audit_logger is not None and result.case_id:
+        try:
+            audit_logger.log("automation_cancelled", {
+                "case_id": result.case_id,
+                "duration_seconds": round(result.duration_seconds, 2),
+            })
+        except Exception:
+            LOGGER.debug("Failed to write cancellation audit entry.", exc_info=True)
+
+    return result
 
 
 def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], list[str]]:
@@ -282,6 +345,7 @@ def _verify_hashes_before_report(
 def run_automation(
     request: AutomationRequest,
     progress_callback: Callable[[str, str, float], None] | None = None,
+    cancel_check: object | None = None,
 ) -> AutomationResult:
     """Execute a complete automated forensic triage pipeline.
 
@@ -304,6 +368,12 @@ def run_automation(
     phase is one of ``"discovery"``, ``"hashing"``, ``"parsing"``,
     ``"analysis"``, ``"reporting"`` and percentage is 0.0--100.0.
 
+    The *cancel_check* argument may be a callable returning ``True`` when
+    cancellation was requested, or an event-like object exposing
+    ``is_set()``.  Cancellation is checked between major phases and between
+    per-image/per-artifact work items, and is passed through to analyzer
+    calls.
+
     Error handling:
 
     - If evidence discovery finds 0 files: return failure immediately.
@@ -316,12 +386,29 @@ def run_automation(
     Args:
         request: Automation parameters dataclass.
         progress_callback: Optional callback for progress updates.
+        cancel_check: Optional cancellation callback or event-like object.
 
     Returns:
         AutomationResult with success status and output paths.
     """
     start_time = time.monotonic()
     result = AutomationResult(success=False, case_id="")
+    cancel_probe = _normalize_cancel_check(cancel_check)
+    safe_cancel_check = (
+        (lambda: _cancel_requested(cancel_probe))
+        if cancel_probe is not None
+        else None
+    )
+    audit_logger: AuditLogger | None = None
+
+    def _stop_if_cancelled() -> AutomationResult | None:
+        if safe_cancel_check is not None and safe_cancel_check():
+            return _cancelled_result(result, start_time, audit_logger)
+        return None
+
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
 
     # --- 1. Validate inputs ---
     try:
@@ -352,9 +439,17 @@ def run_automation(
             f"to {MAX_PROMPT_LENGTH:,} characters."
         )
 
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     # --- 2. Load configuration ---
     config, config_warnings = _load_config_safe(request.config_path)
     result.warnings.extend(config_warnings)
+
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
 
     # --- 3. Load profile ---
     parse_artifacts, analysis_artifacts, profile_warnings = _load_profile(
@@ -366,6 +461,10 @@ def run_automation(
         result.errors.append("No artifacts to parse after profile resolution.")
         result.duration_seconds = time.monotonic() - start_time
         return result
+
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
 
     # --- 4. Discover evidence ---
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)
@@ -389,6 +488,10 @@ def run_automation(
         100.0,
     )
 
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     # --- 5. Create case ---
     cases_dir = _PROJECT_ROOT / "cases"
     case_manager = CaseManager(cases_dir=cases_dir)
@@ -405,6 +508,10 @@ def run_automation(
         "evidence_count": len(evidence_files),
     })
 
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     # --- 6. Per-image processing ---
     image_descriptors: list[dict[str, Any]] = []
     all_metadata: list[dict[str, Any]] = []
@@ -412,6 +519,10 @@ def run_automation(
     successful_images = 0
 
     for img_idx, ev_file in enumerate(evidence_files):
+        cancelled = _stop_if_cancelled()
+        if cancelled is not None:
+            return cancelled
+
         img_label = ev_file.name
         pct = (img_idx / len(evidence_files)) * 100.0
 
@@ -426,6 +537,10 @@ def run_automation(
         image_dir = case_manager.get_image_dir(case_id, image_id)
         parsed_dir = image_dir / "parsed"
 
+        cancelled = _stop_if_cancelled()
+        if cancelled is not None:
+            return cancelled
+
         # Edge case: reject 0-byte evidence files with a clear message.
         if ev_file.is_file() and ev_file.stat().st_size == 0:
             msg = (
@@ -438,6 +553,10 @@ def run_automation(
 
         # Open Dissect target and get metadata.
         try:
+            cancelled = _stop_if_cancelled()
+            if cancelled is not None:
+                return cancelled
+
             with ForensicParser(
                 evidence_path=ev_file,
                 case_dir=case_dir,
@@ -448,6 +567,10 @@ def run_automation(
                 metadata["evidence_file"] = str(ev_file.name)
                 available = parser.get_available_artifacts()
                 os_type = parser.os_type
+
+                cancelled = _stop_if_cancelled()
+                if cancelled is not None:
+                    return cancelled
 
                 # Hash evidence.
                 hashes_entry: dict[str, Any] = {
@@ -481,6 +604,10 @@ def run_automation(
                         detail="Hash verification is unavailable for directory evidence.",
                     )
                 else:
+                    cancelled = _stop_if_cancelled()
+                    if cancelled is not None:
+                        return cancelled
+
                     _notify(
                         progress_callback,
                         "hashing",
@@ -513,6 +640,10 @@ def run_automation(
                             detail=f"Hash computation failed during intake: {exc}",
                         )
 
+                cancelled = _stop_if_cancelled()
+                if cancelled is not None:
+                    return cancelled
+
                 # Intersect profile artifact keys with available parser entries.
                 available_keys = _available_artifact_keys(available)
                 image_parse = [a for a in parse_artifacts if a in available_keys]
@@ -531,6 +662,10 @@ def run_automation(
                 _notify(progress_callback, "parsing", f"Parsing {img_label}...", pct)
 
                 for artifact_key in image_parse:
+                    cancelled = _stop_if_cancelled()
+                    if cancelled is not None:
+                        return cancelled
+
                     try:
                         parse_result = parser.parse_artifact(artifact_key)
                         if (
@@ -547,6 +682,10 @@ def run_automation(
                         )
                         LOGGER.warning(msg)
                         result.warnings.append(msg)
+
+                    cancelled = _stop_if_cancelled()
+                    if cancelled is not None:
+                        return cancelled
 
                 if not csv_paths:
                     msg = f"All artifact parsing failed for {img_label}."
@@ -572,6 +711,10 @@ def run_automation(
             result.warnings.append(msg)
             continue
 
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     if successful_images == 0:
         result.errors.append("All evidence images failed to process.")
         result.duration_seconds = time.monotonic() - start_time
@@ -583,6 +726,10 @@ def run_automation(
         return result
 
     # --- 7. AI Analysis ---
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     _notify(progress_callback, "analysis", "Running AI analysis...", 0.0)
     analysis_results: dict[str, Any] = {}
 
@@ -606,6 +753,7 @@ def run_automation(
                 artifact_keys=desc["artifact_keys"],
                 investigation_context=prompt,
                 metadata=metadata,
+                cancel_check=safe_cancel_check,
             )
         else:
             # Multi-image: use first image's csv_paths for constructor,
@@ -621,14 +769,21 @@ def run_automation(
             analysis_results = analyzer.run_multi_image_analysis(
                 images=image_descriptors,
                 investigation_context=prompt,
+                cancel_check=safe_cancel_check,
                 analysis_date_range=request.date_range,
             )
+
+        cancelled = _stop_if_cancelled()
+        if cancelled is not None:
+            return cancelled
 
         # Persist analysis_results.json in case dir.
         results_file = case_dir / "analysis_results.json"
         with open(results_file, "w", encoding="utf-8") as f:
             json.dump(analysis_results, f, indent=2, ensure_ascii=True)
 
+    except AnalysisCancelledError:
+        return _cancelled_result(result, start_time, audit_logger)
     except Exception as exc:
         msg = f"AI analysis failed: {exc}"
         LOGGER.error(msg, exc_info=True)
@@ -641,11 +796,23 @@ def run_automation(
         })
         return result
 
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     _notify(progress_callback, "analysis", "Analysis complete.", 100.0)
 
     # --- 8 & 9. Report generation ---
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     _notify(progress_callback, "reporting", "Verifying evidence hashes...", 0.0)
     _verify_hashes_before_report(all_hashes, audit_logger)
+
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
 
     _notify(progress_callback, "reporting", "Generating reports...", 10.0)
     audit_entries = _read_audit_log(case_dir)
@@ -653,6 +820,10 @@ def run_automation(
 
     # HTML report.
     try:
+        cancelled = _stop_if_cancelled()
+        if cancelled is not None:
+            return cancelled
+
         generator = ReportGenerator(cases_root=cases_dir)
         # Inject case_id and case_name into analysis_results for the template.
         analysis_results.setdefault("case_id", case_id)
@@ -675,6 +846,10 @@ def run_automation(
 
     # JSON report.
     try:
+        cancelled = _stop_if_cancelled()
+        if cancelled is not None:
+            return cancelled
+
         dest_json = output_dir / f"{basename}.json"
         export_json_report(
             case_id=case_id,
@@ -695,6 +870,10 @@ def run_automation(
     _notify(progress_callback, "reporting", "Reports generated.", 100.0)
 
     # --- Final result ---
+    cancelled = _stop_if_cancelled()
+    if cancelled is not None:
+        return cancelled
+
     result.success = len(result.errors) == 0
     result.duration_seconds = time.monotonic() - start_time
 

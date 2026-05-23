@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -866,6 +867,118 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertIn("discovery", phases_seen)
         self.assertIn("reporting", phases_seen)
+
+    def test_cancel_during_artifact_loop_stops_long_run(self) -> None:
+        """Cancellation between artifacts stops before analysis/reporting."""
+        self.mocks["artifact_options_to_lists"].side_effect = (
+            lambda _options: (
+                ["runkeys", "shellbags"],
+                ["runkeys", "shellbags"],
+            )
+        )
+
+        first_parse_started = threading.Event()
+        release_first_parse = threading.Event()
+
+        class BlockingParser(FakeParser):
+            """Parser that blocks during the first artifact parse."""
+
+            calls: list[str] = []
+
+            def get_available_artifacts(self) -> list[dict[str, object]]:
+                return [
+                    {"key": "runkeys", "name": "Run Keys", "available": True},
+                    {"key": "shellbags", "name": "Shellbags", "available": True},
+                ]
+
+            def parse_artifact(
+                self,
+                artifact_key: str,
+                progress_callback: object | None = None,
+            ) -> dict[str, object]:
+                type(self).calls.append(artifact_key)
+                if artifact_key == "runkeys":
+                    first_parse_started.set()
+                    release_first_parse.wait(timeout=2.0)
+                return super().parse_artifact(artifact_key, progress_callback)
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: BlockingParser(**kwargs)
+        )
+
+        cancel_event = threading.Event()
+        results: list[AutomationResult] = []
+        errors: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                results.append(
+                    run_automation(
+                        self._make_request(),
+                        cancel_check=cancel_event,
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - surfaced below.
+                errors.append(exc)
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+
+        self.assertTrue(first_parse_started.wait(timeout=2.0))
+        cancel_event.set()
+        release_first_parse.set()
+        thread.join(timeout=2.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(BlockingParser.calls, ["runkeys"])
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].success)
+        self.assertTrue(
+            any("cancelled" in error.lower() for error in results[0].errors)
+        )
+        self.mocks["ForensicAnalyzer"].assert_not_called()
+        self.mocks["ReportGenerator"].assert_not_called()
+        self.mocks["export_json_report"].assert_not_called()
+
+    def test_cancel_check_is_passed_to_single_image_analyzer(self) -> None:
+        """The engine gives analyzer calls the normalized cancellation check."""
+
+        class CapturingAnalyzer(_EngineTestAnalyzer):
+            """Analyzer stub that records the cancel_check argument."""
+
+            seen_cancel_check: Any | None = None
+
+            def run_full_analysis(
+                self,
+                artifact_keys: list[str],
+                investigation_context: str,
+                metadata: dict[str, object] | None,
+                progress_callback: object | None = None,
+                cancel_check: object | None = None,
+            ) -> dict[str, object]:
+                type(self).seen_cancel_check = cancel_check
+                return super().run_full_analysis(
+                    artifact_keys=artifact_keys,
+                    investigation_context=investigation_context,
+                    metadata=metadata,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                )
+
+        self.mocks["ForensicAnalyzer"].side_effect = (
+            lambda **kwargs: CapturingAnalyzer(**kwargs)
+        )
+        cancel_event = threading.Event()
+
+        result = run_automation(self._make_request(), cancel_check=cancel_event)
+
+        self.assertTrue(result.success)
+        self.assertIsNotNone(CapturingAnalyzer.seen_cancel_check)
+        assert callable(CapturingAnalyzer.seen_cancel_check)
+        self.assertFalse(CapturingAnalyzer.seen_cancel_check())
+        cancel_event.set()
+        self.assertTrue(CapturingAnalyzer.seen_cancel_check())
 
     def test_skip_hashing(self) -> None:
         """skip_hashing=True skips hash computation."""
