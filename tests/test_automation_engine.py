@@ -570,6 +570,134 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(len(result.warnings) > 0)
 
+    def test_report_metadata_hashes_skip_images_that_fail_after_hashing(self) -> None:
+        """Report metadata and hashes only include images that parsed."""
+        ev2 = self.root / "disk2.vmdk"
+        ev2.write_bytes(b"\x00" * 16)
+        evidence_files = [self.evidence_file, ev2]
+        self.mocks["discover_evidence"].return_value = evidence_files
+
+        hash_by_name = {
+            self.evidence_file.name: {
+                "sha256": "1" * 64,
+                "md5": "1" * 32,
+                "size_bytes": 11,
+            },
+            ev2.name: {
+                "sha256": "2" * 64,
+                "md5": "2" * 32,
+                "size_bytes": 22,
+            },
+        }
+
+        class ParserThatCanFailAfterHash(FakeParser):
+            """Parser that fails selected images only during artifact parsing."""
+
+            fail_names: set[str] = set()
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.evidence_path = Path(kwargs["evidence_path"])
+                super().__init__(**kwargs)
+
+            def get_image_metadata(self) -> dict[str, str]:
+                metadata = super().get_image_metadata()
+                metadata["hostname"] = f"host-{self.evidence_path.stem}"
+                return metadata
+
+            def parse_artifact(
+                self,
+                artifact_key: str,
+                progress_callback: object | None = None,
+            ) -> dict[str, object]:
+                if self.evidence_path.name in type(self).fail_names:
+                    raise RuntimeError("parse failed after metadata and hash")
+                return super().parse_artifact(artifact_key, progress_callback)
+
+        html_calls: list[dict[str, Any]] = []
+        json_calls: list[dict[str, Any]] = []
+
+        class CapturingReportGenerator(FakeReportGenerator):
+            """Capture HTML report inputs before writing the stub report."""
+
+            def generate(self, **kwargs: Any) -> Path:
+                html_calls.append(kwargs)
+                return super().generate(**kwargs)
+
+        def _capture_export(**kwargs: Any) -> Path:
+            json_calls.append(kwargs)
+            out = Path(kwargs["output_path"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text('{"case_id":"case-001"}', encoding="utf-8")
+            return out
+
+        def _hash_for_path(path: str | Path) -> dict[str, object]:
+            return dict(hash_by_name[Path(path).name])
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: ParserThatCanFailAfterHash(**kwargs)
+        )
+        self.mocks["ReportGenerator"].side_effect = (
+            lambda **kwargs: CapturingReportGenerator(
+                cases_root=self.cases_dir,
+                **{k: v for k, v in kwargs.items() if k != "cases_root"},
+            )
+        )
+        self.mocks["export_json_report"].side_effect = _capture_export
+        self.mocks["compute_hashes"].side_effect = _hash_for_path
+
+        scenarios = [
+            (self.evidence_file.name, ev2.name, "2" * 64),
+            (ev2.name, self.evidence_file.name, "1" * 64),
+        ]
+
+        for failed_name, expected_name, expected_sha256 in scenarios:
+            with self.subTest(failed_image=failed_name):
+                ParserThatCanFailAfterHash.fail_names = {failed_name}
+                html_calls.clear()
+                json_calls.clear()
+                _EngineTestAnalyzer.last_full_metadata = None
+                self.mocks["compute_hashes"].reset_mock()
+                self.mock_cm.add_image.side_effect = ["img-001", "img-002"]
+                self.mock_cm.get_image_dir.side_effect = [
+                    self.cases_dir / "case-001" / "images" / "img-001",
+                    self.cases_dir / "case-001" / "images" / "img-002",
+                ]
+
+                result = run_automation(self._make_request())
+
+                self.assertTrue(result.success)
+                self.assertTrue(
+                    any("All artifact parsing failed" in w for w in result.warnings)
+                )
+                hashed_names = [
+                    Path(call.args[0]).name
+                    for call in self.mocks["compute_hashes"].call_args_list
+                ]
+                self.assertEqual(
+                    hashed_names,
+                    [self.evidence_file.name, ev2.name],
+                )
+                self.assertEqual(len(html_calls), 1)
+                self.assertEqual(len(json_calls), 1)
+                self.assertIsNotNone(_EngineTestAnalyzer.last_full_metadata)
+                assert _EngineTestAnalyzer.last_full_metadata is not None
+                self.assertEqual(
+                    _EngineTestAnalyzer.last_full_metadata["evidence_file"],
+                    expected_name,
+                )
+
+                for report_kwargs in [html_calls[0], json_calls[0]]:
+                    metadata = report_kwargs["image_metadata"]
+                    hashes = report_kwargs["evidence_hashes"]
+                    self.assertEqual(
+                        [item["evidence_file"] for item in metadata],
+                        [expected_name],
+                    )
+                    self.assertEqual(
+                        [item["sha256"] for item in hashes],
+                        [expected_sha256],
+                    )
+
     def test_all_images_fail_returns_failure(self) -> None:
         """If every image fails to open, result is failure."""
         self.mocks["ForensicParser"].side_effect = RuntimeError("Cannot open")

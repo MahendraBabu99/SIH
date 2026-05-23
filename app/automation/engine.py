@@ -418,8 +418,6 @@ def run_automation(
                 available = parser.get_available_artifacts()
                 os_type = parser.os_type
 
-                all_metadata.append(metadata)
-
                 # Hash evidence.
                 hashes_entry: dict[str, Any] = {
                     "sha256": "",
@@ -453,8 +451,6 @@ def run_automation(
                         LOGGER.warning(msg)
                         result.warnings.append(msg)
                         hashes_entry["verification_status"] = "UNAVAILABLE"
-
-                all_hashes.append(hashes_entry)
 
                 # Intersect profile artifact keys with available parser entries.
                 available_keys = _available_artifact_keys(available)
@@ -498,6 +494,8 @@ def run_automation(
                     continue
 
                 successful_images += 1
+                all_metadata.append(metadata)
+                all_hashes.append(hashes_entry)
                 image_descriptors.append({
                     "image_id": image_id,
                     "label": img_label,
