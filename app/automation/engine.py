@@ -542,8 +542,9 @@ def run_automation(
                 os_type=first["os_type"],
             )
             analysis_results = analyzer.run_multi_image_analysis(
-                images_analysis_list=image_descriptors,
-                cross_image_context=prompt,
+                images=image_descriptors,
+                investigation_context=prompt,
+                analysis_date_range=request.date_range,
             )
 
         # Persist analysis_results.json in case dir.

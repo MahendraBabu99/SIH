@@ -73,24 +73,29 @@ class _IntegrationAnalyzer(FakeAnalyzer):
 
     def run_multi_image_analysis(
         self,
-        images_analysis_list: list[dict[str, object]],
-        cross_image_context: str,
-        **kwargs: object,
+        images: list[dict[str, Any]],
+        investigation_context: str,
+        progress_callback: Any | None = None,
+        cancel_check: Any | None = None,
+        analysis_date_range: tuple[str, str] | None = None,
     ) -> dict[str, object]:
         """Return fake multi-image analysis results.
 
         Args:
-            images_analysis_list: List of image descriptor dicts.
-            cross_image_context: Investigation context string.
-            **kwargs: Ignored extra keyword arguments.
+            images: List of image descriptor dicts.
+            investigation_context: Investigation context string.
+            progress_callback: Ignored progress callback.
+            cancel_check: Ignored cancellation callback.
+            analysis_date_range: Ignored analysis date range.
 
         Returns:
             Multi-image analysis result dict with images and cross-summary.
         """
-        images: dict[str, dict[str, object]] = {}
-        for desc in images_analysis_list:
+        del investigation_context, progress_callback, cancel_check, analysis_date_range
+        image_results: dict[str, dict[str, object]] = {}
+        for desc in images:
             iid = desc["image_id"]
-            images[iid] = {
+            image_results[iid] = {
                 "label": desc["label"],
                 "per_artifact": [
                     {
@@ -104,7 +109,7 @@ class _IntegrationAnalyzer(FakeAnalyzer):
                 "summary": f"summary for {iid}",
             }
         return {
-            "images": images,
+            "images": image_results,
             "cross_image_summary": "cross-image correlation found",
             "model_info": {"provider": "fake", "model": "fake-model"},
         }

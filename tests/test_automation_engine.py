@@ -8,6 +8,7 @@ progress callbacks, hash skipping, date ranges, and output directory handling.
 
 from __future__ import annotations
 
+import inspect
 import json
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from tests.conftest import (
     FAKE_HASHES,
@@ -30,24 +32,29 @@ class _EngineTestAnalyzer(FakeAnalyzer):
 
     def run_multi_image_analysis(
         self,
-        images_analysis_list: list[dict[str, object]],
-        cross_image_context: str,
-        **kwargs: object,
+        images: list[dict[str, Any]],
+        investigation_context: str,
+        progress_callback: Any | None = None,
+        cancel_check: Any | None = None,
+        analysis_date_range: tuple[str, str] | None = None,
     ) -> dict[str, object]:
         """Return fake multi-image analysis results.
 
         Args:
-            images_analysis_list: List of image descriptor dicts.
-            cross_image_context: Investigation context string.
-            **kwargs: Ignored additional keyword arguments.
+            images: List of image descriptor dicts.
+            investigation_context: Investigation context string.
+            progress_callback: Ignored progress callback.
+            cancel_check: Ignored cancellation callback.
+            analysis_date_range: Ignored analysis date range.
 
         Returns:
             Multi-image analysis result dict.
         """
-        images: dict[str, dict[str, object]] = {}
-        for desc in images_analysis_list:
+        del investigation_context, progress_callback, cancel_check, analysis_date_range
+        image_results: dict[str, dict[str, object]] = {}
+        for desc in images:
             iid = desc["image_id"]
-            images[iid] = {
+            image_results[iid] = {
                 "label": desc["label"],
                 "per_artifact": [
                     {
@@ -61,7 +68,7 @@ class _EngineTestAnalyzer(FakeAnalyzer):
                 "summary": f"summary for {iid}",
             }
         return {
-            "images": images,
+            "images": image_results,
             "cross_image_summary": "cross-image summary",
             "model_info": {"provider": "fake", "model": "fake-model"},
         }
@@ -192,6 +199,24 @@ class TestRunAutomation(unittest.TestCase):
     discover_evidence, compute_hashes, export_json_report, AuditLogger,
     load_config, load_profiles_from_directory, artifact_options_to_lists.
     """
+
+    def test_multi_image_analyzer_stub_signature_matches_real_analyzer(self) -> None:
+        """The strict fake analyzer tracks the real multi-image API."""
+        real_params = inspect.signature(
+            ForensicAnalyzer.run_multi_image_analysis
+        ).parameters
+        fake_params = inspect.signature(
+            _EngineTestAnalyzer.run_multi_image_analysis
+        ).parameters
+        real_shape = [
+            (name, param.kind, param.default)
+            for name, param in real_params.items()
+        ]
+        fake_shape = [
+            (name, param.kind, param.default)
+            for name, param in fake_params.items()
+        ]
+        self.assertEqual(fake_shape, real_shape)
 
     def setUp(self) -> None:
         """Set up temp directories and common patches."""
