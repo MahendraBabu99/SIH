@@ -210,9 +210,9 @@ class TestRunAutomation(unittest.TestCase):
         self.cases_dir = self.root / "cases"
         self.cases_dir.mkdir()
 
-        # Create a fake evidence file.
+        # Create a fake evidence file (non-empty to avoid 0-byte skip).
         self.evidence_file = self.root / "evidence.E01"
-        self.evidence_file.write_bytes(b"")
+        self.evidence_file.write_bytes(b"\x00" * 16)
 
         # Standard patches.
         self.patches = []
@@ -330,7 +330,7 @@ class TestRunAutomation(unittest.TestCase):
     def test_successful_folder_run(self) -> None:
         """Folder with multiple evidence files processes all of them."""
         ev2 = self.root / "disk2.vmdk"
-        ev2.write_bytes(b"")
+        ev2.write_bytes(b"\x00" * 16)
 
         # discover_evidence returns two files.
         self.mocks["discover_evidence"].return_value = [
@@ -389,7 +389,7 @@ class TestRunAutomation(unittest.TestCase):
     def test_partial_failure_returns_warnings(self) -> None:
         """If one image fails to open but others succeed, result has warnings."""
         ev2 = self.root / "bad.e01"
-        ev2.write_bytes(b"")
+        ev2.write_bytes(b"\x00" * 16)
         self.mocks["discover_evidence"].return_value = [
             self.evidence_file, ev2,
         ]

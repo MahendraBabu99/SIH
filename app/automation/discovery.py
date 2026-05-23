@@ -51,12 +51,17 @@ def validate_evidence_path(path: str | Path) -> Path:
     resolved = Path(raw).expanduser().resolve()
 
     # Reject traversal components in the original input.
+    # UNC paths (e.g. \\server\share) start with \\ on Windows; their
+    # Path.parts begin with the share root, never "..".
     parts = Path(raw).parts
     if ".." in parts:
         raise ValueError(
             f"Path contains traversal component '..': {raw}"
         )
 
+    # Follow symlinks — resolve() already does this, but verify the
+    # final target exists (resolve() on a broken symlink raises on some
+    # platforms; on others it returns a non-existent path).
     if not resolved.exists():
         raise FileNotFoundError(f"Evidence path does not exist: {resolved}")
 

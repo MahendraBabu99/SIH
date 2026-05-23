@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -289,6 +290,24 @@ def run_automation(
     output_dir = Path(request.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Edge case: verify the output directory is writable before running.
+    if not os.access(output_dir, os.W_OK):
+        result.errors.append(
+            f"Output directory is not writable: {output_dir}"
+        )
+        result.duration_seconds = time.monotonic() - start_time
+        return result
+
+    # Edge case: truncate very long prompts to prevent excessive AI costs.
+    MAX_PROMPT_LENGTH = 100_000
+    prompt = request.prompt
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        prompt = prompt[:MAX_PROMPT_LENGTH]
+        result.warnings.append(
+            f"Investigation prompt was truncated from {len(request.prompt):,} "
+            f"to {MAX_PROMPT_LENGTH:,} characters."
+        )
+
     # --- 2. Load configuration ---
     config, config_warnings = _load_config_safe(request.config_path)
     result.warnings.extend(config_warnings)
@@ -335,6 +354,12 @@ def run_automation(
     case_dir = cases_dir / case_id
 
     audit_logger = AuditLogger(case_directory=case_dir, tool_version=TOOL_VERSION)
+    audit_logger.log("automation_started", {
+        "evidence_path": str(evidence_path),
+        "profile": request.profile_name or DEFAULT_PROFILE_NAME,
+        "skip_hashing": request.skip_hashing,
+        "evidence_count": len(evidence_files),
+    })
 
     # --- 6. Per-image processing ---
     image_descriptors: list[dict[str, Any]] = []
@@ -356,6 +381,16 @@ def run_automation(
 
         image_dir = case_manager.get_image_dir(case_id, image_id)
         parsed_dir = image_dir / "parsed"
+
+        # Edge case: reject 0-byte evidence files with a clear message.
+        if ev_file.is_file() and ev_file.stat().st_size == 0:
+            msg = (
+                f"Evidence file is empty (0 bytes): {img_label}. "
+                "Skipping — Dissect cannot process empty files."
+            )
+            LOGGER.warning(msg)
+            result.warnings.append(msg)
+            continue
 
         # Open Dissect target and get metadata.
         try:
@@ -456,6 +491,11 @@ def run_automation(
     if successful_images == 0:
         result.errors.append("All evidence images failed to process.")
         result.duration_seconds = time.monotonic() - start_time
+        audit_logger.log("automation_failed", {
+            "case_id": case_id,
+            "errors": list(result.errors),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
         return result
 
     # --- 7. AI Analysis ---
@@ -474,7 +514,7 @@ def run_automation(
             )
             analysis_results = analyzer.run_full_analysis(
                 artifact_keys=desc["artifact_keys"],
-                investigation_context=request.prompt,
+                investigation_context=prompt,
                 metadata=desc["metadata"],
             )
         else:
@@ -490,7 +530,7 @@ def run_automation(
             )
             analysis_results = analyzer.run_multi_image_analysis(
                 images_analysis_list=image_descriptors,
-                cross_image_context=request.prompt,
+                cross_image_context=prompt,
             )
 
         # Persist analysis_results.json in case dir.
@@ -503,6 +543,11 @@ def run_automation(
         LOGGER.error(msg, exc_info=True)
         result.errors.append(msg)
         result.duration_seconds = time.monotonic() - start_time
+        audit_logger.log("automation_failed", {
+            "case_id": case_id,
+            "errors": list(result.errors),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
         return result
 
     _notify(progress_callback, "analysis", "Analysis complete.", 100.0)
@@ -522,7 +567,7 @@ def run_automation(
             analysis_results=analysis_results,
             image_metadata=all_metadata,
             evidence_hashes=all_hashes,
-            investigation_context=request.prompt,
+            investigation_context=prompt,
             audit_log_entries=audit_entries,
         )
         # Copy to output_dir.
@@ -543,7 +588,7 @@ def run_automation(
             analysis_results=analysis_results,
             image_metadata=all_metadata,
             evidence_hashes=all_hashes,
-            investigation_context=request.prompt,
+            investigation_context=prompt,
             audit_log_entries=audit_entries,
             output_path=dest_json,
         )
@@ -558,4 +603,18 @@ def run_automation(
     # --- Final result ---
     result.success = len(result.errors) == 0
     result.duration_seconds = time.monotonic() - start_time
+
+    if result.success:
+        audit_logger.log("automation_completed", {
+            "case_id": case_id,
+            "evidence_count": len(evidence_files),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
+    else:
+        audit_logger.log("automation_failed", {
+            "case_id": case_id,
+            "errors": list(result.errors),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
+
     return result

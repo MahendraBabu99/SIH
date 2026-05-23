@@ -87,6 +87,9 @@ ACTION_TYPES = frozenset(
         "image_added",
         "image_deleted",
         "legacy_case_migrated",
+        "automation_started",
+        "automation_completed",
+        "automation_failed",
     }
 )
 DEFAULT_TOOL_VERSION = TOOL_VERSION
