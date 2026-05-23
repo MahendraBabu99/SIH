@@ -370,6 +370,53 @@ class TestRunAutomation(unittest.TestCase):
         self.assertEqual(result.case_id, "case-001")
         self.assertEqual(len(result.errors), 0)
 
+    def test_parser_context_manager_closes_success_and_parse_failure(self) -> None:
+        """Automation closes the parser on success and parser-loop failure."""
+
+        class RecordingParser(FakeParser):
+            """Fake parser that records context-manager cleanup."""
+
+            instances: list["RecordingParser"] = []
+            fail_parse = False
+
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                self.exit_calls = 0
+                self.close_calls = 0
+                RecordingParser.instances.append(self)
+
+            def __exit__(self, *args: object) -> bool:
+                self.exit_calls += 1
+                self.close()
+                return False
+
+            def close(self) -> None:
+                self.close_calls += 1
+
+            def parse_artifact(
+                self,
+                artifact_key: str,
+                progress_callback: object | None = None,
+            ) -> dict[str, object]:
+                if type(self).fail_parse:
+                    raise RuntimeError("parse boom")
+                return super().parse_artifact(artifact_key, progress_callback)
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: RecordingParser(**kwargs)
+        )
+
+        success_result = run_automation(self._make_request())
+        self.assertTrue(success_result.success)
+        self.assertEqual(RecordingParser.instances[-1].exit_calls, 1)
+        self.assertEqual(RecordingParser.instances[-1].close_calls, 1)
+
+        RecordingParser.fail_parse = True
+        failure_result = run_automation(self._make_request())
+        self.assertFalse(failure_result.success)
+        self.assertEqual(RecordingParser.instances[-1].exit_calls, 1)
+        self.assertEqual(RecordingParser.instances[-1].close_calls, 1)
+
     def test_profile_artifact_key_matches_available_key_not_name(self) -> None:
         """Profile keys match parser keys even when display names differ."""
         result = run_automation(self._make_request())

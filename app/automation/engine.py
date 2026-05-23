@@ -407,99 +407,111 @@ def run_automation(
 
         # Open Dissect target and get metadata.
         try:
-            parser = ForensicParser(
+            with ForensicParser(
                 evidence_path=ev_file,
                 case_dir=case_dir,
                 audit_logger=audit_logger,
                 parsed_dir=parsed_dir,
-            )
-            metadata = parser.get_image_metadata()
-            metadata["evidence_file"] = str(ev_file.name)
-            available = parser.get_available_artifacts()
-            os_type = parser.os_type
+            ) as parser:
+                metadata = parser.get_image_metadata()
+                metadata["evidence_file"] = str(ev_file.name)
+                available = parser.get_available_artifacts()
+                os_type = parser.os_type
+
+                all_metadata.append(metadata)
+
+                # Hash evidence.
+                hashes_entry: dict[str, Any] = {
+                    "sha256": "",
+                    "md5": "",
+                    "size_bytes": 0,
+                    "verification_status": "SKIPPED",
+                }
+                if not request.skip_hashing:
+                    _notify(
+                        progress_callback,
+                        "hashing",
+                        f"Hashing {img_label}...",
+                        pct,
+                    )
+                    try:
+                        h = compute_hashes(ev_file)
+                        hashes_entry = {
+                            "sha256": h["sha256"],
+                            "md5": h["md5"],
+                            "size_bytes": h["size_bytes"],
+                            "verification_status": "PASS",
+                        }
+                        audit_logger.log("evidence_intake", {
+                            "file": str(ev_file),
+                            "sha256": h["sha256"],
+                            "md5": h["md5"],
+                            "size_bytes": h["size_bytes"],
+                        })
+                    except Exception as exc:
+                        msg = f"Hashing failed for {img_label}: {exc}"
+                        LOGGER.warning(msg)
+                        result.warnings.append(msg)
+                        hashes_entry["verification_status"] = "UNAVAILABLE"
+
+                all_hashes.append(hashes_entry)
+
+                # Intersect profile artifact keys with available parser entries.
+                available_keys = _available_artifact_keys(available)
+                image_parse = [a for a in parse_artifacts if a in available_keys]
+                image_analysis = [
+                    a for a in analysis_artifacts if a in available_keys
+                ]
+
+                if not image_parse:
+                    msg = f"No matching artifacts available for {img_label}."
+                    LOGGER.warning(msg)
+                    result.warnings.append(msg)
+                    continue
+
+                # Parse artifacts.
+                csv_paths: dict[str, str | Path] = {}
+                _notify(progress_callback, "parsing", f"Parsing {img_label}...", pct)
+
+                for artifact_key in image_parse:
+                    try:
+                        parse_result = parser.parse_artifact(artifact_key)
+                        if (
+                            parse_result.get("success")
+                            and parse_result.get("csv_path")
+                        ):
+                            csv_paths[artifact_key] = parse_result["csv_path"]
+                            # Handle EVTX multi-part CSVs.
+                            if parse_result.get("csv_paths"):
+                                csv_paths[artifact_key] = parse_result["csv_paths"]
+                    except Exception as exc:
+                        msg = (
+                            f"Parse failed for {artifact_key} on {img_label}: {exc}"
+                        )
+                        LOGGER.warning(msg)
+                        result.warnings.append(msg)
+
+                if not csv_paths:
+                    msg = f"All artifact parsing failed for {img_label}."
+                    LOGGER.warning(msg)
+                    result.warnings.append(msg)
+                    continue
+
+                successful_images += 1
+                image_descriptors.append({
+                    "image_id": image_id,
+                    "label": img_label,
+                    "metadata": metadata,
+                    "artifact_keys": image_analysis,
+                    "parsed_dir": str(parsed_dir),
+                    "os_type": os_type,
+                    "csv_paths": csv_paths,
+                })
         except Exception as exc:
             msg = f"Failed to open evidence {img_label}: {exc}"
             LOGGER.warning(msg)
             result.warnings.append(msg)
             continue
-
-        all_metadata.append(metadata)
-
-        # Hash evidence.
-        hashes_entry: dict[str, Any] = {
-            "sha256": "",
-            "md5": "",
-            "size_bytes": 0,
-            "verification_status": "SKIPPED",
-        }
-        if not request.skip_hashing:
-            _notify(progress_callback, "hashing", f"Hashing {img_label}...", pct)
-            try:
-                h = compute_hashes(ev_file)
-                hashes_entry = {
-                    "sha256": h["sha256"],
-                    "md5": h["md5"],
-                    "size_bytes": h["size_bytes"],
-                    "verification_status": "PASS",
-                }
-                audit_logger.log("evidence_intake", {
-                    "file": str(ev_file),
-                    "sha256": h["sha256"],
-                    "md5": h["md5"],
-                    "size_bytes": h["size_bytes"],
-                })
-            except Exception as exc:
-                msg = f"Hashing failed for {img_label}: {exc}"
-                LOGGER.warning(msg)
-                result.warnings.append(msg)
-                hashes_entry["verification_status"] = "UNAVAILABLE"
-
-        all_hashes.append(hashes_entry)
-
-        # Intersect profile artifact keys with available parser entries.
-        available_keys = _available_artifact_keys(available)
-        image_parse = [a for a in parse_artifacts if a in available_keys]
-        image_analysis = [a for a in analysis_artifacts if a in available_keys]
-
-        if not image_parse:
-            msg = f"No matching artifacts available for {img_label}."
-            LOGGER.warning(msg)
-            result.warnings.append(msg)
-            continue
-
-        # Parse artifacts.
-        csv_paths: dict[str, str | Path] = {}
-        _notify(progress_callback, "parsing", f"Parsing {img_label}...", pct)
-
-        for artifact_key in image_parse:
-            try:
-                parse_result = parser.parse_artifact(artifact_key)
-                if parse_result.get("success") and parse_result.get("csv_path"):
-                    csv_paths[artifact_key] = parse_result["csv_path"]
-                    # Handle EVTX multi-part CSVs.
-                    if parse_result.get("csv_paths"):
-                        csv_paths[artifact_key] = parse_result["csv_paths"]
-            except Exception as exc:
-                msg = f"Parse failed for {artifact_key} on {img_label}: {exc}"
-                LOGGER.warning(msg)
-                result.warnings.append(msg)
-
-        if not csv_paths:
-            msg = f"All artifact parsing failed for {img_label}."
-            LOGGER.warning(msg)
-            result.warnings.append(msg)
-            continue
-
-        successful_images += 1
-        image_descriptors.append({
-            "image_id": image_id,
-            "label": img_label,
-            "metadata": metadata,
-            "artifact_keys": image_analysis,
-            "parsed_dir": str(parsed_dir),
-            "os_type": os_type,
-            "csv_paths": csv_paths,
-        })
 
     if successful_images == 0:
         result.errors.append("All evidence images failed to process.")
