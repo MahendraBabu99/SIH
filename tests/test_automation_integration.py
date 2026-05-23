@@ -38,7 +38,7 @@ _ENGINE = "app.automation.engine"
 
 
 class _IntegrationParser(_BaseFakeParser):
-    """Parser stub returning ``runkeys`` as both key and name.
+    """Parser stub returning ``runkeys`` with its display name.
 
     Attributes:
         os_type: Detected OS type, defaults to ``"windows"``.
@@ -59,7 +59,9 @@ class _IntegrationParser(_BaseFakeParser):
         Returns:
             List with ``runkeys`` artifact.
         """
-        return [{"key": "runkeys", "name": "runkeys", "available": True}]
+        return [
+            {"key": "runkeys", "name": "Run/RunOnce Keys", "available": True},
+        ]
 
 
 class _IntegrationAnalyzer(FakeAnalyzer):

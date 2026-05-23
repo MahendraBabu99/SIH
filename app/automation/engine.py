@@ -199,6 +199,19 @@ def _load_profile(
     return parse_artifacts, analysis_artifacts, warnings
 
 
+def _available_artifact_keys(available_artifacts: list[dict[str, Any]]) -> set[str]:
+    """Return artifact keys that are explicitly available on an image."""
+    keys: set[str] = set()
+    for artifact in available_artifacts:
+        if not artifact.get("available"):
+            continue
+        for key_field in ("key", "artifact_key"):
+            artifact_key = str(artifact.get(key_field, "")).strip()
+            if artifact_key:
+                keys.add(artifact_key)
+    return keys
+
+
 def _read_audit_log(case_dir: Path) -> list[dict[str, Any]]:
     """Read and parse the case audit.jsonl file into a list of dicts.
 
@@ -443,10 +456,10 @@ def run_automation(
 
         all_hashes.append(hashes_entry)
 
-        # Intersect profile artifacts with available.
-        available_names = {a.get("name", a.get("artifact_key", "")) for a in available}
-        image_parse = [a for a in parse_artifacts if a in available_names]
-        image_analysis = [a for a in analysis_artifacts if a in available_names]
+        # Intersect profile artifact keys with available parser entries.
+        available_keys = _available_artifact_keys(available)
+        image_parse = [a for a in parse_artifacts if a in available_keys]
+        image_analysis = [a for a in analysis_artifacts if a in available_keys]
 
         if not image_parse:
             msg = f"No matching artifacts available for {img_label}."

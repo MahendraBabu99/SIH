@@ -68,20 +68,16 @@ class _EngineTestAnalyzer(FakeAnalyzer):
 
 
 class FakeParser(_BaseFakeParser):
-    """Parser stub that returns 'runkeys' as the artifact name.
-
-    The engine intersects profile artifact keys against available artifact
-    *names*, so the name here must match the profile's artifact_key.
-    """
+    """Parser stub that returns a real artifact key and display name."""
 
     def get_available_artifacts(self) -> list[dict[str, object]]:
-        """Return artifacts with a name matching the test profile.
+        """Return artifacts with a key matching the test profile.
 
         Returns:
             List with a single ``runkeys`` artifact marked available.
         """
         return [
-            {"key": "runkeys", "name": "runkeys", "available": True},
+            {"key": "runkeys", "name": "Run/RunOnce Keys", "available": True},
         ]
 
 
@@ -106,10 +102,6 @@ def _fake_load_config(path: Any) -> dict[str, Any]:
 
 def _fake_profiles(root: Any) -> list[dict[str, Any]]:
     """Return a single recommended profile with one artifact.
-
-    The artifact_key must match the ``name`` field returned by
-    FakeParser.get_available_artifacts() because the engine intersects
-    profile artifacts against available artifact *names*.
 
     Args:
         root: Ignored profiles directory path.
@@ -326,6 +318,58 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.case_id, "case-001")
         self.assertEqual(len(result.errors), 0)
+
+    def test_profile_artifact_key_matches_available_key_not_name(self) -> None:
+        """Profile keys match parser keys even when display names differ."""
+        result = run_automation(self._make_request())
+        self.assertTrue(result.success)
+
+    def test_profile_artifact_key_matches_available_artifact_key_field(self) -> None:
+        """Available entries may expose artifact_key instead of key."""
+
+        class ArtifactKeyParser(FakeParser):
+            """Parser stub using the alternate artifact_key field."""
+
+            def get_available_artifacts(self) -> list[dict[str, object]]:
+                return [
+                    {
+                        "artifact_key": "runkeys",
+                        "name": "Run/RunOnce Keys",
+                        "available": True,
+                    },
+                ]
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: ArtifactKeyParser(**kwargs)
+        )
+
+        result = run_automation(self._make_request())
+        self.assertTrue(result.success)
+
+    def test_unavailable_artifact_is_not_selected(self) -> None:
+        """Artifacts with available=False are excluded from automation."""
+
+        class UnavailableParser(FakeParser):
+            """Parser stub with a registered but unavailable artifact."""
+
+            def get_available_artifacts(self) -> list[dict[str, object]]:
+                return [
+                    {
+                        "key": "runkeys",
+                        "name": "Run/RunOnce Keys",
+                        "available": False,
+                    },
+                ]
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: UnavailableParser(**kwargs)
+        )
+
+        result = run_automation(self._make_request())
+        self.assertFalse(result.success)
+        self.assertTrue(
+            any("No matching artifacts available" in w for w in result.warnings)
+        )
 
     def test_successful_folder_run(self) -> None:
         """Folder with multiple evidence files processes all of them."""
