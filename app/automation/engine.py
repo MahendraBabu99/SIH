@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -317,6 +317,70 @@ def _generate_report_basename(case_id: str) -> str:
     return f"AIFT_report_{case_id}_{ts}"
 
 
+def _prepare_output_dir(
+    output_dir_value: str | Path,
+) -> tuple[Path | None, str | None]:
+    """Create and verify an automation output directory.
+
+    Args:
+        output_dir_value: User-supplied output directory path.
+
+    Returns:
+        Tuple of ``(resolved_output_dir, error_message)``.  On success the
+        error is ``None``; on failure the path is ``None``.
+    """
+    try:
+        output_dir = Path(output_dir_value).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return (
+            None,
+            f"Unable to create output directory '{output_dir_value}': {exc}",
+        )
+
+    probe_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=".aift-write-probe-",
+            suffix=".tmp",
+            dir=output_dir,
+            delete=False,
+        ) as probe:
+            probe_path = Path(probe.name)
+            probe.write("AIFT output directory write probe.\n")
+            probe.flush()
+
+        resolved_probe = probe_path.resolve()
+        if resolved_probe.parent != output_dir:
+            raise OSError(
+                f"temporary probe resolved outside output directory: {resolved_probe}"
+            )
+        resolved_probe.unlink()
+    except Exception as exc:
+        if probe_path is not None:
+            try:
+                resolved_probe = probe_path.resolve()
+                if (
+                    resolved_probe.parent == output_dir
+                    and resolved_probe.exists()
+                ):
+                    resolved_probe.unlink()
+            except Exception:
+                LOGGER.debug(
+                    "Failed to clean up output directory probe file.",
+                    exc_info=True,
+                )
+        return (
+            None,
+            "Output directory is not writable: "
+            f"{output_dir}. Failed to create and delete a temporary probe file: {exc}",
+        )
+
+    return output_dir, None
+
+
 def _verify_hashes_before_report(
     hashes_list: list[dict[str, Any]],
     audit_logger: AuditLogger,
@@ -418,16 +482,12 @@ def run_automation(
         result.duration_seconds = time.monotonic() - start_time
         return result
 
-    output_dir = Path(request.output_dir).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Edge case: verify the output directory is writable before running.
-    if not os.access(output_dir, os.W_OK):
-        result.errors.append(
-            f"Output directory is not writable: {output_dir}"
-        )
+    output_dir, output_dir_error = _prepare_output_dir(request.output_dir)
+    if output_dir_error is not None:
+        result.errors.append(output_dir_error)
         result.duration_seconds = time.monotonic() - start_time
         return result
+    assert output_dir is not None
 
     # Edge case: truncate very long prompts to prevent excessive AI costs.
     MAX_PROMPT_LENGTH = 100_000

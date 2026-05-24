@@ -12,7 +12,6 @@ Attributes:
 from __future__ import annotations
 
 import json
-import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -528,23 +527,24 @@ class TestEdgeCaseIntegration(_IntegrationTestBase):
             any("empty" in w.lower() or "0 byte" in w.lower() for w in result.warnings)
         )
 
-    def test_read_only_output_dir_returns_error(self) -> None:
-        """Read-only output directory produces a clear error."""
+    def test_output_dir_probe_write_failure_returns_error(self) -> None:
+        """Probe write failure produces a clear output directory error."""
         ro_dir = self.root / "readonly_output"
         ro_dir.mkdir()
 
-        original_access = os.access
-
-        def _fake_access(path: Any, mode: int) -> bool:
-            """Return False for write access on ro_dir."""
-            if str(path) == str(ro_dir) and mode == os.W_OK:
-                return False
-            return original_access(path, mode)
-
-        with patch(f"{_ENGINE}.os.access", side_effect=_fake_access):
+        with patch(
+            f"{_ENGINE}.tempfile.NamedTemporaryFile",
+            side_effect=PermissionError("access denied"),
+        ):
             result = run_automation(self._make_request(output_dir=str(ro_dir)))
         self.assertFalse(result.success)
-        self.assertTrue(any("writable" in e.lower() or "not writable" in e.lower() for e in result.errors))
+        self.assertTrue(
+            any(
+                "writable" in e.lower() or "not writable" in e.lower()
+                for e in result.errors
+            )
+        )
+        self.mocks["CaseManager"].assert_not_called()
 
     def test_very_long_prompt_truncated(self) -> None:
         """Prompt over 100,000 characters is truncated with a warning."""

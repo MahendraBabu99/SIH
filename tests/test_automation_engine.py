@@ -382,6 +382,14 @@ class TestRunAutomation(unittest.TestCase):
         self.mocks["export_json_report"].side_effect = _capture_export
         return captured
 
+    def _assert_pipeline_not_started(self) -> None:
+        """Assert output validation stopped before pipeline work began."""
+        self.mocks["CaseManager"].assert_not_called()
+        self.mocks["discover_evidence"].assert_not_called()
+        self.mocks["ForensicParser"].assert_not_called()
+        self.mocks["compute_hashes"].assert_not_called()
+        self.mocks["ForensicAnalyzer"].assert_not_called()
+
     def test_successful_single_file_run(self) -> None:
         """Single evidence file processes through full pipeline."""
         result = run_automation(self._make_request())
@@ -1185,6 +1193,42 @@ class TestRunAutomation(unittest.TestCase):
         result = run_automation(self._make_request(output_dir=str(new_output)))
         self.assertTrue(result.success)
         self.assertTrue(new_output.exists())
+        self.assertEqual(list(new_output.glob(".aift-write-probe-*")), [])
+
+    def test_output_dir_cannot_be_created_returns_error(self) -> None:
+        """Output directory creation failure returns before pipeline work."""
+        blocked_parent = self.root / "blocked-parent"
+        blocked_parent.write_text("not a directory", encoding="utf-8")
+        bad_output = blocked_parent / "output"
+
+        result = run_automation(self._make_request(output_dir=str(bad_output)))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.case_id, "")
+        self.assertTrue(
+            any("output directory" in error.lower() for error in result.errors)
+        )
+        self._assert_pipeline_not_started()
+
+    def test_output_dir_probe_write_failure_returns_error(self) -> None:
+        """Probe write failure returns before pipeline work."""
+        probe_output = self.root / "probe-output"
+        probe_output.mkdir()
+
+        with patch(
+            f"{_ENGINE}.tempfile.NamedTemporaryFile",
+            side_effect=PermissionError("access denied"),
+        ):
+            result = run_automation(
+                self._make_request(output_dir=str(probe_output))
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.case_id, "")
+        self.assertTrue(
+            any("not writable" in error.lower() for error in result.errors)
+        )
+        self._assert_pipeline_not_started()
 
     def test_case_id_in_result(self) -> None:
         """Result includes the created case_id."""
