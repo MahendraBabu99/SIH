@@ -7,6 +7,7 @@ mode, verbose mode, default output directory).
 
 from __future__ import annotations
 
+import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -241,6 +242,32 @@ class TestCLIExecution(unittest.TestCase):
             except SystemExit as e:
                 return e.code
 
+    def _run_main_captured(
+        self,
+        extra_args: list[str] | None = None,
+    ) -> tuple[int, str, MagicMock]:
+        """Invoke main(), capturing stderr and exposing run_automation."""
+        args = [
+            "aift_cli.py",
+            "-e", str(self.evidence),
+            "-p", "Test prompt",
+        ] + (extra_args or [])
+
+        stderr = io.StringIO()
+        with (
+            patch("sys.argv", args),
+            patch("aift_cli.assert_supported_python_version"),
+            patch("app.automation.engine.run_automation", return_value=_make_result()) as mock_run,
+            patch("aift_cli._configure_logging"),
+            patch("sys.stderr", stderr),
+        ):
+            try:
+                main()
+                code = EXIT_SUCCESS
+            except SystemExit as e:
+                code = e.code
+        return code, stderr.getvalue(), mock_run
+
     def test_successful_run_exits_0(self) -> None:
         """Successful automation returns exit code 0."""
         code = self._run_main(run_result=_make_result(success=True))
@@ -297,6 +324,48 @@ class TestCLIExecution(unittest.TestCase):
                 pass
             req = mock_run.call_args[0][0]
             self.assertEqual(req.output_dir, Path.cwd())
+
+    def test_date_range_passed_to_request(self) -> None:
+        """Valid --date-start/--date-end are passed as an engine tuple."""
+        code, stderr, mock_run = self._run_main_captured([
+            "--date-start", "2026-04-01",
+            "--date-end", "2026-04-15",
+        ])
+        self.assertEqual(code, EXIT_SUCCESS)
+        self.assertEqual(stderr, "")
+        req = mock_run.call_args[0][0]
+        self.assertEqual(req.date_range, ("2026-04-01", "2026-04-15"))
+
+    def test_date_range_invalid_format_exits_1(self) -> None:
+        """Invalid date format exits before run_automation."""
+        code, stderr, mock_run = self._run_main_captured([
+            "--date-start", "04/01/2026",
+            "--date-end", "2026-04-15",
+        ])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn("Invalid date range", stderr)
+        self.assertIn("YYYY-MM-DD", stderr)
+        mock_run.assert_not_called()
+
+    def test_date_range_missing_one_side_exits_1(self) -> None:
+        """Supplying only one date exits before run_automation."""
+        code, stderr, mock_run = self._run_main_captured([
+            "--date-start", "2026-04-01",
+        ])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn("Both --date-start and --date-end", stderr)
+        mock_run.assert_not_called()
+
+    def test_date_range_reversed_exits_1(self) -> None:
+        """End dates before start dates exit before run_automation."""
+        code, stderr, mock_run = self._run_main_captured([
+            "--date-start", "2026-04-15",
+            "--date-end", "2026-04-01",
+        ])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn("Invalid date range", stderr)
+        self.assertIn("earlier than or equal", stderr)
+        mock_run.assert_not_called()
 
     def test_keyboard_interrupt_exits_1(self) -> None:
         """KeyboardInterrupt results in exit code 1."""

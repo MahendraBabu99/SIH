@@ -218,6 +218,47 @@ def _make_progress_callback(quiet: bool) -> Any:
     return _callback
 
 
+def _resolve_date_range(
+    date_start: str | None,
+    date_end: str | None,
+) -> tuple[str, str] | None:
+    """Validate CLI date-range arguments and return an engine tuple.
+
+    Args:
+        date_start: Raw ``--date-start`` value.
+        date_end: Raw ``--date-end`` value.
+
+    Returns:
+        ``(start_date, end_date)`` tuple, or ``None`` if no range was supplied.
+
+    Raises:
+        SystemExit: If only one side is provided, or the shared validator
+            rejects the format/range.
+    """
+    if not date_start and not date_end:
+        return None
+    if not date_start or not date_end:
+        print(
+            "ERROR: Both --date-start and --date-end must be provided together.",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_FAILURE)
+
+    from app.artifact_profiles import validate_analysis_date_range
+
+    try:
+        validated = validate_analysis_date_range(
+            {"start_date": date_start, "end_date": date_end}
+        )
+    except ValueError as exc:
+        print(f"ERROR: Invalid date range: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_FAILURE) from None
+
+    if validated is None:
+        return None
+    return (validated["start_date"], validated["end_date"])
+
+
 def _print_summary(result: Any) -> None:
     """Print the final summary block after automation completes.
 
@@ -347,16 +388,7 @@ def main() -> None:
         print("ERROR: Investigation prompt must not be empty.", file=sys.stderr)
         raise SystemExit(EXIT_FAILURE)
 
-    # Build date range if specified.
-    date_range: tuple[str, str] | None = None
-    if args.date_start and args.date_end:
-        date_range = (args.date_start, args.date_end)
-    elif args.date_start or args.date_end:
-        print(
-            "ERROR: Both --date-start and --date-end must be provided together.",
-            file=sys.stderr,
-        )
-        raise SystemExit(EXIT_FAILURE)
+    date_range = _resolve_date_range(args.date_start, args.date_end)
 
     # Resolve output directory.
     output_dir = Path(args.output).resolve() if args.output else Path.cwd()

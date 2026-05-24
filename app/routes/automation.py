@@ -26,8 +26,8 @@ from uuid import uuid4
 
 from flask import Blueprint, Response, jsonify, request, send_file
 
+from app.artifact_profiles import validate_analysis_date_range
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
-from app.routes.artifacts import validate_analysis_date_range
 from app.routes.state import CASES_ROOT, error_response, success_response
 
 __all__ = ["automation_bp"]

@@ -26,13 +26,13 @@ import copy
 import json
 import logging
 import threading
-from datetime import datetime
 from pathlib import Path
 import re
 from typing import Any
 
 from flask import Blueprint, Response, current_app, request
 
+from ..artifact_profiles import validate_analysis_date_range
 from ..parser import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
 from .state import (
     MODE_PARSE_AND_AI,
@@ -257,52 +257,6 @@ def extract_parse_selection_payload(
         analysis_artifacts=analysis_artifacts,
     )
     return artifact_options, parse_artifacts, analysis_artifacts
-
-
-def validate_analysis_date_range(payload: Any) -> dict[str, str] | None:
-    """Validate and normalise an optional analysis date range.
-
-    Args:
-        payload: Raw ``analysis_date_range`` value from request JSON.
-
-    Returns:
-        Dict with ``start_date`` and ``end_date``, or ``None``.
-
-    Raises:
-        ValueError: On invalid format or range.
-    """
-    if payload is None:
-        return None
-
-    if not isinstance(payload, dict):
-        raise ValueError("`analysis_date_range` must be an object.")
-
-    start_raw = payload.get("start_date")
-    end_raw = payload.get("end_date")
-    start_text = str(start_raw).strip() if start_raw is not None else ""
-    end_text = str(end_raw).strip() if end_raw is not None else ""
-    if not start_text and not end_text:
-        return None
-    if not start_text or not end_text:
-        raise ValueError(
-            "Provide both `analysis_date_range.start_date` and `analysis_date_range.end_date`."
-        )
-
-    try:
-        start_date = datetime.strptime(start_text, "%Y-%m-%d").date()
-        end_date = datetime.strptime(end_text, "%Y-%m-%d").date()
-    except ValueError as error:
-        raise ValueError("Date range values must use YYYY-MM-DD format.") from error
-
-    if start_date > end_date:
-        raise ValueError(
-            "`analysis_date_range.start_date` must be earlier than or equal to `end_date`."
-        )
-
-    return {
-        "start_date": start_date.isoformat(),
-        "end_date": end_date.isoformat(),
-    }
 
 
 def extract_parse_progress(fallback_artifact: str, args: tuple[Any, ...]) -> tuple[str, int]:
