@@ -34,7 +34,12 @@ from time import perf_counter
 from typing import Any, Callable
 
 from .prompts import load_prompt_template
-from .utils import emit_analysis_progress, estimate_tokens, sanitize_filename
+from .utils import (
+    emit_analysis_progress,
+    estimate_tokens,
+    normalize_os_type,
+    sanitize_filename,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -76,13 +81,31 @@ def _build_image_metadata_table(images: list[dict[str, Any]]) -> str:
         label = str(image.get("label", image_id))
         meta = image.get("metadata") or {}
         hostname = str(meta.get("hostname", "Unknown"))
-        os_version = str(meta.get("os_version", meta.get("os_type", "Unknown")))
+        os_type = _image_os_type(image, meta, default="Unknown")
+        os_version = str(meta.get("os_version") or os_type)
         domain = str(meta.get("domain", "Unknown"))
         ips = str(meta.get("ips", "Unknown"))
         lines.append(
             f"| {index} | {image_id} | {label} | {hostname} | {os_version} | {domain} | {ips} |"
         )
     return "\n".join(lines)
+
+
+def _image_os_type(
+    image: dict[str, Any],
+    metadata: dict[str, Any],
+    default: str = "unknown",
+) -> str:
+    """Return an image OS type from metadata, then descriptor fallback."""
+    metadata_os = str(metadata.get("os_type") or "").strip()
+    if metadata_os and metadata_os.lower() != "unknown":
+        return metadata_os
+
+    descriptor_os = str(image.get("os_type") or "").strip()
+    if descriptor_os:
+        return descriptor_os
+
+    return metadata_os or default
 
 
 def _build_per_image_summaries_text(
@@ -274,7 +297,9 @@ def run_multi_image_analysis(
             for image in images:
                 image_id = str(image.get("image_id", "unknown"))
                 label = str(image.get("label", image_id))
-                metadata = image.get("metadata") or {}
+                metadata = dict(image.get("metadata") or {})
+                os_type = _image_os_type(image, metadata)
+                metadata["os_type"] = os_type
                 artifact_keys = image.get("artifact_keys", [])
                 parsed_dir = image.get("parsed_dir", "")
 
@@ -284,9 +309,7 @@ def run_multi_image_analysis(
                 # Update the analyzer's os_type and host metadata for
                 # the current image so that OS-specific analysis logic
                 # and prompt host context use the correct values.
-                analyzer.os_type = str(
-                    metadata.get("os_type", "unknown")
-                )
+                analyzer.os_type = normalize_os_type(os_type)
                 analyzer._host_metadata = metadata
 
                 # Apply the user-configured date range filter so that

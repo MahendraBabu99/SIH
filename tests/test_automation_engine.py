@@ -1023,6 +1023,156 @@ class TestRunAutomation(unittest.TestCase):
             ("2026-04-01", "2026-04-15"),
         )
 
+    def test_multi_image_uses_per_image_parser_os_type(self) -> None:
+        """Mixed parser OS types reach per-image analysis state."""
+        from app.analyzer.multi_image import (
+            run_multi_image_analysis as real_run_multi_image_analysis,
+        )
+
+        ev2 = self.root / "linux-disk.vmdk"
+        ev2.write_bytes(b"\x00" * 16)
+        self.mocks["discover_evidence"].return_value = [self.evidence_file, ev2]
+        self.mock_cm.add_image.side_effect = ["img-001", "img-002"]
+        img_dir2 = self.cases_dir / "case-001" / "images" / "img-002"
+        img_dir2.mkdir(parents=True, exist_ok=True)
+        self.mock_cm.get_image_dir.side_effect = [
+            self.cases_dir / "case-001" / "images" / "img-001",
+            img_dir2,
+        ]
+        self.mocks["artifact_options_to_lists"].side_effect = (
+            lambda _options: (["services"], ["services"])
+        )
+
+        class MixedOsParser(FakeParser):
+            """Parser fake that reports Windows for one image and Linux for another."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.source_name = Path(kwargs["evidence_path"]).name
+                super().__init__(**kwargs)
+                self.os_type = (
+                    "linux" if self.source_name == ev2.name else "windows"
+                )
+
+            def get_image_metadata(self) -> dict[str, str]:
+                metadata = super().get_image_metadata()
+                metadata.pop("os_type", None)
+                metadata["hostname"] = Path(self.source_name).stem
+                return metadata
+
+            def get_available_artifacts(self) -> list[dict[str, object]]:
+                return [
+                    {"key": "services", "name": "Services", "available": True},
+                ]
+
+        class CrossProvider:
+            """Minimal provider for cross-image correlation."""
+
+            def analyze(
+                self,
+                system_prompt: str,
+                user_prompt: str,
+                max_tokens: int = 4096,
+            ) -> str:
+                del system_prompt, user_prompt, max_tokens
+                return "cross-image summary"
+
+        root = self.root
+
+        class RecordingAnalyzer:
+            """Analyzer fake that runs the real multi-image orchestration."""
+
+            seen_os_types: list[str] = []
+            seen_host_metadata_os_types: list[str | None] = []
+
+            def __init__(self, **kwargs: Any) -> None:
+                self.os_type = str(kwargs.get("os_type", "windows"))
+                self.artifact_csv_paths = dict(
+                    kwargs.get("artifact_csv_paths") or {}
+                )
+                self.analysis_date_range = None
+                self.model_info = {"provider": "fake", "model": "fake-model"}
+                self.prompts_dir = root
+                self.system_prompt = "system"
+                self.ai_response_max_tokens = 128
+                self.ai_provider = CrossProvider()
+
+            def run_multi_image_analysis(
+                self,
+                images: list[dict[str, Any]],
+                investigation_context: str,
+                progress_callback: Any | None = None,
+                cancel_check: Any | None = None,
+                analysis_date_range: tuple[str, str] | None = None,
+            ) -> dict[str, object]:
+                return real_run_multi_image_analysis(
+                    analyzer=self,
+                    images=images,
+                    investigation_context=investigation_context,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    analysis_date_range=analysis_date_range,
+                )
+
+            def analyze_artifact(
+                self,
+                artifact_key: str,
+                investigation_context: str,
+                progress_callback: Any | None = None,
+            ) -> dict[str, str]:
+                del investigation_context, progress_callback
+                type(self).seen_os_types.append(self.os_type)
+                host_metadata = getattr(self, "_host_metadata", {})
+                type(self).seen_host_metadata_os_types.append(
+                    host_metadata.get("os_type")
+                    if isinstance(host_metadata, dict)
+                    else None
+                )
+                return {
+                    "artifact_key": artifact_key,
+                    "artifact_name": artifact_key,
+                    "analysis": f"analysis for {artifact_key}",
+                    "model": "fake-model",
+                }
+
+            def generate_summary(
+                self,
+                per_artifact_results: list[dict[str, Any]],
+                investigation_context: str,
+                metadata: dict[str, Any] | None,
+            ) -> str:
+                del per_artifact_results, investigation_context, metadata
+                return "per-image summary"
+
+            def _audit_log(self, action: str, details: dict[str, Any]) -> None:
+                del action, details
+
+            def _save_case_prompt(
+                self,
+                filename: str,
+                system_prompt: str,
+                user_prompt: str,
+            ) -> None:
+                del filename, system_prompt, user_prompt
+
+            def _call_ai_with_retry(self, call: Any) -> str:
+                return call()
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: MixedOsParser(**kwargs)
+        )
+        self.mocks["ForensicAnalyzer"].side_effect = (
+            lambda **kwargs: RecordingAnalyzer(**kwargs)
+        )
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        self.assertEqual(RecordingAnalyzer.seen_os_types, ["windows", "linux"])
+        self.assertEqual(
+            RecordingAnalyzer.seen_host_metadata_os_types,
+            ["windows", "linux"],
+        )
+
     def test_output_dir_created(self) -> None:
         """Output directory is created if it doesn't exist."""
         new_output = self.root / "new_output" / "deep"
