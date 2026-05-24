@@ -16,6 +16,8 @@ import json
 import logging
 import re
 import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,17 @@ CONFIDENCE_LABEL_PATTERN = re.compile(
 )
 
 CONFIDENCE_ALLCAPS_PATTERN = re.compile(r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b")
+
+UNKNOWN_IP_VALUES = {"", "unknown", "n/a", "na", "none", "null", "unavailable"}
+
+
+@dataclass(frozen=True)
+class _RecordIndex:
+    """Indexed report input records plus legacy order fallback."""
+
+    by_image_id: dict[str, dict[str, Any]]
+    ordered: list[dict[str, Any]]
+    has_image_ids: bool
 
 
 def _resolve_confidence(text: str) -> str | None:
@@ -110,44 +123,140 @@ def _convert_v1_to_multi_image(analysis: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _normalize_metadata(
-    image_metadata: dict[str, Any] | list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Normalise image metadata to a list of dicts.
+def _record_image_id(record: Mapping[str, Any]) -> str:
+    """Return a normalized image_id from a metadata/hash record."""
+    image_id = record.get("image_id")
+    if image_id is None:
+        return ""
+    return str(image_id).strip()
 
-    Args:
-        image_metadata: Single dict or list of dicts.
+
+def _looks_like_image_id_mapping(value: Mapping[str, Any]) -> bool:
+    """Return True when a mapping appears keyed by image_id."""
+    return bool(value) and all(
+        isinstance(item, Mapping) for item in value.values()
+    )
+
+
+def _normalize_records(value: Any) -> _RecordIndex:
+    """Normalize report input records into image-id and order indexes.
+
+    Accepts:
+        - a dict keyed by image_id,
+        - a list/tuple of dicts, optionally with image_id fields,
+        - a legacy single metadata/hash dict.
 
     Returns:
-        List of metadata dicts.
+        _RecordIndex with image-id lookup and legacy positional records.
     """
-    if isinstance(image_metadata, list):
-        return image_metadata
-    return [image_metadata] if image_metadata else []
+    by_image_id: dict[str, dict[str, Any]] = {}
+    ordered: list[dict[str, Any]] = []
+
+    if isinstance(value, Mapping):
+        if _looks_like_image_id_mapping(value):
+            for raw_image_id, raw_record in value.items():
+                image_id = str(raw_image_id).strip()
+                if not image_id or not isinstance(raw_record, Mapping):
+                    continue
+                record = dict(raw_record)
+                record.setdefault("image_id", image_id)
+                by_image_id[image_id] = record
+                ordered.append(record)
+            return _RecordIndex(by_image_id, ordered, bool(by_image_id))
+
+        record = dict(value)
+        if record:
+            ordered.append(record)
+            image_id = _record_image_id(record)
+            if image_id:
+                by_image_id[image_id] = record
+        return _RecordIndex(by_image_id, ordered, bool(by_image_id))
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for raw_record in value:
+            if not isinstance(raw_record, Mapping):
+                continue
+            record = dict(raw_record)
+            ordered.append(record)
+            image_id = _record_image_id(record)
+            if image_id:
+                by_image_id[image_id] = record
+        return _RecordIndex(by_image_id, ordered, bool(by_image_id))
+
+    return _RecordIndex({}, [], False)
 
 
-def _normalize_hashes(
-    evidence_hashes: dict[str, Any] | list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Normalise evidence hashes to a list of dicts.
+def _normalize_metadata(image_metadata: Any) -> _RecordIndex:
+    """Normalize image metadata to image-id lookup plus legacy order."""
+    return _normalize_records(image_metadata)
 
-    Args:
-        evidence_hashes: Single dict or list of dicts.
 
-    Returns:
-        List of hash dicts.
-    """
-    if isinstance(evidence_hashes, list):
-        return evidence_hashes
-    return [evidence_hashes] if evidence_hashes else []
+def _normalize_hashes(evidence_hashes: Any) -> _RecordIndex:
+    """Normalize evidence hashes to image-id lookup plus legacy order."""
+    return _normalize_records(evidence_hashes)
+
+
+def _lookup_record(
+    records: _RecordIndex,
+    image_id: str,
+    idx: int,
+) -> dict[str, Any]:
+    """Look up a record by image_id, then legacy list order when safe."""
+    if image_id in records.by_image_id:
+        return records.by_image_id[image_id]
+
+    # V1 analyses are normalized to image_id="default"; keep single-image
+    # callers working even if their lone metadata/hash record has an image_id.
+    if image_id == "default" and len(records.ordered) == 1:
+        return records.ordered[0]
+
+    if not records.has_image_ids and idx < len(records.ordered):
+        return records.ordered[idx]
+
+    return {}
+
+
+def _normalize_ips(value: Any) -> list[str]:
+    """Normalize IP metadata to the JSON schema's list[str] shape."""
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        parts = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        parts = list(value)
+    else:
+        parts = [value]
+
+    cleaned: list[str] = []
+    for part in parts:
+        text = "" if part is None else str(part).strip()
+        if text.lower() in UNKNOWN_IP_VALUES:
+            continue
+        cleaned.append(text)
+    return cleaned
+
+
+def _resolve_metadata(
+    idx: int,
+    image_id: str,
+    image_data: Mapping[str, Any],
+    metadata_index: _RecordIndex,
+) -> dict[str, Any]:
+    """Resolve metadata for an image, preferring embedded image metadata."""
+    supplied = _lookup_record(metadata_index, image_id, idx)
+    embedded_raw = image_data.get("metadata")
+    if isinstance(embedded_raw, Mapping):
+        return {**supplied, **dict(embedded_raw)}
+    return supplied
 
 
 def _build_evidence_entry(
     idx: int,
     image_id: str,
-    image_data: dict[str, Any],
-    metadata_list: list[dict[str, Any]],
-    hashes_list: list[dict[str, Any]],
+    image_data: Mapping[str, Any],
+    metadata_index: _RecordIndex,
+    hashes_index: _RecordIndex,
 ) -> dict[str, Any]:
     """Build a single evidence entry for the JSON report.
 
@@ -155,27 +264,31 @@ def _build_evidence_entry(
         idx: Index for looking up metadata/hashes.
         image_id: Image identifier string.
         image_data: Analysis data for this image.
-        metadata_list: All image metadata dicts.
-        hashes_list: All evidence hash dicts.
+        metadata_index: Indexed image metadata records.
+        hashes_index: Indexed evidence hash records.
 
     Returns:
         Evidence entry dict.
     """
-    meta = metadata_list[idx] if idx < len(metadata_list) else {}
-    hashes = hashes_list[idx] if idx < len(hashes_list) else {}
-
-    ips_raw = meta.get("ips", [])
-    if isinstance(ips_raw, str):
-        ips_raw = [ips_raw] if ips_raw else []
+    meta = _resolve_metadata(idx, image_id, image_data, metadata_index)
+    hashes = _lookup_record(hashes_index, image_id, idx)
 
     return {
         "image_id": image_id,
         "label": image_data.get("label", ""),
-        "filename": meta.get("filename", meta.get("evidence_file", "")),
+        "filename": meta.get(
+            "filename",
+            meta.get(
+                "evidence_file",
+                hashes.get("filename", hashes.get("file_name", "")),
+            ),
+        ),
         "hostname": meta.get("hostname", ""),
         "os_version": meta.get("os_version", ""),
         "domain": meta.get("domain", ""),
-        "ips": ips_raw,
+        "ips": _normalize_ips(
+            meta.get("ips") or meta.get("ip_addresses") or meta.get("ip")
+        ),
         "hashes": {
             "sha256": hashes.get("sha256", ""),
             "md5": hashes.get("md5", ""),
@@ -230,8 +343,10 @@ def export_json_report(
         case_id: Unique case identifier.
         case_name: Human-readable case name.
         analysis_results: AI analysis output (V1 or multi-image format).
-        image_metadata: Per-image metadata (dict or list).
-        evidence_hashes: Per-image hash info (dict or list).
+        image_metadata: Per-image metadata as a single dict, list of dicts,
+            list/dict keyed by image_id, or legacy positional list.
+        evidence_hashes: Per-image hash info as a single dict, list of dicts,
+            list/dict keyed by image_id, or legacy positional list.
         investigation_context: User's investigation prompt.
         audit_log_entries: Parsed audit.jsonl entries.
         output_path: Where to write the JSON file.
@@ -252,14 +367,22 @@ def export_json_report(
 
     images_data: dict[str, Any] = analysis.get("images", {})
     model_info = analysis.get("model_info", {})
-    metadata_list = _normalize_metadata(image_metadata)
-    hashes_list = _normalize_hashes(evidence_hashes)
+    metadata_index = _normalize_metadata(image_metadata)
+    hashes_index = _normalize_hashes(evidence_hashes)
 
     # Build evidence entries.
     evidence_entries: list[dict[str, Any]] = []
     for idx, (image_id, image_data) in enumerate(images_data.items()):
+        if not isinstance(image_data, Mapping):
+            image_data = {}
         evidence_entries.append(
-            _build_evidence_entry(idx, image_id, image_data, metadata_list, hashes_list)
+            _build_evidence_entry(
+                idx,
+                image_id,
+                image_data,
+                metadata_index,
+                hashes_index,
+            )
         )
 
     # Build analysis section.

@@ -242,6 +242,117 @@ class TestExportJsonReport(unittest.TestCase):
         )
         self.assertEqual(len(data["evidence"]), 2)
 
+    def test_metadata_keyed_by_image_id(self) -> None:
+        """Metadata and hashes keyed by image_id map to the matching image."""
+        analysis = _make_multi_image_analysis()
+        metadata = {
+            "img-2": {
+                **_make_metadata(),
+                "hostname": "workstation",
+                "evidence_file": "workstation.E01",
+            },
+            "img-1": {
+                **_make_metadata(),
+                "hostname": "server",
+                "evidence_file": "server.E01",
+            },
+        }
+        hashes = {
+            "img-2": {**_make_hashes(), "sha256": "2" * 64},
+            "img-1": {**_make_hashes(), "sha256": "1" * 64},
+        }
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        evidence = {entry["image_id"]: entry for entry in data["evidence"]}
+        self.assertEqual(evidence["img-1"]["hostname"], "server")
+        self.assertEqual(evidence["img-1"]["filename"], "server.E01")
+        self.assertEqual(evidence["img-1"]["hashes"]["sha256"], "1" * 64)
+        self.assertEqual(evidence["img-2"]["hostname"], "workstation")
+        self.assertEqual(evidence["img-2"]["filename"], "workstation.E01")
+        self.assertEqual(evidence["img-2"]["hashes"]["sha256"], "2" * 64)
+
+    def test_image_id_list_order_mismatch_does_not_corrupt_evidence(self) -> None:
+        """List records with image_id fields are matched by ID, not position."""
+        analysis = _make_multi_image_analysis()
+        metadata = [
+            {
+                **_make_metadata(),
+                "image_id": "img-2",
+                "hostname": "workstation",
+            },
+            {
+                **_make_metadata(),
+                "image_id": "img-1",
+                "hostname": "server",
+            },
+        ]
+        hashes = [
+            {**_make_hashes(), "image_id": "img-2", "sha256": "2" * 64},
+            {**_make_hashes(), "image_id": "img-1", "sha256": "1" * 64},
+        ]
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        evidence = {entry["image_id"]: entry for entry in data["evidence"]}
+        self.assertEqual(evidence["img-1"]["hostname"], "server")
+        self.assertEqual(evidence["img-1"]["hashes"]["sha256"], "1" * 64)
+        self.assertEqual(evidence["img-2"]["hostname"], "workstation")
+        self.assertEqual(evidence["img-2"]["hashes"]["sha256"], "2" * 64)
+
+    def test_embedded_image_metadata_preferred(self) -> None:
+        """Analysis image metadata wins over supplied positional metadata."""
+        analysis = _make_multi_image_analysis()
+        analysis["images"]["img-1"]["metadata"] = {
+            "hostname": "embedded-server",
+            "os_version": "Windows Server 2022",
+            "domain": "corp.local",
+            "ips": ["10.0.0.10"],
+            "evidence_file": "embedded-server.E01",
+        }
+        metadata = [
+            {
+                **_make_metadata(),
+                "hostname": "wrong-host",
+                "evidence_file": "wrong.E01",
+            },
+            {**_make_metadata(), "hostname": "workstation"},
+        ]
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=[_make_hashes(), _make_hashes()],
+        )
+
+        evidence = {entry["image_id"]: entry for entry in data["evidence"]}
+        self.assertEqual(evidence["img-1"]["hostname"], "embedded-server")
+        self.assertEqual(evidence["img-1"]["filename"], "embedded-server.E01")
+        self.assertEqual(evidence["img-1"]["ips"], ["10.0.0.10"])
+        self.assertEqual(evidence["img-2"]["hostname"], "workstation")
+
+    def test_comma_separated_ips_becomes_list(self) -> None:
+        """Comma-separated IP strings are exported as list[str]."""
+        metadata = {
+            **_make_metadata(),
+            "ips": "10.0.0.1, 192.168.1.10, , Unknown",
+        }
+
+        _, data = self._export(metadata=metadata)
+
+        self.assertEqual(
+            data["evidence"][0]["ips"],
+            ["10.0.0.1", "192.168.1.10"],
+        )
+
     def test_v1_single_image_normalized(self) -> None:
         """V1 single-image format is normalized to multi-image structure."""
         _, data = self._export(analysis=_make_v1_analysis())
@@ -250,6 +361,30 @@ class TestExportJsonReport(unittest.TestCase):
         img = data["analysis"]["images"]["default"]
         self.assertEqual(len(img["artifacts"]), 1)
         self.assertEqual(img["artifacts"][0]["artifact_key"], "runkeys")
+
+    def test_v1_single_image_export_still_includes_evidence(self) -> None:
+        """V1 single-image export remains backwards compatible."""
+        metadata = {
+            **_make_metadata(),
+            "image_id": "img-legacy",
+            "hostname": "legacy-host",
+        }
+        hashes = {
+            **_make_hashes(),
+            "image_id": "img-legacy",
+            "sha256": "c" * 64,
+        }
+
+        _, data = self._export(
+            analysis=_make_v1_analysis(),
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        self.assertIn("default", data["analysis"]["images"])
+        self.assertEqual(len(data["evidence"]), 1)
+        self.assertEqual(data["evidence"][0]["hostname"], "legacy-host")
+        self.assertEqual(data["evidence"][0]["hashes"]["sha256"], "c" * 64)
 
     def test_evidence_section_includes_hashes(self) -> None:
         """Each evidence entry has hash information."""
