@@ -176,8 +176,8 @@ class TestAutomationRequest(unittest.TestCase):
         req = AutomationRequest(
             evidence_path="/fake/path",
             prompt="test",
-            output_dir="/output",
         )
+        self.assertIsNone(req.output_dir)
         self.assertIsNone(req.profile_name)
         self.assertIsNone(req.config_path)
         self.assertIsNone(req.case_name)
@@ -1231,6 +1231,18 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(new_output.exists())
         self.assertEqual(list(new_output.glob(".aift-write-probe-*")), [])
+
+    def test_missing_output_dir_defaults_to_case_reports_dir(self) -> None:
+        """Omitted output_dir writes reports under the real case directory."""
+        result = run_automation(self._make_request(output_dir=None))
+
+        expected_dir = self.cases_dir / "case-001" / "reports"
+        self.assertTrue(result.success)
+        self.assertEqual(result.html_report_path.parent, expected_dir)
+        self.assertEqual(result.json_report_path.parent, expected_dir)
+        self.assertTrue(result.html_report_path.exists())
+        self.assertTrue(result.json_report_path.exists())
+        self.assertEqual(list(expected_dir.glob(".aift-write-probe-*")), [])
 
     def test_output_dir_cannot_be_created_returns_error(self) -> None:
         """Output directory creation failure returns before pipeline work."""

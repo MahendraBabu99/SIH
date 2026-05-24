@@ -60,6 +60,7 @@ class AutomationRequest:
         evidence_path: Path to evidence file or folder to process.
         prompt: Investigation context / prompt for AI analysis.
         output_dir: Directory where reports (HTML + JSON) will be written.
+            If omitted, defaults to the created case's ``reports`` directory.
         profile_name: Artifact profile name.  Falls back to ``"recommended"``
             if None, empty, or not found.
         config_path: Path to config.yaml.  Falls back to default if None
@@ -72,7 +73,7 @@ class AutomationRequest:
 
     evidence_path: str | Path
     prompt: str
-    output_dir: str | Path
+    output_dir: str | Path | None = None
     profile_name: str | None = None
     config_path: str | Path | None = None
     case_name: str | None = None
@@ -419,7 +420,7 @@ def run_automation(
     This is the main entry point for both API and CLI automation.  It runs
     synchronously (blocking) and handles the full workflow:
 
-    1. Validate inputs (evidence path, config, profile, output dir).
+    1. Validate inputs (evidence path, config, profile, explicit output dir).
     2. Load configuration from *config_path* (fallback to default).
     3. Load artifact profile (fallback to ``"recommended"``).
     4. Discover evidence files (folder scanning if directory given).
@@ -485,12 +486,17 @@ def run_automation(
         result.duration_seconds = time.monotonic() - start_time
         return result
 
-    output_dir, output_dir_error = _prepare_output_dir(request.output_dir)
-    if output_dir_error is not None:
-        result.errors.append(output_dir_error)
-        result.duration_seconds = time.monotonic() - start_time
-        return result
-    assert output_dir is not None
+    requested_output_dir: str | Path | None = request.output_dir
+    if isinstance(requested_output_dir, str) and not requested_output_dir.strip():
+        requested_output_dir = None
+
+    output_dir: Path | None = None
+    if requested_output_dir is not None:
+        output_dir, output_dir_error = _prepare_output_dir(requested_output_dir)
+        if output_dir_error is not None:
+            result.errors.append(output_dir_error)
+            result.duration_seconds = time.monotonic() - start_time
+            return result
 
     # Edge case: truncate very long prompts to prevent excessive AI costs.
     MAX_PROMPT_LENGTH = 100_000
@@ -540,6 +546,14 @@ def run_automation(
     case_dir = cases_dir / case_id
     discovery_workspace = case_dir / "evidence"
     discovery_workspace.mkdir(parents=True, exist_ok=True)
+
+    if output_dir is None:
+        output_dir, output_dir_error = _prepare_output_dir(case_dir / "reports")
+        if output_dir_error is not None:
+            result.errors.append(output_dir_error)
+            result.duration_seconds = time.monotonic() - start_time
+            return result
+    assert output_dir is not None
 
     # --- 5. Discover evidence ---
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)

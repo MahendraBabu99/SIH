@@ -28,7 +28,7 @@ from flask import Blueprint, Response, jsonify, request, send_file
 
 from app.artifact_profiles import validate_analysis_date_range
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
-from app.routes.state import CASES_ROOT, error_response, success_response
+from app.routes.state import error_response, success_response
 
 __all__ = ["automation_bp"]
 
@@ -375,18 +375,10 @@ def start_run() -> tuple[Response, int]:
     case_id = ""  # Populated by the background thread once the case is created.
     cancel_event = threading.Event()
 
-    # Resolve output_dir — default to case reports dir once case_id is known.
-    # If not provided, use a temporary placeholder; the engine creates the
-    # case and sets up directories internally.  We pass the CASES_ROOT so
-    # the engine can resolve it.
-    output_dir = params["output_dir"]
-    if not output_dir:
-        output_dir = str(CASES_ROOT / run_id / "reports")
-
     automation_request = AutomationRequest(
         evidence_path=params["evidence_path"],
         prompt=params["prompt"],
-        output_dir=output_dir,
+        output_dir=params["output_dir"],
         profile_name=params["profile_name"],
         config_path=params["config_path"],
         case_name=params["case_name"],

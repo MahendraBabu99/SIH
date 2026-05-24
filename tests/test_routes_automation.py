@@ -352,6 +352,28 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertEqual(req.config_path, "/tmp/config.yaml")
         self.assertEqual(req.case_name, "Case 001")
 
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_omitted_output_dir_passes_none_and_does_not_create_run_reports(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """The route leaves omitted output_dir for the engine to resolve."""
+        from app.routes.state import CASES_ROOT
+
+        mock_run.return_value = _make_successful_result()
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {"evidence_path": "/fake/path.E01", "prompt": "test"},
+        )
+        self.assertEqual(resp.status_code, 202)
+        run_id = resp.get_json()["run_id"]
+
+        req = mock_run.call_args[0][0]
+        self.assertIsNone(req.output_dir)
+        self.assertFalse((CASES_ROOT / run_id / "reports").exists())
+
 
 class TestConcurrentRuns(AutomationRoutesTestBase):
     """Tests that multiple concurrent runs are allowed."""
