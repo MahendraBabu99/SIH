@@ -23,9 +23,10 @@ EXPECTED_HTML_IDS = {
     "image-forms-container",
     "add-image-btn",
     "scan-directory-btn",
-    "scan-directory-dialog",
+    "scan-directory-panel",
     "scan-directory-path",
-    "scan-directory-submit",
+    "scan-directory-message",
+    "scan-directory-results",
     "evidence-summaries-container",
     "evidence-summaries-list",
     "evidence-intake-status",
@@ -81,12 +82,13 @@ class TestMultiImageTemplate(unittest.TestCase):
         self.assertIn('id="scan-directory-btn"', self.html)
         self.assertIn("Scan Directory", self.html)
 
-    def test_scan_directory_dialog_exists(self) -> None:
-        """The scan button should have a dialog for an absolute local path."""
-        self.assertIn('id="scan-directory-dialog"', self.html)
+    def test_scan_directory_panel_exists(self) -> None:
+        """The scan button should have a visible absolute-path panel."""
+        self.assertIn('id="scan-directory-panel"', self.html)
         self.assertIn('id="scan-directory-path"', self.html)
-        self.assertIn('id="scan-directory-submit"', self.html)
-        self.assertIn("Directory path", self.html)
+        self.assertIn('id="scan-directory-message"', self.html)
+        self.assertIn('id="scan-directory-results"', self.html)
+        self.assertIn("Folder path", self.html)
 
     def test_scan_directory_help_exists(self) -> None:
         """The scan button should have an adjacent help tooltip control."""
@@ -96,7 +98,7 @@ class TestMultiImageTemplate(unittest.TestCase):
             r'<button\s+type="button"\s+class="setting-help-icon evidence-scan-help"',
         )
         self.assertIn('aria-label="Scan Directory help"', self.html)
-        self.assertIn("absolute local path", self.html)
+        self.assertIn("absolute local directory path", self.html)
         self.assertIn("same Dissect-aware discovery used by automation mode", self.html)
 
     def test_image_forms_container_exists(self) -> None:
@@ -205,11 +207,6 @@ class TestMultiImageJsExports(unittest.TestCase):
         """The scanEvidenceDirectory function should be exported."""
         self.assertIn("A.scanEvidenceDirectory", self.js_multi_content)
 
-    def test_scan_directory_dialog_functions_exported(self) -> None:
-        """The scan dialog open/close functions should be exported."""
-        self.assertIn("A.openScanDirectoryDialog", self.js_multi_content)
-        self.assertIn("A.closeScanDirectoryDialog", self.js_multi_content)
-
     def test_remove_image_form_exported(self) -> None:
         """The removeImageForm function should be exported."""
         self.assertIn("A.removeImageForm", self.js_multi_content)
@@ -260,7 +257,8 @@ class TestMultiImageCss(unittest.TestCase):
     def test_scan_directory_button_styled(self) -> None:
         """The #scan-directory-btn should be styled."""
         self.assertIn("#scan-directory-btn", self.css_content)
-        self.assertIn(".evidence-scan-actions", self.css_content)
+        self.assertIn(".scan-directory-panel", self.css_content)
+        self.assertIn(".scan-directory-controls", self.css_content)
 
     def test_image_dropzone_styled(self) -> None:
         """The .image-dropzone class should be styled."""
@@ -340,8 +338,9 @@ class TestApplyAllButtonsJsLogic(unittest.TestCase):
         self.assertIn('q("apply-recommended-all")', self.app_js)
         self.assertIn('q("apply-selection-all")', self.app_js)
         self.assertIn('q("scan-directory-btn")', self.app_js)
-        self.assertIn('q("scan-directory-dialog")', self.app_js)
+        self.assertIn('q("scan-directory-panel")', self.app_js)
         self.assertIn('q("scan-directory-path")', self.app_js)
+        self.assertIn('q("scan-directory-results")', self.app_js)
 
     def test_buttons_wired_in_setup_artifacts(self) -> None:
         """The apply-all buttons should have click handlers wired in evidence.js."""
@@ -352,7 +351,6 @@ class TestApplyAllButtonsJsLogic(unittest.TestCase):
         """The scan-directory button should have a click handler."""
         self.assertIn("scanDirectoryBtn", self.js_evidence)
         self.assertIn("scanEvidenceDirectory", self.js_evidence)
-        self.assertIn("openScanDirectoryDialog", self.js_evidence)
 
     def test_visibility_toggled_for_single_image(self) -> None:
         """buildMultiImageArtifactTabs should hide buttons for single-image mode."""

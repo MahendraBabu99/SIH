@@ -77,36 +77,31 @@
           <input id="case-name" name="case_name" type="text" placeholder="Case reference">
         </div>
 
-        <div class="evidence-scan-actions">
-          <button id="scan-directory-btn" type="button">Scan Directory</button>
-          <button
-            type="button"
-            class="setting-help-icon evidence-scan-help"
-            aria-label="Scan Directory help"
-            data-tooltip="Opens a directory scan dialog. Enter an absolute local path and AIFT scans it with the same Dissect-aware discovery used by automation mode, then creates one image card per discovered target."
-          >?</button>
-        </div>
-
-        <dialog id="scan-directory-dialog" class="scan-directory-dialog" aria-labelledby="scan-directory-title">
-          <form id="scan-directory-form" class="scan-directory-form">
-            <button id="scan-directory-close" type="button" class="settings-close-btn" aria-label="Close scan directory dialog">&times;</button>
+        <section id="scan-directory-panel" class="scan-directory-panel" aria-labelledby="scan-directory-title">
+          <div class="scan-directory-header">
             <h3 id="scan-directory-title">Scan Directory</h3>
-            <label for="scan-directory-path">Directory path</label>
+            <button
+              type="button"
+              class="setting-help-icon evidence-scan-help"
+              aria-label="Scan Directory help"
+              data-tooltip="Enter an absolute local directory path. AIFT scans it with the same Dissect-aware discovery used by automation mode, then creates one image card per discovered target."
+            >?</button>
+          </div>
+          <div class="scan-directory-controls">
+            <label for="scan-directory-path">Folder path</label>
             <input
               id="scan-directory-path"
               name="scan_directory_path"
               type="text"
-              placeholder="C:\Evidence\case-folder"
+              placeholder="Absolute folder path"
               autocomplete="off"
               spellcheck="false"
             >
-            <p id="scan-directory-message" role="alert" hidden></p>
-            <div class="scan-directory-dialog-actions">
-              <button id="scan-directory-cancel" type="button">Cancel</button>
-              <button id="scan-directory-submit" type="submit">Scan</button>
-            </div>
-          </form>
-        </dialog>
+            <button id="scan-directory-btn" type="button">Scan Directory</button>
+          </div>
+          <p id="scan-directory-message" role="status" aria-live="polite" hidden></p>
+          <ul id="scan-directory-results" class="scan-directory-results" hidden></ul>
+        </section>
 
         <div id="image-forms-container">
           <div class="image-form-card" data-image-index="0">

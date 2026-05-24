@@ -237,34 +237,27 @@
     A.syncMode();
   }
 
-  /** Open the directory scan dialog. */
-  function openScanDirectoryDialog() {
-    A.clearMsg(el.evidenceMsg);
-    A.clearMsg(el.scanDirectoryMsg);
-    if (!el.scanDirectoryDialog) return;
-    if (typeof el.scanDirectoryDialog.showModal === "function") {
-      if (!el.scanDirectoryDialog.open) el.scanDirectoryDialog.showModal();
-    } else {
-      el.scanDirectoryDialog.hidden = false;
-    }
-    if (el.scanDirectoryPath) el.scanDirectoryPath.focus();
-  }
-
-  /** Close the directory scan dialog. */
-  function closeScanDirectoryDialog() {
-    A.clearMsg(el.scanDirectoryMsg);
-    if (!el.scanDirectoryDialog) return;
-    if (typeof el.scanDirectoryDialog.close === "function" && el.scanDirectoryDialog.open) {
-      el.scanDirectoryDialog.close();
-    } else {
-      el.scanDirectoryDialog.hidden = true;
-    }
+  /** Render the discovered target list in the directory scan panel. */
+  function renderScanDirectoryResults(entries) {
+    if (!el.scanDirectoryResults) return;
+    el.scanDirectoryResults.innerHTML = "";
+    entries.forEach((entry) => {
+      const item = document.createElement("li");
+      const label = entry.label ? `${entry.label}: ` : "";
+      item.textContent = `${label}${entry.path}`;
+      el.scanDirectoryResults.appendChild(item);
+    });
+    el.scanDirectoryResults.hidden = !entries.length;
   }
 
   /** Scan an absolute local path for evidence targets and add them as image cards. */
   async function scanEvidenceDirectory() {
     A.clearMsg(el.evidenceMsg);
     A.clearMsg(el.scanDirectoryMsg);
+    if (el.scanDirectoryResults) {
+      el.scanDirectoryResults.hidden = true;
+      el.scanDirectoryResults.innerHTML = "";
+    }
     const scanPath = A.sanitizeEvidencePath(el.scanDirectoryPath ? el.scanDirectoryPath.value : "");
     if (!scanPath) {
       return A.setMsg(el.scanDirectoryMsg || el.evidenceMsg, "Enter a local directory path before scanning.", "error");
@@ -296,8 +289,13 @@
       }
 
       populateImageFormsFromDiscovery(entries);
-      closeScanDirectoryDialog();
+      renderScanDirectoryResults(entries);
       const noun = entries.length === 1 ? "target" : "targets";
+      A.setMsg(
+        el.scanDirectoryMsg || el.evidenceMsg,
+        `Found ${entries.length} evidence ${noun}. Image cards were added below.`,
+        "success",
+      );
       A.setMsg(
         el.evidenceMsg,
         `Found ${entries.length} evidence ${noun}. Review the paths, then submit.`,
@@ -635,7 +633,11 @@
   function setEvidenceBusy(on, showProgress = true) {
     if (el.submitEvidence) el.submitEvidence.disabled = on;
     if (el.scanDirectoryBtn) el.scanDirectoryBtn.disabled = on;
-    if (el.scanDirectorySubmit) el.scanDirectorySubmit.disabled = on;
+    if (el.scanDirectoryPath) el.scanDirectoryPath.disabled = on;
+    if (el.scanDirectoryBtn) {
+      el.scanDirectoryBtn.setAttribute("aria-busy", on ? "true" : "false");
+      el.scanDirectoryBtn.textContent = on ? "Scanning..." : "Scan Directory";
+    }
     if (el.addImageBtn) el.addImageBtn.disabled = on;
     if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = !(on && showProgress);
   }
@@ -972,8 +974,6 @@
   // ── Public API ─────────────────────────────────────────────────────────
   A.submitEvidence = submitEvidence;
   A.scanEvidenceDirectory = scanEvidenceDirectory;
-  A.openScanDirectoryDialog = openScanDirectoryDialog;
-  A.closeScanDirectoryDialog = closeScanDirectoryDialog;
   A.addImageForm = addImageForm;
   A.removeImageForm = removeImageForm;
   A.renderImageSummaries = renderImageSummaries;

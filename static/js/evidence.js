@@ -32,15 +32,14 @@
     const addBtn = el.addImageBtn || q("add-image-btn");
     if (addBtn) addBtn.addEventListener("click", () => A.addImageForm());
     const scanBtn = el.scanDirectoryBtn || q("scan-directory-btn");
-    if (scanBtn) scanBtn.addEventListener("click", () => A.openScanDirectoryDialog());
-    if (el.scanDirectoryForm) {
-      el.scanDirectoryForm.addEventListener("submit", async (e) => {
+    if (scanBtn) scanBtn.addEventListener("click", () => A.scanEvidenceDirectory());
+    if (el.scanDirectoryPath) {
+      el.scanDirectoryPath.addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter") return;
         e.preventDefault();
         await A.scanEvidenceDirectory();
       });
     }
-    if (el.scanDirectoryCancel) el.scanDirectoryCancel.addEventListener("click", () => A.closeScanDirectoryDialog());
-    if (el.scanDirectoryClose) el.scanDirectoryClose.addEventListener("click", () => A.closeScanDirectoryDialog());
   }
 
   /**

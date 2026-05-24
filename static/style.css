@@ -651,44 +651,66 @@ input[type="radio"] {
   color: var(--accent);
 }
 
-.evidence-scan-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: calc(-1 * var(--space-2));
-  max-width: 100%;
-}
-
 .evidence-scan-help {
   margin-left: 0;
 }
 
-.scan-directory-dialog {
-  width: min(520px, calc(100vw - 2rem));
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  padding: var(--space-5);
-}
-
-.scan-directory-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.55);
-}
-
-.scan-directory-form {
+.scan-directory-panel {
   display: grid;
   gap: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: var(--space-4);
+  background: var(--bg-secondary);
 }
 
-.scan-directory-form h3 {
-  margin: 0;
-}
-
-.scan-directory-dialog-actions {
+.scan-directory-header {
   display: flex;
-  justify-content: flex-end;
-  gap: var(--space-3);
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.scan-directory-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.scan-directory-controls {
+  display: grid;
+  grid-template-columns: minmax(11rem, 1fr) auto;
+  gap: var(--space-2);
+  align-items: end;
+}
+
+.scan-directory-controls label {
+  grid-column: 1 / -1;
+}
+
+.scan-directory-results {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+#scan-directory-message[data-status="failed"] {
+  color: var(--danger);
+}
+
+#scan-directory-message[data-status="success"] {
+  color: var(--success);
+}
+
+#scan-directory-message[data-status="in-progress"] {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .scan-directory-controls {
+    grid-template-columns: 1fr;
+  }
 }
 
 #scan-directory-message {

@@ -240,13 +240,14 @@ describe("scanEvidenceDirectory", () => {
     }));
   }
 
-  test("opens the absolute-path scan dialog", () => {
-    const dialog = document.getElementById("scan-directory-dialog");
-    dialog.showModal = jest.fn();
+  test("renders a visible standalone scan path panel", () => {
+    const panel = document.getElementById("scan-directory-panel");
+    const pathInput = document.getElementById("scan-directory-path");
+    const scanButton = document.getElementById("scan-directory-btn");
 
-    A.openScanDirectoryDialog();
-
-    expect(dialog.showModal).toHaveBeenCalled();
+    expect(panel).not.toBeNull();
+    expect(pathInput).not.toBeNull();
+    expect(scanButton).not.toBeNull();
   });
 
   test("populates one local-path form per backend-discovered evidence target", async () => {
@@ -275,6 +276,15 @@ describe("scanEvidenceDirectory", () => {
     expect(forms[1].querySelector(".image-label-input").value).toBe("C");
     expect(forms[1].querySelector(".image-mode-path").checked).toBe(true);
     expect(forms[1].querySelector(".image-path-input").value).toContain("Unzipped_C_Drive");
+
+    const panelMsg = document.getElementById("scan-directory-message");
+    const results = document.getElementById("scan-directory-results");
+    expect(panelMsg.hidden).toBe(false);
+    expect(panelMsg.dataset.status).toBe("success");
+    expect(panelMsg.textContent).toContain("Found 2 evidence targets");
+    expect(results.hidden).toBe(false);
+    expect(results.querySelectorAll("li").length).toBe(2);
+    expect(results.textContent).toContain("SUSPECT");
   });
 
   test("shows an error when no scan path is entered", async () => {
