@@ -10,10 +10,12 @@ Attributes:
 
 from __future__ import annotations
 
+import tarfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from zipfile import ZipFile
 
 from app.automation.discovery import discover_evidence, validate_evidence_path
 
@@ -115,17 +117,35 @@ class TestDiscoverEvidence(unittest.TestCase):
         p.write_bytes(b"")
         return p.resolve()
 
+    def _discover_with_dissect_fail(
+        self,
+        path: Path,
+        *,
+        workspace_dir: Path | None = None,
+    ) -> list[Path]:
+        """Run discovery with Dissect target probes forced to fail."""
+        kwargs = {"workspace_dir": workspace_dir} if workspace_dir is not None else {}
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            return discover_evidence(path, **kwargs)
+
     def test_single_e01_file(self) -> None:
         """Single E01 file returns one-element list."""
         f = self._touch("image.E01")
-        result = discover_evidence(f)
+        with patch("app.automation.discovery.Target.open") as mock_open:
+            result = discover_evidence(f)
         self.assertEqual(result, [f])
+        mock_open.assert_not_called()
 
     def test_single_vmdk_file(self) -> None:
         """VMDK file is recognized as valid evidence."""
         f = self._touch("disk.vmdk")
-        result = discover_evidence(f)
+        with patch("app.automation.discovery.Target.open") as mock_open:
+            result = discover_evidence(f)
         self.assertEqual(result, [f])
+        mock_open.assert_not_called()
 
     def test_unsupported_extension_raises(self) -> None:
         """File with .txt extension raises ValueError."""
@@ -141,28 +161,43 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("readme.txt")
         self._touch("notes.doc")
 
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         names = [p.name for p in result]
         self.assertIn("image.e01", names)
         self.assertIn("disk.vmdk", names)
         self.assertNotIn("readme.txt", names)
         self.assertNotIn("notes.doc", names)
 
-    def test_directory_includes_subdirectories(self) -> None:
-        """Child directories are included as Dissect targets."""
+    def test_folder_directly_loadable_by_dissect(self) -> None:
+        """Loadable folders are returned as the evidence target."""
         sub = self.root / "acquire_output"
         sub.mkdir()
         # Put a file inside so it's not empty
         (sub / "data.bin").write_bytes(b"")
 
-        result = discover_evidence(self.root)
-        self.assertIn(sub.resolve(), result)
+        fake_target = MagicMock()
+        with patch(
+            "app.automation.discovery.Target.open",
+            return_value=fake_target,
+        ) as mock_open:
+            result = discover_evidence(sub)
+
+        self.assertEqual(result, [sub.resolve()])
+        mock_open.assert_called_once_with(sub.resolve())
+        fake_target.close.assert_called_once()
+
+    def test_folder_not_loadable_recursively_scans_children(self) -> None:
+        """Non-loadable folders are scanned recursively."""
+        nested = self._touch("outer", "inner", "evidence.E01")
+
+        result = self._discover_with_dissect_fail(self.root)
+        self.assertEqual(result, [nested])
 
     def test_directory_no_evidence_returns_empty(self) -> None:
         """Directory with no evidence files and no subdirs returns empty."""
         self._touch("readme.txt")
         self._touch("notes.doc")
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         self.assertEqual(result, [])
 
     def test_segment_deduplication(self) -> None:
@@ -172,18 +207,28 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("image.E02")
         self._touch("image.E03")
 
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         names = [p.name for p in result]
         self.assertIn("image.E01", names)
         self.assertNotIn("image.E02", names)
         self.assertNotIn("image.E03", names)
+
+    def test_segment_deduplication_in_nested_folder(self) -> None:
+        """Nested sibling segment sets keep only the first segment."""
+        self._touch("outer", "image.E01")
+        self._touch("outer", "image.E02")
+        self._touch("outer", "image.E03")
+
+        result = self._discover_with_dissect_fail(self.root)
+        names = [p.name for p in result]
+        self.assertEqual(names, ["image.E01"])
 
     def test_hidden_files_skipped(self) -> None:
         """Files starting with '.' are skipped."""
         self._touch(".hidden.e01")
         self._touch("visible.e01")
 
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         names = [p.name for p in result]
         self.assertNotIn(".hidden.e01", names)
         self.assertIn("visible.e01", names)
@@ -195,22 +240,85 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch(".DS_Store")
         self._touch("evidence.e01")
 
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         names = [p.name for p in result]
         self.assertNotIn("Thumbs.db", names)
         self.assertNotIn("desktop.ini", names)
         self.assertNotIn(".DS_Store", names)
         self.assertIn("evidence.e01", names)
 
-    def test_archive_files_included(self) -> None:
-        """ZIP and 7z files are included as-is."""
-        self._touch("backup.zip")
-        self._touch("archive.7z")
+    def test_hidden_and_system_files_skipped_recursively(self) -> None:
+        """Hidden directories and system files are skipped at every depth."""
+        self._touch(".hidden", "secret.e01")
+        self._touch("__MACOSX", "resource.e01")
+        self._touch("outer", "Thumbs.db")
+        visible = self._touch("outer", "inner", "visible.e01")
 
-        result = discover_evidence(self.root)
-        names = [p.name for p in result]
-        self.assertIn("backup.zip", names)
-        self.assertIn("archive.7z", names)
+        result = self._discover_with_dissect_fail(self.root)
+        self.assertEqual(result, [visible])
+
+    def test_zip_directly_loadable_by_dissect(self) -> None:
+        """Loadable ZIP files are returned as evidence targets."""
+        archive = self.root / "backup.zip"
+        with ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("ignored.txt", "content")
+
+        fake_target = MagicMock()
+        with patch(
+            "app.automation.discovery.Target.open",
+            return_value=fake_target,
+        ) as mock_open:
+            result = discover_evidence(archive)
+
+        self.assertEqual(result, [archive.resolve()])
+        mock_open.assert_called_once_with(archive.resolve())
+        fake_target.close.assert_called_once()
+
+    def test_zip_not_loadable_extracts_and_discovers_nested_evidence(self) -> None:
+        """Non-loadable ZIP files are extracted and scanned recursively."""
+        archive = self.root / "bundle.zip"
+        workspace = self.root / "case" / "evidence"
+        with ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("nested/evidence.E01", b"image")
+
+        result = self._discover_with_dissect_fail(
+            archive,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].name, "evidence.E01")
+        self.assertTrue(result[0].is_relative_to(workspace.resolve()))
+
+    def test_tar_not_loadable_extracts_and_discovers_nested_evidence(self) -> None:
+        """Archive fallback applies to tarballs as well as ZIP files."""
+        payload = self._touch("payload", "disk.raw")
+        archive = self.root / "bundle.tar"
+        workspace = self.root / "case" / "evidence"
+        with tarfile.open(archive, "w") as tar_file:
+            tar_file.add(payload, arcname="nested/disk.raw")
+
+        result = self._discover_with_dissect_fail(
+            archive,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].name, "disk.raw")
+        self.assertTrue(result[0].is_relative_to(workspace.resolve()))
+
+    def test_zip_path_traversal_entry_is_rejected_safely(self) -> None:
+        """Unsafe ZIP paths raise ValueError and do not escape workspace."""
+        archive = self.root / "unsafe.zip"
+        workspace = self.root / "case" / "evidence"
+        with ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("../escape.E01", b"escape")
+            zip_file.writestr("safe/evidence.E01", b"image")
+
+        with self.assertRaises(ValueError):
+            self._discover_with_dissect_fail(archive, workspace_dir=workspace)
+
+        self.assertFalse((self.root / "escape.E01").exists())
 
     def test_results_are_sorted(self) -> None:
         """Returned list is sorted by path string."""
@@ -218,7 +326,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("alpha.e01")
         self._touch("middle.vmdk")
 
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         path_strings = [str(p) for p in result]
         self.assertEqual(path_strings, sorted(path_strings))
 
@@ -231,7 +339,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         """Empty directory returns empty list."""
         empty = self.root / "empty"
         empty.mkdir()
-        result = discover_evidence(empty)
+        result = self._discover_with_dissect_fail(empty)
         self.assertEqual(result, [])
 
     def test_multiple_segment_groups(self) -> None:
@@ -242,7 +350,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("case_b.E02")
         self._touch("case_b.E03")
 
-        result = discover_evidence(self.root)
+        result = self._discover_with_dissect_fail(self.root)
         names = [p.name for p in result]
         self.assertIn("case_a.E01", names)
         self.assertIn("case_b.E01", names)

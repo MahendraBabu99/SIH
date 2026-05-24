@@ -466,10 +466,25 @@ def run_automation(
     if cancelled is not None:
         return cancelled
 
-    # --- 4. Discover evidence ---
+    # --- 4. Create case ---
+    # Archive fallback extraction during discovery writes into the case-owned
+    # evidence directory, matching GUI evidence intake behavior.
+    cases_dir = _PROJECT_ROOT / "cases"
+    case_manager = CaseManager(cases_dir=cases_dir)
+    case_name = request.case_name or f"Automated Triage {datetime.now(timezone.utc):%Y-%m-%d}"
+    case_id = case_manager.create_case(case_name=case_name)
+    result.case_id = case_id
+    case_dir = cases_dir / case_id
+    discovery_workspace = case_dir / "evidence"
+    discovery_workspace.mkdir(parents=True, exist_ok=True)
+
+    # --- 5. Discover evidence ---
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)
     try:
-        evidence_files = discover_evidence(evidence_path)
+        evidence_files = discover_evidence(
+            evidence_path,
+            workspace_dir=discovery_workspace,
+        )
     except (FileNotFoundError, ValueError) as exc:
         result.errors.append(f"Evidence discovery failed: {exc}")
         result.duration_seconds = time.monotonic() - start_time
@@ -491,14 +506,6 @@ def run_automation(
     cancelled = _stop_if_cancelled()
     if cancelled is not None:
         return cancelled
-
-    # --- 5. Create case ---
-    cases_dir = _PROJECT_ROOT / "cases"
-    case_manager = CaseManager(cases_dir=cases_dir)
-    case_name = request.case_name or f"Automated Triage {datetime.now(timezone.utc):%Y-%m-%d}"
-    case_id = case_manager.create_case(case_name=case_name)
-    result.case_id = case_id
-    case_dir = cases_dir / case_id
 
     audit_logger = AuditLogger(case_directory=case_dir, tool_version=TOOL_VERSION)
     audit_logger.log("automation_started", {

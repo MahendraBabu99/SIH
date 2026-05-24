@@ -434,7 +434,7 @@ class TestDiscoveryIntegration(unittest.TestCase):
             validate_evidence_path(str(link))
 
     def test_mixed_evidence_types(self) -> None:
-        """Folder with E01, VMDK, and a directory all discovered."""
+        """Folder with files and a loadable directory all discovered."""
         from app.automation.discovery import discover_evidence
 
         self._touch("image.E01", content=b"\x00")
@@ -443,7 +443,16 @@ class TestDiscoveryIntegration(unittest.TestCase):
         subdir.mkdir()
         (subdir / "data.bin").write_bytes(b"\x00")
 
-        result = discover_evidence(self.root)
+        def _target_open(path: Path) -> MagicMock:
+            if Path(path).resolve() == subdir.resolve():
+                return MagicMock()
+            raise RuntimeError("not directly loadable")
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=_target_open,
+        ):
+            result = discover_evidence(self.root)
         names = [p.name for p in result]
         self.assertIn("image.E01", names)
         self.assertIn("disk.vmdk", names)
