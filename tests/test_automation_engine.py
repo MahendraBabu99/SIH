@@ -211,6 +211,7 @@ class TestAutomationResult(unittest.TestCase):
         res = AutomationResult(success=True, case_id="abc")
         self.assertIsNone(res.html_report_path)
         self.assertIsNone(res.json_report_path)
+        self.assertIsNone(res.analysis_results_path)
         self.assertEqual(res.evidence_files, [])
         self.assertEqual(res.errors, [])
         self.assertEqual(res.warnings, [])
@@ -396,6 +397,42 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.case_id, "case-001")
         self.assertEqual(len(result.errors), 0)
+        expected_path = self.cases_dir / "case-001" / "analysis_results.json"
+        self.assertEqual(result.analysis_results_path, expected_path)
+        self.assertTrue(expected_path.is_file())
+
+    def test_report_generation_failure_keeps_analysis_results_path(self) -> None:
+        """Report errors fail the run but keep the persisted analysis path."""
+
+        class FailingReportGenerator:
+            """Report generator fake that always fails."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                del kwargs
+
+            def generate(self, **kwargs: Any) -> Path:
+                del kwargs
+                raise RuntimeError("template failed")
+
+        self.mocks["ReportGenerator"].side_effect = (
+            lambda **kwargs: FailingReportGenerator(**kwargs)
+        )
+        self.mocks["export_json_report"].side_effect = RuntimeError("json failed")
+
+        result = run_automation(self._make_request())
+
+        expected_path = self.cases_dir / "case-001" / "analysis_results.json"
+        self.assertFalse(result.success)
+        self.assertIsNone(result.html_report_path)
+        self.assertIsNone(result.json_report_path)
+        self.assertEqual(result.analysis_results_path, expected_path)
+        self.assertTrue(expected_path.is_file())
+        self.assertTrue(
+            any("HTML report generation failed" in e for e in result.errors)
+        )
+        self.assertTrue(
+            any("JSON report generation failed" in e for e in result.errors)
+        )
 
     def test_pre_report_hash_verification_pass(self) -> None:
         """File evidence is re-verified before report export."""

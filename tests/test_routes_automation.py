@@ -19,11 +19,15 @@ from app.automation.engine import AutomationResult
 import app.routes.automation as automation_mod
 
 
-def _make_successful_result(case_id: str = "test-case-123") -> AutomationResult:
+def _make_successful_result(
+    case_id: str = "test-case-123",
+    analysis_results_path: Path | None = None,
+) -> AutomationResult:
     """Build a successful AutomationResult for mocking.
 
     Args:
         case_id: Case ID to embed in the result.
+        analysis_results_path: Optional persisted analysis output path.
 
     Returns:
         A populated AutomationResult with success=True.
@@ -33,6 +37,7 @@ def _make_successful_result(case_id: str = "test-case-123") -> AutomationResult:
         case_id=case_id,
         html_report_path=None,
         json_report_path=None,
+        analysis_results_path=analysis_results_path,
         evidence_files=[Path("/fake/evidence.E01")],
         errors=[],
         warnings=["minor warning"],
@@ -40,11 +45,15 @@ def _make_successful_result(case_id: str = "test-case-123") -> AutomationResult:
     )
 
 
-def _make_failed_result(case_id: str = "test-case-456") -> AutomationResult:
+def _make_failed_result(
+    case_id: str = "test-case-456",
+    analysis_results_path: Path | None = None,
+) -> AutomationResult:
     """Build a failed AutomationResult for mocking.
 
     Args:
         case_id: Case ID to embed in the result.
+        analysis_results_path: Optional persisted analysis output path.
 
     Returns:
         A populated AutomationResult with success=False.
@@ -52,6 +61,7 @@ def _make_failed_result(case_id: str = "test-case-456") -> AutomationResult:
     return AutomationResult(
         success=False,
         case_id=case_id,
+        analysis_results_path=analysis_results_path,
         errors=["Evidence path does not exist"],
         duration_seconds=1.0,
     )
@@ -292,6 +302,9 @@ class TestGetRunStatus(AutomationRoutesTestBase):
                 "result": {
                     "html_report_path": "/output/report.html",
                     "json_report_path": "/output/report.json",
+                    "analysis_results_path": (
+                        "/cases/case-xyz/analysis_results.json"
+                    ),
                     "evidence_files_processed": 2,
                     "warnings": [],
                 },
@@ -302,6 +315,10 @@ class TestGetRunStatus(AutomationRoutesTestBase):
         self.assertEqual(body["status"], "completed")
         self.assertIsNotNone(body.get("result"))
         self.assertEqual(body["result"]["evidence_files_processed"], 2)
+        self.assertEqual(
+            body["result"]["analysis_results_path"],
+            "/cases/case-xyz/analysis_results.json",
+        )
         self.assertEqual(body["completed_at"], "2026-04-15T10:45:00Z")
 
     def test_failed_status_includes_errors(self) -> None:
@@ -318,6 +335,11 @@ class TestGetRunStatus(AutomationRoutesTestBase):
                 "elapsed_seconds": 60.0,
                 "evidence_path": "/fake",
                 "errors": ["API key invalid"],
+                "result": {
+                    "analysis_results_path": (
+                        "/cases/case-fail/analysis_results.json"
+                    ),
+                },
                 "_started_mono": time.monotonic() - 60,
             }
 
@@ -325,6 +347,10 @@ class TestGetRunStatus(AutomationRoutesTestBase):
         body = resp.get_json()
         self.assertEqual(body["status"], "failed")
         self.assertIn("API key invalid", body["errors"])
+        self.assertEqual(
+            body["result"]["analysis_results_path"],
+            "/cases/case-fail/analysis_results.json",
+        )
 
 
 class TestListRuns(AutomationRoutesTestBase):
@@ -570,7 +596,11 @@ class TestBackgroundThread(AutomationRoutesTestBase):
     @patch("app.routes.automation.run_automation")
     def test_successful_run_updates_state(self, mock_run: MagicMock) -> None:
         """Background thread updates state to completed on success."""
-        result = _make_successful_result("case-bg-ok")
+        analysis_path = Path("/cases/case-bg-ok/analysis_results.json")
+        result = _make_successful_result(
+            "case-bg-ok",
+            analysis_results_path=analysis_path,
+        )
         mock_run.return_value = result
 
         resp = self._post_json(
@@ -589,11 +619,19 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertEqual(run["case_id"], "case-bg-ok")
         self.assertIsNotNone(run["result"])
         self.assertEqual(run["result"]["evidence_files_processed"], 1)
+        self.assertEqual(
+            run["result"]["analysis_results_path"],
+            str(analysis_path),
+        )
 
     @patch("app.routes.automation.run_automation")
     def test_failed_run_updates_state(self, mock_run: MagicMock) -> None:
         """Background thread updates state to failed on engine failure."""
-        result = _make_failed_result("case-bg-fail")
+        analysis_path = Path("/cases/case-bg-fail/analysis_results.json")
+        result = _make_failed_result(
+            "case-bg-fail",
+            analysis_results_path=analysis_path,
+        )
         mock_run.return_value = result
 
         resp = self._post_json(
@@ -608,6 +646,10 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "failed")
         self.assertIn("Evidence path does not exist", run["errors"])
+        self.assertEqual(
+            run["result"]["analysis_results_path"],
+            str(analysis_path),
+        )
 
     @patch("app.routes.automation.run_automation")
     def test_exception_in_run_marks_failed(self, mock_run: MagicMock) -> None:

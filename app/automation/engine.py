@@ -91,6 +91,8 @@ class AutomationResult:
             report generation failed.
         json_report_path: Path to the generated JSON report, or None if
             report generation failed.
+        analysis_results_path: Path to the persisted analysis_results.json,
+            or None if analysis did not complete successfully.
         evidence_files: List of evidence file Paths that were processed.
         errors: List of error message strings for any fatal failures.
         warnings: List of non-fatal warning message strings.
@@ -105,6 +107,7 @@ class AutomationResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
+    analysis_results_path: Path | None = None
 
 
 def _notify(
@@ -848,6 +851,7 @@ def run_automation(
         results_file = case_dir / "analysis_results.json"
         with open(results_file, "w", encoding="utf-8") as f:
             json.dump(analysis_results, f, indent=2, ensure_ascii=True)
+        result.analysis_results_path = results_file
 
     except AnalysisCancelledError:
         return _cancelled_result(result, start_time, audit_logger)

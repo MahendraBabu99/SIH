@@ -24,6 +24,7 @@ from aift_cli import (
     _build_parser,
     _format_duration,
     _make_progress_callback,
+    _print_summary,
     _resolve_prompt,
     main,
 )
@@ -83,6 +84,30 @@ class TestMakeProgressCallback(unittest.TestCase):
         """Non-quiet mode returns a callable."""
         cb = _make_progress_callback(False)
         self.assertTrue(callable(cb))
+
+
+class TestPrintSummary(unittest.TestCase):
+    """Tests for the final CLI summary output."""
+
+    def test_includes_analysis_results_path_when_available(self) -> None:
+        """Persisted analysis output is printed even when reports failed."""
+        path = Path("/fake/case/analysis_results.json")
+        result = AutomationResult(
+            success=False,
+            case_id="case-cli-partial",
+            analysis_results_path=path,
+            evidence_files=[Path("/fake/evidence.E01")],
+            errors=["HTML report generation failed: template failed"],
+            duration_seconds=3.0,
+        )
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_summary(result)
+
+        output = stdout.getvalue()
+        self.assertIn("Analysis Results", output)
+        self.assertIn(str(path), output)
 
 
 class TestResolvePrompt(unittest.TestCase):

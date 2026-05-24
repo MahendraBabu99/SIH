@@ -134,7 +134,47 @@ def _build_status_response(run: dict[str, Any]) -> dict[str, Any]:
         payload["result"] = run.get("result")
     if status == "failed":
         payload["errors"] = run.get("errors", [])
+        if run.get("result") is not None:
+            payload["result"] = run.get("result")
     return payload
+
+
+def _result_payload(result: AutomationResult) -> dict[str, Any]:
+    """Build the public result payload from an automation engine result.
+
+    Args:
+        result: Result returned by the automation engine.
+
+    Returns:
+        JSON-serialisable result payload.
+    """
+    return {
+        "html_report_path": (
+            str(result.html_report_path) if result.html_report_path else None
+        ),
+        "json_report_path": (
+            str(result.json_report_path) if result.json_report_path else None
+        ),
+        "analysis_results_path": (
+            str(result.analysis_results_path)
+            if result.analysis_results_path
+            else None
+        ),
+        "evidence_files_processed": len(result.evidence_files),
+        "warnings": list(result.warnings),
+    }
+
+
+def _has_output_path(result_payload: dict[str, Any]) -> bool:
+    """Return whether a result payload contains any recoverable output path."""
+    return any(
+        result_payload.get(key)
+        for key in (
+            "html_report_path",
+            "json_report_path",
+            "analysis_results_path",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,17 +260,14 @@ def _run_automation_thread(
             run["message"] = "Automation run completed successfully"
             run["percentage"] = 100.0
             run["completed_at"] = _now_iso()
-            run["result"] = {
-                "html_report_path": str(result.html_report_path) if result.html_report_path else None,
-                "json_report_path": str(result.json_report_path) if result.json_report_path else None,
-                "evidence_files_processed": len(result.evidence_files),
-                "warnings": list(result.warnings),
-            }
+            run["result"] = _result_payload(result)
         else:
             run["status"] = "failed"
             run["phase"] = run.get("phase", "unknown")
             run["message"] = result.errors[0] if result.errors else "Unknown error"
             run["errors"] = list(result.errors)
+            payload = _result_payload(result)
+            run["result"] = payload if _has_output_path(payload) else None
 
 
 # ---------------------------------------------------------------------------

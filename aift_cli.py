@@ -286,6 +286,11 @@ def _print_summary(result: Any) -> None:
             print(f"    JSON: {result.json_report_path}")
         print()
 
+    if getattr(result, "analysis_results_path", None):
+        print("  Analysis Results:")
+        print(f"    JSON: {result.analysis_results_path}")
+        print()
+
     if result.errors:
         print(f"  Errors: {len(result.errors)}")
         for err in result.errors:
