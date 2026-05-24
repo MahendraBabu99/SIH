@@ -230,76 +230,77 @@ describe("removeImageForm", () => {
 // -- scanEvidenceDirectory -------------------------------------------------
 
 describe("scanEvidenceDirectory", () => {
-  function folderFile(name, relativePath, content = "x") {
-    const file = new File([content], name, { type: "application/octet-stream" });
-    Object.defineProperty(file, "webkitRelativePath", {
-      configurable: true,
-      value: relativePath,
-    });
-    return file;
+  function mockJsonFetch(payload) {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    }));
   }
 
-  function setFolderInputFiles(files) {
-    const input = document.getElementById("scan-directory-input");
-    Object.defineProperty(input, "files", {
-      configurable: true,
-      value: files,
-    });
-    return input;
-  }
+  test("opens the absolute-path scan dialog", () => {
+    const dialog = document.getElementById("scan-directory-dialog");
+    dialog.showModal = jest.fn();
 
-  test("opens the hidden folder picker", () => {
-    const input = document.getElementById("scan-directory-input");
-    input.click = jest.fn();
-    A.scanEvidenceDirectory();
+    A.openScanDirectoryDialog();
 
-    expect(input.click).toHaveBeenCalled();
+    expect(dialog.showModal).toHaveBeenCalled();
   });
 
-  test("populates one upload form per discovered evidence target", () => {
-    const input = setFolderInputFiles([
-      folderFile("pc01.E01", "case/pc01/pc01.E01"),
-      folderFile("pc01.E02", "case/pc01/pc01.E02"),
-      folderFile("pc02.vmdk", "case/pc02/pc02.vmdk"),
-      folderFile("notes.txt", "case/notes.txt"),
-    ]);
+  test("populates one local-path form per backend-discovered evidence target", async () => {
+    const pathInput = document.getElementById("scan-directory-path");
+    pathInput.value = "E:\\AIFT-Public2\\AIFT\\test_data\\Small_evidence_folder";
+    mockJsonFetch({
+      success: true,
+      evidence: [
+        { path: "E:\\data\\SUSPECT.E01", label: "SUSPECT" },
+        { path: "E:\\data\\Unzipped_C_Drive (UNZIPPED KAPE OUTPUT)\\C", label: "C" },
+      ],
+    });
 
-    A.handleScanDirectorySelection(input);
+    await A.scanEvidenceDirectory();
+
+    expect(global.fetch).toHaveBeenCalled();
+    expect(global.fetch.mock.calls[0][0]).toBe("/api/evidence/discover");
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.path).toBe("E:\\AIFT-Public2\\AIFT\\test_data\\Small_evidence_folder");
 
     const forms = A.getImageForms();
     expect(forms.length).toBe(2);
-    expect(forms[0].querySelector(".image-label-input").value).toBe("pc01");
-    expect(forms[0].querySelector(".image-mode-upload").checked).toBe(true);
-    expect(forms[0].querySelector(".image-path-input").value).toBe("");
-    expect(forms[0].__aiftUploadFiles.length).toBe(2);
-    expect(forms[0].querySelector(".image-dropzone-help").textContent).toContain("2 segment files selected");
-    expect(forms[1].querySelector(".image-label-input").value).toBe("pc02");
-    expect(forms[1].querySelector(".image-mode-upload").checked).toBe(true);
-    expect(forms[1].__aiftUploadFiles.length).toBe(1);
+    expect(forms[0].querySelector(".image-label-input").value).toBe("SUSPECT");
+    expect(forms[0].querySelector(".image-mode-path").checked).toBe(true);
+    expect(forms[0].querySelector(".image-path-input").value).toBe("E:\\data\\SUSPECT.E01");
+    expect(forms[1].querySelector(".image-label-input").value).toBe("C");
+    expect(forms[1].querySelector(".image-mode-path").checked).toBe(true);
+    expect(forms[1].querySelector(".image-path-input").value).toContain("Unzipped_C_Drive");
   });
 
-  test("does not call the backend discovery endpoint", () => {
+  test("shows an error when no scan path is entered", async () => {
     global.fetch = jest.fn();
-    const input = setFolderInputFiles([
-      folderFile("pc01.E01", "case/pc01.E01"),
-    ]);
-
-    A.handleScanDirectorySelection(input);
+    await A.scanEvidenceDirectory();
 
     expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  test("shows an error when no supported files are selected", () => {
-    const input = setFolderInputFiles([
-      folderFile("notes.txt", "case/notes.txt"),
-    ]);
-
-    A.handleScanDirectorySelection(input);
-
-    const msg = document.getElementById("evidence-message");
+    const msg = document.getElementById("scan-directory-message");
     expect(msg.hidden).toBe(false);
     expect(msg.dataset.status).toBe("failed");
-    expect(msg.textContent).toContain("No supported evidence images");
+    expect(msg.textContent).toContain("local directory path");
+  });
+
+  test("shows an error when the backend finds no targets", async () => {
+    const pathInput = document.getElementById("scan-directory-path");
+    pathInput.value = "E:\\empty";
+    mockJsonFetch({ success: true, evidence: [] });
+
+    await A.scanEvidenceDirectory();
+
+    const msg = document.getElementById("evidence-message");
+    const dialogMsg = document.getElementById("scan-directory-message");
+    expect(msg.hidden).toBe(true);
+    expect(dialogMsg.hidden).toBe(false);
+    expect(dialogMsg.dataset.status).toBe("failed");
+    expect(dialogMsg.textContent).toContain("No supported evidence targets");
   });
 });
 

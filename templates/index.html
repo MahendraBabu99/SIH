@@ -79,23 +79,34 @@
 
         <div class="evidence-scan-actions">
           <button id="scan-directory-btn" type="button">Scan Directory</button>
-          <input
-            id="scan-directory-input"
-            class="scan-directory-input"
-            type="file"
-            webkitdirectory
-            directory
-            multiple
-            hidden
-            aria-label="Select evidence directory to scan"
-          >
           <button
             type="button"
             class="setting-help-icon evidence-scan-help"
             aria-label="Scan Directory help"
-            data-tooltip="Opens a folder picker, scans the selected folder for supported forensic images, then creates one image card per discovered target. Split-image segments are grouped together. Review the generated cards before clicking Submit."
+            data-tooltip="Opens a directory scan dialog. Enter an absolute local path and AIFT scans it with the same Dissect-aware discovery used by automation mode, then creates one image card per discovered target."
           >?</button>
         </div>
+
+        <dialog id="scan-directory-dialog" class="scan-directory-dialog" aria-labelledby="scan-directory-title">
+          <form id="scan-directory-form" class="scan-directory-form">
+            <button id="scan-directory-close" type="button" class="settings-close-btn" aria-label="Close scan directory dialog">&times;</button>
+            <h3 id="scan-directory-title">Scan Directory</h3>
+            <label for="scan-directory-path">Directory path</label>
+            <input
+              id="scan-directory-path"
+              name="scan_directory_path"
+              type="text"
+              placeholder="C:\Evidence\case-folder"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <p id="scan-directory-message" role="alert" hidden></p>
+            <div class="scan-directory-dialog-actions">
+              <button id="scan-directory-cancel" type="button">Cancel</button>
+              <button id="scan-directory-submit" type="submit">Scan</button>
+            </div>
+          </form>
+        </dialog>
 
         <div id="image-forms-container">
           <div class="image-form-card" data-image-index="0">

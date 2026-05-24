@@ -57,7 +57,13 @@
     el.caseName = q("case-name");
     el.submitEvidence = q("submit-evidence");
     el.scanDirectoryBtn = q("scan-directory-btn");
-    el.scanDirectoryInput = q("scan-directory-input");
+    el.scanDirectoryDialog = q("scan-directory-dialog");
+    el.scanDirectoryForm = q("scan-directory-form");
+    el.scanDirectoryPath = q("scan-directory-path");
+    el.scanDirectoryMsg = q("scan-directory-message");
+    el.scanDirectorySubmit = q("scan-directory-submit");
+    el.scanDirectoryCancel = q("scan-directory-cancel");
+    el.scanDirectoryClose = q("scan-directory-close");
     el.addImageBtn = q("add-image-btn");
     el.evidenceProgWrap = q("evidence-intake-progress");
     el.evidenceProg = q("evidence-progress");
@@ -445,9 +451,14 @@
     A.clearDynamicArtifacts();
     if (el.parseBtn) el.parseBtn.disabled = true;
     if (el.scanDirectoryBtn) el.scanDirectoryBtn.disabled = false;
-    if (el.scanDirectoryInput) {
-      el.scanDirectoryInput.disabled = false;
-      el.scanDirectoryInput.value = "";
+    if (el.scanDirectoryPath) el.scanDirectoryPath.value = "";
+    if (el.scanDirectorySubmit) el.scanDirectorySubmit.disabled = false;
+    if (el.scanDirectoryDialog) {
+      if (typeof el.scanDirectoryDialog.close === "function" && el.scanDirectoryDialog.open) {
+        el.scanDirectoryDialog.close();
+      } else {
+        el.scanDirectoryDialog.hidden = true;
+      }
     }
     if (el.addImageBtn) el.addImageBtn.disabled = false;
     if (el.submitEvidence) el.submitEvidence.disabled = false;

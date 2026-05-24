@@ -328,7 +328,7 @@ describe("help tooltips", () => {
 
     help.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     expect(tip.classList.contains("is-visible")).toBe(true);
-    expect(tip.textContent).toContain("Opens a folder picker");
+    expect(tip.textContent).toContain("absolute local path");
 
     help.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     expect(tip.classList.contains("is-visible")).toBe(false);

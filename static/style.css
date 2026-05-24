@@ -663,6 +663,38 @@ input[type="radio"] {
   margin-left: 0;
 }
 
+.scan-directory-dialog {
+  width: min(520px, calc(100vw - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  padding: var(--space-5);
+}
+
+.scan-directory-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.scan-directory-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.scan-directory-form h3 {
+  margin: 0;
+}
+
+.scan-directory-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+#scan-directory-message {
+  margin: 0;
+}
+
 #add-image-btn,
 #scan-directory-btn {
   background: transparent;

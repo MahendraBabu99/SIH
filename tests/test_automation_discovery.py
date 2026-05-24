@@ -186,6 +186,24 @@ class TestDiscoverEvidence(unittest.TestCase):
         mock_open.assert_called_once_with(sub.resolve())
         fake_target.close.assert_called_once()
 
+    def test_loadable_wrapper_is_returned_without_child_scanning(self) -> None:
+        """When a wrapper opens in Dissect, use it as the evidence target."""
+        wrapper = self.root / "wrapper"
+        child = wrapper / "C"
+        child.mkdir(parents=True)
+        (child / "data.bin").write_bytes(b"")
+
+        def fake_open(path: Path):
+            if path in {wrapper.resolve(), child.resolve()}:
+                return MagicMock()
+            raise RuntimeError("not loadable")
+
+        with patch("app.automation.discovery.Target.open", side_effect=fake_open) as mock_open:
+            result = discover_evidence(wrapper)
+
+        self.assertEqual(result, [wrapper.resolve()])
+        mock_open.assert_called_once_with(wrapper.resolve())
+
     def test_folder_not_loadable_recursively_scans_children(self) -> None:
         """Non-loadable folders are scanned recursively."""
         nested = self._touch("outer", "inner", "evidence.E01")
