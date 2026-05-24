@@ -284,18 +284,48 @@ def _validate_run_request(payload: dict[str, Any]) -> tuple[dict[str, Any] | Non
         Tuple of ``(validated_params, error_message)``.  On success the
         error message is empty; on failure validated_params is ``None``.
     """
-    evidence_path = str(payload.get("evidence_path", "")).strip()
-    if not evidence_path:
-        return None, "Field 'evidence_path' is required and must not be empty."
+    def _required_string(field: str) -> tuple[str | None, str]:
+        value = payload.get(field)
+        if not isinstance(value, str):
+            return None, f"Field '{field}' is required and must be a non-empty string."
+        value = value.strip()
+        if not value:
+            return None, f"Field '{field}' is required and must not be empty."
+        return value, ""
 
-    prompt = str(payload.get("prompt", "")).strip()
-    if not prompt:
-        return None, "Field 'prompt' is required and must not be empty."
+    def _optional_string(field: str) -> tuple[str | None, str]:
+        if field not in payload or payload.get(field) is None:
+            return None, ""
+        value = payload.get(field)
+        if not isinstance(value, str):
+            return None, f"Field '{field}' must be a string or null."
+        return value.strip() or None, ""
+
+    evidence_path, error = _required_string("evidence_path")
+    if error:
+        return None, error
+
+    prompt, error = _required_string("prompt")
+    if error:
+        return None, error
+
+    optional_values: dict[str, str | None] = {}
+    for field in ("output_dir", "profile_name", "config_path", "case_name"):
+        value, error = _optional_string(field)
+        if error:
+            return None, error
+        optional_values[field] = value
+
+    skip_hashing_raw = payload.get("skip_hashing", False)
+    if not isinstance(skip_hashing_raw, bool):
+        return None, "Field 'skip_hashing' must be a boolean."
 
     # Date range validation (strict — return 400 on bad format).
     date_range_raw = payload.get("date_range")
     date_range_tuple: tuple[str, str] | None = None
     if date_range_raw is not None:
+        if not isinstance(date_range_raw, dict):
+            return None, "Field 'date_range' must be an object or null."
         try:
             validated = validate_analysis_date_range(date_range_raw)
             if validated is not None:
@@ -306,11 +336,11 @@ def _validate_run_request(payload: dict[str, Any]) -> tuple[dict[str, Any] | Non
     params: dict[str, Any] = {
         "evidence_path": evidence_path,
         "prompt": prompt,
-        "output_dir": str(payload.get("output_dir", "")).strip() or None,
-        "profile_name": str(payload.get("profile_name", "")).strip() or None,
-        "config_path": str(payload.get("config_path", "")).strip() or None,
-        "case_name": str(payload.get("case_name", "")).strip() or None,
-        "skip_hashing": bool(payload.get("skip_hashing", False)),
+        "output_dir": optional_values["output_dir"],
+        "profile_name": optional_values["profile_name"],
+        "config_path": optional_values["config_path"],
+        "case_name": optional_values["case_name"],
+        "skip_hashing": skip_hashing_raw,
         "date_range": date_range_tuple,
     }
     return params, ""

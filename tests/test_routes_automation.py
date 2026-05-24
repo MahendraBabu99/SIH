@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from app import create_app
 from app.automation.engine import AutomationResult
 import app.routes.automation as automation_mod
+from tests.conftest import ImmediateThread
 
 
 def _make_successful_result(
@@ -119,6 +120,19 @@ class TestStartRunValidation(AutomationRoutesTestBase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_evidence_path_rejects_array_and_object(self) -> None:
+        """Return 400 when evidence_path is not a JSON string."""
+        for value in (["/fake/path"], {"path": "/fake/path"}):
+            with self.subTest(value=value):
+                resp = self._post_json(
+                    "/api/automation/run",
+                    {"evidence_path": value, "prompt": "test"},
+                )
+                self.assertEqual(resp.status_code, 400)
+                body = resp.get_json()
+                self.assertFalse(body["success"])
+                self.assertIn("evidence_path", body["error"])
+
     def test_missing_prompt(self) -> None:
         """Return 400 when prompt is missing."""
         resp = self._post_json(
@@ -128,6 +142,72 @@ class TestStartRunValidation(AutomationRoutesTestBase):
         self.assertEqual(resp.status_code, 400)
         body = resp.get_json()
         self.assertIn("prompt", body["error"])
+
+    def test_prompt_rejects_array_and_object(self) -> None:
+        """Return 400 when prompt is not a JSON string."""
+        for value in (["test"], {"text": "test"}):
+            with self.subTest(value=value):
+                resp = self._post_json(
+                    "/api/automation/run",
+                    {"evidence_path": "/fake/path", "prompt": value},
+                )
+                self.assertEqual(resp.status_code, 400)
+                body = resp.get_json()
+                self.assertFalse(body["success"])
+                self.assertIn("prompt", body["error"])
+
+    def test_skip_hashing_rejects_string_false(self) -> None:
+        """Return 400 for string skip_hashing instead of coercing it true."""
+        resp = self._post_json(
+            "/api/automation/run",
+            {
+                "evidence_path": "/fake/path",
+                "prompt": "test",
+                "skip_hashing": "false",
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.get_json()
+        self.assertFalse(body["success"])
+        self.assertIn("skip_hashing", body["error"])
+
+    def test_optional_string_fields_reject_non_strings(self) -> None:
+        """Return 400 when optional string fields receive other JSON types."""
+        invalid_values = {
+            "output_dir": ["/tmp/out"],
+            "profile_name": {"name": "recommended"},
+            "config_path": 123,
+            "case_name": False,
+        }
+        for field, value in invalid_values.items():
+            with self.subTest(field=field):
+                resp = self._post_json(
+                    "/api/automation/run",
+                    {
+                        "evidence_path": "/fake/path",
+                        "prompt": "test",
+                        field: value,
+                    },
+                )
+                self.assertEqual(resp.status_code, 400)
+                body = resp.get_json()
+                self.assertFalse(body["success"])
+                self.assertIn(field, body["error"])
+
+    def test_date_range_rejects_non_object(self) -> None:
+        """Return 400 when date_range is neither an object nor null."""
+        resp = self._post_json(
+            "/api/automation/run",
+            {
+                "evidence_path": "/fake/path",
+                "prompt": "test",
+                "date_range": ["2026-04-01", "2026-04-15"],
+            },
+        )
+        self.assertEqual(resp.status_code, 400)
+        body = resp.get_json()
+        self.assertFalse(body["success"])
+        self.assertIn("date_range", body["error"])
 
     def test_invalid_date_range_format(self) -> None:
         """Return 400 when date_range has invalid date format."""
@@ -219,6 +299,58 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         # Give thread time to register.
         time.sleep(0.1)
         self.assertIn(run_id, automation_mod.AUTOMATION_RUNS)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_valid_skip_hashing_false_passed_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Boolean false for skip_hashing remains false in AutomationRequest."""
+        mock_run.return_value = _make_successful_result()
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {
+                "evidence_path": "/fake/path.E01",
+                "prompt": "test",
+                "skip_hashing": False,
+            },
+        )
+        self.assertEqual(resp.status_code, 202)
+
+        req = mock_run.call_args[0][0]
+        self.assertFalse(req.skip_hashing)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_valid_optional_strings_are_trimmed(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Optional string fields are trimmed before creating the request."""
+        mock_run.return_value = _make_successful_result()
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {
+                "evidence_path": "  /fake/path.E01  ",
+                "prompt": "  Investigate this  ",
+                "output_dir": "  /tmp/aift-out  ",
+                "profile_name": "  full  ",
+                "config_path": "  /tmp/config.yaml  ",
+                "case_name": "  Case 001  ",
+            },
+        )
+        self.assertEqual(resp.status_code, 202)
+
+        req = mock_run.call_args[0][0]
+        self.assertEqual(req.evidence_path, "/fake/path.E01")
+        self.assertEqual(req.prompt, "Investigate this")
+        self.assertEqual(req.output_dir, "/tmp/aift-out")
+        self.assertEqual(req.profile_name, "full")
+        self.assertEqual(req.config_path, "/tmp/config.yaml")
+        self.assertEqual(req.case_name, "Case 001")
 
 
 class TestConcurrentRuns(AutomationRoutesTestBase):
