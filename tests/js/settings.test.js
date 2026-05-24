@@ -316,6 +316,25 @@ describe("test connection button", () => {
   });
 });
 
+// -- Help tooltips ------------------------------------------------------------
+
+describe("help tooltips", () => {
+  test("scan directory help appears on keyboard focus", () => {
+    const help = document.querySelector(".evidence-scan-help");
+    const tip = document.getElementById("setting-tooltip");
+
+    expect(help).not.toBeNull();
+    expect(tip).not.toBeNull();
+
+    help.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(tip.classList.contains("is-visible")).toBe(true);
+    expect(tip.textContent).toContain("Scans the path");
+
+    help.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    expect(tip.classList.contains("is-visible")).toBe(false);
+  });
+});
+
 // ── Settings panel initial state ────────────────────────────────────────────
 
 describe("settings panel initial state", () => {

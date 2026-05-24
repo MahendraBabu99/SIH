@@ -652,9 +652,15 @@ input[type="radio"] {
 }
 
 .evidence-scan-actions {
-  display: grid;
-  grid-template-columns: minmax(180px, 320px);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   margin-top: calc(-1 * var(--space-2));
+  max-width: 100%;
+}
+
+.evidence-scan-help {
+  margin-left: 0;
 }
 
 #add-image-btn,
@@ -677,6 +683,8 @@ input[type="radio"] {
   border-style: solid;
   border-color: var(--accent);
   color: var(--accent);
+  width: min(320px, 100%);
+  min-width: 180px;
 }
 
 #add-image-btn:hover,
@@ -1629,11 +1637,15 @@ details > :not(summary) {
   width: 1.1em;
   height: 1.1em;
   margin-left: 0.35em;
+  padding: 0;
   border-radius: 50%;
   border: 1px solid var(--text-secondary);
+  background: transparent;
   color: var(--text-secondary);
+  font-family: inherit;
   font-size: 0.72em;
   font-weight: 700;
+  line-height: 1;
   cursor: help;
   vertical-align: middle;
   flex-shrink: 0;

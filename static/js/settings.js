@@ -482,13 +482,12 @@
 
   // ── Help-icon tooltips ─────────────────────────────────────────────────────
 
-  /** Wire up hover tooltips for all .setting-help-icon elements. */
+  /** Wire up hover and focus tooltips for all .setting-help-icon elements. */
   function setupHelpTooltips() {
     const tip = document.getElementById("setting-tooltip");
     if (!tip) return;
 
-    document.addEventListener("mouseover", (e) => {
-      const icon = e.target.closest(".setting-help-icon");
+    const showTooltip = (icon) => {
       if (!icon) return;
       const text = icon.getAttribute("data-tooltip");
       if (!text) return;
@@ -520,12 +519,30 @@
 
       tip.style.top = top + "px";
       tip.style.left = left + "px";
+    };
+
+    const hideTooltip = () => {
+      tip.classList.remove("is-visible");
+    };
+
+    document.addEventListener("mouseover", (e) => {
+      showTooltip(e.target.closest(".setting-help-icon"));
     });
 
     document.addEventListener("mouseout", (e) => {
       const icon = e.target.closest(".setting-help-icon");
       if (!icon) return;
-      tip.classList.remove("is-visible");
+      hideTooltip();
+    });
+
+    document.addEventListener("focusin", (e) => {
+      showTooltip(e.target.closest(".setting-help-icon"));
+    });
+
+    document.addEventListener("focusout", (e) => {
+      const icon = e.target.closest(".setting-help-icon");
+      if (!icon) return;
+      hideTooltip();
     });
   }
 

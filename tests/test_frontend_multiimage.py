@@ -78,6 +78,16 @@ class TestMultiImageTemplate(unittest.TestCase):
         self.assertIn('id="scan-directory-btn"', self.html)
         self.assertIn("Scan Directory", self.html)
 
+    def test_scan_directory_help_exists(self) -> None:
+        """The scan button should have an adjacent help tooltip control."""
+        self.assertIn('class="setting-help-icon evidence-scan-help"', self.html)
+        self.assertRegex(
+            self.html,
+            r'<button\s+type="button"\s+class="setting-help-icon evidence-scan-help"',
+        )
+        self.assertIn('aria-label="Scan Directory help"', self.html)
+        self.assertIn("Scans the path entered in a Local Path field", self.html)
+
     def test_image_forms_container_exists(self) -> None:
         """The image forms container should be present."""
         self.assertIn('id="image-forms-container"', self.html)
@@ -235,6 +245,7 @@ class TestMultiImageCss(unittest.TestCase):
     def test_scan_directory_button_styled(self) -> None:
         """The #scan-directory-btn should be styled."""
         self.assertIn("#scan-directory-btn", self.css_content)
+        self.assertIn(".evidence-scan-actions", self.css_content)
 
     def test_image_dropzone_styled(self) -> None:
         """The .image-dropzone class should be styled."""
