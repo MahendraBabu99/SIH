@@ -90,6 +90,7 @@ ACTION_TYPES = frozenset(
         "automation_started",
         "automation_completed",
         "automation_failed",
+        "automation_cancelled",
     }
 )
 DEFAULT_TOOL_VERSION = TOOL_VERSION

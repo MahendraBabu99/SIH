@@ -937,6 +937,12 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(
             any("cancelled" in error.lower() for error in results[0].errors)
         )
+        audit_entries = self.mocks["AuditLogger"].return_value.entries
+        cancelled = [e for e in audit_entries if e[0] == "automation_cancelled"]
+        self.assertEqual(len(cancelled), 1)
+        self.assertEqual(cancelled[0][1]["case_id"], "case-001")
+        self.assertIn("duration_seconds", cancelled[0][1])
+        self.assertIsInstance(cancelled[0][1]["duration_seconds"], float)
         self.mocks["ForensicAnalyzer"].assert_not_called()
         self.mocks["ReportGenerator"].assert_not_called()
         self.mocks["export_json_report"].assert_not_called()

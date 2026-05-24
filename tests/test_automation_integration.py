@@ -19,6 +19,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from app.audit import AuditLogger as RealAuditLogger
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.automation.json_export import DISCLAIMER_TEXT
 from tests.conftest import (
@@ -699,6 +700,44 @@ class TestAuditIntegration(_IntegrationTestBase):
         run_automation(self._make_request(skip_hashing=False))
         actions = [e[0] for e in audit.entries]
         self.assertIn("evidence_intake", actions)
+
+    def test_automation_cancelled_logged_with_real_audit_logger(self) -> None:
+        """Cancellation writes a valid audit action instead of being swallowed."""
+        self.mocks["AuditLogger"].side_effect = (
+            lambda **kwargs: RealAuditLogger(**kwargs)
+        )
+        audit_path = self.cases_dir / "case-integ-001" / "audit.jsonl"
+
+        def _cancel_after_start_audit() -> bool:
+            if not audit_path.exists():
+                return False
+            entries = [
+                json.loads(line)
+                for line in audit_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            return any(entry.get("action") == "automation_started" for entry in entries)
+
+        result = run_automation(
+            self._make_request(),
+            cancel_check=_cancel_after_start_audit,
+        )
+
+        self.assertFalse(result.success)
+        entries = [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        cancelled = [
+            entry for entry in entries
+            if entry.get("action") == "automation_cancelled"
+        ]
+        self.assertEqual(len(cancelled), 1)
+        details = cancelled[0]["details"]
+        self.assertEqual(details["case_id"], "case-integ-001")
+        self.assertIn("duration_seconds", details)
+        self.assertIsInstance(details["duration_seconds"], (int, float))
 
 
 if __name__ == "__main__":
