@@ -57,6 +57,7 @@
     el.caseName = q("case-name");
     el.submitEvidence = q("submit-evidence");
     el.scanDirectoryBtn = q("scan-directory-btn");
+    el.scanDirectoryInput = q("scan-directory-input");
     el.addImageBtn = q("add-image-btn");
     el.evidenceProgWrap = q("evidence-intake-progress");
     el.evidenceProg = q("evidence-progress");
@@ -410,6 +411,7 @@
         if (pathInput) pathInput.value = "";
         const fileInput = firstCard.querySelector(".image-file-input");
         if (fileInput) fileInput.value = "";
+        delete firstCard.__aiftUploadFiles;
         const modePath = firstCard.querySelector(".image-mode-path");
         if (modePath) modePath.checked = true;
         const metaCard = firstCard.querySelector(".image-metadata-card");
@@ -443,6 +445,10 @@
     A.clearDynamicArtifacts();
     if (el.parseBtn) el.parseBtn.disabled = true;
     if (el.scanDirectoryBtn) el.scanDirectoryBtn.disabled = false;
+    if (el.scanDirectoryInput) {
+      el.scanDirectoryInput.disabled = false;
+      el.scanDirectoryInput.value = "";
+    }
     if (el.addImageBtn) el.addImageBtn.disabled = false;
     if (el.submitEvidence) el.submitEvidence.disabled = false;
     if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = true;

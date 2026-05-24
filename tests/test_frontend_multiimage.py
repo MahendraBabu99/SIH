@@ -23,6 +23,7 @@ EXPECTED_HTML_IDS = {
     "image-forms-container",
     "add-image-btn",
     "scan-directory-btn",
+    "scan-directory-input",
     "evidence-summaries-container",
     "evidence-summaries-list",
     "evidence-intake-status",
@@ -78,6 +79,14 @@ class TestMultiImageTemplate(unittest.TestCase):
         self.assertIn('id="scan-directory-btn"', self.html)
         self.assertIn("Scan Directory", self.html)
 
+    def test_scan_directory_input_uses_folder_picker(self) -> None:
+        """The scan button should have a hidden folder picker input."""
+        self.assertIn('id="scan-directory-input"', self.html)
+        self.assertIn("webkitdirectory", self.html)
+        self.assertIn("directory", self.html)
+        self.assertIn("multiple", self.html)
+        self.assertIn('aria-label="Select evidence directory to scan"', self.html)
+
     def test_scan_directory_help_exists(self) -> None:
         """The scan button should have an adjacent help tooltip control."""
         self.assertIn('class="setting-help-icon evidence-scan-help"', self.html)
@@ -86,7 +95,8 @@ class TestMultiImageTemplate(unittest.TestCase):
             r'<button\s+type="button"\s+class="setting-help-icon evidence-scan-help"',
         )
         self.assertIn('aria-label="Scan Directory help"', self.html)
-        self.assertIn("Scans the path entered in a Local Path field", self.html)
+        self.assertIn("Opens a folder picker", self.html)
+        self.assertIn("Split-image segments are grouped together", self.html)
 
     def test_image_forms_container_exists(self) -> None:
         """The image forms container should be present."""
@@ -194,6 +204,10 @@ class TestMultiImageJsExports(unittest.TestCase):
         """The scanEvidenceDirectory function should be exported."""
         self.assertIn("A.scanEvidenceDirectory", self.js_multi_content)
 
+    def test_scan_directory_selection_exported(self) -> None:
+        """The folder-picker selection handler should be exported."""
+        self.assertIn("A.handleScanDirectorySelection", self.js_multi_content)
+
     def test_remove_image_form_exported(self) -> None:
         """The removeImageForm function should be exported."""
         self.assertIn("A.removeImageForm", self.js_multi_content)
@@ -210,7 +224,6 @@ class TestMultiImageJsExports(unittest.TestCase):
         """The JS should call the multi-image API endpoints."""
         self.assertIn("/images", self.js_multi_content)
         self.assertIn("/evidence", self.js_multi_content)
-        self.assertIn("/api/evidence/discover", self.js_multi_content)
 
     def test_apply_recommended_to_all_exported(self) -> None:
         """The applyRecommendedToAllImages function should be exported."""
@@ -325,6 +338,7 @@ class TestApplyAllButtonsJsLogic(unittest.TestCase):
         self.assertIn('q("apply-recommended-all")', self.app_js)
         self.assertIn('q("apply-selection-all")', self.app_js)
         self.assertIn('q("scan-directory-btn")', self.app_js)
+        self.assertIn('q("scan-directory-input")', self.app_js)
 
     def test_buttons_wired_in_setup_artifacts(self) -> None:
         """The apply-all buttons should have click handlers wired in evidence.js."""
@@ -335,6 +349,7 @@ class TestApplyAllButtonsJsLogic(unittest.TestCase):
         """The scan-directory button should have a click handler."""
         self.assertIn("scanDirectoryBtn", self.js_evidence)
         self.assertIn("scanEvidenceDirectory", self.js_evidence)
+        self.assertIn("handleScanDirectorySelection", self.js_evidence)
 
     def test_visibility_toggled_for_single_image(self) -> None:
         """buildMultiImageArtifactTabs should hide buttons for single-image mode."""

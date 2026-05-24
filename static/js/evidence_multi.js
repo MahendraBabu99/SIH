@@ -17,6 +17,23 @@
   /** Counter for generating unique image form indices. */
   let imageFormCounter = 0;
 
+  /** Evidence extensions that can be discovered from a browser folder picker. */
+  const DIRECTORY_SCAN_EXTENSIONS = new Set([
+    ".e01", ".ex01", ".s01", ".l01",
+    ".dd", ".img", ".raw", ".bin", ".iso",
+    ".000", ".001",
+    ".vmdk", ".vhd", ".vhdx", ".vdi", ".qcow2", ".hdd", ".hds",
+    ".vmx", ".vmwarevm", ".vbox", ".vmcx", ".ovf", ".ova", ".pvm", ".pvs", ".utm", ".xva", ".vma",
+    ".vbk",
+    ".asdf", ".asif",
+    ".ad1",
+    ".tar", ".gz", ".tgz",
+    ".zip", ".7z",
+  ]);
+  const DIRECTORY_SCAN_SKIP_NAMES = new Set(["__macosx", "thumbs.db", "desktop.ini", ".ds_store"]);
+  const DIRECTORY_SCAN_EWF_SEGMENT_RE = /^(.+)\.(?:e|ex|s|l)(\d{2})$/i;
+  const DIRECTORY_SCAN_RAW_SEGMENT_RE = /^(.+)\.(\d{3})$/;
+
   /** Add a new image intake form to the container. */
   function addImageForm() {
     const container = q("image-forms-container");
@@ -131,7 +148,9 @@
 
     if (uploadMode) {
       const fileInput = card.querySelector(".image-file-input");
-      const files = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
+      const cachedFiles = Array.isArray(card.__aiftUploadFiles) ? card.__aiftUploadFiles : [];
+      const inputFiles = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
+      const files = cachedFiles.length ? cachedFiles : inputFiles;
       if (files.length === 0) {
         setImageStatusMsg(statusMsg, "Choose one or more evidence files first.", "error");
         return null;
@@ -168,63 +187,170 @@
     node.dataset.status = kind === "error" ? "failed" : kind === "success" ? "success" : "in-progress";
   }
 
-  /** Return the first non-empty local path currently typed into any image card. */
-  function firstScannablePath() {
-    const forms = A.getImageForms();
-    for (const card of forms) {
-      const pathInput = card.querySelector(".image-path-input");
-      const path = A.sanitizeEvidencePath(pathInput ? pathInput.value : "");
-      if (path) return path;
+  /** Return a normalized relative path for a File selected from a folder picker. */
+  function fileRelativePath(file) {
+    return String((file && file.webkitRelativePath) || (file && file.name) || "").replace(/\\/g, "/");
+  }
+
+  /** Return the basename from a normalized relative path. */
+  function pathBasename(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  }
+
+  /** Return the directory name from a normalized relative path. */
+  function pathDirname(path) {
+    const parts = String(path || "").split("/").filter(Boolean);
+    parts.pop();
+    return parts.join("/");
+  }
+
+  /** Return the lowercase last extension from a filename. */
+  function extensionForName(name) {
+    const text = String(name || "");
+    const index = text.lastIndexOf(".");
+    return index >= 0 ? text.slice(index).toLowerCase() : "";
+  }
+
+  /** Return split-image segment metadata for a filename, if it is a segment. */
+  function segmentIdentityForName(name) {
+    const text = String(name || "");
+    let match = DIRECTORY_SCAN_EWF_SEGMENT_RE.exec(text);
+    if (match) {
+      return { kind: "ewf", base: match[1].toLowerCase(), segmentNumber: Number(match[2]) };
     }
-    return "";
-  }
-
-  /** Build a readable fallback label from a discovered path. */
-  function labelFromPath(path) {
-    const trimmed = String(path || "").replace(/[\\/]+$/, "");
-    const name = trimmed.split(/[\\/]/).pop() || "Image";
-    return (name.replace(/\.[^/.]+$/, "") || name || "Image").trim();
-  }
-
-  /** Normalize one backend discovery entry into a path/label object. */
-  function normalizeDiscoveredEvidence(entry) {
-    if (typeof entry === "string") {
-      const path = A.sanitizeEvidencePath(entry);
-      return path ? { path, label: labelFromPath(path) } : null;
+    match = DIRECTORY_SCAN_RAW_SEGMENT_RE.exec(text);
+    if (match) {
+      return { kind: "raw", base: match[1].toLowerCase(), segmentNumber: Number(match[2]) };
     }
-    if (!A.isObj(entry)) return null;
-    const path = A.sanitizeEvidencePath(entry.path);
-    if (!path) return null;
-    const label = String(entry.label || "").trim() || labelFromPath(path);
-    return { path, label };
+    return null;
   }
 
-  /** Fill a form card with a discovered local-path evidence entry. */
-  function setCardToDiscoveredEvidence(card, entry, index) {
+  /** Return true when a selected folder path should be skipped. */
+  function shouldSkipSelectedPath(path) {
+    return String(path || "")
+      .split("/")
+      .filter(Boolean)
+      .some((part) => part.startsWith(".") || DIRECTORY_SCAN_SKIP_NAMES.has(part.toLowerCase()));
+  }
+
+  /** Build a readable fallback label from a selected folder path. */
+  function labelFromSelectedPath(path) {
+    const name = pathBasename(path) || "Image";
+    const identity = segmentIdentityForName(name);
+    if (identity && identity.base) return identity.base;
+    let label = name;
+    if (label.toLowerCase().endsWith(".tar.gz")) label = label.slice(0, -7);
+    else if (label.toLowerCase().endsWith(".tgz")) label = label.slice(0, -4);
+    else label = label.replace(/\.[^/.]+$/, "");
+    return (label || name || "Image").trim();
+  }
+
+  /** Discover supported evidence entries from files returned by a folder picker. */
+  function discoverEvidenceEntriesFromFiles(fileList) {
+    const files = Array.from(fileList || []);
+    const directEntries = [];
+    const segmentGroups = new Map();
+
+    files.forEach((file) => {
+      const relativePath = fileRelativePath(file);
+      if (!relativePath || shouldSkipSelectedPath(relativePath)) return;
+
+      const name = pathBasename(relativePath);
+      const segment = segmentIdentityForName(name);
+      if (segment) {
+        const groupKey = `${pathDirname(relativePath).toLowerCase()}|${segment.kind}|${segment.base}`;
+        if (!segmentGroups.has(groupKey)) {
+          segmentGroups.set(groupKey, {
+            label: segment.base,
+            files: [],
+          });
+        }
+        segmentGroups.get(groupKey).files.push({ file, relativePath, segmentNumber: segment.segmentNumber });
+        return;
+      }
+
+      if (!DIRECTORY_SCAN_EXTENSIONS.has(extensionForName(name))) return;
+      directEntries.push({
+        files: [file],
+        label: labelFromSelectedPath(relativePath),
+        displayPath: relativePath,
+      });
+    });
+
+    const segmentEntries = Array.from(segmentGroups.values()).map((group) => {
+      group.files.sort((a, b) => (
+        a.segmentNumber - b.segmentNumber
+        || a.relativePath.localeCompare(b.relativePath, undefined, { sensitivity: "base" })
+      ));
+      const first = group.files[0];
+      return {
+        files: group.files.map((entry) => entry.file),
+        label: group.label || labelFromSelectedPath(first ? first.relativePath : ""),
+        displayPath: first ? first.relativePath : "",
+      };
+    });
+
+    return directEntries.concat(segmentEntries)
+      .filter((entry) => entry.files.length > 0)
+      .sort((a, b) => String(a.displayPath || "").localeCompare(String(b.displayPath || ""), undefined, { sensitivity: "base" }));
+  }
+
+  /** Assign programmatic upload files to a file input when the browser allows it. */
+  function assignFilesToInput(fileInput, files) {
+    if (!fileInput) return;
+    try {
+      const dt = new DataTransfer();
+      files.forEach((file) => dt.items.add(file));
+      fileInput.files = dt.files;
+      return;
+    } catch (_err) {
+      /* Keep the cached files on the card; submitEvidence reads that cache. */
+    }
+  }
+
+  /** Update one card's dropzone text for a discovered upload entry. */
+  function setDiscoveredDropzoneText(card, files) {
+    const dropzoneHelp = card.querySelector(".image-dropzone-help");
+    if (!dropzoneHelp) return;
+    if (files.length === 1) {
+      const file = files[0];
+      dropzoneHelp.textContent = `${file.name || "Evidence file"}${Number.isFinite(file.size) ? ` (${A.fmtBytes(file.size)})` : ""}`;
+      return;
+    }
+    const totalSize = files.reduce((sum, file) => sum + (Number.isFinite(file.size) ? file.size : 0), 0);
+    dropzoneHelp.textContent = `${files.length} segment files selected (${A.fmtBytes(totalSize)})`;
+  }
+
+  /** Fill a form card with a discovered folder-picker upload entry. */
+  function setCardToDiscoveredUploadEvidence(card, entry, index) {
     const labelInput = card.querySelector(".image-label-input");
     if (labelInput) labelInput.value = entry.label || `Image ${index + 1}`;
 
     const modeUpload = card.querySelector(".image-mode-upload");
     const modePath = card.querySelector(".image-mode-path");
-    if (modeUpload) modeUpload.checked = false;
-    if (modePath) modePath.checked = true;
+    if (modeUpload) modeUpload.checked = true;
+    if (modePath) modePath.checked = false;
 
     const pathInput = card.querySelector(".image-path-input");
-    if (pathInput) pathInput.value = entry.path;
+    if (pathInput) pathInput.value = "";
 
     const fileInput = card.querySelector(".image-file-input");
-    if (fileInput) fileInput.value = "";
-    const dropzoneHelp = card.querySelector(".image-dropzone-help");
-    if (dropzoneHelp) dropzoneHelp.textContent = A.DROP_HELP;
+    if (fileInput) {
+      try { fileInput.value = ""; } catch (_err) { /* ignore */ }
+      assignFilesToInput(fileInput, entry.files);
+    }
+    card.__aiftUploadFiles = entry.files.slice();
+    setDiscoveredDropzoneText(card, entry.files);
 
     const metaCard = card.querySelector(".image-metadata-card");
     if (metaCard) metaCard.hidden = true;
 
     const statusMsg = card.querySelector(".image-status-msg");
-    setImageStatusMsg(statusMsg, "Discovered. Ready to submit.", "success");
+    setImageStatusMsg(statusMsg, "Discovered from selected folder. Ready to submit.", "success");
   }
 
-  /** Replace the current image cards with discovered evidence paths. */
+  /** Replace the current image cards with discovered folder-picker uploads. */
   function populateImageFormsFromDiscovery(entries) {
     const container = q("image-forms-container");
     if (!container || !entries.length) return;
@@ -238,63 +364,51 @@
     entries.forEach((entry, i) => {
       const card = i === 0 ? firstCard : addImageForm();
       if (!card) return;
-      setCardToDiscoveredEvidence(card, entry, i);
+      setCardToDiscoveredUploadEvidence(card, entry, i);
     });
 
     renumberImageForms();
     A.syncMode();
   }
 
-  /** Scan a local path for evidence targets and add them as image cards. */
-  async function scanEvidenceDirectory() {
+  /** Open the browser folder picker for evidence discovery. */
+  function scanEvidenceDirectory() {
     A.clearMsg(el.evidenceMsg);
-    const scanPath = firstScannablePath();
-    if (!scanPath) {
+    const input = el.scanDirectoryInput || q("scan-directory-input");
+    if (!input) {
       return A.setMsg(
         el.evidenceMsg,
-        "Enter a directory path in a Local Path field before scanning.",
+        "Directory scanning is not available in this browser.",
+        "error",
+      );
+    }
+    try { input.value = ""; } catch (_err) { /* allow selecting the same folder again */ }
+    input.click();
+  }
+
+  /** Scan selected folder files and add discovered evidence as upload cards. */
+  function handleScanDirectorySelection(input) {
+    A.clearMsg(el.evidenceMsg);
+    const files = input && input.files ? Array.from(input.files) : [];
+    if (!files.length) return;
+
+    const entries = discoverEvidenceEntriesFromFiles(files);
+    if (!entries.length) {
+      return A.setMsg(
+        el.evidenceMsg,
+        "No supported evidence images were found in the selected folder.",
         "error",
       );
     }
 
-    const timeoutMs = A.num(
-      A.obj(A.obj(st.settings).evidence).intake_timeout_seconds,
-      7200,
-    ) * 1000;
-
-    setEvidenceBusy(true, false);
-    A.setMsg(el.evidenceMsg, "Scanning for supported evidence images...", "info");
-
-    try {
-      const response = await A.apiJson(
-        "/api/evidence/discover",
-        { method: "POST", json: { path: scanPath }, timeout: timeoutMs },
-      );
-      const entries = (Array.isArray(response.evidence) ? response.evidence : [])
-        .map(normalizeDiscoveredEvidence)
-        .filter(Boolean);
-
-      if (!entries.length) {
-        return A.setMsg(
-          el.evidenceMsg,
-          "No supported evidence images were found at that path.",
-          "error",
-        );
-      }
-
-      populateImageFormsFromDiscovery(entries);
-      const noun = entries.length === 1 ? "image" : "images";
-      A.setMsg(
-        el.evidenceMsg,
-        `Found ${entries.length} evidence ${noun}. Review the paths, then submit.`,
-        "success",
-      );
-    } catch (e) {
-      A.setMsg(el.evidenceMsg, `Directory scan failed: ${e.message}`, "error");
-    } finally {
-      setEvidenceBusy(false, false);
-      A.updateNav();
-    }
+    populateImageFormsFromDiscovery(entries);
+    const noun = entries.length === 1 ? "image" : "images";
+    A.setMsg(
+      el.evidenceMsg,
+      `Found ${entries.length} evidence ${noun} in the selected folder. Review the generated cards, then submit.`,
+      "success",
+    );
+    A.updateNav();
   }
 
   // ── Multi-image submission ──────────────────────────────────────────────
@@ -621,6 +735,7 @@
   function setEvidenceBusy(on, showProgress = true) {
     if (el.submitEvidence) el.submitEvidence.disabled = on;
     if (el.scanDirectoryBtn) el.scanDirectoryBtn.disabled = on;
+    if (el.scanDirectoryInput) el.scanDirectoryInput.disabled = on;
     if (el.addImageBtn) el.addImageBtn.disabled = on;
     if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = !(on && showProgress);
   }
@@ -957,6 +1072,8 @@
   // ── Public API ─────────────────────────────────────────────────────────
   A.submitEvidence = submitEvidence;
   A.scanEvidenceDirectory = scanEvidenceDirectory;
+  A.handleScanDirectorySelection = handleScanDirectorySelection;
+  A.discoverEvidenceEntriesFromFiles = discoverEvidenceEntriesFromFiles;
   A.addImageForm = addImageForm;
   A.removeImageForm = removeImageForm;
   A.renderImageSummaries = renderImageSummaries;

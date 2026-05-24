@@ -33,6 +33,10 @@
     if (addBtn) addBtn.addEventListener("click", () => A.addImageForm());
     const scanBtn = el.scanDirectoryBtn || q("scan-directory-btn");
     if (scanBtn) scanBtn.addEventListener("click", () => A.scanEvidenceDirectory());
+    const scanInput = el.scanDirectoryInput || q("scan-directory-input");
+    if (scanInput) {
+      scanInput.addEventListener("change", () => A.handleScanDirectorySelection(scanInput));
+    }
   }
 
   /**
@@ -77,6 +81,7 @@
     const dropzoneHelp = card.querySelector(".image-dropzone-help");
     if (fileInput) {
       fileInput.addEventListener("change", () => {
+        delete card.__aiftUploadFiles;
         updateDropzoneHelp(fileInput, dropzoneHelp);
       });
     }
@@ -118,6 +123,7 @@
           fileInput.files = dt.files;
         } catch (_err) { /* fallback */ }
       }
+      card.__aiftUploadFiles = dropped;
       const helpEl = card.querySelector(".image-dropzone-help");
       updateDropzoneHelp(fileInput, helpEl);
     });
@@ -131,7 +137,10 @@
    */
   function updateDropzoneHelp(fileInput, helpEl) {
     if (!helpEl) return;
-    const files = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
+    const card = helpEl.closest(".image-form-card");
+    const cachedFiles = card && Array.isArray(card.__aiftUploadFiles) ? card.__aiftUploadFiles : [];
+    const inputFiles = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
+    const files = cachedFiles.length ? cachedFiles : inputFiles;
     if (!files.length) {
       helpEl.textContent = A.DROP_HELP;
       return;
