@@ -227,6 +227,55 @@ describe("removeImageForm", () => {
   });
 });
 
+// -- scanEvidenceDirectory -------------------------------------------------
+
+describe("scanEvidenceDirectory", () => {
+  function mockJsonFetch(payload) {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    }));
+  }
+
+  test("populates one image form per discovered evidence path", async () => {
+    const firstCard = A.getImageForms()[0];
+    const pathInput = firstCard.querySelector(".image-path-input");
+    pathInput.value = "C:\\Evidence";
+    mockJsonFetch({
+      success: true,
+      evidence: [
+        { path: "C:\\Evidence\\pc01.E01", label: "pc01" },
+        { path: "C:\\Evidence\\pc02.vmdk", label: "pc02" },
+      ],
+    });
+
+    await A.scanEvidenceDirectory();
+
+    expect(global.fetch).toHaveBeenCalled();
+    expect(global.fetch.mock.calls[0][0]).toBe("/api/evidence/discover");
+    const forms = A.getImageForms();
+    expect(forms.length).toBe(2);
+    expect(forms[0].querySelector(".image-label-input").value).toBe("pc01");
+    expect(forms[0].querySelector(".image-path-input").value).toBe("C:\\Evidence\\pc01.E01");
+    expect(forms[1].querySelector(".image-label-input").value).toBe("pc02");
+    expect(forms[1].querySelector(".image-path-input").value).toBe("C:\\Evidence\\pc02.vmdk");
+  });
+
+  test("shows an error when no path is available to scan", async () => {
+    global.fetch = jest.fn();
+    await A.scanEvidenceDirectory();
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    const msg = document.getElementById("evidence-message");
+    expect(msg.hidden).toBe(false);
+    expect(msg.dataset.status).toBe("failed");
+    expect(msg.textContent).toContain("directory path");
+  });
+});
+
 // ── isMultiImage ────────────────────────────────────────────────────────────
 
 describe("isMultiImage", () => {

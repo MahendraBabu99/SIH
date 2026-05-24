@@ -29,8 +29,10 @@
       e.preventDefault();
       await A.submitEvidence();
     });
-    const addBtn = q("add-image-btn");
+    const addBtn = el.addImageBtn || q("add-image-btn");
     if (addBtn) addBtn.addEventListener("click", () => A.addImageForm());
+    const scanBtn = el.scanDirectoryBtn || q("scan-directory-btn");
+    if (scanBtn) scanBtn.addEventListener("click", () => A.scanEvidenceDirectory());
   }
 
   /**

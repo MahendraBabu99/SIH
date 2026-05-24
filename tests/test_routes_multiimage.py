@@ -154,6 +154,38 @@ class MultiImageRoutesTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.get_json()["images"], [])
 
+    def test_discover_evidence_directory_returns_supported_paths(self) -> None:
+        """POST /api/evidence/discover scans a directory for evidence files."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        ev1 = evidence_dir / "pc01.E01"
+        ev2 = evidence_dir / "pc02.vmdk"
+        notes = evidence_dir / "notes.txt"
+        ev1.write_bytes(b"evidence-1")
+        ev2.write_bytes(b"evidence-2")
+        notes.write_text("not evidence", encoding="utf-8")
+
+        with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+            resp = self.client.post(
+                "/api/evidence/discover",
+                json={"path": str(evidence_dir)},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 2)
+        paths = {Path(item["path"]).name for item in data["evidence"]}
+        self.assertEqual(paths, {"pc01.E01", "pc02.vmdk"})
+        labels = {item["label"] for item in data["evidence"]}
+        self.assertEqual(labels, {"pc01", "pc02"})
+
+    def test_discover_evidence_rejects_missing_path(self) -> None:
+        """POST /api/evidence/discover validates the required path field."""
+        resp = self.client.post("/api/evidence/discover", json={})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("path", resp.get_json()["error"])
+
     def test_image_specific_evidence_intake(self) -> None:
         """POST /api/cases/<id>/images/<img_id>/evidence ingests evidence."""
         evidence_path = Path(self.temp_dir.name) / "test.E01"

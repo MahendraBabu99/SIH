@@ -651,19 +651,36 @@ input[type="radio"] {
   color: var(--accent);
 }
 
-#add-image-btn {
+.evidence-scan-actions {
+  display: grid;
+  grid-template-columns: minmax(180px, 320px);
+  margin-top: calc(-1 * var(--space-2));
+}
+
+#add-image-btn,
+#scan-directory-btn {
   background: transparent;
   border: 1px dashed var(--border);
   color: var(--text-secondary);
   padding: var(--space-2) var(--space-4);
   cursor: pointer;
   width: 100%;
-  margin-bottom: var(--space-4);
   font-size: 0.9rem;
   border-radius: 4px;
 }
 
-#add-image-btn:hover {
+#add-image-btn {
+  margin-bottom: var(--space-4);
+}
+
+#scan-directory-btn {
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#add-image-btn:hover,
+#scan-directory-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
 }

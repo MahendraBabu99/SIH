@@ -22,6 +22,7 @@ from app import create_app
 EXPECTED_HTML_IDS = {
     "image-forms-container",
     "add-image-btn",
+    "scan-directory-btn",
     "evidence-summaries-container",
     "evidence-summaries-list",
     "evidence-intake-status",
@@ -71,6 +72,11 @@ class TestMultiImageTemplate(unittest.TestCase):
         """The 'Add Image' button should be present in the rendered HTML."""
         self.assertIn('id="add-image-btn"', self.html)
         self.assertIn("Add Image", self.html)
+
+    def test_scan_directory_button_exists(self) -> None:
+        """The 'Scan Directory' button should be present in the rendered HTML."""
+        self.assertIn('id="scan-directory-btn"', self.html)
+        self.assertIn("Scan Directory", self.html)
 
     def test_image_forms_container_exists(self) -> None:
         """The image forms container should be present."""
@@ -174,6 +180,10 @@ class TestMultiImageJsExports(unittest.TestCase):
         """The addImageForm function should be exported."""
         self.assertIn("A.addImageForm", self.js_multi_content)
 
+    def test_scan_evidence_directory_exported(self) -> None:
+        """The scanEvidenceDirectory function should be exported."""
+        self.assertIn("A.scanEvidenceDirectory", self.js_multi_content)
+
     def test_remove_image_form_exported(self) -> None:
         """The removeImageForm function should be exported."""
         self.assertIn("A.removeImageForm", self.js_multi_content)
@@ -190,6 +200,7 @@ class TestMultiImageJsExports(unittest.TestCase):
         """The JS should call the multi-image API endpoints."""
         self.assertIn("/images", self.js_multi_content)
         self.assertIn("/evidence", self.js_multi_content)
+        self.assertIn("/api/evidence/discover", self.js_multi_content)
 
     def test_apply_recommended_to_all_exported(self) -> None:
         """The applyRecommendedToAllImages function should be exported."""
@@ -220,6 +231,10 @@ class TestMultiImageCss(unittest.TestCase):
     def test_add_image_button_styled(self) -> None:
         """The #add-image-btn should be styled."""
         self.assertIn("#add-image-btn", self.css_content)
+
+    def test_scan_directory_button_styled(self) -> None:
+        """The #scan-directory-btn should be styled."""
+        self.assertIn("#scan-directory-btn", self.css_content)
 
     def test_image_dropzone_styled(self) -> None:
         """The .image-dropzone class should be styled."""
@@ -298,11 +313,17 @@ class TestApplyAllButtonsJsLogic(unittest.TestCase):
         """The apply-all buttons should be cached in app.js DOM cache."""
         self.assertIn('q("apply-recommended-all")', self.app_js)
         self.assertIn('q("apply-selection-all")', self.app_js)
+        self.assertIn('q("scan-directory-btn")', self.app_js)
 
     def test_buttons_wired_in_setup_artifacts(self) -> None:
         """The apply-all buttons should have click handlers wired in evidence.js."""
         self.assertIn("applyRecommendedToAllImages", self.js_evidence)
         self.assertIn("applyCurrentSelectionToAllImages", self.js_evidence)
+
+    def test_scan_button_wired_in_setup_evidence(self) -> None:
+        """The scan-directory button should have a click handler."""
+        self.assertIn("scanDirectoryBtn", self.js_evidence)
+        self.assertIn("scanEvidenceDirectory", self.js_evidence)
 
     def test_visibility_toggled_for_single_image(self) -> None:
         """buildMultiImageArtifactTabs should hide buttons for single-image mode."""

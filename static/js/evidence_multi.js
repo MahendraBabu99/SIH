@@ -20,7 +20,7 @@
   /** Add a new image intake form to the container. */
   function addImageForm() {
     const container = q("image-forms-container");
-    if (!container) return;
+    if (!container) return null;
     imageFormCounter += 1;
     const idx = imageFormCounter;
     const card = document.createElement("div");
@@ -85,6 +85,7 @@
     container.appendChild(card);
     A.initImageForm(card);
     renumberImageForms();
+    return card;
   }
 
   /**
@@ -165,6 +166,135 @@
     node.hidden = false;
     node.textContent = text;
     node.dataset.status = kind === "error" ? "failed" : kind === "success" ? "success" : "in-progress";
+  }
+
+  /** Return the first non-empty local path currently typed into any image card. */
+  function firstScannablePath() {
+    const forms = A.getImageForms();
+    for (const card of forms) {
+      const pathInput = card.querySelector(".image-path-input");
+      const path = A.sanitizeEvidencePath(pathInput ? pathInput.value : "");
+      if (path) return path;
+    }
+    return "";
+  }
+
+  /** Build a readable fallback label from a discovered path. */
+  function labelFromPath(path) {
+    const trimmed = String(path || "").replace(/[\\/]+$/, "");
+    const name = trimmed.split(/[\\/]/).pop() || "Image";
+    return (name.replace(/\.[^/.]+$/, "") || name || "Image").trim();
+  }
+
+  /** Normalize one backend discovery entry into a path/label object. */
+  function normalizeDiscoveredEvidence(entry) {
+    if (typeof entry === "string") {
+      const path = A.sanitizeEvidencePath(entry);
+      return path ? { path, label: labelFromPath(path) } : null;
+    }
+    if (!A.isObj(entry)) return null;
+    const path = A.sanitizeEvidencePath(entry.path);
+    if (!path) return null;
+    const label = String(entry.label || "").trim() || labelFromPath(path);
+    return { path, label };
+  }
+
+  /** Fill a form card with a discovered local-path evidence entry. */
+  function setCardToDiscoveredEvidence(card, entry, index) {
+    const labelInput = card.querySelector(".image-label-input");
+    if (labelInput) labelInput.value = entry.label || `Image ${index + 1}`;
+
+    const modeUpload = card.querySelector(".image-mode-upload");
+    const modePath = card.querySelector(".image-mode-path");
+    if (modeUpload) modeUpload.checked = false;
+    if (modePath) modePath.checked = true;
+
+    const pathInput = card.querySelector(".image-path-input");
+    if (pathInput) pathInput.value = entry.path;
+
+    const fileInput = card.querySelector(".image-file-input");
+    if (fileInput) fileInput.value = "";
+    const dropzoneHelp = card.querySelector(".image-dropzone-help");
+    if (dropzoneHelp) dropzoneHelp.textContent = A.DROP_HELP;
+
+    const metaCard = card.querySelector(".image-metadata-card");
+    if (metaCard) metaCard.hidden = true;
+
+    const statusMsg = card.querySelector(".image-status-msg");
+    setImageStatusMsg(statusMsg, "Discovered. Ready to submit.", "success");
+  }
+
+  /** Replace the current image cards with discovered evidence paths. */
+  function populateImageFormsFromDiscovery(entries) {
+    const container = q("image-forms-container");
+    if (!container || !entries.length) return;
+
+    const existing = A.getImageForms();
+    existing.forEach((card, i) => { if (i > 0) card.remove(); });
+
+    let firstCard = A.getImageForms()[0];
+    if (!firstCard) firstCard = addImageForm();
+
+    entries.forEach((entry, i) => {
+      const card = i === 0 ? firstCard : addImageForm();
+      if (!card) return;
+      setCardToDiscoveredEvidence(card, entry, i);
+    });
+
+    renumberImageForms();
+    A.syncMode();
+  }
+
+  /** Scan a local path for evidence targets and add them as image cards. */
+  async function scanEvidenceDirectory() {
+    A.clearMsg(el.evidenceMsg);
+    const scanPath = firstScannablePath();
+    if (!scanPath) {
+      return A.setMsg(
+        el.evidenceMsg,
+        "Enter a directory path in a Local Path field before scanning.",
+        "error",
+      );
+    }
+
+    const timeoutMs = A.num(
+      A.obj(A.obj(st.settings).evidence).intake_timeout_seconds,
+      7200,
+    ) * 1000;
+
+    setEvidenceBusy(true, false);
+    A.setMsg(el.evidenceMsg, "Scanning for supported evidence images...", "info");
+
+    try {
+      const response = await A.apiJson(
+        "/api/evidence/discover",
+        { method: "POST", json: { path: scanPath }, timeout: timeoutMs },
+      );
+      const entries = (Array.isArray(response.evidence) ? response.evidence : [])
+        .map(normalizeDiscoveredEvidence)
+        .filter(Boolean);
+
+      if (!entries.length) {
+        return A.setMsg(
+          el.evidenceMsg,
+          "No supported evidence images were found at that path.",
+          "error",
+        );
+      }
+
+      populateImageFormsFromDiscovery(entries);
+      const noun = entries.length === 1 ? "image" : "images";
+      A.setMsg(
+        el.evidenceMsg,
+        `Found ${entries.length} evidence ${noun}. Review the paths, then submit.`,
+        "success",
+      );
+    } catch (e) {
+      A.setMsg(el.evidenceMsg, `Directory scan failed: ${e.message}`, "error");
+    } finally {
+      setEvidenceBusy(false, false);
+      A.updateNav();
+    }
   }
 
   // ── Multi-image submission ──────────────────────────────────────────────
@@ -482,10 +612,17 @@
     };
   }
 
-  /** Toggle the evidence submit button and progress bar visibility. @param {boolean} on */
-  function setEvidenceBusy(on) {
+  /**
+   * Toggle evidence intake controls and optional progress bar visibility.
+   *
+   * @param {boolean} on - Whether evidence intake/discovery is busy.
+   * @param {boolean} [showProgress=true] - Whether to show the progress bar.
+   */
+  function setEvidenceBusy(on, showProgress = true) {
     if (el.submitEvidence) el.submitEvidence.disabled = on;
-    if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = !on;
+    if (el.scanDirectoryBtn) el.scanDirectoryBtn.disabled = on;
+    if (el.addImageBtn) el.addImageBtn.disabled = on;
+    if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = !(on && showProgress);
   }
 
   // ── Multi-image artifact tabs ──────────────────────────────────────────
@@ -819,6 +956,7 @@
 
   // ── Public API ─────────────────────────────────────────────────────────
   A.submitEvidence = submitEvidence;
+  A.scanEvidenceDirectory = scanEvidenceDirectory;
   A.addImageForm = addImageForm;
   A.removeImageForm = removeImageForm;
   A.renderImageSummaries = renderImageSummaries;

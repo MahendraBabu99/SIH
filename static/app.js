@@ -56,6 +56,8 @@
     el.evidenceLoadedBanner = q("evidence-loaded-banner");
     el.caseName = q("case-name");
     el.submitEvidence = q("submit-evidence");
+    el.scanDirectoryBtn = q("scan-directory-btn");
+    el.addImageBtn = q("add-image-btn");
     el.evidenceProgWrap = q("evidence-intake-progress");
     el.evidenceProg = q("evidence-progress");
     el.summaryCard = q("evidence-summary-card");
@@ -440,6 +442,9 @@
     });
     A.clearDynamicArtifacts();
     if (el.parseBtn) el.parseBtn.disabled = true;
+    if (el.scanDirectoryBtn) el.scanDirectoryBtn.disabled = false;
+    if (el.addImageBtn) el.addImageBtn.disabled = false;
+    if (el.submitEvidence) el.submitEvidence.disabled = false;
     if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = true;
     if (el.evidenceProg) el.evidenceProg.value = 0;
 

@@ -42,6 +42,7 @@ from .state import (
     success_response,
 )
 from ..chat.csv_retrieval import invalidate_header_cache
+from ..automation import discover_evidence, validate_evidence_path
 
 __all__ = ["images_bp", "get_case_manager"]
 
@@ -179,6 +180,54 @@ def list_images(case_id: str) -> tuple[Response, int] | Response:
         return error_response(f"Case directory not found for: {case_id}", 404)
 
     return success_response({"images": info["images"]})
+
+
+@images_bp.post("/api/evidence/discover")
+def discover_evidence_paths() -> tuple[Response, int]:
+    """Discover supported evidence targets from a local path.
+
+    This endpoint exposes the same recursive evidence discovery used by
+    automation/CLI mode so the GUI can populate one image card per found
+    forensic image before normal evidence intake.
+
+    Returns:
+        ``(Response, 200)`` with discovered evidence entries, or an error.
+    """
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return error_response("Request body must be a JSON object.", 400)
+
+    path_value = payload.get("path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        return error_response(
+            "Field 'path' is required and must be a non-empty string.", 400,
+        )
+
+    try:
+        source_path = validate_evidence_path(path_value)
+        evidence_paths = discover_evidence(source_path)
+    except (FileNotFoundError, ValueError) as error:
+        return error_response(str(error), 400)
+    except Exception:
+        LOGGER.exception("GUI evidence discovery failed for path %r", path_value)
+        return error_response(
+            "Evidence discovery failed due to an unexpected error. "
+            "Confirm the directory is readable and try again.",
+            500,
+        )
+
+    evidence_entries = [
+        {
+            "path": str(path),
+            "label": _discovery_label_for_path(path),
+        }
+        for path in evidence_paths
+    ]
+    return success_response({
+        "source_path": str(source_path),
+        "evidence": evidence_entries,
+        "count": len(evidence_entries),
+    })
 
 
 @images_bp.delete("/api/cases/<case_id>/images/<image_id>")
@@ -715,6 +764,12 @@ def stream_image_parse_progress(case_id: str, image_id: str) -> Response | tuple
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _discovery_label_for_path(path: Path) -> str:
+    """Return a friendly default image label for a discovered evidence path."""
+    label = path.stem if path.is_file() else path.name
+    return str(label or path.name or "Image").strip() or "Image"
 
 
 def _resolve_evidence_for_image(image_dir: Path) -> dict[str, Any]:
