@@ -21,7 +21,7 @@ Upload Evidence → Select Artifacts → Parse → AI Analysis → HTML Report
 ```
 
 1. **Run the app** - a local web interface opens in your browser.
-2. **Upload evidence** - drag-and-drop an E01, VMDK, VHD, raw image, or archive, or point to a local path for large images. Add multiple images to a single case for cross-system analysis.
+2. **Add evidence** - drag-and-drop an E01, VMDK, VHD, raw image, or archive; point to a local path for large images; or use **Scan Directory** to find forensic images and triage-package targets inside a folder. Add multiple images to a single case for cross-system analysis.
 3. **Pick artifacts** - choose from 25+ Windows or 19 Linux forensic artifacts per image, which will be parsed by [Dissect](https://github.com/fox-it/dissect).
 4. **Get results** - AI analyzes each artifact for indicators of compromise, correlates findings across artifacts and across systems, and generates a self-contained HTML report with evidence hashes and full audit trail.
 
@@ -84,7 +84,8 @@ Click **Test Connection** to verify everything works. That's it - you're ready t
 
 ### 4. Analyze your first image
 
-- Upload evidence by dragging it into the upload area (E01, VMDK, VHD, raw images, ZIP, 7z, tar), or switch to **Path Mode** and enter the file path for large images or directories.
+- Upload evidence by dragging it into the upload area (E01, VMDK, VHD, raw images, ZIP, 7z, tar), or switch to **Path Mode** and enter the file path for a single image, archive, or directory.
+- To bulk-add evidence from a folder, use **Scan Directory** beneath the case name. Enter an absolute local folder path; AIFT runs the same Dissect-aware discovery used by automation mode, shows the discovered targets, and creates one local-path image card per target. This is separate from **Add Image**, which only adds a blank one-for-one image form.
 - To analyze multiple systems, click **Add Image** to add more evidence sources to the same case. Each image is labeled and processed independently.
 - AIFT opens each image or Triage Package.
 - Select artifacts manually or click **Recommended**. Each image has its own artifact tab with OS-specific options. Use **Apply to All** to replicate a selection across all images. You can also save and load artifact profiles.
@@ -191,9 +192,9 @@ AIFT uses [Dissect](https://github.com/fox-it/dissect) for evidence loading, whi
 | **Backup** | `.vbk` | Veeam Backup files |
 | **Dissect native** | `.asdf`, `.asif` | Dissect `acquire` output |
 | **FTK / AccessData** | `.ad1` | Logical images |
-| **Archives** | `.zip`, `.7z`, `.tar`, `.tar.gz` | Extracted and scanned for evidence files inside |
+| **Archives** | `.zip`, `.7z`, `.tar`, `.tar.gz` | Extracted safely and resolved with Dissect-aware discovery |
 
-Evidence can also be provided as a **directory path** (e.g., KAPE or Velociraptor triage output for Windows, or UAC triage output for Linux).
+Evidence can also be provided as a **directory path** (e.g., KAPE or Velociraptor triage output for Windows, or UAC triage output for Linux). AIFT first asks Dissect whether a directory or extracted archive root is itself a target; only if it is not loadable does AIFT recurse into child folders and files. This prevents incidental nested files, such as tracing `.bin` files inside a KAPE collection, from being selected ahead of the loadable triage package directory.
 
 For images over 2 GB, use **Path Mode** instead of uploading - enter the local file path and AIFT reads it directly.
 
@@ -204,6 +205,7 @@ For images over 2 GB, use **Path Mode** instead of uploading - enter the local f
 AIFT supports analyzing multiple evidence sources in a single case - for example, a workstation, a server, and a domain controller from the same incident.
 
 - **Add images** to a case using the **Add Image** button on the evidence page. Each image gets its own label, metadata summary, and hash verification.
+- **Scan directories** from the panel beneath the case name to bulk-create one local-path image card per discovered evidence target.
 - **Per-image artifact selection** with tabbed UI. Select different artifacts for each image based on OS type and investigative focus. Use **Apply Recommended to All** or **Apply Current Selection to All** to bulk-configure artifacts across images.
 - **Parallel parsing** with independent per-image progress tracking via SSE.
 - **Three-phase AI analysis:**
@@ -222,7 +224,7 @@ Single-image cases work exactly as before - the multi-image features activate on
 
 Features under active development:
 
-- **CLI and API Support**: Support for a headless CLI mode and the usage of API's for automations. 
+- **Automation polish**: Continued improvements to headless CLI/API automation, batch workflows, and evidence discovery reporting.
 - **Mobile Support**: iOS and Android device analysis using [iLEAPP](https://github.com/abrignoni/iLEAPP) and [ALEAPP](https://github.com/abrignoni/ALEAPP). Covers call logs, SMS, browser history, installed apps, location data, and more.
 
 ---
