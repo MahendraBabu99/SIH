@@ -634,3 +634,114 @@ describe("analysis navigation prerequisites", () => {
     expect(A.el.indicators[3].title).toContain("Parse and use in AI");
   });
 });
+
+describe("analysis ownership and parsed-selection snapshots", () => {
+  function mockJsonFetch(payload = { success: true }) {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      status: 202,
+      headers: { get: () => "application/json" },
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    }));
+  }
+
+  test("old analysis run events do not render into the current case", () => {
+    A.setCaseId("old-case");
+    const owner = A.newRunOwner("old-case", "analysis");
+    A.st.analysis.owner = owner;
+    A.st.analysis.run = true;
+
+    A.setCaseId("new-case");
+    A.resetAnalysisState();
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "evtx",
+      result: { artifact_key: "evtx", analysis: "stale result" },
+      sequence: 1,
+    }, owner);
+
+    expect(A.st.analysis.order).toEqual([]);
+    expect(A.el.analysisList.textContent).not.toContain("stale result");
+  });
+
+  test("multi-image analysis payload uses parsed snapshot, not live tab state", async () => {
+    A.setCaseId("case-analysis");
+    A.st.parse.done = true;
+    A.st.selectedAi = ["evtx"];
+    A.st.images = [
+      { image_id: "img1", label: "Image 1", available_artifacts: [{ key: "evtx", available: true }, { key: "mft", available: true }] },
+      { image_id: "img2", label: "Image 2", available_artifacts: [{ key: "mft", available: true }] },
+    ];
+    A.st.parsedSelections = {
+      caseId: "case-analysis",
+      runId: "parse-1",
+      mode: "multi",
+      artifactOptions: [],
+      artifacts: ["evtx"],
+      aiArtifacts: ["evtx"],
+      images: {
+        img1: { image_id: "img1", label: "Image 1", artifacts: ["evtx"], aiArtifacts: ["evtx"], artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }] },
+      },
+    };
+    A.buildMultiImageArtifactTabs();
+
+    const panel = document.querySelector(".artifact-image-panel[data-image-id='img1']");
+    panel.querySelector("input[data-artifact-key='evtx']").checked = false;
+    panel.querySelector("input[data-artifact-key='mft']").checked = true;
+
+    mockJsonFetch();
+    await A.submitAnalysis();
+
+    const analyzeCall = global.fetch.mock.calls.find((call) => String(call[0]).includes("/analyze"));
+    expect(analyzeCall).toBeTruthy();
+    const body = JSON.parse(analyzeCall[1].body);
+    expect(body.images).toEqual([{ image_id: "img1", artifacts: ["evtx"] }]);
+  });
+
+  test("parse-only snapshot does not enable analysis even if DOM is later AI-enabled", async () => {
+    A.setCaseId("case-parse-only");
+    A.st.parse.done = true;
+    A.st.selected = ["evtx"];
+    A.st.selectedAi = [];
+    const box = A.artifactBoxes()[0];
+    box.disabled = false;
+    box.checked = true;
+    const select = A.ensureArtifactModeControl(box, A.MODE_PARSE_AND_AI);
+    select.value = A.MODE_PARSE_AND_AI;
+    mockJsonFetch();
+
+    await A.submitAnalysis();
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(A.el.analysisMsg.textContent).toContain("No artifacts");
+  });
+
+  test("changed selections after parse require re-parse before analysis", async () => {
+    A.setCaseId("case-stale");
+    A.st.parse.done = true;
+    A.st.parse.selectionStale = true;
+    A.st.selectedAi = ["evtx"];
+    mockJsonFetch();
+
+    await A.submitAnalysis();
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(A.el.analysisMsg.textContent).toContain("Re-parse");
+  });
+
+  test("snapshot payload excludes failed or unparsed image entries", () => {
+    A.st.parsedSelections = {
+      mode: "multi",
+      images: {
+        img1: { image_id: "img1", aiArtifacts: ["evtx"] },
+      },
+    };
+    A.st.imageParse = {
+      img2: { done: false, fail: false, aiArts: ["mft"] },
+      img3: { done: true, fail: true, aiArts: ["runkeys"] },
+    };
+
+    expect(A._parsedMultiImageSelectionsForAnalysis()).toEqual([{ image_id: "img1", artifacts: ["evtx"] }]);
+  });
+});

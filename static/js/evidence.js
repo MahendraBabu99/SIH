@@ -11,6 +11,7 @@
 (() => {
   const A = window.AIFT;
   const { st, el, q } = A;
+  const droppedFilesByCard = new WeakMap();
 
   // ── Multi-image state ──────────────────────────────────────────────────────
 
@@ -84,7 +85,7 @@
     const dropzoneHelp = card.querySelector(".image-dropzone-help");
     if (fileInput) {
       fileInput.addEventListener("change", () => {
-        delete card.__aiftUploadFiles;
+        clearDroppedFilesForCard(card);
         updateDropzoneHelp(fileInput, dropzoneHelp);
       });
     }
@@ -126,10 +127,38 @@
           fileInput.files = dt.files;
         } catch (_err) { /* fallback */ }
       }
-      card.__aiftUploadFiles = dropped;
+      setDroppedFilesForCard(card, dropped);
       const helpEl = card.querySelector(".image-dropzone-help");
       updateDropzoneHelp(fileInput, helpEl);
     });
+  }
+
+  /** Store dropped files for a card without attaching expando state to DOM. */
+  function setDroppedFilesForCard(card, files) {
+    if (!card) return [];
+    const normalized = Array.isArray(files) ? files.filter(Boolean) : [];
+    if (normalized.length) droppedFilesByCard.set(card, normalized);
+    else droppedFilesByCard.delete(card);
+    return normalized;
+  }
+
+  /** Return dropped files currently cached for a card. */
+  function getDroppedFilesForCard(card) {
+    return card ? (droppedFilesByCard.get(card) || []) : [];
+  }
+
+  /** Clear dropped-file cache for a card. */
+  function clearDroppedFilesForCard(card) {
+    if (card) droppedFilesByCard.delete(card);
+  }
+
+  /** Return the upload files selected for a card, preferring drag/drop cache. */
+  function imageUploadFilesForCard(card) {
+    if (!card) return [];
+    const cachedFiles = getDroppedFilesForCard(card);
+    if (cachedFiles.length) return cachedFiles;
+    const fileInput = card.querySelector(".image-file-input");
+    return fileInput && fileInput.files ? Array.from(fileInput.files) : [];
   }
 
   /**
@@ -141,7 +170,7 @@
   function updateDropzoneHelp(fileInput, helpEl) {
     if (!helpEl) return;
     const card = helpEl.closest(".image-form-card");
-    const cachedFiles = card && Array.isArray(card.__aiftUploadFiles) ? card.__aiftUploadFiles : [];
+    const cachedFiles = getDroppedFilesForCard(card);
     const inputFiles = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
     const files = cachedFiles.length ? cachedFiles : inputFiles;
     if (!files.length) {
@@ -307,16 +336,21 @@
 
   // ── Artifact checkboxes & mode controls ────────────────────────────────────
 
-  /** Return all artifact checkbox `<input>` elements in the artifacts form. */
-  function artifactBoxes() {
-    return el.artifactsForm
-      ? Array.from(el.artifactsForm.querySelectorAll("input[type='checkbox'][data-artifact-key]"))
-      : [];
-  }
-
   /** Normalise a mode string to MODE_PARSE_ONLY or MODE_PARSE_AND_AI. */
   function artifactModeValue(rawMode) {
     return String(rawMode || "").trim().toLowerCase() === A.MODE_PARSE_ONLY ? A.MODE_PARSE_ONLY : A.MODE_PARSE_AND_AI;
+  }
+
+  /** Return all artifact checkbox `<input>` elements under a DOM root. */
+  function artifactBoxesIn(root) {
+    return root
+      ? Array.from(root.querySelectorAll("input[type='checkbox'][data-artifact-key]"))
+      : [];
+  }
+
+  /** Return all artifact checkbox `<input>` elements in the artifacts form. */
+  function artifactBoxes() {
+    return artifactBoxesIn(el.artifactsForm);
   }
 
   /**
@@ -380,9 +414,16 @@
 
   /** Ensure all artifact checkboxes have an associated mode `<select>`. */
   function ensureArtifactModeControls() {
-    artifactBoxes().forEach((cb) => {
+    artifactBoxesIn(el.artifactsForm).forEach((cb) => {
       const select = ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
       syncArtifactModeControl(cb, select);
+    });
+  }
+
+  /** Synchronise every artifact mode select under a DOM root. */
+  function syncArtifactModesIn(root) {
+    artifactBoxesIn(root).forEach((cb) => {
+      syncArtifactModeControl(cb);
     });
   }
 
@@ -478,8 +519,8 @@
    *
    * @returns {{artifact_key: string, mode: string}[]}
    */
-  function selectedArtifactOptions() {
-    return artifactBoxes()
+  function selectedArtifactOptionsIn(root) {
+    return artifactBoxesIn(root)
       .filter((cb) => cb.checked && !cb.disabled && cb.dataset.artifactKey)
       .map((cb) => {
         const key = String(cb.dataset.artifactKey || "");
@@ -487,6 +528,31 @@
         const select = li ? li.querySelector("select.artifact-mode-select") : null;
         return { artifact_key: key, mode: artifactModeValue(select ? select.value : A.MODE_PARSE_AND_AI) };
       });
+  }
+
+  /**
+   * Collect the selected artifact options (key + mode) from all checked checkboxes.
+   *
+   * @returns {{artifact_key: string, mode: string}[]}
+   */
+  function selectedArtifactOptions() {
+    return selectedArtifactOptionsIn(el.artifactsForm);
+  }
+
+  /** Return all artifact checkbox states under a root keyed by artifact key. */
+  function artifactSelectionStateByKeyIn(root) {
+    const selectionMap = new Map();
+    artifactBoxesIn(root).forEach((cb) => {
+      const key = String(cb.dataset.artifactKey || "").trim();
+      if (!key) return;
+      const li = cb.closest("li");
+      const select = li ? li.querySelector("select.artifact-mode-select") : null;
+      selectionMap.set(key, {
+        checked: cb.checked,
+        mode: artifactModeValue(select ? select.value : A.MODE_PARSE_AND_AI),
+      });
+    });
+    return selectionMap;
   }
 
   /** Return an array of selected artifact keys (all modes). */
@@ -507,6 +573,22 @@
       .filter((option) => artifactModeValue(option.mode) === A.MODE_PARSE_AND_AI)
       .map((option) => String(option.artifact_key || ""))
       .filter(Boolean);
+  }
+
+  /** Apply a checkbox preset ("recommended" or "clear") within a DOM root. */
+  function applyArtifactPresetIn(root, mode) {
+    artifactBoxesIn(root).forEach((cb) => {
+      const select = ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
+      if (cb.disabled) {
+        cb.checked = false;
+        if (select) select.value = A.MODE_PARSE_AND_AI;
+        return syncArtifactModeControl(cb, select);
+      }
+      if (mode === "clear") cb.checked = false;
+      else cb.checked = !A.RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS.has(String(cb.dataset.artifactKey || "").trim().toLowerCase());
+      if (select) select.value = A.MODE_PARSE_AND_AI;
+      syncArtifactModeControl(cb, select);
+    });
   }
 
   // ── Date range ─────────────────────────────────────────────────────────────
@@ -624,6 +706,7 @@
       if (modeSelect) modeSelect.value = mode;
       syncArtifactModeControl(cb, modeSelect);
     });
+    A.markParsedSelectionStale();
     updateParseButton();
     if (!silent) A.setMsg(el.artifactsMsg, `Loaded profile: ${profile.name}`, "success");
     return true;
@@ -669,10 +752,12 @@
       const t = e.target;
       if (t instanceof HTMLInputElement && t.type === "checkbox" && t.dataset.artifactKey) {
         syncArtifactModeControl(t);
+        A.markParsedSelectionStale();
         return updateParseButton();
       }
       if (t instanceof HTMLSelectElement && t.classList.contains("artifact-mode-select") && t.dataset.artifactKey) {
         t.value = artifactModeValue(t.value);
+        A.markParsedSelectionStale();
         return updateParseButton();
       }
     });
@@ -714,18 +799,8 @@
    * @param {string} mode - "recommended" or "clear".
    */
   function applyPreset(mode) {
-    artifactBoxes().forEach((cb) => {
-      const select = ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
-      if (cb.disabled) {
-        cb.checked = false;
-        if (select) select.value = A.MODE_PARSE_AND_AI;
-        return syncArtifactModeControl(cb, select);
-      }
-      if (mode === "clear") cb.checked = false;
-      else cb.checked = !A.RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS.has(String(cb.dataset.artifactKey || "").trim().toLowerCase());
-      if (select) select.value = A.MODE_PARSE_AND_AI;
-      syncArtifactModeControl(cb, select);
-    });
+    applyArtifactPresetIn(el.artifactsForm, mode);
+    A.markParsedSelectionStale();
     updateParseButton();
   }
 
@@ -800,9 +875,14 @@
   A.loadArtifactProfiles = loadArtifactProfiles;
 
   A.updateParseButton = updateParseButton;
+  A.artifactBoxesIn = artifactBoxesIn;
   A.selectedArtifactOptions = selectedArtifactOptions;
+  A.selectedArtifactOptionsIn = selectedArtifactOptionsIn;
   A.selectedArtifacts = selectedArtifacts;
   A.selectedAiArtifacts = selectedAiArtifacts;
+  A.applyArtifactPresetIn = applyArtifactPresetIn;
+  A.syncArtifactModesIn = syncArtifactModesIn;
+  A.artifactSelectionStateByKeyIn = artifactSelectionStateByKeyIn;
   A.validateAnalysisDateRange = validateAnalysisDateRange;
   A.artifactBoxes = artifactBoxes;
   A.ensureArtifactModeControl = ensureArtifactModeControl;
@@ -816,4 +896,8 @@
   A.applyEvidence = applyEvidence;
   A.applyPreset = applyPreset;
   A.artifactModeValue = artifactModeValue;
+  A.setDroppedFilesForCard = setDroppedFilesForCard;
+  A.getDroppedFilesForCard = getDroppedFilesForCard;
+  A.clearDroppedFilesForCard = clearDroppedFilesForCard;
+  A.imageUploadFilesForCard = imageUploadFilesForCard;
 })();

@@ -278,6 +278,141 @@ describe("multi-image parse state", () => {
   });
 });
 
+describe("parse SSE ownership and retry state", () => {
+  function installImageParseState(A, owner) {
+    const tr = document.createElement("tr");
+    const tdS = document.createElement("td");
+    const tdR = document.createElement("td");
+    tr.appendChild(tdS);
+    tr.appendChild(tdR);
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.imageParse = {
+      img1: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: { evtx: { tr, tdS, tdR } },
+        status: { evtx: "waiting" },
+        sseState: { es: null, retry: null, retryCount: 0, seq: -1 },
+        snapshot: {
+          image_id: "img1",
+          label: "Image 1",
+          artifacts: ["evtx"],
+          aiArtifacts: ["evtx"],
+          artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+    };
+    return { tdR };
+  }
+
+  test("multi-image SSE retry attempts persist across reconnects", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-retry");
+    const owner = A.newRunOwner("case-retry", "parse");
+    installImageParseState(A, owner);
+
+    A._startImageParseSse("case-retry", "img1", owner);
+
+    for (let attempt = 1; attempt <= A.SSE_MAX_RETRIES; attempt += 1) {
+      const source = window.__AIFT_TEST_OPEN_EVENT_SOURCES__.at(-1);
+      source.onerror();
+      expect(A.st.imageParse.img1.sseState.retryCount).toBe(attempt);
+      jest.advanceTimersByTime(A.sseRetryDelayMs(attempt));
+    }
+
+    const finalSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__.at(-1);
+    finalSource.onerror();
+
+    expect(A.st.imageParse.img1.run).toBe(false);
+    expect(A.st.imageParse.img1.fail).toBe(true);
+  });
+
+  test("multi-image sequence dedupe survives reconnect", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-seq");
+    const owner = A.newRunOwner("case-seq", "parse");
+    const { tdR } = installImageParseState(A, owner);
+
+    A._startImageParseSse("case-seq", "img1", owner);
+    const firstSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__.at(-1);
+    firstSource.onmessage({ data: JSON.stringify({ type: "artifact_progress", artifact_key: "evtx", record_count: 5, sequence: 5 }) });
+    expect(tdR.textContent).toBe("5");
+
+    firstSource.onerror();
+    jest.advanceTimersByTime(A.sseRetryDelayMs(1));
+    const secondSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__.at(-1);
+    secondSource.onmessage({ data: JSON.stringify({ type: "artifact_progress", artifact_key: "evtx", record_count: 99, sequence: 4 }) });
+
+    expect(tdR.textContent).toBe("5");
+    expect(A.st.imageParse.img1.sseState.seq).toBe(5);
+  });
+
+  test("old parse run events do not mutate the current case", () => {
+    A.setCaseId("old-case");
+    const owner = A.newRunOwner("old-case", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+
+    A.setCaseId("new-case");
+    A.resetParseState();
+    A._onParseEvent({ type: "parse_completed", sequence: 1 }, owner);
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.step).not.toBe(4);
+  });
+
+  test("multi-image completion snapshots only successful parsed images", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-snapshot");
+    const owner = A.newRunOwner("case-snapshot", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.imageParse = {
+      img1: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: {
+          image_id: "img1",
+          label: "Image 1",
+          artifacts: ["evtx"],
+          aiArtifacts: ["evtx"],
+          artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+      img2: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: {
+          image_id: "img2",
+          label: "Image 2",
+          artifacts: ["mft"],
+          aiArtifacts: ["mft"],
+          artifactOptions: [{ artifact_key: "mft", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+    };
+
+    A._onImageParseEvent("img1", { type: "parse_completed", sequence: 1 }, owner);
+    A._onImageParseEvent("img2", { type: "parse_failed", error: "boom", sequence: 1 }, owner);
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.parse.done).toBe(true);
+    expect(A.st.selectedAi).toEqual(["evtx"]);
+    expect(Object.keys(A.st.parsedSelections.images)).toEqual(["img1"]);
+  });
+});
+
 // ── Multi-image: showSingleImageParseTable ─────────────────────────────────
 
 describe("showSingleImageParseTable", () => {

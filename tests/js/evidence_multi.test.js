@@ -186,6 +186,16 @@ describe("removeImageForm", () => {
 // -- scanEvidenceDirectory -------------------------------------------------
 
 describe("scanEvidenceDirectory", () => {
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
   function mockJsonFetch(payload) {
     global.fetch = jest.fn(() => Promise.resolve({
       ok: true,
@@ -267,6 +277,100 @@ describe("scanEvidenceDirectory", () => {
     expect(dialogMsg.hidden).toBe(false);
     expect(dialogMsg.dataset.status).toBe("failed");
     expect(dialogMsg.textContent).toContain("No supported evidence targets");
+  });
+
+  test("ignores a directory scan response after reset", async () => {
+    const pathInput = document.getElementById("scan-directory-path");
+    pathInput.value = "E:\\cases";
+    const scan = deferred();
+    global.fetch = jest.fn(() => scan.promise);
+
+    const scanPromise = A.scanEvidenceDirectory();
+    A.resetCaseUi();
+    scan.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ success: true, evidence: [{ path: "E:\\cases\\late.E01", label: "late" }] }),
+      text: async () => JSON.stringify({ success: true, evidence: [{ path: "E:\\cases\\late.E01", label: "late" }] }),
+    });
+    await scanPromise;
+
+    expect(A.getImageForms()).toHaveLength(1);
+    expect(A.getImageForms()[0].querySelector(".image-path-input").value).toBe("");
+    expect(document.getElementById("scan-directory-results").hidden).toBe(true);
+  });
+});
+
+describe("submitEvidence stale operation handling", () => {
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  test("does not set an old case id when create-case response resolves after reset", async () => {
+    const card = A.getImageForms()[0];
+    card.querySelector(".image-mode-path").checked = true;
+    card.querySelector(".image-mode-upload").checked = false;
+    card.querySelector(".image-path-input").value = "E:\\evidence\\disk.E01";
+
+    const createCase = deferred();
+    global.fetch = jest.fn(() => createCase.promise);
+
+    const submitPromise = A.submitEvidence();
+    A.resetCaseUi();
+    createCase.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ case_id: "late-case", case_name: "Late Case" }),
+      text: async () => JSON.stringify({ case_id: "late-case", case_name: "Late Case" }),
+    });
+    await submitPromise;
+
+    expect(A.activeCaseId()).toBe("");
+    expect(A.st.images).toEqual([]);
+    expect(A.el.submitEvidence.disabled).toBe(false);
+  });
+
+  test("a second evidence submit retires a slower first submit", async () => {
+    const card = A.getImageForms()[0];
+    card.querySelector(".image-mode-path").checked = true;
+    card.querySelector(".image-mode-upload").checked = false;
+    card.querySelector(".image-path-input").value = "E:\\evidence\\disk.E01";
+
+    const first = deferred();
+    const second = deferred();
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    const firstSubmit = A.submitEvidence();
+    const secondSubmit = A.submitEvidence();
+    first.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ case_id: "first-case", case_name: "First" }),
+      text: async () => JSON.stringify({ case_id: "first-case", case_name: "First" }),
+    });
+    second.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({ case_id: "second-case", case_name: "Second" }),
+      text: async () => JSON.stringify({ case_id: "second-case", case_name: "Second" }),
+    });
+
+    await Promise.all([firstSubmit, secondSubmit]);
+
+    expect(A.activeCaseId()).toBe("second-case");
   });
 });
 

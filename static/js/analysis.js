@@ -13,6 +13,29 @@
   const A = window.AIFT;
   const { st, el } = A;
 
+  /** Build multi-image analysis payload from the successful parse snapshot. */
+  function parsedMultiImageSelectionsForAnalysis() {
+    const snapshot = st.parsedSelections || {};
+    const images = A.isObj(snapshot.images) ? snapshot.images : {};
+    const fromSnapshot = Object.keys(images).map((imageId) => {
+      const entry = images[imageId] || {};
+      const artifacts = (Array.isArray(entry.aiArtifacts) ? entry.aiArtifacts : [])
+        .map(String)
+        .filter(Boolean);
+      return { image_id: String(entry.image_id || imageId), artifacts };
+    }).filter((entry) => entry.image_id && entry.artifacts.length > 0);
+    if (fromSnapshot.length) return fromSnapshot;
+
+    return Object.keys(st.imageParse || {}).map((imageId) => {
+      const imgState = st.imageParse[imageId];
+      if (!imgState || !imgState.done || imgState.fail) return null;
+      const artifacts = (Array.isArray(imgState.aiArts) ? imgState.aiArts : [])
+        .map(String)
+        .filter(Boolean);
+      return { image_id: imageId, artifacts };
+    }).filter((entry) => entry && entry.artifacts.length > 0);
+  }
+
   // ── Analysis submission ────────────────────────────────────────────────────
 
   /** Wire up the analysis form: submit, cancel, and settings link handlers. */
@@ -51,6 +74,11 @@
       A.showStep(3);
       return;
     }
+    if (st.parse.selectionStale) {
+      A.setMsg(el.analysisMsg, "Artifact selections changed after parsing. Re-parse before analysis.", "error");
+      A.showStep(3);
+      return;
+    }
     if (!st.selectedAi.length) {
       A.setMsg(el.analysisMsg, "No artifacts are set to `Parse and use in AI`. Update artifact options and parse again.", "error");
       A.showStep(2);
@@ -62,6 +90,8 @@
       await st.analysis.cancelPending;
     }
     resetAnalysisState();
+    const owner = A.newRunOwner(caseId, "analysis");
+    st.analysis.owner = owner;
     st.analysis.run = true;
     const abortCtrl = new AbortController();
     st.analysis.abort = abortCtrl;
@@ -73,19 +103,12 @@
     const body = { prompt: A.val(el.prompt) };
     const isMulti = A.isMultiImage && A.isMultiImage();
     if (isMulti) {
-      const selections = A.allImageArtifactSelections();
+      const selections = parsedMultiImageSelectionsForAnalysis();
       if (selections && selections.length) {
         // Backend expects body.images as an array of {image_id: string,
         // artifacts: string[]} where each artifact entry is a key string
         // (e.g. "evtx", "prefetch").  See analysis.py start_analysis().
-        body.images = selections.map(function(sel) {
-          return {
-            image_id: sel.image_id,
-            artifacts: sel.artifact_options
-              .filter(function(opt) { return opt.mode !== A.MODE_PARSE_ONLY; })
-              .map(function(opt) { return opt.artifact_key; }),
-          };
-        }).filter(function(img) { return img.artifacts.length > 0; });
+        body.images = selections;
         st.analysis.multiImage = true;
         st.analysis.imageResults = {};
       }
@@ -94,12 +117,14 @@
     try {
       A.startTimer("analysis");
       await A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/analyze`, { method: "POST", json: body, signal: abortCtrl.signal });
-      startAnalysisSse();
+      if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
+      startAnalysisSse(owner);
       A.showStep(4);
     } catch (e) {
       st.analysis.abort = null;
       if (e.name === "AbortError") return;
       st.analysis.run = false;
+      st.analysis.owner = null;
       A.stopTimer("analysis");
       if (el.runBtn) el.runBtn.disabled = false;
       if (el.cancelAnalysis) el.cancelAnalysis.hidden = true;
@@ -112,23 +137,25 @@
   // ── Analysis SSE ───────────────────────────────────────────────────────────
 
   /** Open the analysis-progress SSE stream for the active case. */
-  function startAnalysisSse() {
-    const caseId = A.activeCaseId();
+  function startAnalysisSse(owner = st.analysis.owner) {
+    const caseId = owner ? owner.caseId : A.activeCaseId();
     if (!caseId) return A.setMsg(el.analysisMsg, "No case ID for analysis stream.", "error");
+    if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
     A.openSseStream(
       `/api/cases/${encodeURIComponent(caseId)}/analyze/progress`,
       st.analysis,
       {
-        onEvent: (p) => onAnalysisEvent(p),
+        onEvent: (p) => onAnalysisEvent(p, owner),
         onError: () => {
-          if (!st.analysis.done && !st.analysis.fail && st.analysis.run) retryAnalysisSse();
+          if (A.isRunOwnerCurrent(st.analysis, owner) && !st.analysis.done && !st.analysis.fail && st.analysis.run) retryAnalysisSse(owner);
         },
       },
     );
   }
 
   /** Dispatch a single analysis SSE event to the appropriate UI handler. */
-  function onAnalysisEvent(p) {
+  function onAnalysisEvent(p, owner = null) {
+    if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
     const t = String(p.type || "");
     if (t === "analysis_started") {
       A.clearMsg(el.analysisMsg);
@@ -624,16 +651,18 @@
   // ── SSE retry / close / cancel ─────────────────────────────────────────────
 
   /** Attempt to reconnect the analysis SSE stream with exponential backoff. */
-  function retryAnalysisSse() {
+  function retryAnalysisSse(owner = st.analysis.owner) {
     if (st.analysis.done || st.analysis.fail || !st.analysis.run) return;
+    if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
     A.retrySseStream(st.analysis, {
       reconnect: () => {
-        if (!st.analysis.done && !st.analysis.fail && st.analysis.run) startAnalysisSse();
+        if (A.isRunOwnerCurrent(st.analysis, owner) && !st.analysis.done && !st.analysis.fail && st.analysis.run) startAnalysisSse(owner);
       },
       onRetryScheduled: (attempt, delaySec) => {
         A.setMsg(el.analysisMsg, `Analysis progress connection dropped. Reconnecting (${attempt}/${A.SSE_MAX_RETRIES}) in ${delaySec}s...`, "error");
       },
       onMaxRetries: () => {
+        if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
         st.analysis.run = false;
         st.analysis.done = false;
         st.analysis.fail = true;
@@ -654,6 +683,8 @@
 
   /** Cancel any in-progress analysis: abort HTTP, close SSE, notify backend. */
   function cancelAnalysis() {
+    const caseId = A.activeCaseId();
+    st.analysis.owner = null;
     if (st.analysis.abort) {
       st.analysis.abort.abort();
       st.analysis.abort = null;
@@ -670,7 +701,6 @@
     setAnalysisStatus(null);
     A.setMsg(el.analysisMsg, "Analysis cancelled.", "info");
     A.updateNav();
-    const caseId = A.activeCaseId();
     if (caseId) {
       st.analysis.cancelPending = A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/analyze/cancel`, { method: "POST" })
         .catch(() => {})
@@ -680,6 +710,7 @@
 
   /** Reset all analysis state, close SSE, and clear rendered results. */
   function resetAnalysisState() {
+    st.analysis.owner = null;
     closeAnalysisSse();
     A.stopTimer("analysis");
     st.analysis.run = false;
@@ -720,6 +751,7 @@
 
   // ── Public API ─────────────────────────────────────────────────────────────
   A.setupAnalysis = setupAnalysis;
+  A.submitAnalysis = submitAnalysis;
   A.cancelAnalysis = cancelAnalysis;
   A.closeAnalysisSse = closeAnalysisSse;
   A.resetAnalysisState = resetAnalysisState;
@@ -728,4 +760,5 @@
   A.renderFindings = renderFindings;
   A.setProvider = setProvider;
   A._onAnalysisEvent = onAnalysisEvent;
+  A._parsedMultiImageSelectionsForAnalysis = parsedMultiImageSelectionsForAnalysis;
 })();

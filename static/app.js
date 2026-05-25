@@ -333,6 +333,7 @@
     if (step === 2) return A.activeCaseId() ? "" : "Submit evidence first.";
     if (step === 3) return st.selected.length > 0 ? "" : "Select artifacts and click Parse Selected first.";
     if (step === 4) {
+      if (st.parse.done && st.parse.selectionStale) return "Artifact selections changed after parsing. Re-parse before analysis.";
       if (st.parse.done && st.selectedAi.length > 0) return "";
       if (st.parse.done && st.selectedAi.length === 0) return "No artifacts are set to \u201cParse and use in AI.\u201d Re-parse with AI-enabled artifacts to unlock analysis.";
       if (st.parse.run) return "Parsing is still running. Wait for completion.";
@@ -383,6 +384,7 @@
 
   /** Reset the entire application UI to its initial state (no active case). */
   function resetCaseUi() {
+    A.abortEvidenceOperations();
     A.closeParseSse();
     A.closeAnalysisSse();
     A.closeChatSse();
@@ -428,7 +430,7 @@
         if (pathInput) pathInput.value = "";
         const fileInput = firstCard.querySelector(".image-file-input");
         if (fileInput) fileInput.value = "";
-        delete firstCard.__aiftUploadFiles;
+        A.clearDroppedFilesForCard(firstCard);
         const modePath = firstCard.querySelector(".image-mode-path");
         if (modePath) modePath.checked = true;
         const metaCard = firstCard.querySelector(".image-metadata-card");

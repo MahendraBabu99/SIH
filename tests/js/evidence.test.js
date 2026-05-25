@@ -194,6 +194,74 @@ describe("artifact selection helpers", () => {
     boxes[0].disabled = true;
     expect(A.selectedArtifactOptions()).toEqual([]);
   });
+
+  test("root-scoped collector handles enabled, disabled, and parse-only artifacts", () => {
+    const root = document.createElement("ul");
+    root.innerHTML = `
+      <li><label><input type="checkbox" data-artifact-key="evtx" checked> Event Logs</label></li>
+      <li><label><input type="checkbox" data-artifact-key="mft" checked> MFT</label></li>
+      <li><label><input type="checkbox" data-artifact-key="prefetch" checked disabled> Prefetch</label></li>
+      <li><label><input type="checkbox" data-artifact-key="runkeys"> Run Keys</label></li>
+    `;
+    document.body.appendChild(root);
+    const boxes = A.artifactBoxesIn(root);
+    const evtxMode = A.ensureArtifactModeControl(boxes[0], A.MODE_PARSE_AND_AI);
+    const mftMode = A.ensureArtifactModeControl(boxes[1], A.MODE_PARSE_ONLY);
+    A.ensureArtifactModeControl(boxes[2], A.MODE_PARSE_AND_AI);
+    A.ensureArtifactModeControl(boxes[3], A.MODE_PARSE_AND_AI);
+    evtxMode.value = A.MODE_PARSE_AND_AI;
+    mftMode.value = A.MODE_PARSE_ONLY;
+
+    expect(A.selectedArtifactOptionsIn(root)).toEqual([
+      { artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI },
+      { artifact_key: "mft", mode: A.MODE_PARSE_ONLY },
+    ]);
+    expect(A.selectedAiArtifacts(A.selectedArtifactOptionsIn(root))).toEqual(["evtx"]);
+  });
+
+  test("single-image and panel roots use the same canonical collector", () => {
+    const makeRoot = () => {
+      const root = document.createElement("ul");
+      root.innerHTML = `
+        <li><label><input type="checkbox" data-artifact-key="evtx" checked> Event Logs</label></li>
+        <li><label><input type="checkbox" data-artifact-key="mft" checked> MFT</label></li>
+      `;
+      document.body.appendChild(root);
+      const boxes = A.artifactBoxesIn(root);
+      A.ensureArtifactModeControl(boxes[0], A.MODE_PARSE_AND_AI);
+      A.ensureArtifactModeControl(boxes[1], A.MODE_PARSE_ONLY).value = A.MODE_PARSE_ONLY;
+      return root;
+    };
+
+    expect(A.selectedArtifactOptionsIn(makeRoot())).toEqual(A.selectedArtifactOptionsIn(makeRoot()));
+  });
+});
+
+describe("dropped file state", () => {
+  test("stores dropped files outside DOM expandos and clears them", () => {
+    const card = A.getImageForms()[0];
+    const file = new File(["abc"], "evidence.E01", { type: "application/octet-stream" });
+
+    A.setDroppedFilesForCard(card, [file]);
+
+    expect(card.__aiftUploadFiles).toBeUndefined();
+    expect(A.getDroppedFilesForCard(card)).toEqual([file]);
+    expect(A.imageUploadFilesForCard(card)).toEqual([file]);
+
+    A.clearDroppedFilesForCard(card);
+    expect(A.getDroppedFilesForCard(card)).toEqual([]);
+  });
+
+  test("file input change clears dropped file cache", () => {
+    const card = A.getImageForms()[0];
+    const file = new File(["abc"], "evidence.E01", { type: "application/octet-stream" });
+    A.setDroppedFilesForCard(card, [file]);
+
+    const input = card.querySelector(".image-file-input");
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    expect(A.getDroppedFilesForCard(card)).toEqual([]);
+  });
 });
 
 // ── validateAnalysisDateRange ───────────────────────────────────────────────

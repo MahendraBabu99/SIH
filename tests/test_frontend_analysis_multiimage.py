@@ -89,8 +89,8 @@ class TestMultiImageResultsTemplate(unittest.TestCase):
 class TestMultiImageAnalysisJSBehavior(unittest.TestCase):
     """Verify multi-image analysis rendering through the real jsdom suite."""
 
-    def test_multi_image_rendering_and_single_fallback_behavior(self) -> None:
-        """The real frontend renderer groups images and hides ``__single__`` labels."""
+    def test_multi_image_rendering_and_snapshot_payload_behavior(self) -> None:
+        """The real frontend renderer and parsed-selection payload behavior are covered."""
         import subprocess
 
         result = subprocess.run(
@@ -99,8 +99,6 @@ class TestMultiImageAnalysisJSBehavior(unittest.TestCase):
                 "jest",
                 "tests/js/analysis.test.js",
                 "--runInBand",
-                "-t",
-                "multi-image analysis rendering behavior",
             ],
             cwd=Path(__file__).resolve().parents[1],
             text=True,

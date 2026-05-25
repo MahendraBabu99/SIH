@@ -98,6 +98,7 @@
     const forms = A.getImageForms();
     /* Don't allow removing the last remaining image form. */
     if (forms.length <= 1) return;
+    A.clearDroppedFilesForCard(card);
     card.remove();
     renumberImageForms();
   }
@@ -130,10 +131,7 @@
     const statusMsg = card.querySelector(".image-status-msg");
 
     if (uploadMode) {
-      const fileInput = card.querySelector(".image-file-input");
-      const cachedFiles = Array.isArray(card.__aiftUploadFiles) ? card.__aiftUploadFiles : [];
-      const inputFiles = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
-      const files = cachedFiles.length ? cachedFiles : inputFiles;
+      const files = A.imageUploadFilesForCard(card);
       if (files.length === 0) {
         setImageStatusMsg(statusMsg, "Choose one or more evidence files first.", "error");
         return null;
@@ -205,7 +203,7 @@
 
     const fileInput = card.querySelector(".image-file-input");
     if (fileInput) fileInput.value = "";
-    delete card.__aiftUploadFiles;
+    A.clearDroppedFilesForCard(card);
     const dropzoneHelp = card.querySelector(".image-dropzone-help");
     if (dropzoneHelp) dropzoneHelp.textContent = A.DROP_HELP;
 
@@ -268,14 +266,16 @@
       7200,
     ) * 1000;
 
+    const token = A.beginEvidenceOperation("scan");
     setEvidenceBusy(true, false);
     A.setMsg(el.scanDirectoryMsg || el.evidenceMsg, "Scanning for supported evidence targets...", "info");
 
     try {
       const response = await A.apiJson(
         "/api/evidence/discover",
-        { method: "POST", json: { path: scanPath }, timeout: timeoutMs },
+        { method: "POST", json: { path: scanPath }, timeout: timeoutMs, signal: token.signal },
       );
+      if (!A.isEvidenceOperationCurrent(token)) return;
       const entries = (Array.isArray(response.evidence) ? response.evidence : [])
         .map(normalizeDiscoveredEvidence)
         .filter(Boolean);
@@ -302,10 +302,13 @@
         "success",
       );
     } catch (e) {
+      if (!A.isEvidenceOperationCurrent(token) || e.name === "AbortError") return;
       A.setMsg(el.scanDirectoryMsg || el.evidenceMsg, `Directory scan failed: ${e.message}`, "error");
     } finally {
-      setEvidenceBusy(false, false);
-      A.updateNav();
+      if (A.finishEvidenceOperation(token)) {
+        setEvidenceBusy(false, false);
+        A.updateNav();
+      }
     }
   }
 
@@ -351,13 +354,15 @@
       }
     }
 
+    const token = A.beginEvidenceOperation("submit");
     setEvidenceBusy(true);
     const intakeProgress = createIntakeProgressTracker();
     const intakeStatusEl = q("evidence-intake-status");
 
     try {
       /* Step 1: Create the case. */
-      const c = await A.apiJson("/api/cases", { method: "POST", json: { case_name: A.val(el.caseName) } });
+      const c = await A.apiJson("/api/cases", { method: "POST", json: { case_name: A.val(el.caseName) }, signal: token.signal });
+      if (!A.isEvidenceOperationCurrent(token)) return;
       const caseId = String(c.case_id || "").trim();
       st.caseName = String(c.case_name || "");
       if (!caseId) throw new Error("Case ID missing from create response.");
@@ -386,8 +391,9 @@
         /* Create image slot. */
         const imgResp = await A.apiJson(
           `/api/cases/${encodeURIComponent(caseId)}/images`,
-          { method: "POST", json: { label: data.label || `Image ${i + 1}` } },
+          { method: "POST", json: { label: data.label || `Image ${i + 1}` }, signal: token.signal },
         );
+        if (!A.isEvidenceOperationCurrent(token)) return;
         const imageId = String(imgResp.image_id || "").trim();
         if (!imageId) throw new Error(`Image ID missing from response for image ${i + 1}.`);
 
@@ -401,14 +407,15 @@
           if (skipHashing) fd.append("skip_hashing", "1");
           ev = await A.apiJson(
             `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/evidence`,
-            { method: "POST", body: fd, timeout: intakeTimeoutMs },
+            { method: "POST", body: fd, timeout: intakeTimeoutMs, signal: token.signal },
           );
         } else {
           ev = await A.apiJson(
             `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/evidence`,
-            { method: "POST", json: { path: data.path, skip_hashing: skipHashing }, timeout: intakeTimeoutMs },
+            { method: "POST", json: { path: data.path, skip_hashing: skipHashing }, timeout: intakeTimeoutMs, signal: token.signal },
           );
         }
+        if (!A.isEvidenceOperationCurrent(token)) return;
 
         /* Show metadata on this card. */
         renderImageMetadataCard(card, ev.metadata || {}, ev.hashes || {}, ev.os_type || "");
@@ -462,12 +469,15 @@
       A.setMsg(el.evidenceMsg, `Evidence intake complete (${imageCountLabel}).`, "success");
       A.showStep(2);
     } catch (e) {
+      if (!A.isEvidenceOperationCurrent(token) || e.name === "AbortError") return;
       A.setMsg(el.evidenceMsg, `Evidence intake failed: ${e.message}`, "error");
       if (intakeStatusEl) intakeStatusEl.hidden = true;
     } finally {
       intakeProgress.stop();
-      setEvidenceBusy(false);
-      A.updateNav();
+      if (A.finishEvidenceOperation(token)) {
+        setEvidenceBusy(false);
+        A.updateNav();
+      }
     }
   }
 
@@ -767,10 +777,12 @@
       const t = e.target;
       if (t instanceof HTMLInputElement && t.type === "checkbox" && t.dataset.artifactKey) {
         A.syncArtifactModeControl(t);
+        A.markParsedSelectionStale();
         return A.updateParseButton();
       }
       if (t instanceof HTMLSelectElement && t.classList.contains("artifact-mode-select") && t.dataset.artifactKey) {
         t.value = A.artifactModeValue(t.value);
+        A.markParsedSelectionStale();
         return A.updateParseButton();
       }
     }, { signal: _panelsChangeAC.signal });
@@ -818,14 +830,7 @@
     if (!panelsContainer) return [];
     const panel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${CSS.escape(imageId)}"]`);
     if (!panel) return [];
-    return Array.from(panel.querySelectorAll("input[type='checkbox'][data-artifact-key]"))
-      .filter((cb) => cb.checked && !cb.disabled && cb.dataset.artifactKey)
-      .map((cb) => {
-        const key = String(cb.dataset.artifactKey || "");
-        const li = cb.closest("li");
-        const select = li ? li.querySelector("select.artifact-mode-select") : null;
-        return { artifact_key: key, mode: A.artifactModeValue(select ? select.value : A.MODE_PARSE_AND_AI) };
-      });
+    return A.selectedArtifactOptionsIn(panel);
   }
 
   /**
@@ -865,18 +870,8 @@
     if (!panelsContainer) return;
     const panel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${CSS.escape(activeId)}"]`);
     if (!panel) return;
-    panel.querySelectorAll("input[type='checkbox'][data-artifact-key]").forEach((cb) => {
-      const select = A.ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
-      if (cb.disabled) {
-        cb.checked = false;
-        if (select) select.value = A.MODE_PARSE_AND_AI;
-        return A.syncArtifactModeControl(cb, select);
-      }
-      if (mode === "clear") cb.checked = false;
-      else cb.checked = !A.RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS.has(String(cb.dataset.artifactKey || "").trim().toLowerCase());
-      if (select) select.value = A.MODE_PARSE_AND_AI;
-      A.syncArtifactModeControl(cb, select);
-    });
+    A.applyArtifactPresetIn(panel, mode);
+    A.markParsedSelectionStale();
     A.updateParseButton();
   }
 
@@ -893,20 +888,9 @@
     if (!panelsContainer) return;
     const panels = panelsContainer.querySelectorAll(".artifact-image-panel");
     panels.forEach((panel) => {
-      panel.querySelectorAll("input[type='checkbox'][data-artifact-key]").forEach((cb) => {
-        const select = A.ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
-        if (cb.disabled) {
-          cb.checked = false;
-          if (select) select.value = A.MODE_PARSE_AND_AI;
-          return A.syncArtifactModeControl(cb, select);
-        }
-        cb.checked = !A.RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS.has(
-          String(cb.dataset.artifactKey || "").trim().toLowerCase(),
-        );
-        if (select) select.value = A.MODE_PARSE_AND_AI;
-        A.syncArtifactModeControl(cb, select);
-      });
+      A.applyArtifactPresetIn(panel, "recommended");
     });
+    A.markParsedSelectionStale();
     A.updateParseButton();
   }
 
@@ -934,24 +918,14 @@
       `.artifact-image-panel[data-image-id="${CSS.escape(activeId)}"]`,
     );
     if (!activePanel) return;
-    const selectionMap = new Map();
-    activePanel.querySelectorAll("input[type='checkbox'][data-artifact-key]").forEach((cb) => {
-      const key = String(cb.dataset.artifactKey || "").trim();
-      if (!key) return;
-      const li = cb.closest("li");
-      const select = li ? li.querySelector("select.artifact-mode-select") : null;
-      selectionMap.set(key, {
-        checked: cb.checked,
-        mode: A.artifactModeValue(select ? select.value : A.MODE_PARSE_AND_AI),
-      });
-    });
+    const selectionMap = A.artifactSelectionStateByKeyIn(activePanel);
 
     /* Apply to every other panel.  Only touch artifacts that exist in the
        source panel — OS-specific artifacts unique to the target are left
        as-is so mixed-OS configurations are preserved. */
     panelsContainer.querySelectorAll(".artifact-image-panel").forEach((panel) => {
       if (panel.dataset.imageId === activeId) return;
-      panel.querySelectorAll("input[type='checkbox'][data-artifact-key]").forEach((cb) => {
+      A.artifactBoxesIn(panel).forEach((cb) => {
         const key = String(cb.dataset.artifactKey || "").trim();
         if (!key) return;
         const entry = selectionMap.get(key);
@@ -968,6 +942,7 @@
         A.syncArtifactModeControl(cb, select);
       });
     });
+    A.markParsedSelectionStale();
     A.updateParseButton();
   }
 

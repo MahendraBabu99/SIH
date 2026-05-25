@@ -36,11 +36,12 @@ window.AIFT = (() => {
     artifactNames: {},
     selected: [],
     selectedAi: [],
+    parsedSelections: { caseId: "", runId: "", mode: "", artifactOptions: [], artifacts: [], aiArtifacts: [], images: {} },
     profiles: [],
     settings: null,
     settingsTab: "basic",
-    parse: { run: false, done: false, fail: false, es: null, retry: null, retryCount: 0, seq: -1, rows: {}, status: {}, timer: null, started: 0, abort: null, cancelPending: null },
-    analysis: { run: false, done: false, fail: false, es: null, retry: null, retryCount: 0, seq: -1, order: [], byKey: {}, summary: "", model: {}, timer: null, started: 0, abort: null, cancelPending: null },
+    parse: { run: false, done: false, fail: false, selectionStale: false, es: null, retry: null, retryCount: 0, seq: -1, rows: {}, status: {}, timer: null, started: 0, abort: null, cancelPending: null, owner: null, pendingSelectionSnapshot: null },
+    analysis: { run: false, done: false, fail: false, es: null, retry: null, retryCount: 0, seq: -1, order: [], byKey: {}, summary: "", model: {}, timer: null, started: 0, abort: null, cancelPending: null, owner: null },
     chat: {
       run: false,
       es: null,
@@ -50,9 +51,11 @@ window.AIFT = (() => {
       pending: null,
       historyLoadedCaseId: "",
     },
+    evidence: { runId: "", abort: null, scanRunId: "", scanAbort: null },
   };
 
   let csrfToken = "";
+  let frontendRunCounter = 0;
 
   const el = {};
   const q = (id) => document.getElementById(id);
@@ -163,6 +166,121 @@ window.AIFT = (() => {
     const domCaseId = el.wizard ? String(el.wizard.dataset.caseId || "").trim() : "";
     if (domCaseId) return setCaseId(domCaseId);
     return "";
+  }
+
+  /**
+   * Create a small immutable owner token for async frontend work.
+   *
+   * @param {string} caseId - Case ID the work belongs to.
+   * @param {string} [kind="run"] - Human-readable token prefix.
+   * @returns {{caseId: string, runId: string}}
+   */
+  function newRunOwner(caseId, kind = "run") {
+    frontendRunCounter += 1;
+    return {
+      caseId: String(caseId || "").trim(),
+      runId: `${kind}-${Date.now()}-${frontendRunCounter}`,
+    };
+  }
+
+  /**
+   * Check whether a captured owner token still owns a channel.
+   *
+   * When no owner is supplied the check is permissive so legacy unit tests
+   * can call event handlers directly.
+   *
+   * @param {Object} channel - State object with an owner property.
+   * @param {{caseId: string, runId: string}|null} owner - Captured owner.
+   * @returns {boolean}
+   */
+  function isRunOwnerCurrent(channel, owner) {
+    if (!owner) return true;
+    const current = channel && channel.owner;
+    return !!(
+      current
+      && current.caseId === owner.caseId
+      && current.runId === owner.runId
+      && owner.caseId === activeCaseId()
+    );
+  }
+
+  /** Mark parsed artifact selections stale after a completed parse is edited. */
+  function markParsedSelectionStale() {
+    if (!st.parse || !st.parse.done || st.parse.run) return false;
+    st.parse.selectionStale = true;
+    return true;
+  }
+
+  /** Reset the stored successful parse-selection snapshot. */
+  function clearParsedSelections() {
+    st.parsedSelections = { caseId: "", runId: "", mode: "", artifactOptions: [], artifacts: [], aiArtifacts: [], images: {} };
+  }
+
+  /** Ensure the evidence operation state exists, including in older tests. */
+  function ensureEvidenceState() {
+    if (!st.evidence) st.evidence = { runId: "", abort: null, scanRunId: "", scanAbort: null };
+    return st.evidence;
+  }
+
+  /** Abort and invalidate active evidence submit or scan operations. */
+  function abortEvidenceOperations() {
+    const evidence = ensureEvidenceState();
+    if (evidence.abort) {
+      evidence.abort.abort();
+      evidence.abort = null;
+      evidence.runId = newRunOwner("", "evidence-invalid").runId;
+    }
+    if (evidence.scanAbort) {
+      evidence.scanAbort.abort();
+      evidence.scanAbort = null;
+      evidence.scanRunId = newRunOwner("", "scan-invalid").runId;
+    }
+  }
+
+  /**
+   * Start an evidence submit or scan operation, retiring any older operation.
+   *
+   * @param {"submit"|"scan"} kind - Operation kind.
+   * @returns {{kind: string, runId: string, controller: AbortController, signal: AbortSignal}}
+   */
+  function beginEvidenceOperation(kind) {
+    abortEvidenceOperations();
+    const evidence = ensureEvidenceState();
+    const opKind = kind === "scan" ? "scan" : "submit";
+    const controller = new AbortController();
+    const runId = newRunOwner(activeCaseId(), `evidence-${opKind}`).runId;
+    if (opKind === "scan") {
+      evidence.scanRunId = runId;
+      evidence.scanAbort = controller;
+    } else {
+      evidence.runId = runId;
+      evidence.abort = controller;
+    }
+    return { kind: opKind, runId, controller, signal: controller.signal };
+  }
+
+  /**
+   * Return whether an evidence operation token still owns its async flow.
+   *
+   * @param {Object} token - Token returned by beginEvidenceOperation().
+   * @returns {boolean}
+   */
+  function isEvidenceOperationCurrent(token) {
+    if (!token) return false;
+    const evidence = ensureEvidenceState();
+    if (token.kind === "scan") {
+      return evidence.scanRunId === token.runId && evidence.scanAbort === token.controller && !token.signal.aborted;
+    }
+    return evidence.runId === token.runId && evidence.abort === token.controller && !token.signal.aborted;
+  }
+
+  /** Clear an operation's active controller if it is still current. */
+  function finishEvidenceOperation(token) {
+    if (!isEvidenceOperationCurrent(token)) return false;
+    const evidence = ensureEvidenceState();
+    if (token.kind === "scan") evidence.scanAbort = null;
+    else evidence.abort = null;
+    return true;
   }
 
   // ── Message helpers ────────────────────────────────────────────────────────
@@ -707,8 +825,11 @@ window.AIFT = (() => {
     st, el, q,
     // CSRF
     fetchCsrfToken,
-    // Case ID
-    setCaseId, activeCaseId,
+    // Case ID / operation ownership
+    setCaseId, activeCaseId, newRunOwner, isRunOwnerCurrent,
+    markParsedSelectionStale, clearParsedSelections,
+    beginEvidenceOperation, isEvidenceOperationCurrent, finishEvidenceOperation,
+    abortEvidenceOperations,
     // Messages & timers
     ensureMsg, setMsg, clearMsg, showToast, ensureTimer, startTimer, stopTimer,
     // SSE

@@ -14,10 +14,15 @@ Attributes:
 from __future__ import annotations
 
 import unittest
+import shutil
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app import create_app
+
+
+NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
 
 
 EXPECTED_ARTIFACT_TAB_IDS = {
@@ -158,140 +163,28 @@ class TestMultiImageParseProgressTemplate(unittest.TestCase):
         self.assertIn('id="step-parsing"', self.html)
 
 
-class TestMultiImageParsingJsExports(unittest.TestCase):
-    """Verify that the JS parsing module exposes multi-image parsing functions."""
+class TestMultiImageParsingJsBehavior(unittest.TestCase):
+    """Verify parsing and artifact-tab behavior through the real jsdom suite."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        """Read the parsing.js file content."""
-        js_path = Path(__file__).resolve().parent.parent / "static" / "js" / "parsing.js"
-        cls.js_content = js_path.read_text(encoding="utf-8")
+    def run_jest(self, target: str) -> None:
+        result = subprocess.run(
+            [NPX, "jest", target, "--runInBand"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"Focused Jest checks failed.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+        )
 
-    def test_submit_parse_exported(self) -> None:
-        """The submitParse function should be exported on the AIFT namespace."""
-        self.assertIn("A.submitParse", self.js_content)
+    def test_multi_image_parse_state_and_sse_behavior(self) -> None:
+        self.run_jest("tests/js/parsing.test.js")
 
-    def test_cancel_parse_exported(self) -> None:
-        """The cancelParse function should be exported."""
-        self.assertIn("A.cancelParse", self.js_content)
-
-    def test_close_parse_sse_exported(self) -> None:
-        """The closeParseSse function should be exported."""
-        self.assertIn("A.closeParseSse", self.js_content)
-
-    def test_reset_parse_state_exported(self) -> None:
-        """The resetParseState function should be exported."""
-        self.assertIn("A.resetParseState", self.js_content)
-
-    def test_render_parse_placeholder_exported(self) -> None:
-        """The renderParsePlaceholder function should be exported."""
-        self.assertIn("A.renderParsePlaceholder", self.js_content)
-
-    def test_image_parse_state_initialized(self) -> None:
-        """The st.imageParse object should be initialized."""
-        self.assertIn("st.imageParse", self.js_content)
-
-    def test_multi_image_parse_function_exists(self) -> None:
-        """The submitMultiImageParse function should be defined."""
-        self.assertIn("submitMultiImageParse", self.js_content)
-
-    def test_start_image_parse_function_exists(self) -> None:
-        """The startImageParse function should be defined."""
-        self.assertIn("startImageParse", self.js_content)
-
-    def test_build_multi_image_parse_sections_exists(self) -> None:
-        """The buildMultiImageParseSections function should be defined."""
-        self.assertIn("buildMultiImageParseSections", self.js_content)
-
-    def test_start_image_parse_sse_exists(self) -> None:
-        """The startImageParseSse function should be defined."""
-        self.assertIn("startImageParseSse", self.js_content)
-
-    def test_on_image_parse_event_exists(self) -> None:
-        """The onImageParseEvent function should be defined."""
-        self.assertIn("onImageParseEvent", self.js_content)
-
-    def test_check_multi_image_completion_exists(self) -> None:
-        """The checkMultiImageCompletion function should be defined."""
-        self.assertIn("checkMultiImageCompletion", self.js_content)
-
-    def test_set_image_parse_row_exists(self) -> None:
-        """The setImageParseRow function should be defined."""
-        self.assertIn("setImageParseRow", self.js_content)
-
-    def test_update_multi_image_parse_progress_exists(self) -> None:
-        """The updateMultiImageParseProgress function should be defined."""
-        self.assertIn("updateMultiImageParseProgress", self.js_content)
-
-    def test_per_image_parse_api_endpoint_used(self) -> None:
-        """The JS should call per-image parse API endpoints."""
-        self.assertIn("/images/", self.js_content)
-        self.assertIn("/parse", self.js_content)
-
-    def test_per_image_sse_endpoint_used(self) -> None:
-        """The JS should connect to per-image parse progress SSE endpoints."""
-        self.assertIn("/parse/progress", self.js_content)
-
-    def test_is_multi_image_check_in_submit(self) -> None:
-        """The submitParse function should check isMultiImage for branching."""
-        self.assertIn("isMultiImage()", self.js_content)
-
-    def test_show_single_image_parse_table_exists(self) -> None:
-        """The showSingleImageParseTable function should be defined."""
-        self.assertIn("showSingleImageParseTable", self.js_content)
-
-
-class TestMultiImageArtifactTabsJsExports(unittest.TestCase):
-    """Verify that the JS evidence module exposes multi-image artifact tab functions."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        """Read the evidence JS files content."""
-        js_dir = Path(__file__).resolve().parent.parent / "static" / "js"
-        cls.js_content = (js_dir / "evidence.js").read_text(encoding="utf-8")
-        cls.js_multi_content = (js_dir / "evidence_multi.js").read_text(encoding="utf-8")
-
-    def test_build_multi_image_artifact_tabs_exported(self) -> None:
-        """The buildMultiImageArtifactTabs function should be exported."""
-        self.assertIn("A.buildMultiImageArtifactTabs", self.js_multi_content)
-
-    def test_switch_artifact_tab_exported(self) -> None:
-        """The switchArtifactTab function should be exported."""
-        self.assertIn("A.switchArtifactTab", self.js_multi_content)
-
-    def test_active_artifact_tab_image_id_exported(self) -> None:
-        """The activeArtifactTabImageId function should be exported."""
-        self.assertIn("A.activeArtifactTabImageId", self.js_multi_content)
-
-    def test_selected_artifact_options_for_image_exported(self) -> None:
-        """The selectedArtifactOptionsForImage function should be exported."""
-        self.assertIn("A.selectedArtifactOptionsForImage", self.js_multi_content)
-
-    def test_all_image_artifact_selections_exported(self) -> None:
-        """The allImageArtifactSelections function should be exported."""
-        self.assertIn("A.allImageArtifactSelections", self.js_multi_content)
-
-    def test_is_multi_image_exported(self) -> None:
-        """The isMultiImage function should be exported."""
-        self.assertIn("A.isMultiImage", self.js_multi_content)
-
-    def test_apply_preset_multi_aware_exported(self) -> None:
-        """The applyPresetMultiAware function should be exported."""
-        self.assertIn("A.applyPresetMultiAware", self.js_multi_content)
-
-    def test_preset_applies_to_active_tab(self) -> None:
-        """The preset logic should call applyPresetMultiAware for multi-image mode."""
-        self.assertIn("applyPresetMultiAware", self.js_content)
-        # The recommended button handler should check isMultiImage
-        self.assertIn('isMultiImage()', self.js_content)
-
-    def test_active_tab_panel_selection_uses_image_id(self) -> None:
-        """The artifact selection should use image_id to scope to the right panel."""
-        self.assertIn("data-image-id", self.js_multi_content)
-
-    def test_clone_fieldsets_for_per_image_panels(self) -> None:
-        """The tab builder should clone fieldsets from the main form."""
-        self.assertIn("cloneNode", self.js_multi_content)
+    def test_multi_image_artifact_tab_behavior(self) -> None:
+        self.run_jest("tests/js/evidence_multi.test.js")
 
 
 class TestMultiImageParsingCss(unittest.TestCase):
