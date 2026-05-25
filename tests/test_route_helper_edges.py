@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import app.artifact_profiles as artifact_profiles
 import app.routes.artifacts as routes_artifacts
 import app.routes.state as routes_state
 
@@ -20,22 +21,22 @@ class ArtifactProfileHelperTests(unittest.TestCase):
                         "name": "Legacy Profile",
                         "selections": [
                             "runkeys",
-                            {"artifact_key": "mft", "mode": routes_artifacts.MODE_PARSE_ONLY},
+                            {"artifact_key": "mft", "mode": artifact_profiles.MODE_PARSE_ONLY},
                         ],
                     }
                 ),
                 encoding="utf-8",
             )
 
-            profile = routes_artifacts._load_profile_file(path)
+            profile = artifact_profiles._load_profile_file(path)
 
         self.assertIsNotNone(profile)
         self.assertEqual(profile["name"], "Legacy Profile")
         self.assertEqual(
             profile["artifact_options"],
             [
-                {"artifact_key": "runkeys", "mode": routes_artifacts.MODE_PARSE_AND_AI},
-                {"artifact_key": "mft", "mode": routes_artifacts.MODE_PARSE_ONLY},
+                {"artifact_key": "runkeys", "mode": artifact_profiles.MODE_PARSE_AND_AI},
+                {"artifact_key": "mft", "mode": artifact_profiles.MODE_PARSE_ONLY},
             ],
         )
 
@@ -51,15 +52,30 @@ class ArtifactProfileHelperTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            profiles = routes_artifacts.load_profiles_from_directory(profiles_root)
+            profiles = artifact_profiles.load_profiles_from_directory(profiles_root)
 
         custom_profiles = [
             profile
             for profile in profiles
-            if str(profile.get("name", "")).strip().lower() != routes_artifacts.BUILTIN_RECOMMENDED_PROFILE
+            if str(profile.get("name", "")).strip().lower() != artifact_profiles.BUILTIN_RECOMMENDED_PROFILE
         ]
         self.assertEqual(len(custom_profiles), 1)
         self.assertEqual(custom_profiles[0]["name"], "Alpha")
+
+    def test_recommended_profile_generation_uses_canonical_exclusions(self) -> None:
+        options = artifact_profiles._recommended_artifact_options()
+
+        keys = {str(option["artifact_key"]).strip().lower() for option in options}
+        self.assertTrue(keys)
+        self.assertTrue(keys.isdisjoint(artifact_profiles.RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS))
+        self.assertEqual(len(keys), len(options))
+
+    def test_route_private_profile_loader_is_canonical_alias(self) -> None:
+        self.assertIs(routes_artifacts._load_profile_file, artifact_profiles._load_profile_file)
+        self.assertIs(
+            routes_artifacts._recommended_artifact_options,
+            artifact_profiles._recommended_artifact_options,
+        )
 
 
 class AuditConfigChangeTests(unittest.TestCase):

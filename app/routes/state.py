@@ -44,6 +44,7 @@ from typing import Any
 
 from flask import Response, jsonify, stream_with_context
 
+from ..artifact_profiles import MODE_PARSE_AND_AI, MODE_PARSE_ONLY
 from ..case_logging import unregister_case_log_handler
 from ..config import LOGO_FILE_CANDIDATES
 from ..evidence_constants import DISSECT_EVIDENCE_EXTENSIONS
@@ -105,8 +106,6 @@ SENSITIVE_KEYS = {"api_key", "token", "secret", "password"}
 MASKED = "********"
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-MODE_PARSE_AND_AI = "parse_and_ai"
-MODE_PARSE_ONLY = "parse_only"
 CONNECTION_TEST_SYSTEM_PROMPT = "You are a connectivity test assistant. Reply briefly."
 CONNECTION_TEST_USER_PROMPT = "Reply with: Connection OK."
 DEFAULT_FORENSIC_SYSTEM_PROMPT = (

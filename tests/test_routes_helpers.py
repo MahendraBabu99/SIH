@@ -19,6 +19,7 @@ from zipfile import ZipFile
 import yaml
 
 from app import create_app
+import app.artifact_profiles as artifact_profiles
 from app.case_logging import unregister_all_case_log_handlers
 import app.routes as routes
 import app.routes.artifacts as routes_artifacts
@@ -514,27 +515,27 @@ class EvidenceHelperTests(unittest.TestCase):
 
 
 class ArtifactHelperTests(unittest.TestCase):
-    """Tests for helper functions in app.routes.artifacts."""
+    """Tests for canonical helper functions in app.artifact_profiles."""
 
     def test_normalize_artifact_mode_defaults(self) -> None:
-        self.assertEqual(routes_artifacts.normalize_artifact_mode("parse_and_ai"), "parse_and_ai")
-        self.assertEqual(routes_artifacts.normalize_artifact_mode("parse_only"), "parse_only")
-        self.assertEqual(routes_artifacts.normalize_artifact_mode(""), "parse_and_ai")
-        self.assertEqual(routes_artifacts.normalize_artifact_mode(None), "parse_and_ai")
-        self.assertEqual(routes_artifacts.normalize_artifact_mode("invalid"), "parse_and_ai")
+        self.assertEqual(artifact_profiles.normalize_artifact_mode("parse_and_ai"), "parse_and_ai")
+        self.assertEqual(artifact_profiles.normalize_artifact_mode("parse_only"), "parse_only")
+        self.assertEqual(artifact_profiles.normalize_artifact_mode(""), "parse_and_ai")
+        self.assertEqual(artifact_profiles.normalize_artifact_mode(None), "parse_and_ai")
+        self.assertEqual(artifact_profiles.normalize_artifact_mode("invalid"), "parse_and_ai")
         self.assertEqual(
-            routes_artifacts.normalize_artifact_mode("invalid", default_mode="parse_only"),
+            artifact_profiles.normalize_artifact_mode("invalid", default_mode="parse_only"),
             "parse_only",
         )
 
     def test_normalize_artifact_options_string_list(self) -> None:
-        result = routes_artifacts.normalize_artifact_options(["runkeys", "mft", "runkeys"])
+        result = artifact_profiles.normalize_artifact_options(["runkeys", "mft", "runkeys"])
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]["artifact_key"], "runkeys")
         self.assertEqual(result[0]["mode"], "parse_and_ai")
 
     def test_normalize_artifact_options_dict_list(self) -> None:
-        result = routes_artifacts.normalize_artifact_options([
+        result = artifact_profiles.normalize_artifact_options([
             {"artifact_key": "runkeys", "mode": "parse_only"},
             {"key": "mft", "ai_enabled": False},
         ])
@@ -544,10 +545,10 @@ class ArtifactHelperTests(unittest.TestCase):
 
     def test_normalize_artifact_options_rejects_non_list(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.normalize_artifact_options("not a list")
+            artifact_profiles.normalize_artifact_options("not a list")
 
     def test_normalize_artifact_options_skips_non_string_non_dict(self) -> None:
-        result = routes_artifacts.normalize_artifact_options(["runkeys", 42, None])
+        result = artifact_profiles.normalize_artifact_options(["runkeys", 42, None])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["artifact_key"], "runkeys")
 
@@ -557,7 +558,7 @@ class ArtifactHelperTests(unittest.TestCase):
             {"artifact_key": "mft", "mode": "parse_only"},
             {"artifact_key": "evtx", "mode": "parse_and_ai"},
         ]
-        parse, analysis = routes_artifacts.artifact_options_to_lists(options)
+        parse, analysis = artifact_profiles.artifact_options_to_lists(options)
         self.assertEqual(parse, ["runkeys", "mft", "evtx"])
         self.assertEqual(analysis, ["runkeys", "evtx"])
 
@@ -568,7 +569,7 @@ class ArtifactHelperTests(unittest.TestCase):
                 {"artifact_key": "mft", "mode": "parse_only"},
             ]
         }
-        options, parse_list, analysis_list = routes_artifacts.extract_parse_selection_payload(payload)
+        options, parse_list, analysis_list = artifact_profiles.extract_parse_selection_payload(payload)
         self.assertEqual(len(options), 2)
         self.assertEqual(parse_list, ["runkeys", "mft"])
         self.assertEqual(analysis_list, ["runkeys"])
@@ -578,123 +579,153 @@ class ArtifactHelperTests(unittest.TestCase):
             "artifacts": ["runkeys", "mft"],
             "ai_artifacts": ["runkeys"],
         }
-        options, parse_list, analysis_list = routes_artifacts.extract_parse_selection_payload(payload)
+        options, parse_list, analysis_list = artifact_profiles.extract_parse_selection_payload(payload)
         self.assertEqual(parse_list, ["runkeys", "mft"])
         self.assertEqual(analysis_list, ["runkeys"])
 
     def test_extract_parse_selection_payload_legacy_no_ai_artifacts(self) -> None:
         payload = {"artifacts": ["runkeys", "mft"]}
-        options, parse_list, analysis_list = routes_artifacts.extract_parse_selection_payload(payload)
+        options, parse_list, analysis_list = artifact_profiles.extract_parse_selection_payload(payload)
         self.assertEqual(parse_list, ["runkeys", "mft"])
         self.assertEqual(analysis_list, ["runkeys", "mft"])
 
     def test_extract_parse_selection_payload_invalid_artifacts(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.extract_parse_selection_payload({"artifacts": "not a list"})
+            artifact_profiles.extract_parse_selection_payload({"artifacts": "not a list"})
 
     def test_extract_parse_selection_payload_invalid_ai_artifacts(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.extract_parse_selection_payload(
+            artifact_profiles.extract_parse_selection_payload(
                 {"artifacts": ["runkeys"], "ai_artifacts": "not a list"}
             )
 
     def test_validate_analysis_date_range_valid(self) -> None:
-        result = routes_artifacts.validate_analysis_date_range(
+        result = artifact_profiles.validate_analysis_date_range(
             {"start_date": "2025-01-01", "end_date": "2025-01-31"}
         )
         self.assertEqual(result["start_date"], "2025-01-01")
         self.assertEqual(result["end_date"], "2025-01-31")
 
     def test_validate_analysis_date_range_none(self) -> None:
-        self.assertIsNone(routes_artifacts.validate_analysis_date_range(None))
+        self.assertIsNone(artifact_profiles.validate_analysis_date_range(None))
 
     def test_validate_analysis_date_range_empty(self) -> None:
         self.assertIsNone(
-            routes_artifacts.validate_analysis_date_range({"start_date": "", "end_date": ""})
+            artifact_profiles.validate_analysis_date_range({"start_date": "", "end_date": ""})
         )
 
     def test_validate_analysis_date_range_partial(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            routes_artifacts.validate_analysis_date_range({"start_date": "2025-01-01"})
+            artifact_profiles.validate_analysis_date_range({"start_date": "2025-01-01"})
         self.assertIn("Provide both", str(ctx.exception))
 
     def test_validate_analysis_date_range_invalid_format(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            routes_artifacts.validate_analysis_date_range(
+            artifact_profiles.validate_analysis_date_range(
                 {"start_date": "01-01-2025", "end_date": "01-31-2025"}
             )
         self.assertIn("YYYY-MM-DD", str(ctx.exception))
 
     def test_validate_analysis_date_range_reversed(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            routes_artifacts.validate_analysis_date_range(
+            artifact_profiles.validate_analysis_date_range(
                 {"start_date": "2025-02-01", "end_date": "2025-01-01"}
             )
         self.assertIn("earlier", str(ctx.exception))
 
     def test_validate_analysis_date_range_non_dict(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.validate_analysis_date_range("not a dict")
+            artifact_profiles.validate_analysis_date_range("not a dict")
 
     def test_extract_parse_progress_dict_arg(self) -> None:
-        key, count = routes_artifacts.extract_parse_progress(
+        key, count = artifact_profiles.extract_parse_progress(
             "fallback", ({"artifact_key": "runkeys", "record_count": 42},)
         )
         self.assertEqual(key, "runkeys")
         self.assertEqual(count, 42)
 
     def test_extract_parse_progress_positional_args(self) -> None:
-        key, count = routes_artifacts.extract_parse_progress("fallback", ("mft", 100))
+        key, count = artifact_profiles.extract_parse_progress("fallback", ("mft", 100))
         self.assertEqual(key, "mft")
         self.assertEqual(count, 100)
 
     def test_extract_parse_progress_single_arg(self) -> None:
-        key, count = routes_artifacts.extract_parse_progress("fallback", (50,))
+        key, count = artifact_profiles.extract_parse_progress("fallback", (50,))
         self.assertEqual(key, "fallback")
         self.assertEqual(count, 50)
 
     def test_extract_parse_progress_no_args(self) -> None:
-        key, count = routes_artifacts.extract_parse_progress("fallback", ())
+        key, count = artifact_profiles.extract_parse_progress("fallback", ())
         self.assertEqual(key, "fallback")
         self.assertEqual(count, 0)
 
     def test_sanitize_prompt_short(self) -> None:
-        result = routes_artifacts.sanitize_prompt("  hello   world  ")
+        result = artifact_profiles.sanitize_prompt("  hello   world  ")
         self.assertEqual(result, "hello world")
 
     def test_sanitize_prompt_truncation(self) -> None:
         long_prompt = "a" * 3000
-        result = routes_artifacts.sanitize_prompt(long_prompt, max_chars=100)
+        result = artifact_profiles.sanitize_prompt(long_prompt, max_chars=100)
         self.assertTrue(result.endswith("... [truncated]"))
         self.assertTrue(len(result) < 200)
 
     def test_normalize_profile_name_valid(self) -> None:
-        self.assertEqual(routes_artifacts.normalize_profile_name("My Profile"), "My Profile")
+        self.assertEqual(artifact_profiles.normalize_profile_name("My Profile"), "My Profile")
 
     def test_normalize_profile_name_empty(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.normalize_profile_name("")
+            artifact_profiles.normalize_profile_name("")
 
     def test_normalize_profile_name_reserved(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.normalize_profile_name("recommended")
+            artifact_profiles.normalize_profile_name("recommended")
 
     def test_normalize_profile_name_invalid_chars(self) -> None:
         with self.assertRaises(ValueError):
-            routes_artifacts.normalize_profile_name("!@#$%")
+            artifact_profiles.normalize_profile_name("!@#$%")
 
     def test_profile_path_for_new_name(self) -> None:
         with TemporaryDirectory() as tmpdir:
             profiles_root = Path(tmpdir)
-            path = routes_artifacts.profile_path_for_new_name(profiles_root, "My Profile")
+            path = artifact_profiles.profile_path_for_new_name(profiles_root, "My Profile")
             self.assertEqual(path, profiles_root / "my_profile.json")
 
     def test_profile_path_for_new_name_collision(self) -> None:
         with TemporaryDirectory() as tmpdir:
             profiles_root = Path(tmpdir)
             (profiles_root / "my_profile.json").write_text("{}", encoding="utf-8")
-            path = routes_artifacts.profile_path_for_new_name(profiles_root, "My Profile")
+            path = artifact_profiles.profile_path_for_new_name(profiles_root, "My Profile")
             self.assertEqual(path, profiles_root / "my_profile_1.json")
+
+
+class ArtifactRouteExportCompatibilityTests(unittest.TestCase):
+    """Route exports should be aliases over app.artifact_profiles."""
+
+    def test_routes_artifacts_reexports_canonical_helpers(self) -> None:
+        helper_names = [
+            "normalize_artifact_mode",
+            "normalize_artifact_options",
+            "artifact_options_to_lists",
+            "extract_parse_selection_payload",
+            "validate_analysis_date_range",
+            "extract_parse_progress",
+            "sanitize_prompt",
+            "resolve_profiles_root",
+            "compose_profile_response",
+            "load_profiles_from_directory",
+            "normalize_profile_name",
+            "profile_path_for_new_name",
+            "write_profile_file",
+        ]
+        for name in helper_names:
+            with self.subTest(name=name):
+                self.assertIs(getattr(routes_artifacts, name), getattr(artifact_profiles, name))
+
+    def test_mode_constants_are_single_source(self) -> None:
+        self.assertEqual(routes_artifacts.MODE_PARSE_AND_AI, artifact_profiles.MODE_PARSE_AND_AI)
+        self.assertEqual(routes_artifacts.MODE_PARSE_ONLY, artifact_profiles.MODE_PARSE_ONLY)
+        self.assertEqual(routes_state.MODE_PARSE_AND_AI, artifact_profiles.MODE_PARSE_AND_AI)
+        self.assertEqual(routes_state.MODE_PARSE_ONLY, artifact_profiles.MODE_PARSE_ONLY)
 
 
 class TaskHelperTests(unittest.TestCase):
