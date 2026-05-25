@@ -14,6 +14,7 @@ Attributes:
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -27,7 +28,10 @@ from ..evidence_segments import (
     SPLIT_RAW_SEGMENT_RE,
     collect_segment_group_paths,
     segment_identity,
+    validate_segment_group_paths,
 )
+from ..evidence_archives import DEFAULT_ARCHIVE_LIMITS, ArchiveExtractionLimits
+from ..evidence_constants import ARCHIVE_EVIDENCE_EXTENSIONS
 from .evidence_archive import extract_zip, extract_tar, extract_7z
 from .state import safe_name
 
@@ -42,6 +46,7 @@ __all__ = [
     "unique_destination",
     "segment_identity",
     "collect_segment_group_paths",
+    "validate_segment_group_paths",
     "resolve_uploaded_dissect_path",
     "normalize_user_path",
     "make_extract_dir",
@@ -49,6 +54,57 @@ __all__ = [
 ]
 
 SAVE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB
+
+
+def _archive_limits_from_config(config: dict[str, Any]) -> ArchiveExtractionLimits:
+    evidence_config = config.get("evidence", {}) if isinstance(config, dict) else {}
+    if not isinstance(evidence_config, dict):
+        return DEFAULT_ARCHIVE_LIMITS
+
+    def _positive_int(name: str, default: int) -> int:
+        value = evidence_config.get(name, default)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    return ArchiveExtractionLimits(
+        max_members=_positive_int(
+            "archive_max_members",
+            DEFAULT_ARCHIVE_LIMITS.max_members,
+        ),
+        max_total_bytes=_positive_int(
+            "archive_max_total_bytes",
+            DEFAULT_ARCHIVE_LIMITS.max_total_bytes,
+        ),
+        max_member_bytes=_positive_int(
+            "archive_max_member_bytes",
+            DEFAULT_ARCHIVE_LIMITS.max_member_bytes,
+        ),
+    )
+
+
+def _cleanup_created_paths(paths: list[Path], root: Path) -> None:
+    resolved_root = root.resolve()
+    for path in sorted(paths, key=lambda item: len(item.parts), reverse=True):
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path.absolute()
+        try:
+            if not resolved.is_relative_to(resolved_root):
+                LOGGER.warning("Refusing to clean path outside evidence root: %s", resolved)
+                continue
+        except (TypeError, ValueError):
+            continue
+        if resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)
+        elif resolved.exists():
+            try:
+                resolved.unlink()
+            except OSError:
+                LOGGER.debug("Failed to clean created evidence file: %s", resolved, exc_info=True)
 
 
 def collect_uploaded_files() -> list[Any]:
@@ -91,6 +147,7 @@ def save_with_limit(
 
     written = 0
     stream = file_storage.stream
+    limit_message = ""
     with open(dest, "wb") as out:
         while True:
             chunk = stream.read(SAVE_CHUNK_SIZE)
@@ -98,14 +155,17 @@ def save_with_limit(
                 break
             written += len(chunk)
             if cumulative + written > max_bytes:
-                dest.unlink(missing_ok=True)
                 limit_gb = max_bytes / (1024 * 1024 * 1024)
-                raise ValueError(
+                limit_message = (
                     f"Upload exceeds the Evidence Size Threshold "
                     f"({limit_gb:.1f} GB). Use path mode instead, or "
                     f"increase the threshold in Settings \u2192 Advanced."
                 )
+                break
             out.write(chunk)
+    if limit_message:
+        dest.unlink(missing_ok=True)
+        raise ValueError(limit_message)
     return cumulative + written
 
 
@@ -149,8 +209,11 @@ def resolve_uploaded_dissect_path(uploaded_paths: list[Path]) -> Path:
     if len(uploaded_paths) == 1:
         return uploaded_paths[0]
 
-    archive_exts = {".zip", ".tar", ".gz", ".tgz", ".7z"}
-    archive_paths = [path for path in uploaded_paths if path.suffix.lower() in archive_exts]
+    archive_paths = [
+        path
+        for path in uploaded_paths
+        if path.suffix.lower() in ARCHIVE_EVIDENCE_EXTENSIONS
+    ]
     if archive_paths and len(uploaded_paths) > 1:
         raise ValueError("Upload either one archive file or raw evidence segments, not both.")
 
@@ -170,8 +233,8 @@ def resolve_uploaded_dissect_path(uploaded_paths: list[Path]) -> Path:
                 f"({', '.join(group_names)}). "
                 "Upload only one split segment set at a time."
             )
-        only_group = next(iter(segment_groups.values()))
-        return min(only_group, key=lambda item: item[0])[1]
+        ordered = validate_segment_group_paths(uploaded_paths)
+        return ordered[0]
 
     # Multiple files that are neither a single archive nor a recognized
     # segment set -- reject rather than silently analyzing only the first.
@@ -247,78 +310,87 @@ def resolve_evidence_payload(case_dir: Path) -> dict[str, Any]:
     """
     evidence_dir = case_dir / "evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    created_paths: list[Path] = []
 
-    uploaded_files = collect_uploaded_files()
-    uploaded_paths: list[Path] = []
-    if uploaded_files:
+    try:
+        uploaded_files = collect_uploaded_files()
+        uploaded_paths: list[Path] = []
         aift_config = current_app.config.get("AIFT_CONFIG", {})
-        threshold_mb = aift_config.get("evidence", {}).get("large_file_threshold_mb", 0)
-        max_bytes = int(threshold_mb) * 1024 * 1024 if threshold_mb and threshold_mb > 0 else 0
-        cumulative_bytes = 0
-        timestamp = int(time.time())
-        for index, uploaded_file in enumerate(uploaded_files, start=1):
-            filename = secure_filename(uploaded_file.filename) or f"evidence_{timestamp}_{index}.bin"
-            stored_path = unique_destination(evidence_dir / filename)
-            cumulative_bytes = save_with_limit(uploaded_file, stored_path, max_bytes, cumulative_bytes)
-            uploaded_paths.append(stored_path)
+        archive_limits = _archive_limits_from_config(aift_config)
+        if uploaded_files:
+            evidence_config = aift_config.get("evidence", {}) if isinstance(aift_config, dict) else {}
+            threshold_mb = evidence_config.get("large_file_threshold_mb", 0)
+            max_bytes = int(threshold_mb) * 1024 * 1024 if threshold_mb and threshold_mb > 0 else 0
+            cumulative_bytes = 0
+            timestamp = int(time.time())
+            for index, uploaded_file in enumerate(uploaded_files, start=1):
+                filename = secure_filename(uploaded_file.filename) or f"evidence_{timestamp}_{index}.bin"
+                stored_path = unique_destination(evidence_dir / filename)
+                cumulative_bytes = save_with_limit(uploaded_file, stored_path, max_bytes, cumulative_bytes)
+                uploaded_paths.append(stored_path)
+                created_paths.append(stored_path)
 
-        source_path = resolve_uploaded_dissect_path(uploaded_paths)
-        mode = "upload"
-    else:
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, dict):
-            raise ValueError("Request body must be a JSON object.")
-        path_value = payload.get("path")
-        if not isinstance(path_value, str):
-            raise ValueError(
-                "Provide evidence via multipart upload or JSON body with {'path': 'C:\\Evidence\\disk-image.E01'}."
-            )
-        normalized_path = normalize_user_path(path_value)
-        if not normalized_path:
-            raise ValueError(
-                "Provide evidence via multipart upload or JSON body with {'path': 'C:\\Evidence\\disk-image.E01'}."
-            )
-        source_path = Path(normalized_path).expanduser().resolve()
-        if not source_path.exists():
-            raise FileNotFoundError(f"Evidence path does not exist: {source_path}")
-        if not source_path.is_file() and not source_path.is_dir():
-            raise ValueError(f"Evidence path is not a file or directory: {source_path}")
-        uploaded_paths = []
-        mode = "path"
+            source_path = resolve_uploaded_dissect_path(uploaded_paths)
+            mode = "upload"
+        else:
+            payload = request.get_json(silent=True) or {}
+            if not isinstance(payload, dict):
+                raise ValueError("Request body must be a JSON object.")
+            path_value = payload.get("path")
+            if not isinstance(path_value, str):
+                raise ValueError(
+                    "Provide evidence via multipart upload or JSON body with {'path': 'C:\\Evidence\\disk-image.E01'}."
+                )
+            normalized_path = normalize_user_path(path_value)
+            if not normalized_path:
+                raise ValueError(
+                    "Provide evidence via multipart upload or JSON body with {'path': 'C:\\Evidence\\disk-image.E01'}."
+                )
+            source_path = Path(normalized_path).expanduser().resolve()
+            if not source_path.exists():
+                raise FileNotFoundError(f"Evidence path does not exist: {source_path}")
+            if not source_path.is_file() and not source_path.is_dir():
+                raise ValueError(f"Evidence path is not a file or directory: {source_path}")
+            uploaded_paths = []
+            mode = "path"
 
-    # Extract archives into the evidence directory.
-    _ARCHIVE_EXTRACTORS = {
-        ".zip": extract_zip,
-        ".tar": extract_tar,
-        ".gz": extract_tar,
-        ".tgz": extract_tar,
-        ".7z": extract_7z,
-    }
-    dissect_path = source_path
-    suffix = source_path.suffix.lower()
-    extractor = _ARCHIVE_EXTRACTORS.get(suffix)
-    if source_path.is_file() and extractor is not None:
-        extract_dir = make_extract_dir(evidence_dir, source_path)
-        dissect_path = extractor(source_path, extract_dir)
+        # Extract archives into the evidence directory.
+        _ARCHIVE_EXTRACTORS = {
+            ".zip": extract_zip,
+            ".tar": extract_tar,
+            ".gz": extract_tar,
+            ".tgz": extract_tar,
+            ".7z": extract_7z,
+        }
+        dissect_path = source_path
+        suffix = source_path.suffix.lower()
+        extractor = _ARCHIVE_EXTRACTORS.get(suffix)
+        if source_path.is_file() and extractor is not None:
+            extract_dir = make_extract_dir(evidence_dir, source_path)
+            created_paths.append(extract_dir)
+            dissect_path = extractor(source_path, extract_dir, limits=archive_limits)
 
-    # Determine the files to hash for integrity verification.
-    # Archives are intentionally verified as the original container file.
-    # Split-image uploads hash all uploaded segments, and path-based split
-    # images hash all matching sibling segments on disk. Directories get N/A.
-    if source_path.is_file() and len(uploaded_paths) > 1:
-        evidence_files_to_hash = sorted(set(str(p) for p in uploaded_paths))
-    elif source_path.is_file():
-        segment_paths = collect_segment_group_paths(source_path)
-        evidence_files_to_hash = [str(path) for path in segment_paths] if segment_paths else [str(source_path)]
-    else:
-        evidence_files_to_hash = []
+        # Determine the files to hash for integrity verification.
+        # Archives are intentionally verified as the original container file.
+        # Split-image uploads hash all uploaded segments, and path-based split
+        # images hash all matching sibling segments on disk. Directories get N/A.
+        if source_path.is_file() and len(uploaded_paths) > 1:
+            evidence_files_to_hash = [str(path) for path in validate_segment_group_paths(uploaded_paths)]
+        elif source_path.is_file():
+            segment_paths = collect_segment_group_paths(source_path)
+            evidence_files_to_hash = [str(path) for path in segment_paths] if segment_paths else [str(source_path)]
+        else:
+            evidence_files_to_hash = []
 
-    return {
-        "mode": mode,
-        "filename": source_path.name,
-        "source_path": str(source_path),
-        "stored_path": str(source_path) if mode == "upload" else "",
-        "dissect_path": str(dissect_path),
-        "uploaded_files": [str(path) for path in uploaded_paths],
-        "evidence_files_to_hash": evidence_files_to_hash,
-    }
+        return {
+            "mode": mode,
+            "filename": source_path.name,
+            "source_path": str(source_path),
+            "stored_path": str(source_path) if mode == "upload" else "",
+            "dissect_path": str(dissect_path),
+            "uploaded_files": [str(path) for path in uploaded_paths],
+            "evidence_files_to_hash": evidence_files_to_hash,
+        }
+    except Exception:
+        _cleanup_created_paths(created_paths, evidence_dir)
+        raise

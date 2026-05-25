@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
-__all__ = ["DISSECT_EVIDENCE_EXTENSIONS"]
+__all__ = [
+    "ARCHIVE_EVIDENCE_EXTENSIONS",
+    "DISSECT_EVIDENCE_EXTENSIONS",
+    "NON_ARCHIVE_EVIDENCE_EXTENSIONS",
+]
+
+ARCHIVE_EVIDENCE_EXTENSIONS = frozenset({
+    ".zip",
+    ".tar",
+    ".gz",
+    ".tgz",
+    ".7z",
+})
 
 DISSECT_EVIDENCE_EXTENSIONS = frozenset({
     ".e01", ".ex01", ".s01", ".l01",
@@ -16,3 +28,7 @@ DISSECT_EVIDENCE_EXTENSIONS = frozenset({
     ".tar", ".gz", ".tgz",
     ".zip", ".7z",
 })
+
+NON_ARCHIVE_EVIDENCE_EXTENSIONS = frozenset(
+    DISSECT_EVIDENCE_EXTENSIONS - ARCHIVE_EVIDENCE_EXTENSIONS
+)

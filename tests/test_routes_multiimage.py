@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import MagicMock, patch
+from zipfile import ZipFile
 
 from app import create_app
 from app.case_logging import unregister_all_case_log_handlers
@@ -185,6 +186,30 @@ class MultiImageRoutesTests(unittest.TestCase):
         resp = self.client.post("/api/evidence/discover", json={})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("path", resp.get_json()["error"])
+
+    def test_discover_evidence_archive_uses_managed_workspace(self) -> None:
+        """Archive fallback paths returned to the GUI remain under CASES_ROOT."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["count"], 1)
+        discovered_path = Path(data["evidence"][0]["path"]).resolve()
+        self.assertTrue(discovered_path.is_relative_to(self.cases_root.resolve()))
+        self.assertIn("_managed_discovery", discovered_path.parts)
+        self.assertTrue(discovered_path.exists())
 
     def test_image_specific_evidence_intake(self) -> None:
         """POST /api/cases/<id>/images/<img_id>/evidence ingests evidence."""

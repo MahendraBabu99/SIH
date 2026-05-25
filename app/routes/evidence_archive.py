@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import gc
 import logging
-import shutil
-import tarfile
 from pathlib import Path
 from typing import Any, Callable
-from zipfile import BadZipFile, ZipFile
 
-import py7zr
-
+from ..evidence_archives import (
+    ArchiveExtractionLimits,
+    DEFAULT_ARCHIVE_LIMITS,
+    extract_archive_to_directory,
+    validate_archive_member_target,
+)
+from ..evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
 __all__ = [
     "EVIDENCE_FILE_EXTENSIONS",
     "extract_archive_members",
@@ -30,14 +32,7 @@ __all__ = [
 ]
 
 # Extensions for evidence files we look for inside extracted archives.
-EVIDENCE_FILE_EXTENSIONS = frozenset({
-    ".e01", ".ex01", ".s01", ".l01",
-    ".dd", ".img", ".raw", ".bin", ".iso",
-    ".vmdk", ".vhd", ".vhdx", ".vdi", ".qcow2", ".hdd", ".hds",
-    ".vmx", ".vbox", ".vmcx", ".ovf", ".ova",
-    ".asdf", ".asif", ".ad1",
-    ".000", ".001",
-})
+EVIDENCE_FILE_EXTENSIONS = NON_ARCHIVE_EVIDENCE_EXTENSIONS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -100,21 +95,22 @@ def extract_archive_members(
     if (extract_member is None) == (extract_all_members is None):
         raise ValueError("Exactly one extraction callback must be provided.")
 
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
     root = destination.resolve()
+    root.mkdir(parents=True, exist_ok=True)
 
     if not members:
         raise ValueError(empty_message)
 
     validated_members: list[tuple[Any, Path]] = []
     for member_name, member in members:
-        member_path = Path(member_name)
-        if member_path.is_absolute() or ".." in member_path.parts:
-            raise ValueError(unsafe_paths_message)
-        target = (root / member_path).resolve()
-        if not target.is_relative_to(root):
+        try:
+            _relative, target = validate_archive_member_target(root, member_name)
+        except ValueError as error:
+            raise ValueError(unsafe_paths_message) from error
+        try:
+            if not target.is_relative_to(root):
+                raise ValueError(unsafe_paths_message)
+        except (TypeError, ValueError) as error:
             raise ValueError(unsafe_paths_message)
         target.parent.mkdir(parents=True, exist_ok=True)
         validated_members.append((member, target))
@@ -160,7 +156,64 @@ def extract_archive_members(
     return destination
 
 
-def extract_zip(zip_path: Path, destination: Path) -> Path:
+def _select_extracted_target(destination: Path) -> Path:
+    """Return the best evidence target within an extracted archive."""
+
+    files = sorted(path for path in destination.rglob("*") if path.is_file())
+    if not files:
+        raise ValueError("Evidence archive extraction produced no files.")
+
+    discovered_target = _discover_extracted_target(destination)
+    if discovered_target is not None:
+        return discovered_target
+
+    evidence_files = [
+        path for path in files if path.suffix.lower() in EVIDENCE_FILE_EXTENSIONS
+    ]
+    if evidence_files:
+        for evidence_file in evidence_files:
+            if evidence_file.suffix.lower() == ".e01":
+                return evidence_file
+        return evidence_files[0]
+
+    top_level_entries: set[str] = set()
+    has_top_level_file = False
+    for file_path in files:
+        relative_parts = file_path.relative_to(destination).parts
+        if not relative_parts:
+            continue
+        top_level_entries.add(relative_parts[0])
+        if len(relative_parts) == 1:
+            has_top_level_file = True
+
+    if not has_top_level_file and len(top_level_entries) == 1:
+        wrapper_dir = destination / sorted(top_level_entries)[0]
+        if wrapper_dir.is_dir():
+            return wrapper_dir
+
+    return destination
+
+
+def _extract_and_select(
+    archive_path: Path,
+    destination: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+) -> Path:
+    extracted_root = extract_archive_to_directory(
+        archive_path,
+        destination,
+        limits=limits,
+    )
+    return _select_extracted_target(extracted_root)
+
+
+def extract_zip(
+    zip_path: Path,
+    destination: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+) -> Path:
     """Extract a ZIP archive and return the best Dissect target path.
 
     Args:
@@ -173,27 +226,15 @@ def extract_zip(zip_path: Path, destination: Path) -> Path:
     Raises:
         ValueError: If the ZIP is invalid, empty, or contains unsafe paths.
     """
-    try:
-        with ZipFile(zip_path, "r") as archive:
-            members = [(member.filename, member) for member in archive.infolist() if not member.is_dir()]
-
-            def _extract_member(member: Any, target: Path) -> None:
-                """Extract a single ZIP member to the target path."""
-                with archive.open(member, "r") as src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-            return extract_archive_members(
-                destination,
-                members,
-                empty_message="Evidence ZIP is empty.",
-                unsafe_paths_message="Archive rejected: contains unsafe file paths",
-                no_files_message="Evidence ZIP extraction produced no files.",
-                extract_member=_extract_member,
-            )
-    except BadZipFile as error:
-        raise ValueError(f"Invalid ZIP evidence file: {zip_path.name}") from error
+    return _extract_and_select(zip_path, destination, limits=limits)
 
 
-def extract_tar(tar_path: Path, destination: Path) -> Path:
+def extract_tar(
+    tar_path: Path,
+    destination: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+) -> Path:
     """Extract a tar archive and return the best Dissect target path.
 
     Args:
@@ -206,34 +247,15 @@ def extract_tar(tar_path: Path, destination: Path) -> Path:
     Raises:
         ValueError: If the tar is invalid, empty, or contains unsafe paths.
     """
-    try:
-        with tarfile.open(tar_path, "r:*") as archive:
-            raw_members = archive.getmembers()
-            for member in raw_members:
-                if member.islnk() or member.issym():
-                    raise ValueError("Archive rejected: contains unsafe file paths")
-            members = [(member.name, member) for member in raw_members if member.isfile()]
-
-            def _extract_member(member: Any, target: Path) -> None:
-                """Extract a single tar member to the target path."""
-                src = archive.extractfile(member)
-                if src is None:
-                    return
-                with src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-            return extract_archive_members(
-                destination,
-                members,
-                empty_message="Evidence tar archive is empty.",
-                unsafe_paths_message="Archive rejected: contains unsafe file paths",
-                no_files_message="Evidence tar extraction produced no files.",
-                extract_member=_extract_member,
-            )
-    except tarfile.TarError as error:
-        raise ValueError(f"Invalid tar evidence file: {tar_path.name}") from error
+    return _extract_and_select(tar_path, destination, limits=limits)
 
 
-def extract_7z(archive_path: Path, destination: Path) -> Path:
+def extract_7z(
+    archive_path: Path,
+    destination: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+) -> Path:
     """Extract a 7z archive and return the best Dissect target path.
 
     Args:
@@ -246,29 +268,4 @@ def extract_7z(archive_path: Path, destination: Path) -> Path:
     Raises:
         ValueError: If the 7z is invalid, empty, or contains unsafe paths.
     """
-    try:
-        with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-            members = [(name, name) for name in archive.getnames() if not name.endswith("/")]
-
-            def _extract_members(validated: list[tuple[Any, Path]]) -> None:
-                """Extract 7z members via temp directory for path-traversal safety."""
-                import tempfile
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tmp = Path(tmpdir)
-                    archive.extractall(path=tmp)
-                    for member_name, target in validated:
-                        src = tmp / member_name
-                        if src.is_file():
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, target)
-
-            return extract_archive_members(
-                destination,
-                members,
-                empty_message="Evidence 7z archive is empty.",
-                unsafe_paths_message="Archive rejected: contains unsafe file paths",
-                no_files_message="Evidence 7z extraction produced no files.",
-                extract_all_members=_extract_members,
-            )
-    except py7zr.Bad7zFile as error:
-        raise ValueError(f"Invalid 7z evidence file: {archive_path.name}") from error
+    return _extract_and_select(archive_path, destination, limits=limits)

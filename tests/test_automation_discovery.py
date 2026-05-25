@@ -337,6 +337,47 @@ class TestDiscoverEvidence(unittest.TestCase):
             self._discover_with_dissect_fail(archive, workspace_dir=workspace)
 
         self.assertFalse((self.root / "escape.E01").exists())
+        self.assertFalse(
+            [path for path in workspace.rglob("*") if path.exists()]
+            if workspace.exists()
+            else []
+        )
+
+    def test_directory_symlink_to_outside_tree_is_skipped(self) -> None:
+        """Recursive discovery does not escape through a symlinked directory."""
+        outside = self.root / "outside"
+        outside.mkdir()
+        outside_evidence = outside / "outside.E01"
+        outside_evidence.write_bytes(b"outside")
+        selected = self.root / "selected"
+        selected.mkdir()
+        inside_evidence = selected / "inside.E01"
+        inside_evidence.write_bytes(b"inside")
+        link = selected / "outside-link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            self.skipTest("Symlinks are not available in this environment")
+
+        result = self._discover_with_dissect_fail(selected)
+
+        self.assertEqual(result, [inside_evidence.resolve()])
+
+    def test_top_level_symlink_target_still_discovers_selected_tree(self) -> None:
+        """A symlink selected as the top-level path resolves to that target."""
+        real = self.root / "real-selected"
+        real.mkdir()
+        evidence = real / "disk.E01"
+        evidence.write_bytes(b"image")
+        link = self.root / "selected-link"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            self.skipTest("Symlinks are not available in this environment")
+
+        result = self._discover_with_dissect_fail(link)
+
+        self.assertEqual(result, [evidence.resolve()])
 
     def test_results_are_sorted(self) -> None:
         """Returned list is sorted by path string."""

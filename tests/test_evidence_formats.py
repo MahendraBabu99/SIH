@@ -30,6 +30,8 @@ import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
+from app.evidence_archives import ArchiveExtractionLimits, validate_archive_member_target
+from app.evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +244,50 @@ class TestExtractZip(unittest.TestCase):
         with self.assertRaises(ValueError, msg="unsafe paths"):
             routes_evidence._extract_zip(zip_path, dest)
 
+    def test_zip_rejects_windows_drive_path(self) -> None:
+        zip_path = self.root / "evil-drive.zip"
+        dest = self.root / "extracted"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("C:\\Windows\\System32\\config\\SAM", b"sam")
+        with self.assertRaises(ValueError):
+            routes_evidence._extract_zip(zip_path, dest)
+
+    def test_zip_rejects_total_extracted_size_and_cleans_destination(self) -> None:
+        zip_path = self.root / "too-large.zip"
+        dest = self.root / "extracted"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("disk.E01", b"A" * 32)
+        with self.assertRaises(ValueError):
+            routes_evidence._extract_zip(
+                zip_path,
+                dest,
+                limits=ArchiveExtractionLimits(
+                    max_members=10,
+                    max_total_bytes=8,
+                    max_member_bytes=64,
+                ),
+            )
+        self.assertFalse(dest.exists())
+
+    def test_zip_rejects_symlink_destination_without_deleting_target(self) -> None:
+        zip_path = self.root / "evidence.zip"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("disk.E01", b"EWF-DATA")
+        target = self.root / "outside-target"
+        target.mkdir()
+        marker = target / "keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+        dest = self.root / "extracted-link"
+        try:
+            dest.symlink_to(target, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            self.skipTest("Symlinks are not available in this environment")
+
+        with self.assertRaises(ValueError):
+            routes_evidence._extract_zip(zip_path, dest)
+
+        self.assertTrue(marker.exists())
+
 
 class TestExtractTar(unittest.TestCase):
     """Test _extract_tar with various content types."""
@@ -294,6 +340,17 @@ class TestExtractTar(unittest.TestCase):
         tar_path = self._make_tar("evil.tar", {"../../etc/passwd": b"root"})
         dest = self.root / "extracted"
         with self.assertRaises(ValueError, msg="unsafe paths"):
+            routes_evidence._extract_tar(tar_path, dest)
+
+    def test_tar_rejects_symlink_member(self) -> None:
+        tar_path = self.root / "evil-link.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo(name="disk.E01")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "../outside.E01"
+            tf.addfile(info)
+        dest = self.root / "extracted"
+        with self.assertRaises(ValueError):
             routes_evidence._extract_tar(tar_path, dest)
 
 
@@ -349,6 +406,11 @@ class TestExtract7z(unittest.TestCase):
         dest = self.root / "extracted"
         result = routes_evidence._extract_7z(archive_path, dest)
         self.assertTrue(str(result).endswith(".E01"))
+
+    def test_shared_member_validator_rejects_backslash_traversal(self) -> None:
+        dest = (self.root / "extracted").resolve()
+        with self.assertRaises(ValueError):
+            validate_archive_member_target(dest, "..\\escape.E01")
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +505,28 @@ class TestResolveUploadedDissectPath(unittest.TestCase):
         ]
         result = routes_evidence._resolve_uploaded_dissect_path(paths)
         self.assertTrue(result.name.endswith(".E01"))
+
+    def test_ewf_missing_first_segment_raises(self) -> None:
+        paths = [self._touch("Disk.E02"), self._touch("Disk.E03")]
+        with self.assertRaises(ValueError) as ctx:
+            routes_evidence._resolve_uploaded_dissect_path(paths)
+        self.assertIn("Incomplete split-image set", str(ctx.exception))
+
+    def test_raw_segment_gap_raises(self) -> None:
+        paths = [self._touch("disk.000"), self._touch("disk.002")]
+        with self.assertRaises(ValueError) as ctx:
+            routes_evidence._resolve_uploaded_dissect_path(paths)
+        self.assertIn("missing", str(ctx.exception))
+
+    def test_segment_group_mixed_with_standalone_file_raises(self) -> None:
+        paths = [
+            self._touch("Disk.E01"),
+            self._touch("Disk.E02"),
+            self._touch("notes.dd"),
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            routes_evidence._resolve_uploaded_dissect_path(paths)
+        self.assertIn("non-segment files", str(ctx.exception))
 
     def test_two_standalone_images_raises(self) -> None:
         """Reject two unrelated standalone evidence files (no segment pattern)."""
@@ -730,6 +814,60 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             payload = resp.get_json()
             self.assertTrue(payload["evidence_path"].endswith(".000"))
 
+    def test_failed_multipart_upload_cleans_saved_files(self) -> None:
+        case_id = self._create_case()
+        self.app.config["AIFT_CONFIG"].setdefault("evidence", {})[
+            "large_file_threshold_mb"
+        ] = 1
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                data={
+                    "evidence_file": [
+                        (io.BytesIO(b"seg1"), "Disk.E01"),
+                        (io.BytesIO(b"x" * (1024 * 1024 + 1)), "Disk.E02"),
+                    ]
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        evidence_dirs = list((self.cases_root / case_id).glob("**/evidence"))
+        self.assertTrue(evidence_dirs)
+        for evidence_dir in evidence_dirs:
+            self.assertFalse(
+                [path for path in evidence_dir.rglob("*") if path.is_file()],
+                f"Files left behind in {evidence_dir}",
+            )
+
+    def test_failed_path_archive_extraction_cleans_created_directory_only(self) -> None:
+        case_id = self._create_case()
+        zip_path = Path(self.temp_dir.name) / "unsafe.zip"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("../escape.E01", b"escape")
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(zip_path)},
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertTrue(zip_path.exists())
+        evidence_dirs = list((self.cases_root / case_id).glob("**/evidence"))
+        self.assertTrue(evidence_dirs)
+        for evidence_dir in evidence_dirs:
+            self.assertFalse(list(evidence_dir.glob("extracted_*")))
+
 
 # ---------------------------------------------------------------------------
 # 6. Extension constants consistency
@@ -745,6 +883,12 @@ class TestExtensionConstants(unittest.TestCase):
         self.assertFalse(
             missing,
             f"_EVIDENCE_FILE_EXTENSIONS has entries not in DISSECT_EVIDENCE_EXTENSIONS: {missing}",
+        )
+
+    def test_archive_target_selection_uses_all_non_archive_extensions(self) -> None:
+        self.assertEqual(
+            routes_evidence._EVIDENCE_FILE_EXTENSIONS,
+            NON_ARCHIVE_EVIDENCE_EXTENSIONS,
         )
 
 
@@ -998,6 +1142,65 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             {entry["path"] for entry in file_hashes},
             {str(disk_e01), str(disk_e02)},
         )
+
+    def test_split_path_rejects_gapped_segments_before_hashing(self) -> None:
+        """Path intake rejects a sibling split set with missing segments."""
+        case_id = self._create_case()
+        disk_000 = Path(self.temp_dir.name) / "disk.000"
+        disk_002 = Path(self.temp_dir.name) / "disk.002"
+        disk_000.write_bytes(b"seg0")
+        disk_002.write_bytes(b"seg2")
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES) as mock_hash,
+            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES) as mock_hash_shared,
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(disk_000)},
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Incomplete split-image set", resp.get_json()["error"])
+        mock_hash.assert_not_called()
+        mock_hash_shared.assert_not_called()
+
+    def test_split_path_ignores_symlinked_sibling_segment(self) -> None:
+        """Path-mode segment hashing must not include symlinked siblings."""
+        case_id = self._create_case()
+        disk_e01 = Path(self.temp_dir.name) / "Disk.E01"
+        disk_e02_real = Path(self.temp_dir.name) / "outside-real.E02"
+        disk_e02_link = Path(self.temp_dir.name) / "Disk.E02"
+        disk_e01.write_bytes(b"seg1")
+        disk_e02_real.write_bytes(b"seg2")
+        try:
+            disk_e02_link.symlink_to(disk_e02_real)
+        except (NotImplementedError, OSError):
+            self.skipTest("Symlinks are not available in this environment")
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
+            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(disk_e01)},
+            )
+            self.assertEqual(resp.status_code, 200)
+
+        with routes.STATE_LOCK:
+            file_hashes = routes.CASE_STATES[case_id].get("evidence_file_hashes", [])
+        self.assertEqual([entry["path"] for entry in file_hashes], [str(disk_e01)])
 
     def test_split_path_report_verifies_all_segments(self) -> None:
         """Path intake report verification must cover every sibling segment."""

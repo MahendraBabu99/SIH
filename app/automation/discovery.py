@@ -9,25 +9,17 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
-import tarfile
 import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
-from zipfile import BadZipFile, ZipFile
+from pathlib import Path
 
-import py7zr
 from dissect.target import Target
 
+from app.evidence_archives import ARCHIVE_EXTENSIONS, extract_archive_to_directory
 from app.evidence_constants import DISSECT_EVIDENCE_EXTENSIONS
-from app.evidence_segments import segment_identity
+from app.evidence_segments import segment_identity, validate_segment_group_paths
 
 LOGGER = logging.getLogger(__name__)
-
-ARCHIVE_EXTENSIONS: frozenset[str] = frozenset({
-    ".zip", ".tar", ".gz", ".tgz", ".7z",
-})
 
 SKIP_NAMES: frozenset[str] = frozenset({
     "__MACOSX", "Thumbs.db", "desktop.ini", ".DS_Store",
@@ -41,6 +33,7 @@ SKIP_NAMES_CASEFOLD: frozenset[str] = frozenset(
 class _DiscoveryContext:
     """Mutable state shared across a recursive discovery run."""
 
+    source_root: Path | None = None
     workspace_root: Path | None = None
     extraction_count: int = 0
     visited_directories: set[Path] = field(default_factory=set)
@@ -59,6 +52,16 @@ class _DiscoveryContext:
         return self.workspace_root / (
             f"extracted_{safe_stem}_{self.extraction_count:04d}"
         )
+
+    def contains_allowed_path(self, path: Path) -> bool:
+        """Return True when *path* stays in selected or managed roots."""
+        resolved = path.resolve()
+        roots = [
+            root
+            for root in (self.source_root, self.workspace_root)
+            if root is not None
+        ]
+        return any(resolved.is_relative_to(root) for root in roots)
 
 
 def validate_evidence_path(path: str | Path) -> Path:
@@ -141,149 +144,9 @@ def _can_open_with_dissect(path: Path) -> bool:
     return True
 
 
-def _member_parts(member_name: str) -> tuple[str, ...]:
-    """Validate and normalise an archive member path."""
-    normalized_name = member_name.replace("\\", "/")
-    posix_path = PurePosixPath(normalized_name)
-    windows_path = PureWindowsPath(member_name)
-
-    if (
-        not normalized_name
-        or posix_path.is_absolute()
-        or windows_path.is_absolute()
-        or windows_path.drive
-        or ".." in posix_path.parts
-        or ".." in windows_path.parts
-    ):
-        raise ValueError("Archive rejected: contains unsafe file paths")
-
-    parts = tuple(part for part in posix_path.parts if part not in ("", "."))
-    if not parts:
-        raise ValueError("Archive rejected: contains unsafe file paths")
-    return parts
-
-
-def _validated_member_target(root: Path, member_name: str) -> tuple[str, Path]:
-    """Return validated relative member text and destination path."""
-    parts = _member_parts(member_name)
-    target = root.joinpath(*parts).resolve()
-    if not target.is_relative_to(root):
-        raise ValueError("Archive rejected: contains unsafe file paths")
-    return "/".join(parts), target
-
-
-def _extract_zip_into(zip_path: Path, destination: Path) -> None:
-    """Safely extract a ZIP archive into *destination*."""
-    try:
-        with ZipFile(zip_path, "r") as archive:
-            targets: list[tuple[Any, Path]] = []
-            for member in archive.infolist():
-                if member.is_dir():
-                    continue
-                _relative_name, target = _validated_member_target(
-                    destination, member.filename
-                )
-                targets.append((member, target))
-
-            if not targets:
-                raise ValueError("Evidence ZIP is empty.")
-
-            for member, target in targets:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(member, "r") as src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-    except BadZipFile as error:
-        raise ValueError(f"Invalid ZIP evidence file: {zip_path.name}") from error
-
-
-def _extract_tar_into(tar_path: Path, destination: Path) -> None:
-    """Safely extract a tar/tar.gz archive into *destination*."""
-    try:
-        with tarfile.open(tar_path, "r:*") as archive:
-            targets: list[tuple[Any, Path]] = []
-            for member in archive.getmembers():
-                if member.islnk() or member.issym():
-                    raise ValueError("Archive rejected: contains unsafe file paths")
-                if not member.isfile():
-                    continue
-                _relative_name, target = _validated_member_target(
-                    destination, member.name
-                )
-                targets.append((member, target))
-
-            if not targets:
-                raise ValueError("Evidence tar archive is empty.")
-
-            for member, target in targets:
-                src = archive.extractfile(member)
-                if src is None:
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-    except tarfile.TarError as error:
-        raise ValueError(f"Invalid tar evidence file: {tar_path.name}") from error
-
-
-def _extract_7z_into(archive_path: Path, destination: Path) -> None:
-    """Safely extract a 7z archive into *destination*."""
-    try:
-        with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-            targets: list[tuple[str, Path]] = []
-            for member_name in archive.getnames():
-                if member_name.endswith("/"):
-                    continue
-                relative_name, target = _validated_member_target(
-                    destination, member_name
-                )
-                targets.append((relative_name, target))
-
-            if not targets:
-                raise ValueError("Evidence 7z archive is empty.")
-
-            with tempfile.TemporaryDirectory(prefix="aift-7z-extract-") as tmpdir:
-                tmp_root = Path(tmpdir).resolve()
-                archive.extractall(path=tmp_root)
-                for relative_name, target in targets:
-                    src = (tmp_root / Path(relative_name)).resolve()
-                    if not src.is_relative_to(tmp_root) or not src.is_file():
-                        continue
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src, target)
-    except py7zr.Bad7zFile as error:
-        raise ValueError(f"Invalid 7z evidence file: {archive_path.name}") from error
-
-
 def _safe_extract_archive(archive_path: Path, destination: Path) -> Path:
     """Safely extract an archive into *destination* and return that directory."""
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    root = destination.resolve()
-
-    try:
-        suffix = archive_path.suffix.lower()
-        if suffix == ".zip":
-            _extract_zip_into(archive_path, root)
-        elif suffix in {".tar", ".gz", ".tgz"}:
-            _extract_tar_into(archive_path, root)
-        elif suffix == ".7z":
-            _extract_7z_into(archive_path, root)
-        else:
-            raise ValueError(
-                f"Unsupported archive extension '{archive_path.suffix}': "
-                f"{archive_path.name}"
-            )
-
-        if not any(path.is_file() for path in root.rglob("*")):
-            raise ValueError(
-                f"Evidence archive extraction produced no files: {archive_path.name}"
-            )
-    except Exception:
-        shutil.rmtree(root, ignore_errors=True)
-        raise
-
-    return root
+    return extract_archive_to_directory(archive_path, destination)
 
 
 def _deduplicate_segments(paths: list[Path]) -> list[Path]:
@@ -302,13 +165,8 @@ def _deduplicate_segments(paths: list[Path]) -> list[Path]:
 
     first_segments: list[Path] = []
     for group in groups.values():
-        group.sort(
-            key=lambda item: (
-                (segment_identity(item) or ("", "", 0))[2],
-                item.name.casefold(),
-            )
-        )
-        first_segments.append(group[0])
+        ordered_group = validate_segment_group_paths(group)
+        first_segments.append(ordered_group[0])
         if len(group) > 1:
             LOGGER.debug(
                 "Segment group with %d parts, keeping: %s",
@@ -348,6 +206,9 @@ def _discover_file(
 def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Path]:
     """Discover evidence targets in a directory."""
     directory = path.resolve()
+    if not context.contains_allowed_path(directory):
+        LOGGER.info("Skipping directory outside selected evidence tree: %s", directory)
+        return []
     if directory in context.visited_directories:
         return []
     context.visited_directories.add(directory)
@@ -362,7 +223,17 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Path]:
         if _is_hidden_or_skipped(child):
             continue
 
+        if child.is_symlink():
+            LOGGER.info("Skipping symlink during evidence discovery: %s", child)
+            continue
+
         child_path = child.resolve()
+        if not context.contains_allowed_path(child_path):
+            LOGGER.info(
+                "Skipping path outside selected evidence tree during discovery: %s",
+                child_path,
+            )
+            continue
         if child_path.is_dir():
             recursive_candidates.append(child_path)
         elif child_path.is_file() and _has_supported_extension(child_path):
@@ -385,10 +256,14 @@ def _discover_path(
     strict_extension: bool,
 ) -> list[Path]:
     """Dispatch discovery based on path type."""
+    resolved = path.resolve()
+    if not context.contains_allowed_path(resolved):
+        LOGGER.info("Skipping path outside selected evidence tree: %s", resolved)
+        return []
     if path.is_file():
-        return _discover_file(path, context, strict_extension=strict_extension)
+        return _discover_file(resolved, context, strict_extension=strict_extension)
     if path.is_dir():
-        return _discover_directory(path, context)
+        return _discover_directory(resolved, context)
     return []
 
 
@@ -426,7 +301,7 @@ def discover_evidence(
     workspace_root = (
         Path(workspace_dir).resolve() if workspace_dir is not None else None
     )
-    context = _DiscoveryContext(workspace_root=workspace_root)
+    context = _DiscoveryContext(source_root=resolved, workspace_root=workspace_root)
     result = _discover_path(resolved, context, strict_extension=True)
     result = sorted(set(result), key=lambda item: str(item))
 

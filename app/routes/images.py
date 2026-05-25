@@ -16,6 +16,7 @@ import json
 import logging
 import shutil
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -205,7 +206,15 @@ def discover_evidence_paths() -> tuple[Response, int]:
 
     try:
         source_path = validate_evidence_path(path_value)
-        evidence_paths = discover_evidence(source_path)
+        discovery_workspace = (
+            CASES_ROOT
+            / "_managed_discovery"
+            / f"discovery_{uuid.uuid4().hex[:12]}"
+        )
+        evidence_paths = discover_evidence(
+            source_path,
+            workspace_dir=discovery_workspace,
+        )
     except (FileNotFoundError, ValueError) as error:
         return error_response(str(error), 400)
     except Exception:
