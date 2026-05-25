@@ -1,7 +1,8 @@
 """REST API endpoints for headless automation of AIFT forensic triage runs.
 
 Exposes a Flask Blueprint that allows external tools to trigger, monitor,
-cancel, and retrieve results of automated analysis runs via JSON HTTP.
+cancel, and retrieve results of automated analysis runs via JSON or multipart
+HTTP.
 
 Run state is held in a module-level dictionary protected by a reentrant
 lock.  Multiple runs may execute concurrently.  Completed/failed runs are
@@ -16,19 +17,25 @@ Attributes:
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 from uuid import uuid4
 
-from flask import Blueprint, Response, jsonify, request, send_file
+from flask import Blueprint, Response, current_app, jsonify, request, send_file
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
 
 from app.artifact_profiles import validate_analysis_date_range
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
-from app.routes.state import error_response, success_response
+from app.routes.evidence_upload import save_with_limit, unique_destination
+from app.routes.state import CASES_ROOT, error_response, success_response
 
 __all__ = ["automation_bp"]
 
@@ -39,6 +46,7 @@ automation_bp = Blueprint("automation", __name__)
 AUTOMATION_RUNS: dict[str, dict[str, Any]] = {}
 RUNS_LOCK = threading.RLock()
 RUN_TTL_SECONDS = 3600  # 1 hour
+AUTOMATION_UPLOAD_ROOT_NAME = "_automation_uploads"
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +81,9 @@ def _cleanup_expired_runs() -> None:
             and (now - run.get("_finished_mono", now)) > RUN_TTL_SECONDS
         ]
         for rid in expired:
-            AUTOMATION_RUNS.pop(rid, None)
+            run = AUTOMATION_RUNS.pop(rid, None)
+            if run is not None:
+                _cleanup_upload_dir(run.get("_upload_dir"))
 
 
 def _get_run(run_id: str) -> dict[str, Any] | None:
@@ -177,6 +187,183 @@ def _has_output_path(result_payload: dict[str, Any]) -> bool:
     )
 
 
+def _automation_upload_root() -> Path:
+    """Return the root directory used for staged automation uploads."""
+    return (CASES_ROOT / AUTOMATION_UPLOAD_ROOT_NAME).resolve()
+
+
+def _cleanup_upload_dir(upload_dir: Any) -> None:
+    """Remove a staged automation upload directory if it is safe to do so."""
+    if not upload_dir:
+        return
+    try:
+        root = _automation_upload_root()
+        target = Path(str(upload_dir)).resolve()
+    except Exception:
+        LOGGER.debug("Unable to resolve staged upload directory: %r", upload_dir)
+        return
+
+    if target == root or not target.is_relative_to(root):
+        LOGGER.warning("Refusing to clean upload directory outside root: %s", target)
+        return
+    shutil.rmtree(target, ignore_errors=True)
+
+
+def _uploaded_filename_parts(filename: str, fallback: str) -> tuple[str, ...]:
+    """Return safe relative path parts for a multipart upload filename.
+
+    API clients may upload a folder by sending multiple files whose multipart
+    filenames contain relative paths.  This helper preserves that directory
+    shape while rejecting absolute paths and traversal.
+    """
+    raw = str(filename or "").strip()
+    if not raw:
+        return (fallback,)
+
+    normalized = raw.replace("\\", "/")
+    posix_path = PurePosixPath(normalized)
+    windows_path = PureWindowsPath(raw)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or ".." in posix_path.parts
+        or ".." in windows_path.parts
+    ):
+        raise ValueError(f"Unsafe upload filename: {raw}")
+
+    cleaned_parts: list[str] = []
+    for part in posix_path.parts:
+        if part in ("", "."):
+            continue
+        cleaned = secure_filename(part)
+        if cleaned:
+            cleaned_parts.append(cleaned)
+
+    return tuple(cleaned_parts) if cleaned_parts else (fallback,)
+
+
+def _collect_uploaded_files() -> list[FileStorage]:
+    """Collect non-empty multipart file uploads from the current request."""
+    uploaded: list[FileStorage] = []
+    for key in request.files:
+        for file_storage in request.files.getlist(key):
+            if file_storage and file_storage.filename:
+                uploaded.append(file_storage)
+    return uploaded
+
+
+def _stage_uploaded_evidence(run_id: str) -> tuple[Path | None, Path | None]:
+    """Save multipart evidence uploads and return the path for automation.
+
+    A single uploaded file is passed to the engine directly.  Multiple files
+    are passed as their staging directory, which lets discovery handle split
+    images and folder-shaped uploads.
+    """
+    uploaded_files = _collect_uploaded_files()
+    if not uploaded_files:
+        return None, None
+
+    root = _automation_upload_root()
+    upload_dir = (root / run_id).resolve()
+    upload_dir.mkdir(parents=True, exist_ok=False)
+
+    try:
+        if not upload_dir.is_relative_to(root):
+            raise ValueError("Upload staging path resolved outside its root.")
+
+        aift_config = current_app.config.get("AIFT_CONFIG", {})
+        evidence_config = (
+            aift_config.get("evidence", {}) if isinstance(aift_config, dict) else {}
+        )
+        threshold_mb = (
+            evidence_config.get("large_file_threshold_mb", 0)
+            if isinstance(evidence_config, dict)
+            else 0
+        )
+        max_bytes = (
+            int(threshold_mb) * 1024 * 1024
+            if threshold_mb and threshold_mb > 0
+            else 0
+        )
+        cumulative_bytes = 0
+        saved_paths: list[Path] = []
+
+        for index, uploaded_file in enumerate(uploaded_files, start=1):
+            fallback = f"evidence_{index}.bin"
+            parts = _uploaded_filename_parts(uploaded_file.filename, fallback)
+            target = upload_dir.joinpath(*parts).resolve()
+            if not target.is_relative_to(upload_dir):
+                raise ValueError(f"Unsafe upload filename: {uploaded_file.filename}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target = unique_destination(target)
+            cumulative_bytes = save_with_limit(
+                uploaded_file,
+                target,
+                max_bytes,
+                cumulative_bytes,
+            )
+            saved_paths.append(target)
+
+        if not saved_paths:
+            raise ValueError("No uploaded evidence files were provided.")
+        if len(saved_paths) == 1:
+            return saved_paths[0], upload_dir
+        return upload_dir, upload_dir
+    except Exception:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise
+
+
+def _parse_form_bool(field: str, default: bool = False) -> tuple[bool | None, str]:
+    """Parse a boolean field from multipart form data."""
+    if field not in request.form:
+        return default, ""
+    value = str(request.form.get(field, "")).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True, ""
+    if value in {"0", "false", "no", "off"}:
+        return False, ""
+    return None, f"Field '{field}' must be a boolean."
+
+
+def _multipart_payload() -> tuple[dict[str, Any] | None, str]:
+    """Build a validation payload from multipart form fields."""
+    payload: dict[str, Any] = {}
+    for field in (
+        "evidence_path",
+        "prompt",
+        "output_dir",
+        "profile_name",
+        "config_path",
+        "case_name",
+    ):
+        if field in request.form:
+            payload[field] = request.form.get(field)
+
+    skip_hashing, error = _parse_form_bool("skip_hashing", False)
+    if error:
+        return None, error
+    payload["skip_hashing"] = skip_hashing
+
+    if "date_range" in request.form:
+        raw_date_range = str(request.form.get("date_range", "")).strip()
+        if raw_date_range:
+            try:
+                payload["date_range"] = json.loads(raw_date_range)
+            except json.JSONDecodeError as exc:
+                return None, f"Invalid date_range: {exc.msg}"
+        else:
+            payload["date_range"] = None
+    elif "start_date" in request.form or "end_date" in request.form:
+        payload["date_range"] = {
+            "start_date": request.form.get("start_date"),
+            "end_date": request.form.get("end_date"),
+        }
+
+    return payload, ""
+
+
 # ---------------------------------------------------------------------------
 # Background thread target
 # ---------------------------------------------------------------------------
@@ -274,7 +461,11 @@ def _run_automation_thread(
 # Validation
 # ---------------------------------------------------------------------------
 
-def _validate_run_request(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+def _validate_run_request(
+    payload: dict[str, Any],
+    *,
+    require_evidence_path: bool = True,
+) -> tuple[dict[str, Any] | None, str]:
     """Validate the POST body for starting an automation run.
 
     Args:
@@ -301,9 +492,14 @@ def _validate_run_request(payload: dict[str, Any]) -> tuple[dict[str, Any] | Non
             return None, f"Field '{field}' must be a string or null."
         return value.strip() or None, ""
 
-    evidence_path, error = _required_string("evidence_path")
-    if error:
-        return None, error
+    if require_evidence_path:
+        evidence_path, error = _required_string("evidence_path")
+        if error:
+            return None, error
+    else:
+        evidence_path, error = _optional_string("evidence_path")
+        if error:
+            return None, error
 
     prompt, error = _required_string("prompt")
     if error:
@@ -354,24 +550,45 @@ def _validate_run_request(payload: dict[str, Any]) -> tuple[dict[str, Any] | Non
 def start_run() -> tuple[Response, int]:
     """Start a new automated forensic triage run.
 
-    Validates the JSON request body, ensures no other run is active,
-    spawns a background daemon thread, and returns 202 Accepted with the
-    new run ID and a status URL.
+    Validates either a JSON path request or multipart upload request, spawns a
+    background daemon thread, and returns 202 Accepted with the new run ID and
+    a status URL.
 
     Returns:
         ``(Response, 202)`` on success, or an error tuple (400/409).
     """
     _cleanup_expired_runs()
 
-    payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        return error_response("Request body must be a JSON object.", 400)
-
-    params, error_msg = _validate_run_request(payload)
-    if params is None:
-        return error_response(error_msg, 400)
-
     run_id = str(uuid4())
+    upload_dir: Path | None = None
+
+    if request.mimetype == "multipart/form-data":
+        upload_present = bool(_collect_uploaded_files())
+        payload, error_msg = _multipart_payload()
+        if payload is None:
+            return error_response(error_msg, 400)
+        params, error_msg = _validate_run_request(
+            payload,
+            require_evidence_path=not upload_present,
+        )
+        if params is None:
+            return error_response(error_msg, 400)
+
+        try:
+            uploaded_evidence_path, upload_dir = _stage_uploaded_evidence(run_id)
+        except (OSError, ValueError) as exc:
+            return error_response(str(exc), 400)
+        if uploaded_evidence_path is not None:
+            params["evidence_path"] = str(uploaded_evidence_path)
+    else:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return error_response("Request body must be a JSON object.", 400)
+
+        params, error_msg = _validate_run_request(payload)
+        if params is None:
+            return error_response(error_msg, 400)
+
     case_id = ""  # Populated by the background thread once the case is created.
     cancel_event = threading.Event()
 
@@ -400,6 +617,7 @@ def start_run() -> tuple[Response, int]:
         "result": None,
         "errors": [],
         "cancel_event": cancel_event,
+        "_upload_dir": str(upload_dir) if upload_dir else "",
         "_started_mono": time.monotonic(),
     }
 

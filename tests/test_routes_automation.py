@@ -10,6 +10,7 @@ import json
 import threading
 import time
 import unittest
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -373,6 +374,97 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         req = mock_run.call_args[0][0]
         self.assertIsNone(req.output_dir)
         self.assertFalse((CASES_ROOT / run_id / "reports").exists())
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_file_upload_passes_staged_file_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Automation API accepts an uploaded evidence file."""
+        mock_run.return_value = _make_successful_result()
+        upload_root = Path(self.temp_dir.name) / "cases"
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": (BytesIO(b"evidence"), "uploaded.E01"),
+                    "prompt": "Investigate upload",
+                    "skip_hashing": "true",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        req = mock_run.call_args.args[0]
+        evidence_path = Path(req.evidence_path)
+        self.assertTrue(evidence_path.is_file())
+        self.assertEqual(evidence_path.name, "uploaded.E01")
+        self.assertTrue(evidence_path.is_relative_to(upload_root.resolve()))
+        self.assertEqual(evidence_path.read_bytes(), b"evidence")
+        self.assertEqual(req.prompt, "Investigate upload")
+        self.assertTrue(req.skip_hashing)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_folder_upload_passes_staged_directory_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Automation API preserves relative paths for folder-style uploads."""
+        mock_run.return_value = _make_successful_result()
+        upload_root = Path(self.temp_dir.name) / "cases"
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": [
+                        (BytesIO(b"sam"), "KAPE/Windows/System32/config/SAM"),
+                        (
+                            BytesIO(b"software"),
+                            "KAPE/Windows/System32/config/SOFTWARE",
+                        ),
+                    ],
+                    "prompt": "Investigate uploaded folder",
+                    "skip_hashing": "false",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        req = mock_run.call_args.args[0]
+        evidence_path = Path(req.evidence_path)
+        self.assertTrue(evidence_path.is_dir())
+        self.assertTrue((evidence_path / "KAPE/Windows/System32/config/SAM").is_file())
+        self.assertTrue(
+            (evidence_path / "KAPE/Windows/System32/config/SOFTWARE").is_file()
+        )
+        self.assertFalse(req.skip_hashing)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_upload_rejects_unsafe_relative_filename(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Folder uploads cannot escape the automation upload staging root."""
+        mock_run.return_value = _make_successful_result()
+        upload_root = Path(self.temp_dir.name) / "cases"
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": (BytesIO(b"bad"), "../escape.E01"),
+                    "prompt": "Investigate upload",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        mock_run.assert_not_called()
 
 
 class TestConcurrentRuns(AutomationRoutesTestBase):
