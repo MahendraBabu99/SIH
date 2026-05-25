@@ -1083,7 +1083,11 @@ class ForensicAnalyzer:
             per_artifact_results.append(result)
             if progress_callback is not None:
                 emit_analysis_progress(progress_callback, str(artifact_key), "complete", result)
+            if cancel_check is not None and cancel_check():
+                raise AnalysisCancelledError("Analysis cancelled by user.")
 
+        if cancel_check is not None and cancel_check():
+            raise AnalysisCancelledError("Analysis cancelled by user.")
         summary = self.generate_summary(
             per_artifact_results=per_artifact_results,
             investigation_context=investigation_context,

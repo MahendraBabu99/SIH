@@ -42,13 +42,17 @@ from dissect.target.exceptions import PluginError, UnsupportedPluginError
 
 from .registry import get_artifact_registry
 
-__all__ = ["ForensicParser"]
+__all__ = ["ForensicParser", "ParserCancelledError"]
 
 logger = logging.getLogger(__name__)
 
 UNKNOWN_VALUE = "Unknown"
 EVTX_MAX_RECORDS_PER_FILE = 500_000
 MAX_RECORDS_PER_ARTIFACT = 1_000_000
+
+
+class ParserCancelledError(Exception):
+    """Raised when artifact parsing is cancelled by the caller."""
 
 
 class ForensicParser:
@@ -224,6 +228,7 @@ class ForensicParser:
         self,
         artifact_key: str,
         progress_callback: Callable[..., None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Parse a single artifact and stream its records to one or more CSV files.
 
@@ -236,6 +241,8 @@ class ForensicParser:
                 the artifact to parse.
             progress_callback: Optional callback invoked every 1 000 records
                 with progress information.
+            cancel_check: Optional callable returning ``True`` when parsing
+                should stop.
 
         Returns:
             Result dictionary with keys ``csv_path``, ``record_count``,
@@ -270,6 +277,8 @@ class ForensicParser:
         created_csv_paths: list[Path] = []
 
         try:
+            if cancel_check is not None and cancel_check():
+                raise ParserCancelledError("Parsing cancelled by user.")
             records = self._call_target_function(function_name)
             if self._is_evtx_artifact(function_name):
                 all_csv_paths, record_count = self._write_evtx_records(
@@ -277,6 +286,7 @@ class ForensicParser:
                     records=records,
                     progress_callback=progress_callback,
                     created_csv_paths=created_csv_paths,
+                    cancel_check=cancel_check,
                 )
                 if all_csv_paths:
                     csv_path = str(all_csv_paths[0])
@@ -294,6 +304,7 @@ class ForensicParser:
                     csv_output_path=csv_output,
                     progress_callback=progress_callback,
                     artifact_key=artifact_key,
+                    cancel_check=cancel_check,
                 )
                 csv_path = str(csv_output)
 
@@ -320,6 +331,19 @@ class ForensicParser:
             if self._is_evtx_artifact(function_name):
                 result["csv_paths"] = [str(p) for p in all_csv_paths]
             return result
+        except ParserCancelledError:
+            self._cleanup_partial_csv_files(created_csv_paths, artifact_key)
+            self.audit_logger.log(
+                "parsing_cancelled",
+                {
+                    "artifact_key": artifact_key,
+                    "artifact_name": artifact.get("name", artifact_key),
+                    "function": function_name,
+                    "record_count": record_count,
+                    "duration_seconds": round(perf_counter() - start_time, 6),
+                },
+            )
+            raise
         except UnsupportedPluginError:
             duration = perf_counter() - start_time
             self._cleanup_partial_csv_files(created_csv_paths, artifact_key)
@@ -434,6 +458,7 @@ class ForensicParser:
         csv_output_path: Path,
         progress_callback: Callable[..., None] | None,
         artifact_key: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """Stream Dissect records to a CSV file, handling dynamic schemas.
 
@@ -458,6 +483,8 @@ class ForensicParser:
         with csv_output_path.open("w", newline="", encoding="utf-8") as csv_file:
             writer: csv.DictWriter | None = None
             for record in records:
+                if cancel_check is not None and cancel_check():
+                    raise ParserCancelledError("Parsing cancelled by user.")
                 record_dict = self._record_to_dict(record)
 
                 new_keys = [str(k) for k in record_dict.keys() if str(k) not in fieldnames_set]
@@ -530,6 +557,7 @@ class ForensicParser:
         records: Any,
         progress_callback: Callable[..., None] | None,
         created_csv_paths: list[Path] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[Path], int]:
         """Stream EVTX records into per-channel CSV files with automatic splitting.
 
@@ -555,6 +583,8 @@ class ForensicParser:
 
         try:
             for record in records:
+                if cancel_check is not None and cancel_check():
+                    raise ParserCancelledError("Parsing cancelled by user.")
                 if record_count >= MAX_RECORDS_PER_ARTIFACT:
                     self.audit_logger.log(
                         "parsing_capped",

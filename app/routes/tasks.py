@@ -19,6 +19,7 @@ ensure log messages are tagged with the case ID.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import logging
 import time
@@ -29,6 +30,7 @@ from ..analyzer import ForensicAnalyzer
 from ..analyzer.core import AnalysisCancelledError
 from ..case_logging import case_log_context
 from ..parser import ForensicParser
+from ..parser.core import ParserCancelledError
 from .state import (
     ANALYSIS_PROGRESS,
     PARSE_PROGRESS,
@@ -212,6 +214,7 @@ def run_parse_loop(
         cancelled before completion.
     """
     cancel_event = get_cancel_event(PARSE_PROGRESS, progress_key)
+    cancel_check = (lambda: cancel_event.is_set()) if cancel_event is not None else None
 
     with ForensicParser(
         evidence_path=evidence_path,
@@ -223,7 +226,7 @@ def run_parse_loop(
         total = len(parse_artifacts)
 
         for index, artifact in enumerate(parse_artifacts, start=1):
-            if cancel_event is not None and cancel_event.is_set():
+            if cancel_check is not None and cancel_check():
                 LOGGER.info(
                     "Parsing cancelled for case %s before artifact %s",
                     case_id, artifact,
@@ -248,9 +251,25 @@ def run_parse_loop(
                      "record_count": record_count},
                 )
 
-            result = parser.parse_artifact(
-                artifact, progress_callback=_progress_callback,
-            )
+            try:
+                parse_signature = inspect.signature(parser.parse_artifact)
+                if "cancel_check" in parse_signature.parameters:
+                    result = parser.parse_artifact(
+                        artifact,
+                        progress_callback=_progress_callback,
+                        cancel_check=cancel_check,
+                    )
+                else:
+                    result = parser.parse_artifact(
+                        artifact,
+                        progress_callback=_progress_callback,
+                    )
+            except ParserCancelledError:
+                LOGGER.info("Parsing cancelled for case %s during artifact %s", case_id, artifact)
+                return None
+            if cancel_check is not None and cancel_check():
+                LOGGER.info("Parsing cancelled for case %s after artifact %s", case_id, artifact)
+                return None
             result_entry = {"artifact_key": artifact, **result}
             results.append(result_entry)
 

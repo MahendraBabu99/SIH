@@ -431,6 +431,7 @@ def run_multi_image_analysis(
             image_results=image_results,
             investigation_context=investigation_context,
             progress_callback=progress_callback,
+            cancel_check=cancel_check,
         )
 
     # ------------------------------------------------------------------
@@ -503,6 +504,7 @@ def _run_cross_image_correlation(
     image_results: dict[str, dict[str, Any]],
     investigation_context: str,
     progress_callback: Any | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> str:
     """Execute Phase 3: cross-image correlation analysis.
 
@@ -519,6 +521,11 @@ def _run_cross_image_correlation(
     Returns:
         The AI-generated cross-image correlation summary text.
     """
+    from .core import AnalysisCancelledError
+
+    if cancel_check is not None and cancel_check():
+        raise AnalysisCancelledError("Analysis cancelled by user.")
+
     cross_image_prompt_template = load_prompt_template(
         analyzer.prompts_dir,
         "cross_image_prompt.md",
@@ -572,6 +579,8 @@ def _run_cross_image_correlation(
 
     start_time = perf_counter()
     try:
+        if cancel_check is not None and cancel_check():
+            raise AnalysisCancelledError("Analysis cancelled by user.")
         summary = analyzer._call_ai_with_retry(
             lambda: analyzer.ai_provider.analyze(
                 system_prompt=analyzer.system_prompt,
@@ -590,7 +599,6 @@ def _run_cross_image_correlation(
     except Exception as error:
         # Re-raise cancellation so the caller can propagate it correctly
         # instead of silently swallowing it into a summary string.
-        from .core import AnalysisCancelledError
         if isinstance(error, AnalysisCancelledError):
             raise
         duration_seconds = perf_counter() - start_time

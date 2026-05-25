@@ -9,6 +9,7 @@ from dissect.target.exceptions import UnsupportedPluginError
 from .core import (
     EVTX_MAX_RECORDS_PER_FILE,
     MAX_RECORDS_PER_ARTIFACT,
+    ParserCancelledError,
     UNKNOWN_VALUE,
     ForensicParser,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "ForensicParser",
     "LINUX_ARTIFACT_REGISTRY",
     "MAX_RECORDS_PER_ARTIFACT",
+    "ParserCancelledError",
     "UNKNOWN_VALUE",
     "UnsupportedPluginError",
     "WINDOWS_ARTIFACT_REGISTRY",

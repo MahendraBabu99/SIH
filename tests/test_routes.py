@@ -86,6 +86,38 @@ class RoutesTests(unittest.TestCase):
         unregister_all_case_log_handlers()
         self.temp_dir.cleanup()
 
+    def test_cancel_parse_marks_cancelling_and_emits_requested_event(self) -> None:
+        """Parse cancellation is requested first; worker owns final status."""
+        case_id = "cancel-parse-case"
+        with routes.STATE_LOCK:
+            routes.CASE_STATES[case_id] = {"status": "running"}
+            routes.PARSE_PROGRESS[case_id] = routes.new_progress(status="running")
+
+        resp = self.client.post(f"/api/cases/{case_id}/parse/cancel")
+
+        self.assertEqual(resp.status_code, 200)
+        with routes.STATE_LOCK:
+            progress = routes.PARSE_PROGRESS[case_id]
+            self.assertEqual(progress["status"], "cancelling")
+            self.assertTrue(progress["cancel_event"].is_set())
+            self.assertEqual(progress["events"][-1]["type"], "parse_cancel_requested")
+
+    def test_chat_cancel_endpoint_marks_cancelling(self) -> None:
+        """Chat cancellation uses the same requested-then-final lifecycle."""
+        case_id = "cancel-chat-case"
+        with routes.STATE_LOCK:
+            routes.CASE_STATES[case_id] = {"status": "completed"}
+            routes.CHAT_PROGRESS[case_id] = routes.new_progress(status="running")
+
+        resp = self.client.post(f"/api/cases/{case_id}/chat/cancel")
+
+        self.assertEqual(resp.status_code, 200)
+        with routes.STATE_LOCK:
+            progress = routes.CHAT_PROGRESS[case_id]
+            self.assertEqual(progress["status"], "cancelling")
+            self.assertTrue(progress["cancel_event"].is_set())
+            self.assertEqual(progress["events"][-1]["type"], "chat_cancel_requested")
+
     def _evidence_patches(
         self,
         parser_cls: type = None,

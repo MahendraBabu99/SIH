@@ -65,6 +65,7 @@ __all__ = [
     "DEFAULT_FORENSIC_SYSTEM_PROMPT",
     "CHAT_HISTORY_MAX_PAIRS",
     "TERMINAL_CASE_STATUSES",
+    "ACTIVE_PROGRESS_STATUSES",
     "SSE_POLL_INTERVAL_SECONDS",
     "SSE_INITIAL_IDLE_GRACE_SECONDS",
     "CASE_TTL_SECONDS",
@@ -82,6 +83,7 @@ __all__ = [
     "normalize_case_status",
     "new_progress",
     "set_progress_status",
+    "set_progress_status_and_emit",
     "emit_progress",
     "stream_sse",
     "get_case",
@@ -89,6 +91,8 @@ __all__ = [
     "cancel_progress",
     "is_cancelled",
     "get_cancel_event",
+    "active_operations_for_case",
+    "case_has_active_operation",
     "cleanup_case_entries",
     "cleanup_terminal_cases",
     "mask_sensitive",
@@ -116,6 +120,7 @@ DEFAULT_FORENSIC_SYSTEM_PROMPT = (
 )
 CHAT_HISTORY_MAX_PAIRS = 20
 TERMINAL_CASE_STATUSES = frozenset({"completed", "failed", "error", "cancelled"})
+ACTIVE_PROGRESS_STATUSES = frozenset({"running", "cancelling"})
 SSE_POLL_INTERVAL_SECONDS = 0.2
 SSE_INITIAL_IDLE_GRACE_SECONDS = 1.0
 CASE_TTL_SECONDS = 21600
@@ -276,11 +281,36 @@ def set_progress_status(
         state["error"] = error
 
 
+def _append_progress_event_locked(state: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Append a progress event to *state* while ``STATE_LOCK`` is held."""
+    event = dict(payload)
+    event.setdefault("timestamp", now_iso())
+    event["sequence"] = len(state.setdefault("events", []))
+    state["events"].append(event)
+
+
+def set_progress_status_and_emit(
+    store: dict[str, dict[str, Any]],
+    case_id: str,
+    status: str,
+    payload: dict[str, Any],
+    error: str | None = None,
+) -> None:
+    """Atomically update progress status and append one SSE event."""
+    with STATE_LOCK:
+        state = store.setdefault(case_id, new_progress())
+        state["status"] = status
+        state["error"] = error
+        _append_progress_event_locked(state, payload)
+
+
 def cancel_progress(
     store: dict[str, dict[str, Any]],
     case_id: str,
+    event_type: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> bool:
-    """Mark a running progress entry as cancelled and signal its cancel event.
+    """Mark a running progress entry as cancelling and signal its cancel event.
 
     Thread-safe: acquires ``STATE_LOCK``.
 
@@ -289,16 +319,21 @@ def cancel_progress(
         case_id: UUID of the case.
 
     Returns:
-        ``True`` if the entry was running and is now cancelled, ``False`` otherwise.
+        ``True`` if the entry was running and is now cancelling, ``False`` otherwise.
     """
     with STATE_LOCK:
         state = store.get(case_id)
         if state is None or state.get("status") != "running":
             return False
-        state["status"] = "cancelled"
+        state["status"] = "cancelling"
         cancel_event = state.get("cancel_event")
         if isinstance(cancel_event, threading.Event):
             cancel_event.set()
+        if event_type:
+            event = dict(payload or {})
+            event["type"] = event_type
+            event.setdefault("status", "cancelling")
+            _append_progress_event_locked(state, event)
         return True
 
 
@@ -315,11 +350,16 @@ def is_cancelled(
         case_id: UUID of the case.
 
     Returns:
-        ``True`` if the entry status is ``"cancelled"``.
+        ``True`` if the entry has been requested to cancel or is cancelled.
     """
     with STATE_LOCK:
         state = store.get(case_id)
-        return state is not None and state.get("status") == "cancelled"
+        if state is None:
+            return False
+        if state.get("status") in {"cancelling", "cancelled"}:
+            return True
+        cancel_event = state.get("cancel_event")
+        return isinstance(cancel_event, threading.Event) and cancel_event.is_set()
 
 
 def get_cancel_event(
@@ -361,12 +401,57 @@ def emit_progress(
         case_id: UUID of the case.
         payload: Event dict (must include a ``"type"`` key).
     """
-    event = dict(payload)
-    event.setdefault("timestamp", now_iso())
     with STATE_LOCK:
         state = store.setdefault(case_id, new_progress())
-        event["sequence"] = len(state["events"])
-        state["events"].append(event)
+        _append_progress_event_locked(state, payload)
+
+
+def active_operations_for_case(case_id: str) -> list[dict[str, Any]]:
+    """Return active parse/analysis/chat/delete-style operations for a case.
+
+    Must be called without holding slow I/O. The returned dictionaries are
+    intentionally small so route handlers can produce clear 409 responses.
+    """
+    operations: list[dict[str, Any]] = []
+    with STATE_LOCK:
+        for key, progress in PARSE_PROGRESS.items():
+            if key == case_id or key.startswith(f"{case_id}::"):
+                status = str(progress.get("status", "")).strip().lower()
+                if status in ACTIVE_PROGRESS_STATUSES:
+                    op: dict[str, Any] = {"operation": "parse", "key": key, "status": status}
+                    if "::" in key:
+                        op["image_id"] = key.split("::", 1)[1]
+                    operations.append(op)
+        for name, store in (("analysis", ANALYSIS_PROGRESS), ("chat", CHAT_PROGRESS)):
+            progress = store.get(case_id)
+            status = str((progress or {}).get("status", "")).strip().lower()
+            if status in ACTIVE_PROGRESS_STATUSES:
+                operations.append({"operation": name, "key": case_id, "status": status})
+
+        case = CASE_STATES.get(case_id)
+        if isinstance(case, dict):
+            progress_active = bool(operations)
+            case_status = normalize_case_status(case.get("status"))
+            if case_status == "running" and not progress_active:
+                operations.append({"operation": "case", "key": case_id, "status": case_status})
+            image_states = case.get("image_states")
+            if isinstance(image_states, dict):
+                for image_id, image_state in image_states.items():
+                    if isinstance(image_state, dict):
+                        image_status = normalize_case_status(image_state.get("status"))
+                        if image_status in {"deleting", "replacing"}:
+                            operations.append({
+                                "operation": image_status,
+                                "key": f"{case_id}::{image_id}",
+                                "image_id": str(image_id),
+                                "status": image_status,
+                            })
+    return operations
+
+
+def case_has_active_operation(case_id: str) -> bool:
+    """Return ``True`` if any active operation is registered for *case_id*."""
+    return bool(active_operations_for_case(case_id))
 
 
 def _cleanup_progress_store(store: dict[str, dict[str, Any]], case_id: str) -> None:

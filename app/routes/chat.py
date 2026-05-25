@@ -19,6 +19,8 @@ from ..chat import ChatManager
 from .state import (
     STATE_LOCK,
     CHAT_PROGRESS,
+    active_operations_for_case,
+    cancel_progress,
     error_response,
     success_response,
     get_case,
@@ -71,14 +73,22 @@ def chat_with_case(case_id: str) -> Response | tuple[Response, int]:
         chat_state = CHAT_PROGRESS.setdefault(case_id, new_progress())
         if chat_state.get("status") == "running":
             return error_response("Chat is already running for this case.", 409)
+        active = active_operations_for_case(case_id)
+        if active:
+            return error_response("Cannot start chat while another case operation is running.", 409)
         CHAT_PROGRESS[case_id] = new_progress(status="running")
 
     config_snapshot = copy.deepcopy(config)
-    threading.Thread(
-        target=run_task_with_case_log_context,
-        args=(case_id, run_chat, case_id, message, config_snapshot),
-        daemon=True,
-    ).start()
+    try:
+        threading.Thread(
+            target=run_task_with_case_log_context,
+            args=(case_id, run_chat, case_id, message, config_snapshot),
+            daemon=True,
+        ).start()
+    except Exception:
+        with STATE_LOCK:
+            CHAT_PROGRESS.pop(case_id, None)
+        return error_response("Failed to start chat. Chat state was restored.", 500)
     return success_response({"status": "processing"}, 202)
 
 
@@ -95,6 +105,17 @@ def stream_chat_progress(case_id: str) -> Response | tuple[Response, int]:
     if get_case(case_id) is None:
         return error_response(f"Case not found: {case_id}", 404)
     return stream_sse(CHAT_PROGRESS, case_id)
+
+
+@chat_bp.post("/api/cases/<case_id>/chat/cancel")
+def cancel_chat(case_id: str) -> tuple[Response, int]:
+    """Cancel a running chat response for a case."""
+    if get_case(case_id) is None:
+        return error_response(f"Case not found: {case_id}", 404)
+    cancelled = cancel_progress(CHAT_PROGRESS, case_id, "chat_cancel_requested")
+    if not cancelled:
+        return error_response("No running chat to cancel.", 409)
+    return success_response({"status": "cancelling", "case_id": case_id})
 
 
 @chat_bp.get("/api/cases/<case_id>/chat/history")

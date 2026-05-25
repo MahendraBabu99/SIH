@@ -35,10 +35,13 @@ from .state import (
     CHAT_PROGRESS,
     PARSE_PROGRESS,
     STATE_LOCK,
+    active_operations_for_case,
     emit_progress,
     error_response,
     get_case,
+    mark_case_status,
     new_progress,
+    now_iso,
     stream_sse,
     success_response,
 )
@@ -117,6 +120,138 @@ def _progress_key(case_id: str, image_id: str) -> str:
         A string key like ``"<case_id>::<image_id>"``.
     """
     return f"{case_id}::{image_id}"
+
+
+def _purge_case_downstream_files(case_dir: Path) -> None:
+    """Remove analysis, chat, prompt, and generated reports for stale state."""
+    for stale_name in ("analysis_results.json", "prompt.txt", "chat_history.jsonl"):
+        try:
+            (case_dir / stale_name).unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning("Failed to remove stale case artifact: %s", case_dir / stale_name, exc_info=True)
+    reports_dir = case_dir / "reports"
+    if reports_dir.is_dir():
+        for report_path in reports_dir.glob("report_*.html"):
+            try:
+                report_path.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning("Failed to remove stale report: %s", report_path, exc_info=True)
+
+
+def _rebuild_case_parse_state_from_images(case: dict[str, Any]) -> bool:
+    """Rebuild aggregate parse fields from remaining per-image state.
+
+    Returns:
+        ``True`` when at least one image still has parsed output.
+    """
+    image_states = case.get("image_states", {})
+    if not isinstance(image_states, dict):
+        image_states = {}
+
+    merged_results: list[dict[str, Any]] = []
+    merged_csv_map: dict[str, Any] = {}
+    selected: set[str] = set()
+    analysis: set[str] = set()
+    options: dict[str, dict[str, str]] = {}
+    csv_output_dir = ""
+
+    for image_state in image_states.values():
+        if not isinstance(image_state, dict):
+            continue
+        parse_results = image_state.get("parse_results") or []
+        csv_map = image_state.get("artifact_csv_paths") or {}
+        has_parsed = bool(parse_results or csv_map)
+        if not has_parsed:
+            continue
+        for entry in parse_results:
+            if isinstance(entry, dict):
+                merged_results.append(entry)
+                artifact_key = str(entry.get("artifact_key", "")).strip()
+                if artifact_key:
+                    selected.add(artifact_key)
+        if isinstance(csv_map, dict):
+            merged_csv_map.update(csv_map)
+            selected.update(str(key) for key in csv_map if str(key).strip())
+        if not csv_output_dir:
+            csv_output_dir = str(image_state.get("csv_output_dir", "")).strip()
+
+    case["parse_results"] = merged_results
+    case["artifact_csv_paths"] = merged_csv_map
+    case["selected_artifacts"] = sorted(selected)
+    existing_analysis = case.get("analysis_artifacts")
+    if isinstance(existing_analysis, list):
+        analysis = {str(item) for item in existing_analysis if str(item) in selected}
+    case["analysis_artifacts"] = sorted(analysis)
+    existing_options = case.get("artifact_options")
+    if isinstance(existing_options, list):
+        for opt in existing_options:
+            if isinstance(opt, dict):
+                key = str(opt.get("artifact_key", "")).strip()
+                if key in selected:
+                    options[key] = dict(opt)
+    case["artifact_options"] = list(options.values())
+    case["csv_output_dir"] = csv_output_dir
+    case["analysis_results"] = {}
+    case["investigation_context"] = ""
+    if not merged_results and not merged_csv_map:
+        case["analysis_date_range"] = None
+        case["status"] = "evidence_loaded"
+        return False
+    case["status"] = "parsed"
+    return True
+
+
+def _finish_image_parse_progress(
+    case_id: str,
+    image_id: str,
+    status: str,
+    event: dict[str, Any],
+    error: str | None = None,
+) -> str | None:
+    """Finish one image parse and atomically update aggregate case progress."""
+    progress_key = _progress_key(case_id, image_id)
+    event = {**event, "image_id": image_id}
+    with STATE_LOCK:
+        image_progress = PARSE_PROGRESS.setdefault(progress_key, new_progress())
+        image_progress["status"] = status
+        image_progress["error"] = error
+        image_event = dict(event)
+        image_event.setdefault("timestamp", now_iso())
+        image_event["sequence"] = len(image_progress.setdefault("events", []))
+        image_progress["events"].append(image_event)
+
+        prefix = f"{case_id}::"
+        related = {
+            key: value
+            for key, value in PARSE_PROGRESS.items()
+            if key.startswith(prefix)
+        }
+        active = [
+            value for key, value in related.items()
+            if key != progress_key and str(value.get("status", "")).lower() in {"running", "cancelling"}
+        ]
+        if active:
+            return None
+
+        statuses = [str(value.get("status", "")).lower() for value in related.values()]
+        if any(item == "failed" for item in statuses):
+            aggregate_status = "failed"
+        elif any(item == "completed" for item in statuses):
+            aggregate_status = "completed"
+        elif statuses and all(item == "cancelled" for item in statuses):
+            aggregate_status = "cancelled"
+        else:
+            aggregate_status = status
+
+        aggregate = PARSE_PROGRESS.setdefault(case_id, new_progress())
+        aggregate["status"] = aggregate_status
+        aggregate["error"] = error if aggregate_status == "failed" else None
+        aggregate_event = dict(event)
+        aggregate_event["aggregate_status"] = aggregate_status
+        aggregate_event.setdefault("timestamp", now_iso())
+        aggregate_event["sequence"] = len(aggregate.setdefault("events", []))
+        aggregate["events"].append(aggregate_event)
+        return aggregate_status
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +403,7 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
 
     # Prevent deletion while parsing or analysis is running.
     with STATE_LOCK:
-        case_status = str(case.get("status", "")).strip().lower()
-        if case_status == "running":
+        if active_operations_for_case(case_id):
             return error_response(
                 "Cannot remove an image while parsing or analysis is running.", 409,
             )
@@ -316,15 +450,28 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
             if img.get("image_id") != image_id
         ]
 
+        removed_csv_dir = str(original_state.get("csv_output_dir", "")).strip()
+
         # Remove from image_states.
         image_states = case.get("image_states", {})
         image_states.pop(image_id, None)
+        has_remaining_parse = _rebuild_case_parse_state_from_images(case)
 
         # Clear per-image progress keys.
         img_progress_key = _progress_key(case_id, image_id)
         PARSE_PROGRESS.pop(img_progress_key, None)
         ANALYSIS_PROGRESS.pop(img_progress_key, None)
         CHAT_PROGRESS.pop(img_progress_key, None)
+        ANALYSIS_PROGRESS.pop(case_id, None)
+        CHAT_PROGRESS.pop(case_id, None)
+        if not has_remaining_parse:
+            PARSE_PROGRESS.pop(case_id, None)
+
+        case_dir = Path(case["case_dir"])
+
+    if removed_csv_dir:
+        invalidate_header_cache(removed_csv_dir)
+    _purge_case_downstream_files(case_dir)
 
     # Note: CaseManager.delete_image() already writes an "image_deleted"
     # audit entry, so we do not duplicate it here.
@@ -365,6 +512,10 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         return error_response("Invalid image identifier.", 400)
 
     with STATE_LOCK:
+        if active_operations_for_case(case_id):
+            return error_response(
+                "Cannot replace evidence while parsing, analysis, or chat is running.", 409,
+            )
         case_dir = case["case_dir"]
         audit_logger = case["audit"]
 
@@ -436,13 +587,13 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             image_states = case.setdefault("image_states", {})
 
             # Capture previous per-image state before updating so we can
-            # preserve parse results and clean up external parsed output.
+            # remove stale parsed output after the state mutation.
             prev_img_state = image_states.get(image_id, {})
             prev_csv_output_dir = str(prev_img_state.get("csv_output_dir", "")).strip()
 
-            # Update the image state, preserving any existing parse
-            # results and CSV paths from a previous parse run so that
-            # re-uploading evidence does not silently discard them.
+            # Update the image state without parse-derived fields. Evidence
+            # replacement invalidates this image's parsed CSVs and all
+            # downstream analysis/chat/report state.
             new_img_state: dict[str, Any] = {
                 "evidence_path": str(dissect_path),
                 "evidence_hashes": hashes,
@@ -457,18 +608,9 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 "stored_path": evidence_payload["stored_path"],
                 "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
             }
-            for _keep_key in ("parse_results", "artifact_csv_paths", "csv_output_dir"):
-                if _keep_key in prev_img_state:
-                    new_img_state.setdefault(_keep_key, prev_img_state[_keep_key])
             image_states[image_id] = new_img_state
 
-            # Check whether any OTHER image already has parse results.
-            # If so, we must not wipe case-level downstream state because
-            # that would destroy results from those images.
-            other_images_have_results = any(
-                img_id != image_id and bool(img_st.get("parse_results"))
-                for img_id, img_st in image_states.items()
-            )
+            other_images_have_results = _rebuild_case_parse_state_from_images(case)
 
             # Set top-level evidence fields for backward compatibility
             # with V1 code paths.  Only overwrite when this is the first
@@ -490,26 +632,6 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 case["os_type"] = detected_os_type
                 case["available_artifacts"] = available_artifacts
 
-            # Invalidate case-level downstream state only when no other
-            # image has parse results.  This prevents adding Image 2 from
-            # destroying parse/analysis results that belong to Image 1.
-            if not other_images_have_results:
-                case["parse_results"] = []
-                case["artifact_csv_paths"] = {}
-                case["analysis_results"] = {}
-                case["csv_output_dir"] = ""
-                case["selected_artifacts"] = []
-                case["analysis_artifacts"] = []
-                case["artifact_options"] = []
-                case["analysis_date_range"] = None
-                case["investigation_context"] = ""
-
-            # Only reset to evidence_loaded when no other image has
-            # parse results; otherwise keep the current status so the
-            # UI does not lose track of prior parsing progress.
-            if not other_images_have_results:
-                case["status"] = "evidence_loaded"
-
             # Clear per-image progress keys so stale SSE streams are not
             # reused.  Only clear the case-level keys when this is the
             # sole image (no other images have results).
@@ -517,10 +639,10 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             PARSE_PROGRESS.pop(img_progress_key, None)
             ANALYSIS_PROGRESS.pop(img_progress_key, None)
             CHAT_PROGRESS.pop(img_progress_key, None)
+            ANALYSIS_PROGRESS.pop(case_id, None)
+            CHAT_PROGRESS.pop(case_id, None)
             if not other_images_have_results:
                 PARSE_PROGRESS.pop(case_id, None)
-                ANALYSIS_PROGRESS.pop(case_id, None)
-                CHAT_PROGRESS.pop(case_id, None)
 
             # Capture the flag while still under the lock so that the
             # disk cleanup below uses a consistent snapshot.  This
@@ -548,14 +670,11 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             clean_default_parsed=should_clean_case_level,
         )
 
-        # Only clean case-level stale analysis files when no other image
-        # retains parse results.  Otherwise adding a new image would
-        # destroy on-disk state for prior images.
-        if should_clean_case_level:
-            for stale_file in ("analysis_results.json", "prompt.txt", "chat_history.jsonl"):
-                stale_path = case_dir_path / stale_file
-                if stale_path.exists():
-                    stale_path.unlink(missing_ok=True)
+        # The analyzed image set changed, so prior analysis/chat/report
+        # artifacts are stale even when other images remain parsed.
+        _purge_case_downstream_files(case_dir_path)
+        if prev_csv_output_dir:
+            invalidate_header_cache(prev_csv_output_dir)
 
         os_warning = ""
         if detected_os_type == "unknown":
@@ -656,18 +775,27 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         parse_state = PARSE_PROGRESS.setdefault(progress_key, new_progress())
         if parse_state.get("status") == "running":
             return error_response("Parsing is already running for this image.", 409)
+        active = active_operations_for_case(case_id)
+        has_active_image_parse = any(op.get("operation") == "parse" and op.get("image_id") for op in active)
+        incompatible = [
+            op for op in active
+            if op.get("operation") != "parse"
+            or op.get("image_id") == image_id
+            or (op.get("key") == case_id and not has_active_image_parse)
+        ]
+        if incompatible:
+            return error_response("Cannot start parsing while another case operation is running.", 409)
+        case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
+        previous_image_progress = PARSE_PROGRESS.get(progress_key)
+        previous_case_progress = PARSE_PROGRESS.get(case_id)
         PARSE_PROGRESS[progress_key] = new_progress(status="running")
 
-        # Also set the case-level progress for backward compat.
-        # Build a fresh progress dict rather than sharing a reference
-        # with the per-image entry -- otherwise mutations to one would
-        # silently affect the other.  We cannot use deepcopy because
-        # the dict contains a threading.Event (unpicklable), so we
-        # create a new progress entry with the same status instead.
-        img_progress = PARSE_PROGRESS[progress_key]
-        PARSE_PROGRESS[case_id] = new_progress(
-            status=str(img_progress.get("status", "running")),
-        )
+        # Keep one stable case-level aggregate progress store; do not
+        # replace it while other image parses may already have emitted
+        # events to it.
+        case_progress = PARSE_PROGRESS.setdefault(case_id, new_progress())
+        case_progress["status"] = "running"
+        case_progress["error"] = None
 
         case["status"] = "running"
         case["selected_artifacts"] = list(parse_artifacts)
@@ -688,51 +816,71 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         img_state_lock["artifact_csv_paths"] = {}
         img_state_lock["csv_output_dir"] = ""
 
-        # Also invalidate case-level aggregated state.
-        case["parse_results"] = []
-        case["artifact_csv_paths"] = {}
+        # Also invalidate case-level aggregated state from this image,
+        # then rebuild from any other images that are still parsed.
         case["analysis_results"] = {}
         case["investigation_context"] = ""
+        _rebuild_case_parse_state_from_images(case)
+        case["analysis_date_range"] = analysis_date_range
+        case["status"] = "running"
 
         case_dir = Path(case["case_dir"])
 
-    from .evidence_utils import cleanup_parsed_data
+    try:
+        from .evidence_utils import cleanup_parsed_data
 
-    single_image_states: dict[str, dict[str, Any]] = {
-        image_id: {"dir": str(image_dir)},
-    }
-    cleanup_parsed_data(
-        case_dir=case_dir,
-        image_states=single_image_states,
-        prev_csv_output_dir=prev_csv_output_dir,
-        clean_default_parsed=False,
-    )
-    from .artifacts import _purge_stale_downstream_case_files
+        single_image_states: dict[str, dict[str, Any]] = {
+            image_id: {"dir": str(image_dir)},
+        }
+        cleanup_parsed_data(
+            case_dir=case_dir,
+            image_states=single_image_states,
+            prev_csv_output_dir=prev_csv_output_dir,
+            clean_default_parsed=False,
+        )
+        _purge_case_downstream_files(case_dir)
 
-    _purge_stale_downstream_case_files(case_dir)
+        started_event = {
+            "type": "parse_started",
+            "image_id": image_id,
+            "artifacts": parse_artifacts,
+            "analysis_artifacts": analysis_artifacts,
+            "artifact_options": artifact_options,
+            "total_artifacts": len(parse_artifacts),
+        }
+        emit_progress(PARSE_PROGRESS, progress_key, started_event)
+        emit_progress(PARSE_PROGRESS, case_id, started_event)
 
-    emit_progress(PARSE_PROGRESS, progress_key, {
-        "type": "parse_started",
-        "image_id": image_id,
-        "artifacts": parse_artifacts,
-        "analysis_artifacts": analysis_artifacts,
-        "artifact_options": artifact_options,
-        "total_artifacts": len(parse_artifacts),
-    })
+        config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
 
-    config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
+        from .tasks import run_task_with_case_log_context
 
-    from .tasks import run_task_with_case_log_context
-
-    threading.Thread(
-        target=run_task_with_case_log_context,
-        args=(
-            case_id, _run_image_parse,
-            case_id, image_id, parse_artifacts, analysis_artifacts,
-            artifact_options, config_snapshot, str(evidence_path), str(parsed_dir),
-        ),
-        daemon=True,
-    ).start()
+        threading.Thread(
+            target=run_task_with_case_log_context,
+            args=(
+                case_id, _run_image_parse,
+                case_id, image_id, parse_artifacts, analysis_artifacts,
+                artifact_options, config_snapshot, str(evidence_path), str(parsed_dir),
+            ),
+            daemon=True,
+        ).start()
+    except Exception:
+        LOGGER.exception("Failed to start image parse for case %s image %s", case_id, image_id)
+        with STATE_LOCK:
+            audit = case.get("audit")
+            case.clear()
+            case.update(copy.deepcopy(case_snapshot))
+            if audit is not None:
+                case["audit"] = audit
+            if previous_image_progress is None:
+                PARSE_PROGRESS.pop(progress_key, None)
+            else:
+                PARSE_PROGRESS[progress_key] = previous_image_progress
+            if previous_case_progress is None:
+                PARSE_PROGRESS.pop(case_id, None)
+            else:
+                PARSE_PROGRESS[case_id] = previous_case_progress
+        return error_response("Failed to start parsing. Case state was restored.", 500)
 
     response_payload: dict[str, Any] = {
         "status": "started",
@@ -892,27 +1040,14 @@ def _run_image_parse(
         if outcome is None:
             # Parsing was cancelled — reset status so the user can retry.
             # Only transition case status when no other image is still parsing.
-            with STATE_LOCK:
-                image_states = case.get("image_states", {})
-                any_image_still_running = any(
-                    iid != image_id
-                    and _progress_key(case_id, iid) in PARSE_PROGRESS
-                    and PARSE_PROGRESS[_progress_key(case_id, iid)].get("status") == "running"
-                    for iid in image_states
-                )
-            if not any_image_still_running:
+            aggregate_status = _finish_image_parse_progress(
+                case_id,
+                image_id,
+                "cancelled",
+                {"type": "parse_cancelled", "image_id": image_id},
+            )
+            if aggregate_status is not None:
                 mark_case_status(case_id, "evidence_loaded")
-            set_progress_status(PARSE_PROGRESS, progress_key, "cancelled")
-            emit_progress(PARSE_PROGRESS, progress_key, {
-                "type": "parse_cancelled", "image_id": image_id,
-            })
-            # Mirror terminal status to case-level progress so SSE
-            # clients on /api/cases/<case_id>/parse/progress see it.
-            if not any_image_still_running:
-                set_progress_status(PARSE_PROGRESS, case_id, "cancelled")
-                emit_progress(PARSE_PROGRESS, case_id, {
-                    "type": "parse_cancelled", "image_id": image_id,
-                })
             return
 
         results, csv_map = outcome
@@ -961,26 +1096,8 @@ def _run_image_parse(
             if not case.get("csv_output_dir"):
                 case["csv_output_dir"] = parsed_dir
 
-            # Check if any other image is still parsing.  Only
-            # transition the case to "parsed" when all images are
-            # done, to avoid a race where one thread sets "parsed"
-            # while another image is still running.
-            any_image_still_running = any(
-                iid != image_id
-                and _progress_key(case_id, iid) in PARSE_PROGRESS
-                and PARSE_PROGRESS[_progress_key(case_id, iid)].get("status") == "running"
-                for iid in image_states
-            )
-
-            # Mark case as "parsed" while still holding the lock so that no
-            # concurrent thread can start a new parse between the check and
-            # the status transition.
-            if not any_image_still_running:
-                mark_case_status(case_id, "parsed")
-
         completed = sum(1 for item in results if item.get("success"))
         failed = len(results) - completed
-        set_progress_status(PARSE_PROGRESS, progress_key, "completed")
         completion_event: dict[str, Any] = {
             "type": "parse_completed",
             "image_id": image_id,
@@ -988,12 +1105,9 @@ def _run_image_parse(
             "successful_artifacts": completed,
             "failed_artifacts": failed,
         }
-        emit_progress(PARSE_PROGRESS, progress_key, completion_event)
-        # Mirror terminal status to case-level progress so SSE
-        # clients on /api/cases/<case_id>/parse/progress see it.
-        if not any_image_still_running:
-            set_progress_status(PARSE_PROGRESS, case_id, "completed")
-            emit_progress(PARSE_PROGRESS, case_id, completion_event)
+        aggregate_status = _finish_image_parse_progress(case_id, image_id, "completed", completion_event)
+        if aggregate_status is not None:
+            mark_case_status(case_id, "parsed" if aggregate_status == "completed" else "error")
         invalidate_header_cache(parsed_dir)
     except Exception:
         LOGGER.exception("Background parse failed for case %s image %s", case_id, image_id)
@@ -1001,21 +1115,12 @@ def _run_image_parse(
             "Parsing failed due to an internal error. "
             "Check logs and retry after confirming the evidence file is readable."
         )
-        # Only set case to "error" if no other image is still running.
-        with STATE_LOCK:
-            image_states = case.get("image_states", {})
-            any_still_running = any(
-                iid != image_id
-                and _progress_key(case_id, iid) in PARSE_PROGRESS
-                and PARSE_PROGRESS[_progress_key(case_id, iid)].get("status") == "running"
-                for iid in image_states
-            )
-        if not any_still_running:
+        aggregate_status = _finish_image_parse_progress(
+            case_id,
+            image_id,
+            "failed",
+            {"type": "parse_failed", "error": user_message},
+            error=user_message,
+        )
+        if aggregate_status is not None:
             mark_case_status(case_id, "error")
-        set_progress_status(PARSE_PROGRESS, progress_key, "failed", user_message)
-        emit_progress(PARSE_PROGRESS, progress_key, {"type": "parse_failed", "error": user_message})
-        # Mirror terminal status to case-level progress so SSE
-        # clients on /api/cases/<case_id>/parse/progress see it.
-        if not any_still_running:
-            set_progress_status(PARSE_PROGRESS, case_id, "failed", user_message)
-            emit_progress(PARSE_PROGRESS, case_id, {"type": "parse_failed", "error": user_message})

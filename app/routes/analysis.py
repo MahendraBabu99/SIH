@@ -18,6 +18,7 @@ from flask import Blueprint, Response, current_app, request
 from .state import (
     STATE_LOCK,
     ANALYSIS_PROGRESS,
+    active_operations_for_case,
     cancel_progress,
     error_response,
     success_response,
@@ -112,6 +113,11 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         analysis_state = ANALYSIS_PROGRESS.setdefault(case_id, new_progress())
         if analysis_state.get("status") == "running":
             return error_response("Analysis is already running for this case.", 409)
+        active = active_operations_for_case(case_id)
+        if active:
+            return error_response("Cannot start analysis while another case operation is running.", 409)
+        case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
+        previous_progress = ANALYSIS_PROGRESS.get(case_id)
         ANALYSIS_PROGRESS[case_id] = new_progress(status="running")
         case["status"] = "running"
         case["investigation_context"] = prompt
@@ -122,46 +128,59 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
 
     # Write the prompt file outside the lock — it doesn't depend on shared
     # state and avoids blocking other threads during file I/O.
-    prompt_path.write_text(prompt, encoding="utf-8")
+    try:
+        prompt_path.write_text(prompt, encoding="utf-8")
 
-    # Remove the on-disk results file outside the lock to avoid holding
-    # the lock during I/O.
-    stale_results_path = Path(case_dir) / "analysis_results.json"
-    if stale_results_path.exists():
-        stale_results_path.unlink(missing_ok=True)
+        # Remove the on-disk results file outside the lock to avoid holding
+        # the lock during I/O.
+        stale_results_path = Path(case_dir) / "analysis_results.json"
+        if stale_results_path.exists():
+            stale_results_path.unlink(missing_ok=True)
 
-    audit_logger.log("prompt_submitted", prompt_details)
+        audit_logger.log("prompt_submitted", prompt_details)
 
-    # Determine total artifact count for the SSE started event.
-    if images_payload:
-        total_artifact_count = sum(len(img.get("artifacts", [])) for img in images_payload)
-    else:
-        total_artifact_count = len(analysis_artifacts_snapshot)
+        # Determine total artifact count for the SSE started event.
+        if images_payload:
+            total_artifact_count = sum(len(img.get("artifacts", [])) for img in images_payload)
+        else:
+            total_artifact_count = len(analysis_artifacts_snapshot)
 
-    emit_progress(
-        ANALYSIS_PROGRESS, case_id,
-        {
-            "type": "analysis_started",
-            "prompt_provided": bool(prompt),
-            "analysis_artifact_count": total_artifact_count,
-            "multi_image": images_payload is not None,
-        },
-    )
-    config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
+        emit_progress(
+            ANALYSIS_PROGRESS, case_id,
+            {
+                "type": "analysis_started",
+                "prompt_provided": bool(prompt),
+                "analysis_artifact_count": total_artifact_count,
+                "multi_image": images_payload is not None,
+            },
+        )
+        config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
 
-    if images_payload:
-        threading.Thread(
-            target=run_task_with_case_log_context,
-            args=(case_id, run_multi_image_analysis_task, case_id, prompt,
-                  images_payload, config_snapshot),
-            daemon=True,
-        ).start()
-    else:
-        threading.Thread(
-            target=run_task_with_case_log_context,
-            args=(case_id, run_analysis, case_id, prompt, config_snapshot),
-            daemon=True,
-        ).start()
+        if images_payload:
+            threading.Thread(
+                target=run_task_with_case_log_context,
+                args=(case_id, run_multi_image_analysis_task, case_id, prompt,
+                      images_payload, config_snapshot),
+                daemon=True,
+            ).start()
+        else:
+            threading.Thread(
+                target=run_task_with_case_log_context,
+                args=(case_id, run_analysis, case_id, prompt, config_snapshot),
+                daemon=True,
+            ).start()
+    except Exception:
+        with STATE_LOCK:
+            audit = case.get("audit")
+            case.clear()
+            case.update(copy.deepcopy(case_snapshot))
+            if audit is not None:
+                case["audit"] = audit
+            if previous_progress is None:
+                ANALYSIS_PROGRESS.pop(case_id, None)
+            else:
+                ANALYSIS_PROGRESS[case_id] = previous_progress
+        return error_response("Failed to start analysis. Case state was restored.", 500)
 
     return success_response(
         {
@@ -201,7 +220,7 @@ def cancel_analysis_route(case_id: str) -> tuple[Response, int]:
     """
     if get_case(case_id) is None:
         return error_response(f"Case not found: {case_id}", 404)
-    cancelled = cancel_progress(ANALYSIS_PROGRESS, case_id)
+    cancelled = cancel_progress(ANALYSIS_PROGRESS, case_id, "analysis_cancel_requested")
     if not cancelled:
         return error_response("No running analysis to cancel.", 409)
     return success_response({"status": "cancelling", "case_id": case_id})

@@ -55,6 +55,7 @@ from ..artifact_profiles import (
 from .state import (
     PARSE_PROGRESS,
     STATE_LOCK,
+    active_operations_for_case,
     cancel_progress,
     emit_progress,
     error_response,
@@ -188,6 +189,11 @@ def start_parse(case_id: str) -> tuple[Response, int]:
         parse_state = PARSE_PROGRESS.setdefault(case_id, new_progress())
         if parse_state.get("status") == "running":
             return error_response("Parsing is already running for this case.", 409)
+        active = active_operations_for_case(case_id)
+        if active:
+            return error_response("Cannot start parsing while another case operation is running.", 409)
+        case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
+        previous_progress = PARSE_PROGRESS.get(case_id)
         case_dir = Path(case["case_dir"])
         PARSE_PROGRESS[case_id] = new_progress(status="running")
         case["status"] = "running"
@@ -208,33 +214,47 @@ def start_parse(case_id: str) -> tuple[Response, int]:
         case["csv_output_dir"] = ""
         case["investigation_context"] = ""
 
-    from .evidence_utils import cleanup_parsed_data
+    try:
+        from .evidence_utils import cleanup_parsed_data
 
-    cleanup_parsed_data(
-        case_dir=case_dir,
-        image_states={},
-        prev_csv_output_dir=prev_csv_output_dir,
-        clean_default_parsed=True,
-    )
-    _purge_stale_downstream_case_files(case_dir)
+        cleanup_parsed_data(
+            case_dir=case_dir,
+            image_states={},
+            prev_csv_output_dir=prev_csv_output_dir,
+            clean_default_parsed=True,
+        )
+        _purge_stale_downstream_case_files(case_dir)
 
-    parse_started_event: dict[str, Any] = {
-        "type": "parse_started",
-        "artifacts": parse_artifacts,
-        "analysis_artifacts": analysis_artifacts,
-        "artifact_options": artifact_options,
-        "total_artifacts": len(parse_artifacts),
-    }
-    if analysis_date_range is not None:
-        parse_started_event["analysis_date_range"] = analysis_date_range
-    emit_progress(PARSE_PROGRESS, case_id, parse_started_event)
-    config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
-    from .tasks import run_task_with_case_log_context, run_parse  # deferred to avoid circular import
-    threading.Thread(
-        target=run_task_with_case_log_context,
-        args=(case_id, run_parse, case_id, parse_artifacts, analysis_artifacts, artifact_options, config_snapshot),
-        daemon=True,
-    ).start()
+        parse_started_event: dict[str, Any] = {
+            "type": "parse_started",
+            "artifacts": parse_artifacts,
+            "analysis_artifacts": analysis_artifacts,
+            "artifact_options": artifact_options,
+            "total_artifacts": len(parse_artifacts),
+        }
+        if analysis_date_range is not None:
+            parse_started_event["analysis_date_range"] = analysis_date_range
+        emit_progress(PARSE_PROGRESS, case_id, parse_started_event)
+        config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
+        from .tasks import run_task_with_case_log_context, run_parse  # deferred to avoid circular import
+        threading.Thread(
+            target=run_task_with_case_log_context,
+            args=(case_id, run_parse, case_id, parse_artifacts, analysis_artifacts, artifact_options, config_snapshot),
+            daemon=True,
+        ).start()
+    except Exception:
+        LOGGER.exception("Failed to start parse for case %s", case_id)
+        with STATE_LOCK:
+            audit_logger = case.get("audit")
+            case.clear()
+            case.update(copy.deepcopy(case_snapshot))
+            if audit_logger is not None:
+                case["audit"] = audit_logger
+            if previous_progress is None:
+                PARSE_PROGRESS.pop(case_id, None)
+            else:
+                PARSE_PROGRESS[case_id] = previous_progress
+        return error_response("Failed to start parsing. Case state was restored.", 500)
 
     response_payload: dict[str, Any] = {
         "status": "started",
@@ -279,7 +299,7 @@ def cancel_parse(case_id: str) -> tuple[Response, int]:
     """
     if get_case(case_id) is None:
         return error_response(f"Case not found: {case_id}", 404)
-    cancelled = cancel_progress(PARSE_PROGRESS, case_id)
+    cancelled = cancel_progress(PARSE_PROGRESS, case_id, "parse_cancel_requested")
 
     # Also cancel all per-image progress entries for this case.
     # Per-image keys use the format "<case_id>::<image_id>".
@@ -290,8 +310,9 @@ def cancel_parse(case_id: str) -> tuple[Response, int]:
             if key.startswith(prefix)
         ]
     for img_key in image_keys:
-        cancel_progress(PARSE_PROGRESS, img_key)
-        cancelled = True
+        image_id = img_key.split("::", 1)[1]
+        if cancel_progress(PARSE_PROGRESS, img_key, "parse_cancel_requested", {"image_id": image_id}):
+            cancelled = True
 
     if not cancelled:
         return error_response("No running parse to cancel.", 409)

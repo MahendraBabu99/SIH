@@ -27,6 +27,7 @@ from .state import (
     DEFAULT_FORENSIC_SYSTEM_PROMPT,
     STATE_LOCK,
     emit_progress,
+    get_cancel_event,
     get_case,
     set_progress_status,
 )
@@ -214,6 +215,10 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
     """
     # Import here to avoid circular dependency with tasks.py.
     from .tasks import load_case_analysis_results, resolve_case_investigation_context, resolve_case_parsed_dir
+    cancel_event = get_cancel_event(CHAT_PROGRESS, case_id)
+
+    def _cancel_requested() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
 
     case = get_case(case_id)
     if case is None:
@@ -263,6 +268,10 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
     )
 
     try:
+        if _cancel_requested():
+            set_progress_status(CHAT_PROGRESS, case_id, "cancelled")
+            emit_progress(CHAT_PROGRESS, case_id, {"type": "chat_cancelled"})
+            return
         prompt_budget = int(chat_max_tokens * 0.8)
         provider = create_provider(copy.deepcopy(config_snapshot))
 
@@ -363,17 +372,29 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
         started_at = time.perf_counter()
         chunks: list[str] = []
         chat_response_max_tokens = max(1, int(chat_max_tokens * 0.2))
+        if _cancel_requested():
+            set_progress_status(CHAT_PROGRESS, case_id, "cancelled")
+            emit_progress(CHAT_PROGRESS, case_id, {"type": "chat_cancelled"})
+            return
         for chunk in provider.analyze_stream(
             system_prompt=system_prompt,
             user_prompt=chat_user_prompt,
             max_tokens=chat_response_max_tokens,
         ):
+            if _cancel_requested():
+                set_progress_status(CHAT_PROGRESS, case_id, "cancelled")
+                emit_progress(CHAT_PROGRESS, case_id, {"type": "chat_cancelled"})
+                return
             chunk_text = str(chunk)
             if not chunk_text:
                 continue
             chunks.append(chunk_text)
             emit_progress(CHAT_PROGRESS, case_id, {"type": "token", "content": chunk_text})
 
+        if _cancel_requested():
+            set_progress_status(CHAT_PROGRESS, case_id, "cancelled")
+            emit_progress(CHAT_PROGRESS, case_id, {"type": "chat_cancelled"})
+            return
         response_text = "".join(chunks).strip()
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         if not response_text:
