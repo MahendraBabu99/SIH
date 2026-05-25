@@ -426,6 +426,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
                             BytesIO(b"software"),
                             "KAPE/Windows/System32/config/SOFTWARE",
                         ),
+                        (BytesIO(b"mft"), "KAPE/C/$MFT"),
                     ],
                     "prompt": "Investigate uploaded folder",
                     "skip_hashing": "false",
@@ -441,6 +442,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertTrue(
             (evidence_path / "KAPE/Windows/System32/config/SOFTWARE").is_file()
         )
+        self.assertTrue((evidence_path / "KAPE/C/$MFT").is_file())
         self.assertFalse(req.skip_hashing)
 
     @patch("app.routes.automation.run_automation")

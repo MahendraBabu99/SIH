@@ -30,7 +30,6 @@ from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, jsonify, request, send_file
 from werkzeug.datastructures import FileStorage
-from werkzeug.utils import secure_filename
 
 from app.artifact_profiles import validate_analysis_date_range
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
@@ -47,6 +46,7 @@ AUTOMATION_RUNS: dict[str, dict[str, Any]] = {}
 RUNS_LOCK = threading.RLock()
 RUN_TTL_SECONDS = 3600  # 1 hour
 AUTOMATION_UPLOAD_ROOT_NAME = "_automation_uploads"
+INVALID_UPLOAD_PATH_CHARS = frozenset('<>:"|?*\x00')
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +236,9 @@ def _uploaded_filename_parts(filename: str, fallback: str) -> tuple[str, ...]:
     for part in posix_path.parts:
         if part in ("", "."):
             continue
-        cleaned = secure_filename(part)
-        if cleaned:
-            cleaned_parts.append(cleaned)
+        if any(char in INVALID_UPLOAD_PATH_CHARS for char in part):
+            raise ValueError(f"Unsafe upload filename: {raw}")
+        cleaned_parts.append(part)
 
     return tuple(cleaned_parts) if cleaned_parts else (fallback,)
 
