@@ -197,6 +197,35 @@ class TestExtractZip(unittest.TestCase):
         result = routes_evidence._extract_zip(zip_path, dest)
         self.assertTrue(result.is_dir())
 
+    def test_zip_prefers_dissect_directory_over_nested_bin(self) -> None:
+        class FakeTarget:
+            def close(self) -> None:
+                return None
+
+        zip_path = self.root / "kape.zip"
+        dest = self.root / "extracted"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("collection/CopyLog.csv", b"log")
+            zf.writestr(
+                "collection/C/ProgramData/Microsoft/Windows Defender/Support/"
+                "MpWppTracing-20260524-171905-00000003-ffffffff.bin",
+                b"trace",
+            )
+
+        def open_only_collection(path: Path) -> FakeTarget:
+            if Path(path).resolve() == (dest / "collection").resolve():
+                return FakeTarget()
+            raise RuntimeError("not a Dissect target")
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=open_only_collection,
+        ):
+            result = routes_evidence._extract_zip(zip_path, dest)
+
+        self.assertEqual(result, (dest / "collection").resolve())
+        self.assertTrue(result.is_dir())
+
     def test_zip_empty_raises(self) -> None:
         zip_path = self.root / "empty.zip"
         dest = self.root / "extracted"

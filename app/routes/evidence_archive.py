@@ -11,6 +11,8 @@ Attributes:
 
 from __future__ import annotations
 
+import gc
+import logging
 import shutil
 import tarfile
 from pathlib import Path
@@ -36,6 +38,33 @@ EVIDENCE_FILE_EXTENSIONS = frozenset({
     ".asdf", ".asif", ".ad1",
     ".000", ".001",
 })
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _discover_extracted_target(destination: Path) -> Path | None:
+    """Return the best target from Dissect-aware discovery, if available."""
+    try:
+        from app.automation.discovery import discover_evidence
+
+        discovered = discover_evidence(destination)
+    except Exception:
+        LOGGER.debug(
+            "Dissect-aware archive discovery failed for %s",
+            destination,
+            exc_info=True,
+        )
+        return None
+    finally:
+        gc.collect()
+
+    if not discovered:
+        return None
+
+    for path in discovered:
+        if path.suffix.lower() == ".e01":
+            return path
+    return discovered[0]
 
 
 def extract_archive_members(
@@ -99,6 +128,11 @@ def extract_archive_members(
     files = sorted(path for path in destination.rglob("*") if path.is_file())
     if not files:
         raise ValueError(no_files_message)
+
+    discovered_target = _discover_extracted_target(destination)
+    if discovered_target is not None:
+        return discovered_target
+
     evidence_files = [
         path for path in files if path.suffix.lower() in EVIDENCE_FILE_EXTENSIONS
     ]
