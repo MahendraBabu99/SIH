@@ -24,19 +24,19 @@ from .base import (
     DEFAULT_LOCAL_MODEL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_LOCAL_REQUEST_TIMEOUT_SECONDS,
-    RATE_LIMIT_MAX_RETRIES,
-    _extract_retry_after_seconds,
     _is_attachment_unsupported_error,
     _normalize_api_key_value,
     _normalize_openai_compatible_base_url,
     _resolve_timeout_seconds,
-    _run_with_rate_limit_retries,
+    _run_stream_with_rate_limit_retries,
+    _run_with_completion_token_retry,
 )
 from .utils import (
     _clean_streamed_answer_text,
     _extract_openai_delta_text,
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
+    _raise_on_openai_delta_refusal,
     _strip_leading_reasoning_blocks,
     upload_and_request_via_responses_api,
 )
@@ -163,94 +163,64 @@ class LocalProvider(AIProvider):
         Raises:
             AIProviderError: On empty response or API failure.
         """
-        def _stream() -> Iterator[str]:
-            """Inner generator with rate-limit retry around create + iterate."""
-            prompt_for_completion = self._build_chat_completion_prompt(
-                user_prompt=user_prompt,
-                attachments=None,
-            )
-            last_rate_limit_error: Exception | None = None
-            for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
-                try:
-                    try:
-                        stream = self.client.chat.completions.create(
-                            model=self.model,
-                            max_tokens=max_tokens,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": prompt_for_completion},
-                            ],
-                            stream=True,
-                        )
-                    except self._openai.BadRequestError as error:
-                        lowered_error = str(error).lower()
-                        if "stream" in lowered_error and ("unsupported" in lowered_error or "not support" in lowered_error):
-                            fallback_text = self._request_non_stream(
-                                system_prompt=system_prompt,
-                                user_prompt=user_prompt,
-                                max_tokens=max_tokens,
-                                attachments=None,
-                            )
-                            if fallback_text:
-                                yield fallback_text
-                                return
-                        raise
+        prompt_for_completion = self._build_chat_completion_prompt(
+            user_prompt=user_prompt,
+            attachments=None,
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_for_completion},
+        ]
 
-                    emitted = False
-                    for chunk in stream:
-                        choices = getattr(chunk, "choices", None)
-                        if not choices:
-                            continue
-                        choice = choices[0]
-                        delta = getattr(choice, "delta", None)
-                        if delta is None and isinstance(choice, dict):
-                            delta = choice.get("delta")
-                        # Only yield from the content field, skipping
-                        # reasoning/thinking fields so streaming output
-                        # matches the non-streaming path which strips
-                        # leading <think> blocks via
-                        # _strip_leading_reasoning_blocks().
-                        chunk_text = (
-                            getattr(delta, "content", None)
-                            if not isinstance(delta, dict)
-                            else (delta.get("content") if delta else None)
-                        )
-                        if not chunk_text:
-                            continue
-                        emitted = True
-                        yield chunk_text
-
-                    if not emitted:
-                        raise AIProviderError(
-                            "Local AI provider returned an empty streamed response. "
-                            "Try a different local model or increase max tokens."
-                        )
-                    return
-                except self._openai.RateLimitError as rate_error:
-                    last_rate_limit_error = rate_error
-                    if attempt >= RATE_LIMIT_MAX_RETRIES:
-                        break
-                    retry_after = _extract_retry_after_seconds(rate_error)
-                    if retry_after is None:
-                        retry_after = float(2 ** attempt)
-                    logger.warning(
-                        "Local provider stream rate limited (attempt %d/%d), retrying in %.1fs",
-                        attempt + 1,
-                        RATE_LIMIT_MAX_RETRIES,
-                        retry_after,
+        def _stream_factory() -> Any:
+            try:
+                return self._create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    stream=True,
+                )
+            except self._openai.BadRequestError as error:
+                if self._is_stream_unsupported_error(error):
+                    return self._request_non_stream(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        max_tokens=max_tokens,
+                        attachments=None,
                     )
-                    time.sleep(retry_after)
-                except AIProviderError:
-                    raise
-                except Exception as error:
-                    raise self._map_api_error(error) from error
+                raise
 
-            raise AIProviderError(
-                f"Local provider rate limit exceeded after {RATE_LIMIT_MAX_RETRIES} retries. "
-                f"Details: {last_rate_limit_error}"
+        def _stream_text_iterator(stream: Any) -> Iterator[str]:
+            if isinstance(stream, str):
+                if stream:
+                    yield stream
+                return
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None and isinstance(choice, dict):
+                    delta = choice.get("delta")
+                _raise_on_openai_delta_refusal(delta)
+                # Only yield from the content field, skipping
+                # reasoning/thinking fields so streaming output matches
+                # the non-streaming path which strips leading blocks.
+                chunk_text = _extract_openai_delta_text(delta, ("content",))
+                if chunk_text:
+                    yield chunk_text
+
+        return _run_stream_with_rate_limit_retries(
+            stream_factory=_stream_factory,
+            stream_text_iterator=_stream_text_iterator,
+            rate_limit_error_type=self._openai.RateLimitError,
+            provider_name="Local/OpenAI-compatible",
+            map_error=self._map_api_error,
+            empty_response_message=(
+                "Local AI provider returned an empty streamed response. "
+                "Try a different local model or increase max tokens."
             )
-
-        return _stream()
+        )
 
     def analyze_with_attachments(
         self,
@@ -449,20 +419,16 @@ class LocalProvider(AIProvider):
         )
 
         try:
-            return self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=max_tokens,
+            return self._create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt_for_completion},
                 ],
+                max_tokens=max_tokens,
                 stream=True,
             )
         except self._openai.BadRequestError as error:
-            lowered_error = str(error).lower()
-            if "stream" in lowered_error and (
-                "unsupported" in lowered_error or "not support" in lowered_error
-            ):
+            if self._is_stream_unsupported_error(error):
                 return self._request_non_stream(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
@@ -492,6 +458,7 @@ class LocalProvider(AIProvider):
         if delta is None:
             return None
 
+        _raise_on_openai_delta_refusal(delta)
         answer_delta = _extract_openai_delta_text(delta, ("content",))
         thinking_delta = _extract_openai_delta_text(
             delta,
@@ -627,13 +594,12 @@ class LocalProvider(AIProvider):
             attachments=attachments,
         )
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
+        response = self._create_chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt_for_completion},
             ],
+            max_tokens=max_tokens,
         )
         text = _extract_openai_text(response)
         if text:
@@ -653,6 +619,37 @@ class LocalProvider(AIProvider):
         raise AIProviderError(
             "Local AI provider returned an empty response"
             f"{reason_detail}. This can happen with reasoning-only outputs or very low token limits."
+        )
+
+    def _create_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        stream: bool = False,
+    ) -> Any:
+        """Create a local OpenAI-compatible chat completion with token retry."""
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if stream:
+            request_kwargs["stream"] = True
+
+        return _run_with_completion_token_retry(
+            create_fn=lambda kw: self.client.chat.completions.create(**kw),
+            request_kwargs=request_kwargs,
+            token_parameter="max_tokens",
+            bad_request_error_type=self._openai.BadRequestError,
+            provider_name="Local/OpenAI-compatible",
+        )
+
+    @staticmethod
+    def _is_stream_unsupported_error(error: Exception) -> bool:
+        """Return true when a local endpoint rejects streaming mode."""
+        lowered_error = str(error).lower()
+        return "stream" in lowered_error and (
+            "unsupported" in lowered_error or "not support" in lowered_error
         )
 
     def _build_chat_completion_prompt(

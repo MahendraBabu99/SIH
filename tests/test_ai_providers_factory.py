@@ -472,6 +472,99 @@ class TestUploadAndRequestViaResponsesAPI(unittest.TestCase):
 
         mock_client.files.delete.assert_called_once_with("file-cleanup")
 
+    def test_cleans_up_all_uploaded_files_on_response_failure(self) -> None:
+        import openai as openai_module
+
+        mock_client = MagicMock()
+        mock_client.files.create.side_effect = [
+            SimpleNamespace(id="file-one"),
+            SimpleNamespace(id="file-two"),
+        ]
+        mock_client.responses.create.side_effect = RuntimeError("API error")
+
+        with TemporaryDirectory(prefix="aift-test-") as tmp:
+            path_one = Path(tmp) / "one.csv"
+            path_two = Path(tmp) / "two.csv"
+            path_one.write_text("a,b\n1,2\n")
+            path_two.write_text("c,d\n3,4\n")
+
+            with self.assertRaises(RuntimeError):
+                upload_and_request_via_responses_api(
+                    client=mock_client,
+                    openai_module=openai_module,
+                    model="test-model",
+                    normalized_attachments=[
+                        {"path": str(path_one), "name": "one.csv", "mime_type": "text/csv"},
+                        {"path": str(path_two), "name": "two.csv", "mime_type": "text/csv"},
+                    ],
+                    system_prompt="sys",
+                    user_prompt="user",
+                    max_tokens=1000,
+                    provider_name="Test",
+                )
+
+        mock_client.files.delete.assert_has_calls([call("file-one"), call("file-two")])
+
+    def test_cleans_up_uploaded_files_when_later_upload_fails(self) -> None:
+        import openai as openai_module
+
+        mock_client = MagicMock()
+        mock_client.files.create.side_effect = [
+            SimpleNamespace(id="file-one"),
+            RuntimeError("upload failed"),
+        ]
+
+        with TemporaryDirectory(prefix="aift-test-") as tmp:
+            path_one = Path(tmp) / "one.csv"
+            path_two = Path(tmp) / "two.csv"
+            path_one.write_text("a,b\n1,2\n")
+            path_two.write_text("c,d\n3,4\n")
+
+            with self.assertRaises(RuntimeError):
+                upload_and_request_via_responses_api(
+                    client=mock_client,
+                    openai_module=openai_module,
+                    model="test-model",
+                    normalized_attachments=[
+                        {"path": str(path_one), "name": "one.csv", "mime_type": "text/csv"},
+                        {"path": str(path_two), "name": "two.csv", "mime_type": "text/csv"},
+                    ],
+                    system_prompt="sys",
+                    user_prompt="user",
+                    max_tokens=1000,
+                    provider_name="Test",
+                )
+
+        mock_client.files.delete.assert_called_once_with("file-one")
+        mock_client.responses.create.assert_not_called()
+
+    def test_delete_failure_is_logged_without_masking_original_error(self) -> None:
+        import openai as openai_module
+
+        mock_client = MagicMock()
+        mock_client.files.create.return_value = SimpleNamespace(id="file-cleanup")
+        mock_client.responses.create.side_effect = RuntimeError("original API error")
+        mock_client.files.delete.side_effect = RuntimeError("delete failed")
+
+        with TemporaryDirectory(prefix="aift-test-") as tmp:
+            path = Path(tmp) / "data.csv"
+            path.write_text("a,b\n1,2\n")
+
+            with self.assertLogs("app.ai_providers.utils", level="WARNING") as logs:
+                with self.assertRaisesRegex(RuntimeError, "original API error"):
+                    upload_and_request_via_responses_api(
+                        client=mock_client,
+                        openai_module=openai_module,
+                        model="test-model",
+                        normalized_attachments=[{"path": str(path), "name": "data.csv", "mime_type": "text/csv"}],
+                        system_prompt="sys",
+                        user_prompt="user",
+                        max_tokens=1000,
+                        provider_name="Test",
+                    )
+
+        self.assertTrue(any("could not delete uploaded file id" in line for line in logs.output))
+
     def test_converts_csv_to_txt_when_flag_set(self) -> None:
         import openai as openai_module
 

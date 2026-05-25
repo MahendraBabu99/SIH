@@ -75,6 +75,45 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertIn("empty response", str(ctx.exception))
 
     @patch("openai.OpenAI")
+    def test_analyze_stream_refusal_raises(self, mock_openai_cls: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(refusal="Refused"))]),
+        ]
+
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+        with self.assertRaises(AIProviderError) as ctx:
+            list(provider.analyze_stream("system", "user"))
+        self.assertIn("refused", str(ctx.exception))
+        self.assertIn("Refused", str(ctx.exception))
+
+    @patch("app.ai_providers.base.time.sleep")
+    @patch("openai.OpenAI")
+    def test_analyze_stream_retries_rate_limit_with_shared_runner(
+        self,
+        mock_openai_cls: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        class _FakeRateLimitError(Exception):
+            pass
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            _FakeRateLimitError("rate limited"),
+            [SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Recovered"))])],
+        ]
+
+        with patch("openai.RateLimitError", _FakeRateLimitError):
+            provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+            chunks = list(provider.analyze_stream("system", "user"))
+
+        self.assertEqual(chunks, ["Recovered"])
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        mock_sleep.assert_called()
+
+    @patch("openai.OpenAI")
     def test_analyze_prefers_max_completion_tokens(self, mock_openai_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
@@ -308,6 +347,39 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertIn("File attachments were unavailable", fallback_prompt)
         self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", fallback_prompt)
         self.assertIn("ts,name", fallback_prompt)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_attachments_propagates_unrelated_bad_request(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        class _FakeBadRequestError(Exception):
+            pass
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.files.create.return_value = SimpleNamespace(id="file-related")
+        mock_client.responses.create.side_effect = _FakeBadRequestError(
+            "this model does not support max_tokens"
+        )
+        mock_client.chat.completions.create.return_value = _make_openai_response("should not fallback")
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+
+            with patch("openai.BadRequestError", _FakeBadRequestError):
+                provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+                with self.assertRaises(AIProviderError) as ctx:
+                    provider.analyze_with_attachments(
+                        "system",
+                        "user",
+                        attachments=[{"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}],
+                    )
+
+        self.assertIn("request was rejected", str(ctx.exception))
+        self.assertIsNone(provider._csv_attachment_supported)
+        self.assertEqual(mock_client.chat.completions.create.call_count, 0)
 
     @patch("openai.OpenAI")
     def test_analyze_connection_error(self, mock_openai_cls: MagicMock) -> None:

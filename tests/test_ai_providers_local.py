@@ -94,6 +94,56 @@ class TestLocalProvider(unittest.TestCase):
         self.assertIn("empty", str(ctx.exception).lower())
 
     @patch("openai.OpenAI")
+    def test_analyze_stream_refusal_raises(self, mock_openai_cls: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(refusal="Refused"))]),
+        ]
+
+        provider = LocalProvider(base_url="http://localhost:11434/v1", model="test")
+        with self.assertRaises(AIProviderError) as ctx:
+            list(provider.analyze_stream("system", "user"))
+        self.assertIn("refused", str(ctx.exception))
+        self.assertIn("Refused", str(ctx.exception))
+
+    @patch("openai.OpenAI")
+    def test_analyze_stream_retries_with_model_token_cap_when_max_tokens_too_large(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        class _FakeBadRequestError(Exception):
+            def __init__(self, message: str, *, param: str | None = None) -> None:
+                super().__init__(message)
+                self.param = param
+                self.body = {"error": {"message": message, "param": param}}
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            _FakeBadRequestError(
+                "maxtokens is too large: 256000. This model supports at most 128000 completion tokens.",
+                param="maxtokens",
+            ),
+            [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="Local capped stream"))]
+                )
+            ],
+        ]
+
+        with patch("openai.BadRequestError", _FakeBadRequestError):
+            provider = LocalProvider(base_url="http://localhost:11434/v1", model="test")
+            chunks = list(provider.analyze_stream("system", "user", max_tokens=256000))
+
+        self.assertEqual(chunks, ["Local capped stream"])
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs["max_tokens"], 256000)
+        self.assertEqual(second_kwargs["max_tokens"], 128000)
+        self.assertTrue(second_kwargs["stream"])
+
+    @patch("openai.OpenAI")
     def test_get_model_info(self, _mock: MagicMock) -> None:
         provider = LocalProvider(
             base_url="http://localhost:11434/v1", model="llama3.1:70b"
@@ -371,6 +421,54 @@ class TestLocalProvider(unittest.TestCase):
         self.assertNotIn("<think>", result)
 
     @patch("openai.OpenAI")
+    def test_analyze_with_progress_retries_with_model_token_cap_when_too_large(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        class _FakeBadRequestError(Exception):
+            def __init__(self, message: str, *, param: str | None = None) -> None:
+                super().__init__(message)
+                self.param = param
+                self.body = {"error": {"message": message, "param": param}}
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            _FakeBadRequestError(
+                "maxtokens is too large: 256000. This model supports at most 128000 completion tokens.",
+                param="maxtokens",
+            ),
+            [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(reasoning="Thinking. "))]
+                ),
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="Final answer."))]
+                ),
+            ],
+        ]
+
+        progress_updates: list[dict[str, str]] = []
+        with patch("openai.BadRequestError", _FakeBadRequestError):
+            provider = LocalProvider(
+                base_url="http://localhost:11434/v1", model="llama3.1:70b"
+            )
+            result = provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=lambda payload: progress_updates.append(payload),
+                max_tokens=256000,
+            )
+
+        self.assertEqual(result, "Final answer.")
+        self.assertTrue(progress_updates)
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs["max_tokens"], 256000)
+        self.assertEqual(second_kwargs["max_tokens"], 128000)
+        self.assertTrue(second_kwargs["stream"])
+
+    @patch("openai.OpenAI")
     def test_analyze_with_progress_with_attachments_falls_back_to_stream_with_inlined_prompt(
         self,
         mock_openai_cls: MagicMock,
@@ -431,6 +529,39 @@ class TestLocalProvider(unittest.TestCase):
         result = provider.analyze("system", "user")
 
         self.assertEqual(result, "Final answer.")
+
+    @patch("openai.OpenAI")
+    def test_analyze_retries_with_model_token_cap_when_max_tokens_too_large(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        class _FakeBadRequestError(Exception):
+            def __init__(self, message: str, *, param: str | None = None) -> None:
+                super().__init__(message)
+                self.param = param
+                self.body = {"error": {"message": message, "param": param}}
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            _FakeBadRequestError(
+                "maxtokens is too large: 256000. This model supports at most 128000 completion tokens.",
+                param="maxtokens",
+            ),
+            _make_openai_response("<think>hidden</think>\n\nLocal capped result"),
+        ]
+
+        with patch("openai.BadRequestError", _FakeBadRequestError):
+            provider = LocalProvider(
+                base_url="http://localhost:11434/v1", model="llama3.1:70b"
+            )
+            result = provider.analyze("system", "user", max_tokens=256000)
+
+        self.assertEqual(result, "Local capped result")
+        first_kwargs = mock_client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertEqual(first_kwargs["max_tokens"], 256000)
+        self.assertEqual(second_kwargs["max_tokens"], 128000)
 
     @patch("openai.OpenAI")
     def test_analyze_with_attachments_uses_responses_api_when_supported(
@@ -495,6 +626,41 @@ class TestLocalProvider(unittest.TestCase):
         self.assertIn("File attachments were unavailable", second_prompt)
         self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", second_prompt)
         self.assertIn("ts,name", second_prompt)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_attachments_propagates_unrelated_bad_request(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        class _FakeBadRequestError(Exception):
+            pass
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.files.create.return_value = SimpleNamespace(id="file-related")
+        mock_client.responses.create.side_effect = _FakeBadRequestError(
+            "this model does not support max_tokens"
+        )
+        mock_client.chat.completions.create.return_value = _make_openai_response("should not fallback")
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+
+            with patch("openai.BadRequestError", _FakeBadRequestError):
+                provider = LocalProvider(
+                    base_url="http://localhost:11434/v1", model="llama3.1:70b"
+                )
+                with self.assertRaises(AIProviderError) as ctx:
+                    provider.analyze_with_attachments(
+                        "system",
+                        "user",
+                        attachments=[{"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}],
+                    )
+
+        self.assertIn("request was rejected", str(ctx.exception))
+        self.assertIsNone(provider._csv_attachment_supported)
+        self.assertEqual(mock_client.chat.completions.create.call_count, 0)
 
     @patch("openai.OpenAI")
     def test_analyze_with_progress_no_callback_delegates_to_analyze_with_attachments(

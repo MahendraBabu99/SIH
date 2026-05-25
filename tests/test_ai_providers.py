@@ -44,6 +44,7 @@ from app.ai_providers.base import (
     _resolve_api_key_candidates,
     _resolve_completion_token_retry_limit,
     _resolve_timeout_seconds,
+    _run_stream_with_rate_limit_retries,
     _run_with_rate_limit_retries,
     _RATE_LIMIT_STATE,
 )
@@ -336,6 +337,10 @@ class TestIsAttachmentUnsupportedError(unittest.TestCase):
         error = Exception("does not support file uploads")
         self.assertTrue(_is_attachment_unsupported_error(error))
 
+    def test_ignores_unrelated_does_not_support(self) -> None:
+        error = Exception("this model does not support max_tokens")
+        self.assertFalse(_is_attachment_unsupported_error(error))
+
     def test_detects_csv_file_type_rejection(self) -> None:
         error = Exception("Expected context stuffing file type to be a supported format but got .csv.")
         self.assertTrue(_is_attachment_unsupported_error(error))
@@ -345,8 +350,12 @@ class TestIsAttachmentUnsupportedError(unittest.TestCase):
         self.assertFalse(_is_attachment_unsupported_error(error))
 
     def test_detects_unrecognized_request_url(self) -> None:
-        error = Exception("unrecognized request url")
+        error = Exception("unrecognized request url /responses")
         self.assertTrue(_is_attachment_unsupported_error(error))
+
+    def test_ignores_unrecognized_request_url_without_attachment_endpoint(self) -> None:
+        error = Exception("unrecognized request url")
+        self.assertFalse(_is_attachment_unsupported_error(error))
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +719,84 @@ class TestRunWithRateLimitRetries(unittest.TestCase):
         state = _get_rate_limit_state(self.provider_name)
         self.assertEqual(state.backoff_duration, 0.0)
         self.assertEqual(state.consecutive_error_count, 0)
+
+
+# ---------------------------------------------------------------------------
+# _run_stream_with_rate_limit_retries
+# ---------------------------------------------------------------------------
+
+class TestRunStreamWithRateLimitRetries(unittest.TestCase):
+    def setUp(self) -> None:
+        self.provider_name = f"test-stream-rl-{id(self)}"
+        _RATE_LIMIT_STATE.pop(self.provider_name, None)
+
+    def tearDown(self) -> None:
+        _RATE_LIMIT_STATE.pop(self.provider_name, None)
+
+    @staticmethod
+    def _map_error(error: Exception) -> AIProviderError:
+        return AIProviderError(f"mapped: {error}")
+
+    @patch("app.ai_providers.base.time.sleep")
+    def test_retries_rate_limit_and_resets_state(self, mock_sleep: MagicMock) -> None:
+        call_count = 0
+
+        def stream_factory():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("rate limited")
+            return ["chunk-a", "chunk-b"]
+
+        chunks = list(
+            _run_stream_with_rate_limit_retries(
+                stream_factory=stream_factory,
+                stream_text_iterator=lambda stream: iter(stream),
+                rate_limit_error_type=ValueError,
+                provider_name=self.provider_name,
+                map_error=self._map_error,
+                empty_response_message="empty stream",
+            )
+        )
+
+        self.assertEqual(chunks, ["chunk-a", "chunk-b"])
+        self.assertEqual(call_count, 2)
+        mock_sleep.assert_called()
+        state = _get_rate_limit_state(self.provider_name)
+        self.assertEqual(state.backoff_duration, 0.0)
+        self.assertEqual(state.consecutive_error_count, 0)
+
+    @patch("app.ai_providers.base.time.sleep")
+    def test_failed_stream_leaves_residual_backoff_for_next_request(
+        self,
+        mock_sleep: MagicMock,
+    ) -> None:
+        def stream_factory():
+            error = ValueError("rate limited")
+            error.response = SimpleNamespace(headers={"retry-after": "3"})
+            raise error
+
+        with self.assertRaises(AIProviderError):
+            list(
+                _run_stream_with_rate_limit_retries(
+                    stream_factory=stream_factory,
+                    stream_text_iterator=lambda stream: iter(stream),
+                    rate_limit_error_type=ValueError,
+                    provider_name=self.provider_name,
+                    map_error=self._map_error,
+                    empty_response_message="empty stream",
+                )
+            )
+
+        result = _run_with_rate_limit_retries(
+            request_fn=lambda: "ok",
+            rate_limit_error_type=ValueError,
+            provider_name=self.provider_name,
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertGreaterEqual(mock_sleep.call_count, RATE_LIMIT_MAX_RETRIES + 1)
+        mock_sleep.assert_any_call(3.0)
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any, Iterator, Mapping
 
 from .base import (
@@ -22,18 +21,18 @@ from .base import (
     DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_OPENAI_MODEL,
-    RATE_LIMIT_MAX_RETRIES,
-    _extract_retry_after_seconds,
     _is_attachment_unsupported_error,
     _is_unsupported_parameter_error,
     _normalize_api_key_value,
     _resolve_completion_token_retry_limit,
     _resolve_timeout_seconds,
+    _run_stream_with_rate_limit_retries,
 )
 from .utils import (
     _extract_openai_delta_text,
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
+    _raise_on_openai_delta_refusal,
     upload_and_request_via_responses_api,
 )
 
@@ -143,65 +142,43 @@ class OpenAIProvider(AIProvider):
         Raises:
             AIProviderError: On empty response or API failure.
         """
-        def _stream() -> Iterator[str]:
-            """Inner generator with rate-limit retry around create + iterate."""
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-            last_rate_limit_error: Exception | None = None
-            for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
-                try:
-                    stream = self._create_chat_completion(
-                        messages=messages,
-                        max_tokens=max_tokens,
-                        stream=True,
-                    )
-                    emitted = False
-                    for chunk in stream:
-                        choices = getattr(chunk, "choices", None)
-                        if not choices:
-                            continue
-                        choice = choices[0]
-                        delta = getattr(choice, "delta", None)
-                        if delta is None and isinstance(choice, dict):
-                            delta = choice.get("delta")
-                        chunk_text = _extract_openai_delta_text(
-                            delta,
-                            ("content", "reasoning_content", "reasoning", "refusal"),
-                        )
-                        if not chunk_text:
-                            continue
-                        emitted = True
-                        yield chunk_text
-                    if not emitted:
-                        raise AIProviderError("OpenAI returned an empty response.")
-                    return
-                except self._openai.RateLimitError as rate_error:
-                    last_rate_limit_error = rate_error
-                    if attempt >= RATE_LIMIT_MAX_RETRIES:
-                        break
-                    retry_after = _extract_retry_after_seconds(rate_error)
-                    if retry_after is None:
-                        retry_after = float(2 ** attempt)
-                    logger.warning(
-                        "OpenAI stream rate limited (attempt %d/%d), retrying in %.1fs",
-                        attempt + 1,
-                        RATE_LIMIT_MAX_RETRIES,
-                        retry_after,
-                    )
-                    time.sleep(retry_after)
-                except AIProviderError:
-                    raise
-                except Exception as error:
-                    raise self._map_api_error(error) from error
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
 
-            raise AIProviderError(
-                f"OpenAI rate limit exceeded after {RATE_LIMIT_MAX_RETRIES} retries. "
-                f"Details: {last_rate_limit_error}"
+        def _stream_factory() -> Any:
+            return self._create_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens,
+                stream=True,
             )
 
-        return _stream()
+        def _stream_text_iterator(stream: Any) -> Iterator[str]:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None and isinstance(choice, dict):
+                    delta = choice.get("delta")
+                _raise_on_openai_delta_refusal(delta)
+                chunk_text = _extract_openai_delta_text(
+                    delta,
+                    ("content", "reasoning_content", "reasoning"),
+                )
+                if chunk_text:
+                    yield chunk_text
+
+        return _run_stream_with_rate_limit_retries(
+            stream_factory=_stream_factory,
+            stream_text_iterator=_stream_text_iterator,
+            rate_limit_error_type=self._openai.RateLimitError,
+            provider_name="OpenAI",
+            map_error=self._map_api_error,
+            empty_response_message="OpenAI returned an empty response.",
+        )
 
     def analyze_with_attachments(
         self,

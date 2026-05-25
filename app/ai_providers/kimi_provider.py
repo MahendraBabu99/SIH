@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any, Iterator, Mapping
 
 from .base import (
@@ -24,19 +23,20 @@ from .base import (
     DEFAULT_KIMI_FILE_UPLOAD_PURPOSE,
     DEFAULT_KIMI_MODEL,
     DEFAULT_MAX_TOKENS,
-    RATE_LIMIT_MAX_RETRIES,
-    _extract_retry_after_seconds,
     _is_attachment_unsupported_error,
     _is_kimi_model_not_available_error,
     _normalize_api_key_value,
     _normalize_kimi_model_name,
     _normalize_openai_compatible_base_url,
     _resolve_timeout_seconds,
+    _run_stream_with_rate_limit_retries,
+    _run_with_completion_token_retry,
 )
 from .utils import (
     _extract_openai_delta_text,
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
+    _raise_on_openai_delta_refusal,
     upload_and_request_via_responses_api,
 )
 
@@ -165,65 +165,43 @@ class KimiProvider(AIProvider):
         Raises:
             AIProviderError: On empty response or API failure.
         """
-        def _stream() -> Iterator[str]:
-            """Inner generator with rate-limit retry around create + iterate."""
-            last_rate_limit_error: Exception | None = None
-            for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
-                try:
-                    stream = self.client.chat.completions.create(
-                        model=self.model,
-                        max_tokens=max_tokens,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        stream=True,
-                    )
-                    emitted = False
-                    for chunk in stream:
-                        choices = getattr(chunk, "choices", None)
-                        if not choices:
-                            continue
-                        choice = choices[0]
-                        delta = getattr(choice, "delta", None)
-                        if delta is None and isinstance(choice, dict):
-                            delta = choice.get("delta")
-                        chunk_text = _extract_openai_delta_text(
-                            delta,
-                            ("content", "reasoning_content", "reasoning", "refusal"),
-                        )
-                        if not chunk_text:
-                            continue
-                        emitted = True
-                        yield chunk_text
-                    if not emitted:
-                        raise AIProviderError("Kimi returned an empty response.")
-                    return
-                except self._openai.RateLimitError as rate_error:
-                    last_rate_limit_error = rate_error
-                    if attempt >= RATE_LIMIT_MAX_RETRIES:
-                        break
-                    retry_after = _extract_retry_after_seconds(rate_error)
-                    if retry_after is None:
-                        retry_after = float(2 ** attempt)
-                    logger.warning(
-                        "Kimi stream rate limited (attempt %d/%d), retrying in %.1fs",
-                        attempt + 1,
-                        RATE_LIMIT_MAX_RETRIES,
-                        retry_after,
-                    )
-                    time.sleep(retry_after)
-                except AIProviderError:
-                    raise
-                except Exception as error:
-                    raise self._map_api_error(error) from error
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
 
-            raise AIProviderError(
-                f"Kimi rate limit exceeded after {RATE_LIMIT_MAX_RETRIES} retries. "
-                f"Details: {last_rate_limit_error}"
+        def _stream_factory() -> Any:
+            return self._create_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens,
+                stream=True,
             )
 
-        return _stream()
+        def _stream_text_iterator(stream: Any) -> Iterator[str]:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                choice = choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None and isinstance(choice, dict):
+                    delta = choice.get("delta")
+                _raise_on_openai_delta_refusal(delta)
+                chunk_text = _extract_openai_delta_text(
+                    delta,
+                    ("content", "reasoning_content", "reasoning"),
+                )
+                if chunk_text:
+                    yield chunk_text
+
+        return _run_stream_with_rate_limit_retries(
+            stream_factory=_stream_factory,
+            stream_text_iterator=_stream_text_iterator,
+            rate_limit_error_type=self._openai.RateLimitError,
+            provider_name="Kimi",
+            map_error=self._map_api_error,
+            empty_response_message="Kimi returned an empty response.",
+        )
 
     def analyze_with_attachments(
         self,
@@ -295,18 +273,40 @@ class KimiProvider(AIProvider):
             if inlined:
                 logger.info("Kimi attachment fallback inlined attachment data into prompt.")
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
+        response = self._create_chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt_for_completion},
             ],
+            max_tokens=max_tokens,
         )
         text = _extract_openai_text(response)
         if not text:
             raise AIProviderError("Kimi returned an empty response.")
         return text
+
+    def _create_chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        stream: bool = False,
+    ) -> Any:
+        """Create a Kimi chat completion with token-cap retry parity."""
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+        if stream:
+            request_kwargs["stream"] = True
+
+        return _run_with_completion_token_retry(
+            create_fn=lambda kw: self.client.chat.completions.create(**kw),
+            request_kwargs=request_kwargs,
+            token_parameter="max_tokens",
+            bad_request_error_type=self._openai.BadRequestError,
+            provider_name="Kimi",
+        )
 
     def _request_with_csv_attachments(
         self,

@@ -446,6 +446,55 @@ def _run_with_rate_limit_retries(
     state = _get_rate_limit_state(provider_name)
     last_error: Exception | None = None
 
+    _honor_residual_rate_limit_backoff(provider_name, state)
+
+    for retry_count in range(RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            with state.lock:
+                state.last_request_time = time.monotonic()
+
+            result = request_fn()
+
+            # Only reset backoff state for non-streaming responses.
+            # Streaming responses return a lazy iterator; the actual
+            # API data consumption happens later when the caller
+            # iterates.  Resetting here would falsely signal success
+            # before any data has been received.
+            is_streaming = hasattr(result, '__next__')
+            if not is_streaming:
+                _reset_rate_limit_state(state)
+
+            return result
+        except rate_limit_error_type as error:
+            last_error = error
+
+            retry_after = _record_rate_limit_error(state, error, retry_count)
+
+            if retry_count >= RATE_LIMIT_MAX_RETRIES:
+                break
+
+            logger.warning(
+                "%s rate limited (attempt %d/%d, %d consecutive), "
+                "retrying in %.1fs",
+                provider_name,
+                retry_count + 1,
+                RATE_LIMIT_MAX_RETRIES,
+                state.consecutive_error_count,
+                retry_after,
+            )
+            time.sleep(retry_after)
+
+    detail = f" Details: {last_error}" if last_error else ""
+    raise AIProviderError(
+        f"{provider_name} rate limit exceeded after {RATE_LIMIT_MAX_RETRIES} retries.{detail}"
+    ) from last_error
+
+
+def _honor_residual_rate_limit_backoff(
+    provider_name: str,
+    state: RateLimitState,
+) -> None:
+    """Sleep for any unexpired provider backoff before a request attempt."""
     with state.lock:
         if state.backoff_duration > 0.0 and state.last_request_time > 0.0:
             elapsed = time.monotonic() - state.last_request_time
@@ -466,42 +515,79 @@ def _run_with_rate_limit_retries(
     if wait_time > 0.0:
         time.sleep(wait_time)
 
+
+def _record_rate_limit_error(
+    state: RateLimitState,
+    error: Exception,
+    retry_count: int,
+) -> float:
+    """Record a rate-limit failure and return the selected retry delay."""
+    retry_after = _extract_retry_after_seconds(error)
+    if retry_after is None:
+        retry_after = float(2**retry_count)
+
+    with state.lock:
+        state.consecutive_error_count += 1
+        state.backoff_duration = retry_after
+        state.last_request_time = time.monotonic()
+
+    return retry_after
+
+
+def _reset_rate_limit_state(state: RateLimitState) -> None:
+    """Clear provider backoff after a completed request."""
+    with state.lock:
+        state.backoff_duration = 0.0
+        state.consecutive_error_count = 0
+
+
+def _run_stream_with_rate_limit_retries(
+    stream_factory: Callable[[], Any],
+    stream_text_iterator: Callable[[Any], Iterator[str]],
+    *,
+    rate_limit_error_type: type[Exception],
+    provider_name: str,
+    map_error: Callable[[Exception], AIProviderError],
+    empty_response_message: str,
+) -> Iterator[str]:
+    """Stream text with shared provider rate-limit/backoff semantics.
+
+    The factory and stream iteration are retried together so rate limits raised
+    either while opening the stream or while consuming it update the same
+    ``RateLimitState`` used by non-streaming requests.
+    """
+    state = _get_rate_limit_state(provider_name)
+    last_error: Exception | None = None
+
+    _honor_residual_rate_limit_backoff(provider_name, state)
+
     for retry_count in range(RATE_LIMIT_MAX_RETRIES + 1):
+        emitted = False
         try:
             with state.lock:
                 state.last_request_time = time.monotonic()
 
-            result = request_fn()
+            stream = stream_factory()
+            for chunk_text in stream_text_iterator(stream):
+                if not chunk_text:
+                    continue
+                emitted = True
+                yield chunk_text
 
-            # Only reset backoff state for non-streaming responses.
-            # Streaming responses return a lazy iterator; the actual
-            # API data consumption happens later when the caller
-            # iterates.  Resetting here would falsely signal success
-            # before any data has been received.
-            is_streaming = hasattr(result, '__next__')
-            if not is_streaming:
-                with state.lock:
-                    state.backoff_duration = 0.0
-                    state.consecutive_error_count = 0
+            if not emitted:
+                raise AIProviderError(empty_response_message)
 
-            return result
+            _reset_rate_limit_state(state)
+            return
         except rate_limit_error_type as error:
             last_error = error
-
-            retry_after = _extract_retry_after_seconds(error)
-            if retry_after is None:
-                retry_after = float(2**retry_count)
-
-            with state.lock:
-                state.consecutive_error_count += 1
-                state.backoff_duration = retry_after
-                state.last_request_time = time.monotonic()
+            retry_after = _record_rate_limit_error(state, error, retry_count)
 
             if retry_count >= RATE_LIMIT_MAX_RETRIES:
                 break
 
             logger.warning(
-                "%s rate limited (attempt %d/%d, %d consecutive), "
+                "%s stream rate limited (attempt %d/%d, %d consecutive), "
                 "retrying in %.1fs",
                 provider_name,
                 retry_count + 1,
@@ -510,11 +596,55 @@ def _run_with_rate_limit_retries(
                 retry_after,
             )
             time.sleep(retry_after)
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise map_error(exc) from exc
 
     detail = f" Details: {last_error}" if last_error else ""
     raise AIProviderError(
         f"{provider_name} rate limit exceeded after {RATE_LIMIT_MAX_RETRIES} retries.{detail}"
     ) from last_error
+
+
+def _run_with_completion_token_retry(
+    create_fn: Callable[[dict[str, Any]], _T],
+    request_kwargs: dict[str, Any],
+    *,
+    token_parameter: str,
+    bad_request_error_type: type[Exception],
+    provider_name: str,
+) -> _T:
+    """Run a request once, retrying with a provider-declared token cap.
+
+    OpenAI-compatible endpoints commonly reject over-large output-token
+    budgets with a message that includes the maximum supported value. This
+    helper keeps that fallback consistent for chat-completion providers.
+    """
+    effective_kwargs: dict[str, Any] = dict(request_kwargs)
+    try:
+        return create_fn(effective_kwargs)
+    except bad_request_error_type as error:
+        try:
+            requested_tokens = int(effective_kwargs.get(token_parameter, 0))
+        except (TypeError, ValueError):
+            requested_tokens = 0
+        retry_token_count = _resolve_completion_token_retry_limit(
+            error=error,
+            requested_tokens=requested_tokens,
+        )
+        if retry_token_count is None:
+            raise
+        logger.warning(
+            "%s rejected %s=%d; retrying with %s=%d.",
+            provider_name,
+            token_parameter,
+            requested_tokens,
+            token_parameter,
+            retry_token_count,
+        )
+        effective_kwargs[token_parameter] = retry_token_count
+    return create_fn(effective_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -661,27 +791,71 @@ def _is_attachment_unsupported_error(error: Exception) -> bool:
     Returns:
         ``True`` if the error indicates file-attachment APIs are unavailable.
     """
-    message = str(error).lower()
-    unsupported_markers = (
+    message_parts: list[str] = [str(error).lower()]
+    for attribute_name in ("code", "param", "type"):
+        value = getattr(error, attribute_name, None)
+        if isinstance(value, str):
+            message_parts.append(value.lower())
+
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        message_parts.append(str(body).lower())
+        error_payload = body.get("error", body)
+        if isinstance(error_payload, Mapping):
+            for key in ("message", "code", "param", "type"):
+                value = error_payload.get(key)
+                if isinstance(value, str):
+                    message_parts.append(value.lower())
+
+    message = " ".join(part for part in message_parts if part)
+
+    explicit_attachment_markers = (
         "file not found",
         "file_not_found",
         "attachment not found",
         "unsupported file",
         "file upload not supported",
         "attachments not supported",
-        "unsupported_content",
         "unsupported document",
-        "does not support",
         "input_file",
         "/responses",
         "/files",
-        "unrecognized request url",
-        "unknown field",
-        "supported format",
         "context stuffing file type",
         "but got .csv",
     )
-    return any(marker in message for marker in unsupported_markers)
+    if any(marker in message for marker in explicit_attachment_markers):
+        return True
+
+    if "unrecognized request url" in message and (
+        "/responses" in message or "/files" in message
+    ):
+        return True
+
+    attachment_terms = (
+        "attachment",
+        "attachments",
+        "file",
+        "files",
+        "upload",
+        "document",
+        "input_file",
+        "/responses",
+        "/files",
+        "csv",
+    )
+    has_attachment_context = any(term in message for term in attachment_terms)
+    if not has_attachment_context:
+        return False
+
+    contextual_unsupported_markers = (
+        "does not support",
+        "not support",
+        "unsupported",
+        "unknown field",
+        "unrecognized request url",
+        "supported format",
+    )
+    return any(marker in message for marker in contextual_unsupported_markers)
 
 
 def _is_anthropic_streaming_required_error(error: Exception) -> bool:

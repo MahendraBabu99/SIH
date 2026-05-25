@@ -268,6 +268,28 @@ def _extract_openai_delta_text(delta: Any, field_names: tuple[str, ...]) -> str:
     return ""
 
 
+def _extract_openai_delta_refusal_text(delta: Any) -> str:
+    """Extract a model-refusal delta from an OpenAI-compatible stream chunk."""
+    if delta is None:
+        return ""
+
+    refusal_value = getattr(delta, "refusal", None)
+    if refusal_value is None and isinstance(delta, dict):
+        refusal_value = delta.get("refusal")
+    return _coerce_openai_text(refusal_value).strip()
+
+
+def _raise_on_openai_delta_refusal(delta: Any) -> None:
+    """Raise the shared provider error when a streamed delta refuses."""
+    refusal_text = _extract_openai_delta_refusal_text(delta)
+    if not refusal_text:
+        return
+
+    from .base import AIProviderError
+
+    raise AIProviderError(f"AI model refused the request: {refusal_text}")
+
+
 def _extract_openai_responses_text(response: Any) -> str:
     """Extract output text from OpenAI Responses API payloads.
 
@@ -615,5 +637,11 @@ def upload_and_request_via_responses_api(
         for uploaded_file_id in uploaded_file_ids:
             try:
                 client.files.delete(uploaded_file_id)
-            except Exception:
+            except Exception as cleanup_error:
+                logger.warning(
+                    "%s could not delete uploaded file id %s: %s",
+                    provider_name,
+                    uploaded_file_id,
+                    cleanup_error,
+                )
                 continue
