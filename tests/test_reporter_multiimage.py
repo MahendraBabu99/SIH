@@ -522,6 +522,33 @@ class TestReportGeneratorHelpers(unittest.TestCase):
             self.assertEqual(len(sections), 1)
             self.assertEqual(sections[0]["label"], "Good Image")
 
+    def test_build_image_sections_accepts_per_artifact_findings_key(self) -> None:
+        """Multi-image sections keep legacy per_artifact_findings entries."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            sections = reporter._build_image_sections(
+                {
+                    "img-a": {
+                        "label": "Image A",
+                        "summary": "Summary.",
+                        "per_artifact_findings": [
+                            {
+                                "artifact_name": "Run Keys",
+                                "analysis": "Persistence found.",
+                            }
+                        ],
+                    }
+                }
+            )
+
+            self.assertEqual(len(sections), 1)
+            findings = sections[0]["per_artifact_findings"]
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["artifact_name"], "Run Keys")
+            self.assertEqual(findings[0]["analysis"], "Persistence found.")
+
 
 class TestMultiImageHashDetail(unittest.TestCase):
     """Verify that per-image hash details are rendered individually."""

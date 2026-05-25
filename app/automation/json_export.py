@@ -6,15 +6,12 @@ management systems.
 
 Attributes:
     DISCLAIMER_TEXT: Standard disclaimer included in every JSON report.
-    CONFIDENCE_LABEL_PATTERN: Regex for extracting confidence from analysis text.
-    CONFIDENCE_ALLCAPS_PATTERN: Fallback regex for ALL-CAPS confidence words.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +19,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.reporter.normalization import (
+    convert_v1_to_multi_image,
+    extract_confidence_label,
+    normalize_per_artifact_findings,
+    stringify,
+)
 from app.version import TOOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
@@ -31,13 +34,6 @@ DISCLAIMER_TEXT = (
     "independently verified by a qualified forensic examiner before being "
     "used in any legal or formal proceeding."
 )
-
-CONFIDENCE_LABEL_PATTERN = re.compile(
-    r"\bconfidence\b[\s:]+(?:\w+[\s:]+){0,3}(CRITICAL|HIGH|MEDIUM|LOW)\b",
-    re.IGNORECASE,
-)
-
-CONFIDENCE_ALLCAPS_PATTERN = re.compile(r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b")
 
 UNKNOWN_IP_VALUES = {"", "unknown", "n/a", "na", "none", "null", "unavailable"}
 
@@ -62,15 +58,7 @@ def _resolve_confidence(text: str) -> str | None:
     Returns:
         Uppercase confidence label, or None if not found.
     """
-    if not text:
-        return None
-    match = CONFIDENCE_LABEL_PATTERN.search(text)
-    if match:
-        return match.group(1).upper()
-    match = CONFIDENCE_ALLCAPS_PATTERN.search(text)
-    if match:
-        return match.group(1).upper()
-    return None
+    return extract_confidence_label(text)
 
 
 def _stringify(value: Any) -> str:
@@ -82,9 +70,7 @@ def _stringify(value: Any) -> str:
     Returns:
         String representation.
     """
-    if value is None:
-        return ""
-    return str(value)
+    return stringify(value)
 
 
 def _convert_v1_to_multi_image(analysis: dict[str, Any]) -> dict[str, Any]:
@@ -100,27 +86,10 @@ def _convert_v1_to_multi_image(analysis: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Dict in multi-image format with a single ``"default"`` image entry.
     """
-    per_artifact = (
-        analysis.get("per_artifact")
-        or analysis.get("per_artifact_findings")
-        or []
+    return convert_v1_to_multi_image(
+        analysis,
+        default_label=stringify(analysis.get("case_name"), "Evidence Image"),
     )
-    summary = _stringify(
-        analysis.get("summary") or analysis.get("executive_summary")
-    )
-
-    return {
-        **analysis,
-        "images": {
-            "default": {
-                "label": analysis.get("case_name", "Evidence Image"),
-                "per_artifact": per_artifact,
-                "summary": summary,
-            }
-        },
-        "cross_image_summary": None,
-        "model_info": analysis.get("model_info", {}),
-    }
 
 
 def _record_image_id(record: Mapping[str, Any]) -> str:
@@ -311,14 +280,27 @@ def _build_artifact_entry(finding: dict[str, Any]) -> dict[str, Any]:
         Artifact entry dict for JSON report.
     """
     text = _stringify(
-        finding.get("analysis") or finding.get("analysis_text", "")
+        finding.get("analysis_text") or finding.get("analysis") or ""
     )
+    confidence = finding.get("confidence")
+    if not confidence:
+        confidence = finding.get("confidence_label") or _resolve_confidence(text)
+    if confidence == "UNSPECIFIED":
+        confidence = None
     return {
-        "artifact_key": finding.get("artifact_key", finding.get("artifact", "")),
-        "artifact_name": finding.get("artifact_name", finding.get("artifact", "")),
+        "artifact_key": finding.get("artifact_key", ""),
+        "artifact_name": finding.get("artifact_name", ""),
         "analysis_text": text,
-        "confidence": finding.get("confidence") or _resolve_confidence(text),
+        "confidence": confidence,
         "model": finding.get("model", ""),
+        "record_count": finding.get("record_count", "N/A"),
+        "time_range_start": finding.get("time_range_start", "N/A"),
+        "time_range_end": finding.get("time_range_end", "N/A"),
+        "key_data_points": list(finding.get("key_data_points") or []),
+        "confidence_label": finding.get("confidence_label", "UNSPECIFIED"),
+        "confidence_class": finding.get("confidence_class", "confidence-unknown"),
+        "metadata": dict(finding.get("metadata") or {}),
+        "hash_status": finding.get("hash_status", ""),
     }
 
 
@@ -388,9 +370,9 @@ def export_json_report(
     # Build analysis section.
     analysis_section: dict[str, Any] = {"images": {}, "cross_image_summary": None}
     for image_id, image_data in images_data.items():
-        per_artifact = image_data.get("per_artifact", [])
-        if isinstance(per_artifact, dict):
-            per_artifact = list(per_artifact.values())
+        if not isinstance(image_data, Mapping):
+            image_data = {}
+        per_artifact = normalize_per_artifact_findings(image_data)
 
         analysis_section["images"][image_id] = {
             "label": image_data.get("label", ""),

@@ -530,6 +530,13 @@ def run_automation(
         result.errors.append("No artifacts to parse after profile resolution.")
         result.duration_seconds = time.monotonic() - start_time
         return result
+    if not analysis_artifacts:
+        result.errors.append(
+            "No analyzable AI artifacts selected after profile resolution. "
+            "Choose a profile with at least one artifact marked for analysis."
+        )
+        result.duration_seconds = time.monotonic() - start_time
+        return result
 
     cancelled = _stop_if_cancelled()
     if cancelled is not None:
@@ -805,6 +812,23 @@ def run_automation(
         audit_logger.log("automation_failed", {
             "case_id": case_id,
             "errors": list(result.errors),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
+        return result
+
+    analyzable_artifact_count = sum(
+        len(desc.get("artifact_keys", [])) for desc in image_descriptors
+    )
+    if analyzable_artifact_count == 0:
+        result.errors.append(
+            "No analyzable AI artifacts were available after matching the "
+            "selected profile to the processed evidence."
+        )
+        result.duration_seconds = time.monotonic() - start_time
+        audit_logger.log("automation_failed", {
+            "case_id": case_id,
+            "errors": list(result.errors),
+            "warnings": list(result.warnings),
             "duration_seconds": round(result.duration_seconds, 2),
         })
         return result

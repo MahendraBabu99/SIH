@@ -187,6 +187,13 @@ def _has_output_path(result_payload: dict[str, Any]) -> bool:
     )
 
 
+def _report_download_status_error(run: dict[str, Any]) -> str:
+    """Return a report download availability error, or an empty string."""
+    if run.get("status") in ("completed", "failed"):
+        return ""
+    return "Report not available - run has not completed."
+
+
 def _automation_upload_root() -> Path:
     """Return the root directory used for staged automation uploads."""
     return (CASES_ROOT / AUTOMATION_UPLOAD_ROOT_NAME).resolve()
@@ -716,7 +723,7 @@ def cancel_run(run_id: str) -> tuple[Response, int]:
 
 @automation_bp.get("/api/automation/run/<run_id>/report/html")
 def download_html_report(run_id: str) -> Response | tuple[Response, int]:
-    """Download the HTML report for a completed automation run.
+    """Download the HTML report for a completed or failed automation run.
 
     Args:
         run_id: UUID of the run.
@@ -727,8 +734,9 @@ def download_html_report(run_id: str) -> Response | tuple[Response, int]:
     run = _get_run(run_id)
     if run is None:
         return error_response(f"Run not found: {run_id}", 404)
-    if run.get("status") != "completed":
-        return error_response("Report not available — run has not completed.", 404)
+    status_error = _report_download_status_error(run)
+    if status_error:
+        return error_response(status_error, 404)
 
     result = run.get("result") or {}
     html_path_str = result.get("html_report_path")
@@ -744,7 +752,7 @@ def download_html_report(run_id: str) -> Response | tuple[Response, int]:
 
 @automation_bp.get("/api/automation/run/<run_id>/report/json")
 def download_json_report(run_id: str) -> Response | tuple[Response, int]:
-    """Download the JSON report for a completed automation run.
+    """Download the JSON report for a completed or failed automation run.
 
     Args:
         run_id: UUID of the run.
@@ -755,8 +763,9 @@ def download_json_report(run_id: str) -> Response | tuple[Response, int]:
     run = _get_run(run_id)
     if run is None:
         return error_response(f"Run not found: {run_id}", 404)
-    if run.get("status") != "completed":
-        return error_response("Report not available — run has not completed.", 404)
+    status_error = _report_download_status_error(run)
+    if status_error:
+        return error_response(status_error, 404)
 
     result = run.get("result") or {}
     json_path_str = result.get("json_report_path")

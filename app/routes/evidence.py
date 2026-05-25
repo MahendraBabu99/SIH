@@ -530,11 +530,9 @@ def download_report(case_id: str) -> Response | tuple[Response, int]:
         existing = sorted(reports_dir.glob("report_*.html"))
         if existing:
             report_path = existing[-1]
-            # Check whether this report is stale relative to analysis
-            # results.  If analysis was re-run but report generation
-            # failed, the old report will be older than the results
-            # file.  We still serve it (stale is better than nothing)
-            # but add a header so the frontend can show a notice.
+            # Regenerate stale reports before serving so GUI downloads
+            # reflect the latest analysis results. If regeneration fails,
+            # keep serving the existing file and mark it as stale.
             stale = False
             analysis_path = Path(case_dir) / "analysis_results.json"
             if analysis_path.is_file():
@@ -544,10 +542,20 @@ def download_report(case_id: str) -> Response | tuple[Response, int]:
                     stale = True
                     LOGGER.warning(
                         "Report %s is older than analysis_results.json "
-                        "for case %s — serving stale report",
+                        "for case %s - regenerating before download",
                         report_path.name,
                         case_id,
                     )
+                    result = generate_case_report(case_id)
+                    if result.get("success"):
+                        report_path = result["report_path"]
+                        stale = False
+                    else:
+                        LOGGER.warning(
+                            "Failed to regenerate stale report for case %s: %s",
+                            case_id,
+                            result.get("error"),
+                        )
             response = make_response(
                 send_file(
                     report_path,

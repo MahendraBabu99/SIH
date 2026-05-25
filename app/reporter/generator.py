@@ -38,27 +38,18 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from ..config import LOGO_FILE_CANDIDATES
 from ..utils import stringify as _stringify_impl
 from ..version import TOOL_VERSION
-from .markdown import (
-    CONFIDENCE_CLASS_MAP,
-    CONFIDENCE_PATTERN,
-    format_block,
-    format_markdown_block,
+from .markdown import format_block, format_markdown_block
+from .normalization import (
+    coerce_per_artifact_iterable,
+    convert_v1_to_multi_image,
+    looks_like_single_finding,
+    mapping_to_kv_text,
+    nested_lookup,
+    normalize_key_data_points,
+    normalize_per_artifact_findings,
+    normalize_to_list,
+    resolve_confidence,
 )
-
-# More specific pattern for extracting confidence from free-text analysis.
-# Requires "confidence" (or "Confidence") as context preceding the label,
-# allowing a few intervening words (e.g. "Confidence is MEDIUM",
-# "confidence level: HIGH").  This avoids false positives from ordinary
-# English phrases like "the low number of events".
-CONFIDENCE_LABEL_PATTERN = re.compile(
-    r"\bconfidence\b[\s:]+(?:\w+[\s:]+){0,3}(CRITICAL|HIGH|MEDIUM|LOW)\b",
-    re.IGNORECASE,
-)
-
-# Fallback pattern that matches only ALL-CAPS confidence words.  Used when
-# the context-aware CONFIDENCE_LABEL_PATTERN does not find a match but the
-# text contains an unambiguous uppercase confidence indicator like "LOW".
-_CONFIDENCE_ALLCAPS_PATTERN = re.compile(r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b")
 
 __all__ = ["ReportGenerator"]
 
@@ -247,9 +238,7 @@ class ReportGenerator:
             executive_summary = self._stringify(
                 analysis.get("executive_summary") or summary_text
             )
-            per_artifact = self._normalize_per_artifact_findings(
-                {"per_artifact": first_image_data.get("per_artifact", [])}
-            )
+            per_artifact = self._normalize_per_artifact_findings(first_image_data)
         else:
             executive_summary = ""
             per_artifact = []
@@ -296,24 +285,10 @@ class ReportGenerator:
         Returns:
             A dict in multi-image format with a single image entry.
         """
-        per_artifact = analysis.get("per_artifact") or analysis.get("per_artifact_findings") or []
-        summary = self._stringify(
-            analysis.get("summary") or analysis.get("executive_summary")
+        return convert_v1_to_multi_image(
+            analysis,
+            default_label=self._resolve_case_name(analysis),
         )
-        case_name = self._resolve_case_name(analysis)
-
-        return {
-            **analysis,
-            "images": {
-                "default": {
-                    "label": case_name,
-                    "per_artifact": per_artifact,
-                    "summary": summary,
-                }
-            },
-            "cross_image_summary": None,
-            "model_info": analysis.get("model_info", {}),
-        }
 
     @staticmethod
     def _normalize_to_list(value: Any) -> list[dict[str, Any]]:
@@ -325,13 +300,7 @@ class ReportGenerator:
         Returns:
             A list of dicts.  Returns ``[{}]`` if *value* is ``None``.
         """
-        if value is None:
-            return [{}]
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            return [dict(item) if isinstance(item, Mapping) else {} for item in value]
-        if isinstance(value, Mapping):
-            return [dict(value)]
-        return [{}]
+        return normalize_to_list(value)
 
     def _build_evidence_rows(
         self,
@@ -444,9 +413,7 @@ class ReportGenerator:
 
             label = self._stringify(img_data.get("label"), default=image_id)
             summary = self._stringify(img_data.get("summary"), default="")
-            per_artifact = self._normalize_per_artifact_findings(
-                {"per_artifact": img_data.get("per_artifact", [])}
-            )
+            per_artifact = self._normalize_per_artifact_findings(img_data)
 
             sections.append({
                 "image_id": image_id,
@@ -710,148 +677,20 @@ class ReportGenerator:
             ``time_range_end``, ``key_data_points``, ``confidence_label``,
             and ``confidence_class``.
         """
-        raw_findings = analysis.get("per_artifact")
-        if raw_findings is None:
-            raw_findings = analysis.get("per_artifact_findings")
-
-        findings: list[dict[str, Any]] = []
-        iterable = self._coerce_per_artifact_iterable(raw_findings)
-
-        for index, finding in enumerate(iterable, start=1):
-            if not isinstance(finding, Mapping):
-                continue
-
-            artifact_name = self._stringify(
-                finding.get("artifact_name") or finding.get("name") or finding.get("artifact_key"),
-                default=f"Artifact {index}",
-            )
-            artifact_key = self._stringify(finding.get("artifact_key"), default="")
-            analysis_text = self._stringify(
-                finding.get("analysis") or finding.get("findings") or finding.get("text"),
-                default="No findings were provided.",
-            )
-            confidence_label, confidence_class = self._resolve_confidence(
-                self._stringify(finding.get("confidence"), default=""),
-                analysis_text,
-            )
-
-            time_range_start = self._stringify(
-                finding.get("time_range_start") or self._nested_lookup(finding, ("time_range", "start")),
-                default="N/A",
-            )
-            time_range_end = self._stringify(
-                finding.get("time_range_end") or self._nested_lookup(finding, ("time_range", "end")),
-                default="N/A",
-            )
-            record_count = self._stringify(finding.get("record_count"), default="N/A")
-            key_data_points = self._normalize_key_data_points(
-                finding.get("key_data_points") or finding.get("key_points") or finding.get("data_points")
-            )
-
-            findings.append(
-                {
-                    "artifact_name": artifact_name,
-                    "artifact_key": artifact_key,
-                    "analysis": analysis_text,
-                    "record_count": record_count,
-                    "time_range_start": time_range_start,
-                    "time_range_end": time_range_end,
-                    "key_data_points": key_data_points,
-                    "confidence_label": confidence_label,
-                    "confidence_class": confidence_class,
-                }
-            )
-
-        return findings
+        return normalize_per_artifact_findings(analysis)
 
     def _coerce_per_artifact_iterable(self, raw_findings: Any) -> Sequence[Any]:
         """Coerce various per-artifact finding shapes into a sequence."""
-        if isinstance(raw_findings, Sequence) and not isinstance(raw_findings, (str, bytes, bytearray)):
-            return raw_findings
-
-        if isinstance(raw_findings, Mapping):
-            if self._looks_like_single_finding(raw_findings):
-                return [raw_findings]
-
-            coerced: list[dict[str, Any]] = []
-            for artifact_key, raw_value in raw_findings.items():
-                if isinstance(raw_value, Mapping):
-                    merged = dict(raw_value)
-                    merged.setdefault("artifact_key", self._stringify(artifact_key, default=""))
-                    if not self._stringify(merged.get("artifact_name"), default=""):
-                        merged["artifact_name"] = self._stringify(artifact_key, default="Unknown Artifact")
-                    coerced.append(merged)
-                    continue
-
-                analysis_text = self._stringify(raw_value, default="")
-                if not analysis_text:
-                    continue
-                artifact_label = self._stringify(artifact_key, default="Unknown Artifact")
-                coerced.append(
-                    {
-                        "artifact_key": artifact_label,
-                        "artifact_name": artifact_label,
-                        "analysis": analysis_text,
-                    }
-                )
-            return coerced
-
-        return []
+        return coerce_per_artifact_iterable(raw_findings)
 
     @staticmethod
     def _looks_like_single_finding(value: Mapping[str, Any]) -> bool:
         """Return *True* if *value* appears to be a single finding mapping."""
-        finding_keys = {
-            "artifact_name",
-            "name",
-            "artifact_key",
-            "analysis",
-            "findings",
-            "text",
-            "record_count",
-            "time_range_start",
-            "time_range_end",
-            "time_range",
-            "key_data_points",
-            "key_points",
-            "data_points",
-            "confidence",
-        }
-        return any(key in value for key in finding_keys)
+        return looks_like_single_finding(value)
 
     def _normalize_key_data_points(self, raw_points: Any) -> list[dict[str, str]]:
         """Normalise key data points into a list of ``{timestamp, value}`` dicts."""
-        if isinstance(raw_points, Sequence) and not isinstance(raw_points, (str, bytes, bytearray)):
-            points: list[dict[str, str]] = []
-            for point in raw_points:
-                if isinstance(point, Mapping):
-                    timestamp = self._stringify(
-                        point.get("timestamp") or point.get("time") or point.get("date") or point.get("ts"),
-                        default="",
-                    )
-                    value = self._stringify(
-                        point.get("value") or point.get("data") or point.get("detail") or point.get("event"),
-                        default="",
-                    )
-                    if not value:
-                        value = self._mapping_to_kv_text(point)
-                    points.append({"timestamp": timestamp, "value": value})
-                else:
-                    text_value = self._stringify(point, default="")
-                    if text_value:
-                        points.append({"timestamp": "", "value": text_value})
-            return points
-
-        if isinstance(raw_points, Mapping):
-            return [{"timestamp": "", "value": self._mapping_to_kv_text(raw_points)}]
-
-        if raw_points is None:
-            return []
-
-        text_value = self._stringify(raw_points, default="")
-        if text_value:
-            return [{"timestamp": "", "value": text_value}]
-        return []
+        return normalize_key_data_points(raw_points)
 
     def _normalize_audit_entries(self, entries: Sequence[Any] | None) -> list[dict[str, str]]:
         """Normalise raw audit log entries into template-ready dicts."""
@@ -894,40 +733,12 @@ class ReportGenerator:
         Returns:
             Tuple of ``(label, css_class)`` -- e.g. ``("HIGH", "confidence-high")``.
         """
-        if explicit_value:
-            label = explicit_value.strip().upper()
-            if label in CONFIDENCE_CLASS_MAP:
-                return label, CONFIDENCE_CLASS_MAP[label]
-
-        text = analysis_text or ""
-
-        # First, try the context-aware pattern that requires "confidence"
-        # to precede the label word, avoiding false positives like
-        # "the low number of events" or "high frequency of access".
-        match = CONFIDENCE_LABEL_PATTERN.search(text)
-        if match:
-            label = match.group(1).upper()
-            return label, CONFIDENCE_CLASS_MAP[label]
-
-        # Fall back to matching standalone ALL-CAPS confidence words.
-        # AI models typically output "LOW", "HIGH" etc. in uppercase for
-        # confidence ratings, while ordinary prose uses lowercase.
-        match = _CONFIDENCE_ALLCAPS_PATTERN.search(text)
-        if match:
-            label = match.group(1).upper()
-            return label, CONFIDENCE_CLASS_MAP[label]
-
-        return "UNSPECIFIED", "confidence-unknown"
+        return resolve_confidence(explicit_value, analysis_text)
 
     @staticmethod
     def _nested_lookup(mapping: Mapping[str, Any], path: tuple[str, str]) -> Any:
         """Traverse a nested mapping using a two-element key path."""
-        current: Any = mapping
-        for key in path:
-            if not isinstance(current, Mapping):
-                return None
-            current = current.get(key)
-        return current
+        return nested_lookup(mapping, path)
 
     @staticmethod
     def _coerce_mapping(value: Any) -> dict[str, Any] | None:
@@ -983,12 +794,7 @@ class ReportGenerator:
     @staticmethod
     def _mapping_to_kv_text(value: Mapping[str, Any]) -> str:
         """Convert a mapping to a ``key=value; ...`` text representation."""
-        parts = [
-            f"{str(key)}={str(item)}"
-            for key, item in value.items()
-            if item not in (None, "")
-        ]
-        return "; ".join(parts)
+        return mapping_to_kv_text(value)
 
     @staticmethod
     def _stringify(value: Any, default: str = "") -> str:

@@ -416,6 +416,85 @@ class TestExportJsonReport(unittest.TestCase):
         artifact = img["artifacts"][0]
         self.assertEqual(artifact["confidence"], "HIGH")
 
+    def test_artifact_details_match_html_normalization(self) -> None:
+        """JSON keeps the same artifact details rendered by HTML reports."""
+        analysis = {
+            "per_artifact": {
+                "runkeys": {
+                    "analysis": "Persistence found. Confidence: CRITICAL",
+                    "records": 7,
+                    "time_range": {
+                        "start": "2026-01-01T00:00:00Z",
+                        "end": "2026-01-02T00:00:00Z",
+                    },
+                    "key_points": [
+                        {
+                            "timestamp": "2026-01-01T01:00:00Z",
+                            "event": r"HKCU\Run suspicious.exe",
+                        }
+                    ],
+                    "metadata": {"csv_path": "runkeys.csv"},
+                    "hash_status": "PASS",
+                    "model": "fake-model",
+                },
+                "shimcache": "No notable execution.",
+            },
+            "summary": "Summary.",
+            "model_info": {"provider": "fake", "model": "fake-model"},
+        }
+
+        _, data = self._export(analysis=analysis)
+
+        artifacts = data["analysis"]["images"]["default"]["artifacts"]
+        self.assertEqual(len(artifacts), 2)
+        by_key = {artifact["artifact_key"]: artifact for artifact in artifacts}
+        runkeys = by_key["runkeys"]
+        self.assertEqual(runkeys["artifact_name"], "runkeys")
+        self.assertEqual(runkeys["record_count"], "7")
+        self.assertEqual(runkeys["time_range_start"], "2026-01-01T00:00:00Z")
+        self.assertEqual(runkeys["time_range_end"], "2026-01-02T00:00:00Z")
+        self.assertEqual(
+            runkeys["key_data_points"],
+            [
+                {
+                    "timestamp": "2026-01-01T01:00:00Z",
+                    "value": r"HKCU\Run suspicious.exe",
+                }
+            ],
+        )
+        self.assertEqual(runkeys["confidence"], "CRITICAL")
+        self.assertEqual(runkeys["confidence_class"], "confidence-critical")
+        self.assertEqual(runkeys["metadata"], {"csv_path": "runkeys.csv"})
+        self.assertEqual(runkeys["hash_status"], "PASS")
+        self.assertEqual(by_key["shimcache"]["analysis_text"], "No notable execution.")
+
+    def test_multi_image_accepts_per_artifact_findings_key(self) -> None:
+        """JSON normalization keeps legacy keys inside image sections."""
+        analysis = {
+            "images": {
+                "img-a": {
+                    "label": "Image A",
+                    "summary": "Summary.",
+                    "per_artifact_findings": [
+                        {
+                            "artifact_name": "Run Keys",
+                            "analysis": "Persistence found.",
+                            "record_count": 3,
+                        }
+                    ],
+                }
+            },
+            "model_info": {"provider": "fake", "model": "fake-model"},
+        }
+
+        _, data = self._export(analysis=analysis)
+
+        artifacts = data["analysis"]["images"]["img-a"]["artifacts"]
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["artifact_name"], "Run Keys")
+        self.assertEqual(artifacts[0]["analysis_text"], "Persistence found.")
+        self.assertEqual(artifacts[0]["record_count"], "3")
+
     def test_atomic_write(self) -> None:
         """File is written atomically (no partial files on failure)."""
         out = self.output_dir / "atomic_test.json"

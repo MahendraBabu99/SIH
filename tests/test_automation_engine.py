@@ -693,6 +693,36 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(any("profile" in w.lower() for w in result.warnings))
 
+    def test_profile_without_analysis_artifacts_fails_clearly(self) -> None:
+        """Profiles that only parse artifacts do not start automation analysis."""
+        self.mocks["artifact_options_to_lists"].side_effect = (
+            lambda _options: (["runkeys"], [])
+        )
+
+        result = run_automation(self._make_request())
+
+        self.assertFalse(result.success)
+        self.assertTrue(
+            any("No analyzable AI artifacts" in e for e in result.errors)
+        )
+        self._assert_pipeline_not_started()
+
+    def test_no_matching_analyzable_artifacts_fails_clearly(self) -> None:
+        """A parse-only availability match fails before empty analyzer calls."""
+        self.mocks["artifact_options_to_lists"].side_effect = (
+            lambda _options: (["runkeys"], ["shellbags"])
+        )
+
+        result = run_automation(self._make_request())
+
+        self.assertFalse(result.success)
+        self.assertTrue(
+            any("No analyzable AI artifacts were available" in e for e in result.errors)
+        )
+        self.mocks["ForensicAnalyzer"].assert_not_called()
+        self.mocks["ReportGenerator"].assert_not_called()
+        self.mocks["export_json_report"].assert_not_called()
+
     def test_partial_failure_returns_warnings(self) -> None:
         """If one image fails to open but others succeed, result has warnings."""
         ev2 = self.root / "bad.e01"

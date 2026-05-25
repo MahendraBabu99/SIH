@@ -779,6 +779,66 @@ class TestReportDownload(AutomationRoutesTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"case_id", resp.data)
 
+    def test_failed_run_html_report_download_when_file_exists(self) -> None:
+        """Failed runs can still serve partial HTML report outputs."""
+        html_file = Path(self.temp_dir.name) / "partial.html"
+        html_file.write_text("<html><body>Partial</body></html>", encoding="utf-8")
+
+        with automation_mod.RUNS_LOCK:
+            automation_mod.AUTOMATION_RUNS["run-partial-html"] = {
+                "run_id": "run-partial-html",
+                "status": "failed",
+                "phase": "reporting",
+                "message": "JSON failed",
+                "percentage": 90,
+                "started_at": "",
+                "evidence_path": "/fake",
+                "_started_mono": time.monotonic(),
+                "errors": ["JSON report generation failed"],
+                "result": {
+                    "html_report_path": str(html_file),
+                    "json_report_path": None,
+                    "evidence_files_processed": 1,
+                    "warnings": [],
+                },
+            }
+
+        resp = self.client.get(
+            "/api/automation/run/run-partial-html/report/html"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Partial", resp.data)
+
+    def test_failed_run_json_report_download_when_file_exists(self) -> None:
+        """Failed runs can still serve partial JSON report outputs."""
+        json_file = Path(self.temp_dir.name) / "partial.json"
+        json_file.write_text('{"partial": true}', encoding="utf-8")
+
+        with automation_mod.RUNS_LOCK:
+            automation_mod.AUTOMATION_RUNS["run-partial-json"] = {
+                "run_id": "run-partial-json",
+                "status": "failed",
+                "phase": "reporting",
+                "message": "HTML failed",
+                "percentage": 90,
+                "started_at": "",
+                "evidence_path": "/fake",
+                "_started_mono": time.monotonic(),
+                "errors": ["HTML report generation failed"],
+                "result": {
+                    "html_report_path": None,
+                    "json_report_path": str(json_file),
+                    "evidence_files_processed": 1,
+                    "warnings": [],
+                },
+            }
+
+        resp = self.client.get(
+            "/api/automation/run/run-partial-json/report/json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"partial", resp.data)
+
     def test_json_report_file_missing_on_disk(self) -> None:
         """Return 404 when the report file doesn't exist on disk."""
         with automation_mod.RUNS_LOCK:

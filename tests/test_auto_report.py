@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -496,6 +498,55 @@ class DownloadReportServesExistingTests(unittest.TestCase):
             self.assertEqual(report_resp.status_code, 200)
             body = report_resp.get_data(as_text=True)
             self.assertIn("latest", body)
+        finally:
+            _exit_patches(patches)
+
+    def test_download_regenerates_stale_report_before_serving(self) -> None:
+        """When analysis is newer than HTML, download_report regenerates."""
+        patches = _common_patches(self.cases_root)
+        _enter_patches(patches)
+        try:
+            evidence_path = Path(self.temp_dir.name) / "sample.E01"
+            evidence_path.write_bytes(b"demo")
+            case_id = _run_full_flow(self.client, evidence_path)
+
+            reports_dir = self.cases_root / case_id / "reports"
+            old_report = next(reports_dir.glob("report_*.html"))
+            old_report.write_text("<html><body>stale</body></html>", encoding="utf-8")
+            old_time = time.time() - 100
+            old_report.touch()
+
+            os.utime(old_report, (old_time, old_time))
+
+            analysis_path = self.cases_root / case_id / "analysis_results.json"
+            analysis_path.write_text('{"summary": "new"}', encoding="utf-8")
+            new_time = time.time()
+            os.utime(analysis_path, (new_time, new_time))
+
+            regenerated = reports_dir / "report_29990101_000000.html"
+
+            def _regenerate(_case_id: str) -> dict[str, object]:
+                regenerated.write_text(
+                    "<html><body>regenerated</body></html>",
+                    encoding="utf-8",
+                )
+                return {
+                    "success": True,
+                    "report_path": regenerated,
+                    "hash_ok": True,
+                }
+
+            with patch.object(
+                routes_evidence,
+                "generate_case_report",
+                side_effect=_regenerate,
+            ) as mock_generate:
+                report_resp = self.client.get(f"/api/cases/{case_id}/report")
+
+            self.assertEqual(report_resp.status_code, 200)
+            self.assertIn("regenerated", report_resp.get_data(as_text=True))
+            self.assertNotIn("X-Report-Stale", report_resp.headers)
+            mock_generate.assert_called_once_with(case_id)
         finally:
             _exit_patches(patches)
 
