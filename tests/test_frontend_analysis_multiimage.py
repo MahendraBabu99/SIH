@@ -17,6 +17,7 @@ Attributes:
 from __future__ import annotations
 
 import json
+import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -24,6 +25,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app import create_app
+from tests.conftest import ImmediateThread
+
+
+NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
 
 
 EXPECTED_RESULTS_HTML_IDS = {
@@ -81,68 +86,32 @@ class TestMultiImageResultsTemplate(unittest.TestCase):
                 self.assertIn(css_class, self.html)
 
 
-class TestMultiImageAnalysisJS(unittest.TestCase):
-    """Verify that the analysis JS contains multi-image support."""
+class TestMultiImageAnalysisJSBehavior(unittest.TestCase):
+    """Verify multi-image analysis rendering through the real jsdom suite."""
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        """Read the analysis.js source file."""
-        js_path = Path(__file__).resolve().parents[1] / "static" / "js" / "analysis.js"
-        cls.js_content = js_path.read_text(encoding="utf-8")
+    def test_multi_image_rendering_and_single_fallback_behavior(self) -> None:
+        """The real frontend renderer groups images and hides ``__single__`` labels."""
+        import subprocess
 
-    def test_sends_images_in_body(self) -> None:
-        """The JS should send images array in the analysis request body."""
-        self.assertIn("body.images", self.js_content)
-
-    def test_multi_image_state_tracking(self) -> None:
-        """The JS should track multiImage state."""
-        self.assertIn("st.analysis.multiImage", self.js_content)
-
-    def test_cross_image_summary_state(self) -> None:
-        """The JS should track crossImageSummary state."""
-        self.assertIn("st.analysis.crossImageSummary", self.js_content)
-
-    def test_image_results_state(self) -> None:
-        """The JS should track imageResults state."""
-        self.assertIn("st.analysis.imageResults", self.js_content)
-
-    def test_render_multi_image_analysis(self) -> None:
-        """The JS should have renderMultiImageAnalysis function."""
-        self.assertIn("renderMultiImageAnalysis", self.js_content)
-
-    def test_render_multi_image_findings(self) -> None:
-        """The JS should have renderMultiImageFindings function."""
-        self.assertIn("renderMultiImageFindings", self.js_content)
-
-    def test_render_multi_image_exec_summary(self) -> None:
-        """The JS should have renderMultiImageExecSummary function."""
-        self.assertIn("renderMultiImageExecSummary", self.js_content)
-
-    def test_analysis_image_group_class(self) -> None:
-        """The JS should create analysis-image-group elements."""
-        self.assertIn("analysis-image-group", self.js_content)
-
-    def test_findings_image_group_class(self) -> None:
-        """The JS should create findings-image-group elements."""
-        self.assertIn("findings-image-group", self.js_content)
-
-    def test_per_image_summary_section_class(self) -> None:
-        """The JS should create per-image-summary-section elements."""
-        self.assertIn("per-image-summary-section", self.js_content)
-
-    def test_cross_system_analysis_id(self) -> None:
-        """The JS should reference the cross-system-analysis element."""
-        self.assertIn("cross-system-analysis", self.js_content)
-
-    def test_reset_clears_multi_image_state(self) -> None:
-        """resetAnalysisState should clear multi-image state fields."""
-        self.assertIn('st.analysis.multiImage = false', self.js_content)
-        self.assertIn('st.analysis.imageResults = {}', self.js_content)
-        self.assertIn('st.analysis.crossImageSummary = ""', self.js_content)
-
-    def test_all_image_artifact_selections_usage(self) -> None:
-        """The JS should call allImageArtifactSelections for multi-image."""
-        self.assertIn("allImageArtifactSelections", self.js_content)
+        result = subprocess.run(
+            [
+                NPX,
+                "jest",
+                "tests/js/analysis.test.js",
+                "--runInBand",
+                "-t",
+                "multi-image analysis rendering behavior",
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"Focused analysis Jest checks failed.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+        )
 
 
 class TestMultiImageAnalysisCSS(unittest.TestCase):
@@ -220,15 +189,65 @@ class TestMultiImageAnalyzeEndpoint(unittest.TestCase):
 
 
 class TestMultiImageAnalysisRoute(unittest.TestCase):
-    """Verify analysis route code handles the images payload."""
+    """Verify analysis route behavior for the images payload."""
 
-    def test_analysis_route_reads_images_from_payload(self) -> None:
-        """The analysis route source should extract images from the payload."""
-        route_path = Path(__file__).resolve().parents[1] / "app" / "routes" / "analysis.py"
-        source = route_path.read_text(encoding="utf-8")
-        self.assertIn('payload.get("images")', source)
-        self.assertIn("images_payload", source)
-        self.assertIn("run_multi_image_analysis_task", source)
+    def setUp(self) -> None:
+        self._tmpdir = TemporaryDirectory()
+        config_path = Path(self._tmpdir.name) / "config.yaml"
+        config_path.write_text("", encoding="utf-8")
+        self.app = create_app(config_path=str(config_path))
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+        self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.app.config["CSRF_TOKEN"]
+
+        import app.routes.state as routes_state
+
+        self.routes_state = routes_state
+        self.routes_state.CASE_STATES.clear()
+        self.routes_state.ANALYSIS_PROGRESS.clear()
+        case_dir = Path(self._tmpdir.name) / "case"
+        case_dir.mkdir()
+        audit = MagicMock()
+        self.routes_state.CASE_STATES["case-images"] = {
+            "case_dir": str(case_dir),
+            "audit": audit,
+            "artifact_csv_paths": {"runkeys": str(case_dir / "runkeys.csv")},
+            "parse_results": [{"artifact_key": "runkeys", "success": True}],
+            "analysis_artifacts": ["runkeys"],
+            "selected_artifacts": ["runkeys"],
+            "artifact_options": [],
+            "image_metadata": {},
+        }
+
+    def tearDown(self) -> None:
+        self.routes_state.CASE_STATES.clear()
+        self.routes_state.ANALYSIS_PROGRESS.clear()
+        self._tmpdir.cleanup()
+
+    @patch("app.routes.analysis.threading.Thread", ImmediateThread)
+    @patch("app.routes.analysis.run_multi_image_analysis_task")
+    def test_analysis_route_accepts_valid_images_payload(self, mock_task: MagicMock) -> None:
+        resp = self.client.post(
+            "/api/cases/case-images/analyze",
+            json={"prompt": "test", "images": [{"image_id": "img1", "artifacts": ["runkeys"]}]},
+        )
+        self.assertEqual(resp.status_code, 202)
+        body = resp.get_json()
+        self.assertTrue(body["multi_image"])
+        mock_task.assert_called_once()
+        self.assertEqual(mock_task.call_args.args[2], [{"image_id": "img1", "artifacts": ["runkeys"]}])
+
+    @patch("app.routes.analysis.threading.Thread", ImmediateThread)
+    @patch("app.routes.analysis.run_analysis")
+    def test_analysis_route_ignores_malformed_images_payload(self, mock_task: MagicMock) -> None:
+        resp = self.client.post(
+            "/api/cases/case-images/analyze",
+            json={"prompt": "test", "images": [{"artifacts": ["runkeys"]}]},
+        )
+        self.assertEqual(resp.status_code, 202)
+        body = resp.get_json()
+        self.assertFalse(body["multi_image"])
+        mock_task.assert_called_once()
 
 
 class TestMultiImageChatContext(unittest.TestCase):
@@ -490,116 +509,6 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
         self.assertIn("retrieved", result)
 
 
-class TestMultiImageExecSummaryJSCleanup(unittest.TestCase):
-    """Verify the JS cleans up stale per-image summary containers."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        """Read the analysis.js source file."""
-        js_path = Path(__file__).resolve().parents[1] / "static" / "js" / "analysis.js"
-        cls.js_content = js_path.read_text(encoding="utf-8")
-
-    def test_renderMultiImageExecSummary_removes_old_containers(self) -> None:
-        """renderMultiImageExecSummary should remove old per-image-summaries before appending."""
-        # The function should contain cleanup logic for .per-image-summaries.
-        # Find the function body and verify the cleanup is before the append.
-        idx_func = self.js_content.index("function renderMultiImageExecSummary")
-        idx_remove = self.js_content.index('querySelectorAll(".per-image-summaries")', idx_func)
-        idx_append = self.js_content.index("appendChild(perImageContainer)", idx_func)
-        self.assertLess(idx_remove, idx_append,
-                        "Cleanup of old per-image-summaries should happen before appending new ones")
-
-
-class TestAnalysisJSFieldCarryOver(unittest.TestCase):
-    """Verify that analysis.js carries over artifact_key/image_id from parent events.
-
-    Regression tests for bugs where:
-    - ``p.result`` lacked ``artifact_key``, causing ``artifact_N`` fallback keys.
-    - ``p.result`` lacked ``image_id``, causing ``__single__`` grouping.
-
-    The fix adds defensive field carry-over in onAnalysisEvent for all
-    three event types: started, thinking, completed.
-    """
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        """Read the analysis.js source file."""
-        js_path = Path(__file__).resolve().parents[1] / "static" / "js" / "analysis.js"
-        cls.js_content = js_path.read_text(encoding="utf-8")
-
-    def test_started_event_carries_over_artifact_key(self) -> None:
-        """artifact_analysis_started handler carries artifact_key from p to r."""
-        self.assertIn(
-            "if (!r.artifact_key && p.artifact_key) r.artifact_key = p.artifact_key",
-            self.js_content,
-        )
-
-    def test_started_event_carries_over_image_id(self) -> None:
-        """artifact_analysis_started handler carries image_id from p to r."""
-        self.assertIn(
-            "if (!r.image_id && p.image_id) r.image_id = p.image_id",
-            self.js_content,
-        )
-
-    def test_started_event_carries_over_image_label(self) -> None:
-        """artifact_analysis_started handler carries image_label from p to r."""
-        self.assertIn(
-            "if (!r.image_label && p.image_label) r.image_label = p.image_label",
-            self.js_content,
-        )
-
-    def test_thinking_event_carries_over_fields(self) -> None:
-        """artifact_analysis_thinking handler carries over all three fields."""
-        # Find the thinking block and verify it has the carry-over lines.
-        idx = self.js_content.index('"artifact_analysis_thinking"')
-        block = self.js_content[idx:idx + 500]
-        self.assertIn("rt.artifact_key = p.artifact_key", block)
-        self.assertIn("rt.image_id = p.image_id", block)
-        self.assertIn("rt.image_label = p.image_label", block)
-
-    def test_completed_event_carries_over_fields(self) -> None:
-        """artifact_analysis_completed handler carries over all three fields."""
-        idx = self.js_content.index('"artifact_analysis_completed"')
-        block = self.js_content[idx:idx + 500]
-        self.assertIn("rc.artifact_key = p.artifact_key", block)
-        self.assertIn("rc.image_id = p.image_id", block)
-        self.assertIn("rc.image_label = p.image_label", block)
-
-
-class TestAnalysisJSSingleFallbackHandling(unittest.TestCase):
-    """Verify that __single__ is not shown as a visible group header.
-
-    Regression tests for the bug where single-image entries without
-    image_id were grouped under a visible "__single__" header in the
-    multi-image renderer.
-    """
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        """Read the analysis.js source file."""
-        js_path = Path(__file__).resolve().parents[1] / "static" / "js" / "analysis.js"
-        cls.js_content = js_path.read_text(encoding="utf-8")
-
-    def test_render_multi_image_analysis_suppresses_single_header(self) -> None:
-        """renderMultiImageAnalysis skips the header when the only group is __single__."""
-        # The renderer should check groupOrder.length before adding a header.
-        idx = self.js_content.index("function renderMultiImageAnalysis")
-        block = self.js_content[idx:idx + 1500]
-        self.assertIn('imgId !== "__single__"', block)
-        self.assertIn("groupOrder.length > 1", block)
-
-    def test_render_multi_image_findings_handles_single_gracefully(self) -> None:
-        """renderMultiImageFindings does not wrap __single__ group in a details/summary."""
-        idx = self.js_content.index("function renderMultiImageFindings")
-        block = self.js_content[idx:idx + 1500]
-        self.assertIn('imgId === "__single__"', block)
-
-    def test_single_fallback_label_is_analysis_not_raw(self) -> None:
-        """When __single__ is the only group, the label should be 'Analysis', not '__single__'."""
-        # Both renderers use: imgId === "__single__" ? "Analysis" : imgId
-        count = self.js_content.count('imgId === "__single__" ? "Analysis" : imgId')
-        self.assertGreaterEqual(count, 2,
-                                "Both renderers should map __single__ to 'Analysis'")
 
 
 if __name__ == "__main__":

@@ -296,6 +296,22 @@ window.AIFT = (() => {
     }
   }
 
+  /**
+   * Require named AIFT module exports to be registered before startup.
+   *
+   * @param {string[]} names - Public function names expected on AIFT.
+   * @returns {true} True when all names are present.
+   * @throws {Error} When any required export is missing.
+   */
+  function requireModules(names) {
+    const missing = (Array.isArray(names) ? names : [])
+      .filter((name) => typeof window.AIFT[name] !== "function");
+    if (missing.length) {
+      throw new Error(`AIFT startup contract missing module exports: ${missing.join(", ")}`);
+    }
+    return true;
+  }
+
   // ── Network ────────────────────────────────────────────────────────────────
 
   /**
@@ -696,7 +712,7 @@ window.AIFT = (() => {
     // Messages & timers
     ensureMsg, setMsg, clearMsg, showToast, ensureTimer, startTimer, stopTimer,
     // SSE
-    sseRetryDelayMs, closeSseChannel,
+    sseRetryDelayMs, closeSseChannel, requireModules,
     // Network
     fetchWithTimeout, handleFetchError, apiJson, readErr,
     // Utilities

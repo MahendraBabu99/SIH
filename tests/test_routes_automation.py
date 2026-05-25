@@ -69,6 +69,23 @@ def _make_failed_result(
     )
 
 
+def _wait_for_run(
+    run_id: str,
+    predicate: object,
+    timeout: float = 1.0,
+) -> dict:
+    """Wait for an automation run to satisfy a predicate with diagnostics."""
+    deadline = time.monotonic() + timeout
+    last_run: dict = {}
+    while time.monotonic() < deadline:
+        with automation_mod.RUNS_LOCK:
+            last_run = dict(automation_mod.AUTOMATION_RUNS.get(run_id, {}))
+        if callable(predicate) and predicate(last_run):
+            return last_run
+        time.sleep(0.005)
+    raise AssertionError(f"Timed out waiting for run {run_id}; last state: {last_run!r}")
+
+
 class AutomationRoutesTestBase(unittest.TestCase):
     """Base class for automation route tests with app and client setup."""
 
@@ -288,6 +305,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertIn(body["run_id"], body["status_url"])
 
     @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_run_registered_in_state(self, mock_run: MagicMock) -> None:
         """Starting a run registers it in AUTOMATION_RUNS."""
         mock_run.return_value = _make_successful_result()
@@ -297,8 +315,6 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         )
         body = resp.get_json()
         run_id = body["run_id"]
-        # Give thread time to register.
-        time.sleep(0.1)
         self.assertIn(run_id, automation_mod.AUTOMATION_RUNS)
 
     @patch("app.routes.automation.run_automation")
@@ -842,6 +858,7 @@ class TestBackgroundThread(AutomationRoutesTestBase):
     """Tests for the background automation thread behaviour."""
 
     @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_successful_run_updates_state(self, mock_run: MagicMock) -> None:
         """Background thread updates state to completed on success."""
         analysis_path = Path("/cases/case-bg-ok/analysis_results.json")
@@ -858,9 +875,6 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertEqual(resp.status_code, 202)
         run_id = resp.get_json()["run_id"]
 
-        # Wait for the background thread to finish.
-        time.sleep(0.5)
-
         run = automation_mod.AUTOMATION_RUNS.get(run_id)
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "completed")
@@ -873,6 +887,7 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         )
 
     @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_failed_run_updates_state(self, mock_run: MagicMock) -> None:
         """Background thread updates state to failed on engine failure."""
         analysis_path = Path("/cases/case-bg-fail/analysis_results.json")
@@ -888,8 +903,6 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         )
         run_id = resp.get_json()["run_id"]
 
-        time.sleep(0.5)
-
         run = automation_mod.AUTOMATION_RUNS.get(run_id)
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "failed")
@@ -900,6 +913,7 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         )
 
     @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_exception_in_run_marks_failed(self, mock_run: MagicMock) -> None:
         """Background thread marks run as failed if engine raises."""
         mock_run.side_effect = RuntimeError("boom")
@@ -910,8 +924,6 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         )
         run_id = resp.get_json()["run_id"]
 
-        time.sleep(0.5)
-
         run = automation_mod.AUTOMATION_RUNS.get(run_id)
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "failed")
@@ -920,11 +932,14 @@ class TestBackgroundThread(AutomationRoutesTestBase):
     @patch("app.routes.automation.run_automation")
     def test_cancelled_run_not_overwritten(self, mock_run: MagicMock) -> None:
         """If user cancels before engine finishes, status stays cancelled."""
+        engine_started = threading.Event()
+        engine_can_finish = threading.Event()
 
         def _slow_run(req, progress_callback=None, cancel_check=None):
             """Simulate a slow run that checks for cancel."""
             del req, progress_callback, cancel_check
-            time.sleep(0.3)
+            engine_started.set()
+            self.assertTrue(engine_can_finish.wait(timeout=1.0))
             return _make_successful_result()
 
         mock_run.side_effect = _slow_run
@@ -935,15 +950,13 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         )
         run_id = resp.get_json()["run_id"]
 
-        # Cancel immediately.
-        time.sleep(0.05)
+        self.assertTrue(engine_started.wait(timeout=1.0))
         cancel_resp = self._post_json(f"/api/automation/run/{run_id}/cancel", {})
         self.assertEqual(cancel_resp.status_code, 200)
 
-        # Wait for engine to finish.
-        time.sleep(0.5)
+        engine_can_finish.set()
+        run = _wait_for_run(run_id, lambda state: state.get("_finished_mono") is not None)
 
-        run = automation_mod.AUTOMATION_RUNS.get(run_id)
         self.assertEqual(run["status"], "cancelled")
 
     @patch("app.routes.automation.run_automation")
@@ -989,8 +1002,7 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertEqual(cancel_resp.status_code, 200)
         self.assertTrue(engine_saw_cancel.wait(timeout=2.0))
 
-        time.sleep(0.2)
-        run = automation_mod.AUTOMATION_RUNS.get(run_id)
+        run = _wait_for_run(run_id, lambda state: state.get("_finished_mono") is not None)
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "cancelled")
         self.assertNotEqual(run.get("case_id"), "case-after-cancel")
@@ -1001,6 +1013,7 @@ class TestProgressCallback(AutomationRoutesTestBase):
     """Tests for progress callback updating run state."""
 
     @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_progress_callback_updates_phase(self, mock_run: MagicMock) -> None:
         """Progress callback updates phase, message, and percentage."""
         callback_holder: list = []
@@ -1021,8 +1034,6 @@ class TestProgressCallback(AutomationRoutesTestBase):
         )
         run_id = resp.get_json()["run_id"]
 
-        time.sleep(0.5)
-
         # The run should have been updated by the callback at some point.
         # Since it completed, status is now "completed", but we can verify
         # the callback was invoked.
@@ -1033,6 +1044,7 @@ class TestValidDateRange(AutomationRoutesTestBase):
     """Tests for valid date range handling."""
 
     @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_valid_date_range_accepted(self, mock_run: MagicMock) -> None:
         """Valid date range is accepted and passed to the engine."""
         mock_run.return_value = _make_successful_result()
@@ -1049,8 +1061,6 @@ class TestValidDateRange(AutomationRoutesTestBase):
             },
         )
         self.assertEqual(resp.status_code, 202)
-
-        time.sleep(0.3)
 
         # Verify the engine was called with the date range.
         call_args = mock_run.call_args

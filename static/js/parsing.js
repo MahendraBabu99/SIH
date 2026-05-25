@@ -848,4 +848,5 @@
   A.closeParseSse = closeParseSse;
   A.resetParseState = resetParseState;
   A.renderParsePlaceholder = renderParsePlaceholder;
+  A._onParseEvent = onParseEvent;
 })();

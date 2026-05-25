@@ -20,6 +20,20 @@
   function init() {
     cache();
     if (!el.wizard) return;
+    A.requireModules([
+      "setupEvidence",
+      "setupArtifacts",
+      "setupAnalysis",
+      "setupResults",
+      "setupSettings",
+      "setupHelpTooltips",
+      "resetParseState",
+      "resetAnalysisState",
+      "resetChatState",
+      "closeParseSse",
+      "closeAnalysisSse",
+      "closeChatSse",
+    ]);
     addMessages();
     addTimers();
     setupWizard();

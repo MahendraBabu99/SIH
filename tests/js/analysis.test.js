@@ -16,56 +16,12 @@
 
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
-
-const STATIC = path.resolve(__dirname, "..", "..", "static");
-const TEMPLATES = path.resolve(__dirname, "..", "..", "templates");
-
-function readJs(relPath) {
-  return fs.readFileSync(path.join(STATIC, relPath), "utf-8");
-}
-
-function setup() {
-  const indexHtml = fs.readFileSync(path.join(TEMPLATES, "index.html"), "utf-8");
-  document.documentElement.innerHTML = "";
-  document.write(indexHtml);
-  document.close();
-
-  global.fetch = () => Promise.reject(new Error("fetch not available in tests"));
-  global.EventSource = class { close() {} };
-  if (!global.CSS) global.CSS = {};
-  if (!global.CSS.escape) global.CSS.escape = (v) => String(v).replace(/([^\w-])/g, "\\$1");
-
-  const scripts = [
-    "js/utils.js",
-    "js/markdown.js",
-    "js/evidence.js",
-    "js/evidence_multi.js",
-    "js/parsing.js",
-    "js/analysis.js",
-    "js/chat.js",
-    "js/settings.js",
-    "app.js",
-  ];
-  for (const s of scripts) {
-    const code = readJs(s);
-    try {
-      const fn = new Function(code);
-      fn.call(window);
-    } catch (e) {
-      throw new Error(`Failed to evaluate ${s}: ${e.message}`);
-    }
-  }
-
-  document.dispatchEvent(new Event("DOMContentLoaded"));
-  return window.AIFT;
-}
+const { setupAift, mustGet, mustQuery } = require("./harness");
 
 let A;
 
 beforeEach(() => {
-  A = setup();
+  A = setupAift();
 });
 
 // ── resetAnalysisState ──────────────────────────────────────────────────────
@@ -587,6 +543,65 @@ describe("upsertAnalysis picks up summary field from per-image summary events", 
 });
 
 // ── Analysis navigation prerequisites ───────────────────────────────────────
+
+describe("multi-image analysis rendering behavior", () => {
+  test("groups artifact cards by image label and renders cross-image summary", () => {
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 2, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "evtx",
+      image_id: "img1",
+      image_label: "Workstation",
+      result: { artifact_name: "Event Logs", analysis: "Suspicious service install." },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "mft",
+      image_id: "img2",
+      image_label: "Server",
+      result: { artifact_name: "MFT", analysis: "Unexpected executable." },
+      sequence: 2,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_summary",
+      multi_image: true,
+      images: {
+        img1: { label: "Workstation", summary: "Workstation summary" },
+        img2: { label: "Server", summary: "Server summary" },
+      },
+      cross_image_summary: "Activity links the workstation and server.",
+      sequence: 3,
+    });
+    A.renderAnalysis();
+
+    const groups = A.el.analysisList.querySelectorAll(".analysis-image-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0].textContent).toContain("Workstation");
+    expect(groups[0].textContent).toContain("Suspicious service install.");
+    expect(groups[1].textContent).toContain("Server");
+    expect(groups[1].textContent).toContain("Unexpected executable.");
+    expect(document.getElementById("cross-system-analysis").hidden).toBe(false);
+    expect(document.getElementById("cross-system-analysis").textContent).toContain(
+      "Activity links the workstation and server."
+    );
+  });
+
+  test("single fallback does not expose __single__ as a visible header", () => {
+    A.st.analysis.multiImage = true;
+    A.st.analysis.order = ["evtx"];
+    A.st.analysis.byKey = {
+      evtx: { key: "evtx", name: "Event Logs", text: "Single image result.", isThinking: false },
+    };
+
+    A.renderAnalysis();
+    A.renderFindings();
+
+    expect(A.el.analysisList.textContent).toContain("Single image result.");
+    expect(A.el.analysisList.textContent).not.toContain("__single__");
+    expect(A.el.findings.textContent).not.toContain("__single__");
+  });
+});
 
 describe("analysis navigation prerequisites", () => {
   test("step 5 is blocked when analysis not done", () => {

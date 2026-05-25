@@ -14,56 +14,12 @@
 
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
-
-const STATIC = path.resolve(__dirname, "..", "..", "static");
-const TEMPLATES = path.resolve(__dirname, "..", "..", "templates");
-
-function readJs(relPath) {
-  return fs.readFileSync(path.join(STATIC, relPath), "utf-8");
-}
-
-function setup() {
-  const indexHtml = fs.readFileSync(path.join(TEMPLATES, "index.html"), "utf-8");
-  document.documentElement.innerHTML = "";
-  document.write(indexHtml);
-  document.close();
-
-  global.fetch = () => Promise.reject(new Error("fetch not available in tests"));
-  global.EventSource = class { close() {} };
-  if (!global.CSS) global.CSS = {};
-  if (!global.CSS.escape) global.CSS.escape = (v) => String(v).replace(/([^\w-])/g, "\\$1");
-
-  const scripts = [
-    "js/utils.js",
-    "js/markdown.js",
-    "js/evidence.js",
-    "js/evidence_multi.js",
-    "js/parsing.js",
-    "js/analysis.js",
-    "js/chat.js",
-    "js/settings.js",
-    "app.js",
-  ];
-  for (const s of scripts) {
-    const code = readJs(s);
-    try {
-      const fn = new Function(code);
-      fn.call(window);
-    } catch (e) {
-      throw new Error(`Failed to evaluate ${s}: ${e.message}`);
-    }
-  }
-
-  document.dispatchEvent(new Event("DOMContentLoaded"));
-  return window.AIFT;
-}
+const { setupAift, mustGet, mustQuery } = require("./harness");
 
 let A;
 
 beforeEach(() => {
-  A = setup();
+  A = setupAift();
 });
 
 // ── resetParseState ─────────────────────────────────────────────────────────
@@ -233,6 +189,35 @@ describe("parse state lifecycle", () => {
     A.st.parse.done = false;
     A.updateNav();
     expect(A.el.indicators[3].classList.contains("is-disabled")).toBe(true);
+  });
+
+  test("parse-only completion stays on parsing and blocks analysis", () => {
+    A.setCaseId("test-case");
+    A.showStep(3);
+    A.st.parse.run = true;
+    A.st.selected = ["evtx"];
+    A.st.selectedAi = [];
+
+    A._onParseEvent({ type: "parse_completed", sequence: 1 });
+
+    expect(A.st.step).toBe(3);
+    expect(A.st.parse.done).toBe(true);
+    expect(A.el.indicators[3].classList.contains("is-disabled")).toBe(true);
+    expect(A.el.parseErr.textContent).toContain("No artifacts were set");
+  });
+
+  test("AI-enabled parse completion advances to analysis", () => {
+    A.setCaseId("test-case");
+    A.showStep(3);
+    A.st.parse.run = true;
+    A.st.selected = ["evtx"];
+    A.st.selectedAi = ["evtx"];
+
+    A._onParseEvent({ type: "parse_completed", sequence: 1 });
+
+    expect(A.st.step).toBe(4);
+    expect(A.st.parse.done).toBe(true);
+    expect(A.el.indicators[3].classList.contains("is-disabled")).toBe(false);
   });
 });
 
