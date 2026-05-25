@@ -156,6 +156,7 @@ class ForensicAnalyzer:
         self.prompts_dir = Path(prompts_dir) if prompts_dir is not None else PROJECT_ROOT / "prompts"
         self.os_type = normalize_os_type(os_type)
         import random
+        self._random_seed = random_seed
         self._random = random.Random(random_seed)
         self._load_analysis_settings()
         self.artifact_ai_column_projections = self._load_artifact_ai_column_projections()
@@ -192,13 +193,31 @@ class ForensicAnalyzer:
             self.ai_response_max_tokens = configured_response_tokens
         else:
             self.ai_response_max_tokens = max(4096, int(self.ai_max_tokens * 0.2))
+        self.ai_input_safety_margin_tokens = read_int_setting(
+            analysis_config,
+            "ai_input_safety_margin_tokens",
+            max(128, int(self.ai_max_tokens * 0.05)),
+            minimum=0,
+        )
+        configured_input_budget = self.ai_max_tokens - self.ai_response_max_tokens - self.ai_input_safety_margin_tokens
+        minimum_input_budget = min(self.ai_max_tokens, max(1024, int(self.ai_max_tokens * 0.1)))
+        if configured_input_budget < minimum_input_budget:
+            self.ai_input_max_tokens = minimum_input_budget
+            self.logger.warning(
+                "analysis.ai_max_tokens leaves only %d input tokens after reserving response/safety tokens; "
+                "using conservative input budget %d.",
+                configured_input_budget,
+                self.ai_input_max_tokens,
+            )
+        else:
+            self.ai_input_max_tokens = configured_input_budget
         legacy_shortened = read_int_setting(
             analysis_config, "statistics_section_cutoff_tokens", DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS, minimum=1,
         )
         self.shortened_prompt_cutoff_tokens = read_int_setting(
             analysis_config, "shortened_prompt_cutoff_tokens", legacy_shortened, minimum=1,
         )
-        self.chunk_csv_budget = int(self.ai_max_tokens * TOKEN_CHAR_RATIO * 0.6)
+        self.chunk_csv_budget = int(self.ai_input_max_tokens * TOKEN_CHAR_RATIO * 0.6)
         self.citation_spot_check_limit = read_int_setting(
             analysis_config, "citation_spot_check_limit", CITATION_SPOT_CHECK_LIMIT, minimum=1,
         )
@@ -379,6 +398,18 @@ class ForensicAnalyzer:
         except OSError:
             self.logger.warning("Failed to save prompt to %s", prompts_dir / filename)
 
+    def _current_analysis_scope_id(self) -> str:
+        """Return the active analysis scope ID, if any."""
+        return str(getattr(self, "_analysis_scope_id", "") or "").strip()
+
+    def _scoped_artifact_filename_stem(self, artifact_key: str) -> str:
+        """Build a collision-safe filename stem for the current scope."""
+        safe_key = sanitize_filename(artifact_key)
+        scope_id = self._current_analysis_scope_id()
+        if not scope_id:
+            return safe_key
+        return f"{sanitize_filename(scope_id)}__{safe_key}"
+
     # ------------------------------------------------------------------
     # Delegation methods — thin wrappers for backward compatibility.
     # Methods that don't use self are exposed as staticmethod assignments
@@ -398,7 +429,13 @@ class ForensicAnalyzer:
     _build_full_data_csv = staticmethod(build_full_data_csv)
     _deduplicate_rows_for_analysis = staticmethod(deduplicate_rows_for_analysis)
 
-    def _validate_citations(self, artifact_key: str, analysis_text: str) -> list[str]:
+    def _validate_citations(
+        self,
+        artifact_key: str,
+        analysis_text: str,
+        *,
+        analysis_available: bool = True,
+    ) -> list[str]:
         """Spot-check AI-cited values against source CSV.
 
         Args:
@@ -408,7 +445,7 @@ class ForensicAnalyzer:
         Returns:
             List of warning strings.
         """
-        if analysis_text.startswith("Analysis failed:"):
+        if not analysis_available or analysis_text.startswith("Analysis failed:"):
             return []
         try:
             original_path = self._resolve_artifact_csv_path(artifact_key)
@@ -620,8 +657,15 @@ class ForensicAnalyzer:
             artifact_key: Artifact identifier.
             csv_path: Path to the analysis-input CSV.
         """
-        self._analysis_input_csv_paths[artifact_key] = csv_path
+        scope_id = self._current_analysis_scope_id()
         normalized = normalize_artifact_key(artifact_key)
+        if scope_id:
+            scoped_key = f"{scope_id}::{artifact_key}"
+            scoped_normalized = f"{scope_id}::{normalized}"
+            self._analysis_input_csv_paths[scoped_key] = csv_path
+            self._analysis_input_csv_paths[scoped_normalized] = csv_path
+            return
+        self._analysis_input_csv_paths[artifact_key] = csv_path
         self._analysis_input_csv_paths[normalized] = csv_path
 
     def _resolve_analysis_input_csv_path(self, artifact_key: str, fallback: Path) -> Path:
@@ -634,10 +678,19 @@ class ForensicAnalyzer:
         Returns:
             The stored analysis-input CSV path, or *fallback*.
         """
+        scope_id = self._current_analysis_scope_id()
+        normalized = normalize_artifact_key(artifact_key)
+        if scope_id:
+            mapped = self._analysis_input_csv_paths.get(f"{scope_id}::{artifact_key}")
+            if mapped is not None:
+                return mapped
+            mapped = self._analysis_input_csv_paths.get(f"{scope_id}::{normalized}")
+            if mapped is not None:
+                return mapped
+
         mapped = self._analysis_input_csv_paths.get(artifact_key)
         if mapped is not None:
             return mapped
-        normalized = normalize_artifact_key(artifact_key)
         mapped = self._analysis_input_csv_paths.get(normalized)
         if mapped is not None:
             return mapped
@@ -794,6 +847,9 @@ class ForensicAnalyzer:
             audit_log_fn=self._audit_log,
             date_range=self.analysis_date_range,
             host_metadata=getattr(self, "_host_metadata", None),
+            rng=self._random,
+            random_seed=self._random_seed,
+            analysis_scope_id=self._current_analysis_scope_id() or None,
         )
         self._set_analysis_input_csv_path(artifact_key=artifact_key, csv_path=analysis_csv_path)
         return prompt_text
@@ -836,16 +892,22 @@ class ForensicAnalyzer:
                 artifact_key=artifact_key, investigation_context=investigation_context, csv_path=csv_path,
             )
             analysis_csv_path = self._resolve_analysis_input_csv_path(artifact_key=artifact_key, fallback=csv_path)
-            attachments = [build_artifact_csv_attachment(artifact_key=artifact_key, csv_path=analysis_csv_path)]
+            attachments = [
+                build_artifact_csv_attachment(
+                    artifact_key=artifact_key,
+                    csv_path=analysis_csv_path,
+                    analysis_scope_id=self._current_analysis_scope_id() or None,
+                )
+            ]
 
-            safe_key = sanitize_filename(artifact_key)
+            safe_key = self._scoped_artifact_filename_stem(artifact_key)
             self._save_case_prompt(f"artifact_{safe_key}.md", self.system_prompt, artifact_prompt)
 
             prompt_tokens_estimate = self._estimate_tokens(artifact_prompt) + self._estimate_tokens(self.system_prompt)
-            if prompt_tokens_estimate > self.ai_max_tokens:
+            if prompt_tokens_estimate > self.ai_input_max_tokens:
                 self.logger.info(
-                    "Prompt for %s (~%d tokens) exceeds ai_max_tokens (%d); using chunked analysis.",
-                    artifact_key, prompt_tokens_estimate, self.ai_max_tokens,
+                    "Prompt for %s (~%d input tokens) exceeds reserved input budget (%d); using chunked analysis.",
+                    artifact_key, prompt_tokens_estimate, self.ai_input_max_tokens,
                 )
                 if progress_callback is not None:
                     emit_analysis_progress(progress_callback, artifact_key, "started", {
@@ -860,12 +922,15 @@ class ForensicAnalyzer:
                     system_prompt=self.system_prompt,
                     ai_response_max_tokens=self.ai_response_max_tokens,
                     chunk_csv_budget=self.chunk_csv_budget,
+                    input_token_budget=self.ai_input_max_tokens,
+                    estimate_tokens_fn=self._estimate_tokens,
                     chunk_merge_prompt_template=self.chunk_merge_prompt_template,
                     max_merge_rounds=self.max_merge_rounds,
                     call_ai_with_retry_fn=self._call_ai_with_retry,
                     ai_provider=self.ai_provider,
                     audit_log_fn=self._audit_log,
                     save_case_prompt_fn=self._save_case_prompt,
+                    prompt_filename_stem=safe_key,
                     progress_callback=progress_callback,
                 )
                 duration_seconds = perf_counter() - start_time
@@ -879,6 +944,7 @@ class ForensicAnalyzer:
                 result: dict[str, Any] = {
                     "artifact_key": artifact_key, "artifact_name": artifact_name,
                     "analysis": analysis_text, "model": model,
+                    "status": "success", "error": None, "analysis_available": True,
                 }
                 if citation_warnings:
                     result["citation_warnings"] = citation_warnings
@@ -957,23 +1023,35 @@ class ForensicAnalyzer:
                 "token_count": self._estimate_tokens(analysis_text),
                 "duration_seconds": round(duration_seconds, 6), "status": "success",
             })
+            status = "success"
+            error_text: str | None = None
+            analysis_available = True
         except AnalysisCancelledError:
             raise
         except Exception as error:
             self.logger.exception("Unhandled error in analyze_artifact for '%s'", artifact_key)
             duration_seconds = perf_counter() - start_time
             analysis_text = f"Analysis failed: {error}"
+            status = "failed"
+            error_text = str(error)
+            analysis_available = False
             self._audit_log("analysis_completed", {
                 "artifact_key": artifact_key, "artifact_name": artifact_name,
                 "token_count": 0, "duration_seconds": round(duration_seconds, 6),
                 "status": "failed", "error": str(error),
             })
 
-        citation_warnings = self._validate_citations(artifact_key, analysis_text)
+        citation_warnings = self._validate_citations(
+            artifact_key,
+            analysis_text,
+            analysis_available=analysis_available,
+        )
 
         result = {
             "artifact_key": artifact_key, "artifact_name": artifact_name,
             "analysis": analysis_text, "model": model,
+            "status": status, "error": error_text,
+            "analysis_available": analysis_available,
         }
         if citation_warnings:
             result["citation_warnings"] = citation_warnings
@@ -1007,7 +1085,7 @@ class ForensicAnalyzer:
         provider = self.model_info.get("provider", "unknown")
         summary_artifact_key = "cross_artifact_summary"
         summary_artifact_name = "Cross-Artifact Summary"
-        summary_prompt_filename = f"{sanitize_filename(summary_artifact_key)}.md"
+        summary_prompt_filename = f"{self._scoped_artifact_filename_stem(summary_artifact_key)}.md"
 
         self._audit_log("analysis_started", {
             "artifact_key": summary_artifact_key, "artifact_name": summary_artifact_name,

@@ -417,6 +417,7 @@ def _sample_rows(
     rows: list[dict[str, str]],
     max_flagged: int = 500,
     max_normal: int = 200,
+    rng: random.Random | None = None,
 ) -> list[dict[str, str]]:
     """Down-sample rows using anomaly flags to prioritize interesting data.
 
@@ -429,6 +430,8 @@ def _sample_rows(
         rows: List of row dicts to sample from.
         max_flagged: Maximum number of anomaly-flagged rows to keep.
         max_normal: Maximum number of non-flagged rows to keep.
+        rng: Optional random number generator.  When omitted, a local
+            deterministic generator is used so sampling is reproducible.
 
     Returns:
         A sampled list of row dicts, preserving original row order.
@@ -447,13 +450,15 @@ def _sample_rows(
         else:
             normal_indices.append(idx)
 
+    sampler = rng if rng is not None else random.Random(0)
+
     # Cap flagged rows.
     if len(flagged_indices) > max_flagged:
-        flagged_indices = random.sample(flagged_indices, max_flagged)
+        flagged_indices = sampler.sample(flagged_indices, max_flagged)
 
     # Cap normal rows.
     if len(normal_indices) > max_normal:
-        normal_indices = random.sample(normal_indices, max_normal)
+        normal_indices = sampler.sample(normal_indices, max_normal)
 
     # Merge and sort to preserve original row order.
     selected = sorted(set(flagged_indices) | set(normal_indices))
@@ -520,11 +525,21 @@ def resolve_analysis_input_output_dir(case_dir: Path | None, source_csv_path: Pa
     return parent / DEDUPLICATED_PARSED_DIRNAME
 
 
+def _analysis_input_filename(source_csv_path: Path, analysis_scope_id: str | None = None) -> str:
+    """Build a collision-safe analysis-input CSV filename."""
+    source_name = source_csv_path.name
+    scope = sanitize_filename(str(analysis_scope_id or "").strip())
+    if not analysis_scope_id or scope == "artifact":
+        return source_name
+    return f"{scope}__{source_name}"
+
+
 def write_analysis_input_csv(
     source_csv_path: Path,
     rows: list[dict[str, str]],
     columns: list[str],
     case_dir: Path | None = None,
+    analysis_scope_id: str | None = None,
 ) -> Path:
     """Write deduplicated/projected rows to a new CSV file for audit.
 
@@ -533,6 +548,8 @@ def write_analysis_input_csv(
         rows: Row dicts to write.
         columns: Column names for the CSV header.
         case_dir: Optional case directory.
+        analysis_scope_id: Optional image/scope identifier used to avoid
+            filename collisions in multi-image analysis.
 
     Returns:
         Path to the newly written analysis-input CSV file.
@@ -542,7 +559,7 @@ def write_analysis_input_csv(
     """
     output_dir = resolve_analysis_input_output_dir(case_dir=case_dir, source_csv_path=source_csv_path)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / source_csv_path.name
+    output_path = output_dir / _analysis_input_filename(source_csv_path, analysis_scope_id)
 
     write_columns = list(columns)
     include_row_ref = "_row_ref" not in write_columns and any("_row_ref" in r for r in rows)
@@ -561,17 +578,26 @@ def write_analysis_input_csv(
     return output_path
 
 
-def build_artifact_csv_attachment(artifact_key: str, csv_path: Path) -> dict[str, str]:
+def build_artifact_csv_attachment(
+    artifact_key: str,
+    csv_path: Path,
+    analysis_scope_id: str | None = None,
+) -> dict[str, str]:
     """Build an attachment descriptor dict for an artifact CSV file.
 
     Args:
         artifact_key: Artifact identifier.
         csv_path: Path to the CSV file on disk.
+        analysis_scope_id: Optional image/scope identifier used to avoid
+            attachment filename collisions in multi-image analysis.
 
     Returns:
         A dict with ``path``, ``name``, and ``mime_type`` keys.
     """
+    scope = sanitize_filename(str(analysis_scope_id or "").strip())
     filename_stem = sanitize_filename(artifact_key)
+    if analysis_scope_id and scope != "artifact":
+        filename_stem = f"{scope}__{filename_stem}"
     filename = f"{filename_stem}.csv" if not filename_stem.lower().endswith(".csv") else filename_stem
     return {"path": str(csv_path), "name": filename, "mime_type": "text/csv"}
 
@@ -597,6 +623,9 @@ def prepare_artifact_data(
     audit_log_fn: Any = None,
     date_range: tuple[str, str] | None = None,
     host_metadata: Mapping[str, Any] | None = None,
+    rng: random.Random | None = None,
+    random_seed: int | None = None,
+    analysis_scope_id: str | None = None,
 ) -> tuple[str, Path, list[str]]:
     """Prepare one artifact CSV as an analysis-ready prompt.
 
@@ -629,6 +658,11 @@ def prepare_artifact_data(
             for date-based row filtering.  ``None`` skips date filtering.
         host_metadata: Optional host metadata mapping with ``hostname``,
             ``domain``, and ``ips`` keys for populating prompt context.
+        rng: Optional random number generator for deterministic sampling.
+        random_seed: Optional seed value recorded in audit metadata when
+            sampling occurs.
+        analysis_scope_id: Optional image/scope identifier for collision-safe
+            analysis-input CSV output.
 
     Returns:
         A 3-tuple of ``(prompt_text, analysis_csv_path, analysis_columns)``.
@@ -648,11 +682,18 @@ def prepare_artifact_data(
             row["_row_ref"] = str(source_row_count)
             rows.append(row)
 
+    # Date filtering must run against the source schema.  Projection can
+    # intentionally omit timestamp columns from the AI-visible CSV, but that
+    # must not make every row look timestamp-less and survive the filter.
+    pre_filter_count = len(rows)
+    filtered_rows = _filter_by_date_range(rows=rows, date_range=date_range)
+    date_filtered_count = pre_filter_count - len(filtered_rows)
+
     analysis_columns, projection_applied = select_ai_columns(
         artifact_key=artifact_key, available_columns=columns,
         column_projections=artifact_ai_column_projections, audit_log_fn=audit_log_fn,
     )
-    analysis_rows = project_rows_for_analysis(rows=rows, columns=analysis_columns)
+    analysis_rows = project_rows_for_analysis(rows=filtered_rows, columns=analysis_columns)
     deduplicated_records = 0
     dedup_annotated_rows = 0
     dedup_variant_columns: list[str] = []
@@ -664,33 +705,51 @@ def prepare_artifact_data(
             deduplicate_rows_for_analysis(rows=analysis_rows, columns=analysis_columns)
         )
 
-    # ----- Data feeding strategy: date filter + anomaly sampling -----
-    pre_filter_count = len(analysis_rows)
-    analysis_rows = _filter_by_date_range(rows=analysis_rows, date_range=date_range)
-    date_filtered_count = pre_filter_count - len(analysis_rows)
-
     pre_sample_count = len(analysis_rows)
-    analysis_rows = _sample_rows(rows=analysis_rows)
+    analysis_rows = _sample_rows(rows=analysis_rows, rng=rng)
     sampled_away_count = pre_sample_count - len(analysis_rows)
+    source_rows_by_ref = {row.get("_row_ref", ""): row for row in filtered_rows}
+    source_rows_for_analysis = [
+        source_rows_by_ref.get(row.get("_row_ref", ""), row)
+        for row in analysis_rows
+    ]
+    analysis_min_time, analysis_max_time = time_range_for_rows(source_rows_for_analysis)
 
-    if (date_filtered_count or sampled_away_count) and audit_log_fn is not None:
-        audit_log_fn("artifact_data_feeding", {
-            "artifact_key": artifact_key,
-            "rows_before_date_filter": pre_filter_count,
-            "rows_removed_by_date_filter": date_filtered_count,
-            "rows_before_sampling": pre_sample_count,
-            "rows_removed_by_sampling": sampled_away_count,
-            "rows_after_sampling": len(analysis_rows),
-        })
-
-    if projection_applied or artifact_deduplication_enabled:
+    transformed_for_analysis = bool(
+        projection_applied
+        or artifact_deduplication_enabled
+        or date_filtered_count
+        or sampled_away_count
+    )
+    if transformed_for_analysis:
         try:
             analysis_csv_path = write_analysis_input_csv(
-                source_csv_path=csv_path, rows=analysis_rows, columns=analysis_columns, case_dir=case_dir,
+                source_csv_path=csv_path,
+                rows=analysis_rows,
+                columns=analysis_columns,
+                case_dir=case_dir,
+                analysis_scope_id=analysis_scope_id,
             )
         except OSError as error:
             analysis_csv_path = csv_path
             dedup_write_error = str(error)
+
+    if (date_filtered_count or sampled_away_count) and audit_log_fn is not None:
+        feed_details: dict[str, Any] = {
+            "artifact_key": artifact_key,
+            "source_csv": str(csv_path),
+            "analysis_csv": str(analysis_csv_path),
+            "rows_before_date_filter": pre_filter_count,
+            "rows_removed_by_date_filter": date_filtered_count,
+            "rows_after_date_filter": len(filtered_rows),
+            "rows_before_sampling": pre_sample_count,
+            "rows_removed_by_sampling": sampled_away_count,
+            "rows_after_sampling": len(analysis_rows),
+            "sampling_seed": random_seed if random_seed is not None else "deterministic-default",
+        }
+        if dedup_write_error:
+            feed_details["write_error"] = dedup_write_error
+        audit_log_fn("artifact_data_feeding", feed_details)
 
     if projection_applied and audit_log_fn is not None:
         projection_details: dict[str, Any] = {
@@ -713,7 +772,16 @@ def prepare_artifact_data(
 
     statistics = ""
     if include_statistics:
-        statistics, min_time, max_time = compute_statistics(rows=analysis_rows, columns=analysis_columns)
+        statistics, _projected_min_time, _projected_max_time = compute_statistics(
+            rows=analysis_rows,
+            columns=analysis_columns,
+        )
+        min_time, max_time = analysis_min_time, analysis_max_time
+        stat_lines = statistics.splitlines()
+        if len(stat_lines) >= 3:
+            stat_lines[1] = f"Time range start: {format_datetime(min_time)}"
+            stat_lines[2] = f"Time range end: {format_datetime(max_time)}"
+            statistics = "\n".join(stat_lines)
         stats_prefix: list[str] = []
 
         if artifact_deduplication_enabled:
@@ -732,7 +800,7 @@ def prepare_artifact_data(
         if stats_prefix:
             statistics = "\n".join(stats_prefix) + "\n" + statistics
     else:
-        min_time, max_time = time_range_for_rows(analysis_rows)
+        min_time, max_time = analysis_min_time, analysis_max_time
 
     full_data_csv = build_full_data_csv(rows=analysis_rows, columns=analysis_columns)
     extracted_iocs = extract_ioc_targets(investigation_context)

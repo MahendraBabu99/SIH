@@ -223,17 +223,40 @@ def build_summary_prompt(
         The fully rendered summary prompt string.
     """
     findings_blocks: list[str] = []
+    failure_blocks: list[str] = []
     for result in per_artifact_results:
         artifact_key = str(result.get("artifact_key", "unknown"))
         artifact_name = str(result.get("artifact_name", artifact_key))
         analysis = str(result.get("analysis", "")).strip()
-        findings_blocks.append(f"### {artifact_name} ({artifact_key})\n{analysis}")
+        status = str(result.get("status") or "").strip().lower()
+        analysis_available = result.get("analysis_available", True)
+        failed = (
+            status in {"failed", "error", "cancelled"}
+            or analysis_available is False
+            or analysis.startswith("Analysis failed:")
+        )
+        if failed:
+            failure_blocks.append(
+                f"- {artifact_name} ({artifact_key}): analysis unavailable; see audit log for failure details."
+            )
+            continue
+        findings_blocks.append(
+            f"### {artifact_name} ({artifact_key})\n"
+            "[Untrusted model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
+            f"{analysis}"
+        )
 
     findings_text = (
         "\n\n".join(findings_blocks)
         if findings_blocks
         else "No per-artifact findings available."
     )
+    if failure_blocks:
+        findings_text = (
+            f"{findings_text}\n\n"
+            "## Analysis Failures / Data Gaps\n"
+            + "\n".join(failure_blocks)
+        )
 
     extracted_iocs = extract_ioc_targets(investigation_context)
     priority_directives = build_priority_directives(investigation_context, ioc_targets=extracted_iocs)

@@ -6,6 +6,7 @@ and citation validation helpers.
 from __future__ import annotations
 
 import csv
+import random
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -557,6 +558,26 @@ class TestEmitAnalysisProgress(unittest.TestCase):
             raise RuntimeError("broken")
         # Should not raise
         emit_analysis_progress(cb, "art1", "started", {"msg": "hi"})
+
+
+class TestSampleRows(unittest.TestCase):
+    """Tests for deterministic data-feed sampling."""
+
+    def test_sample_rows_uses_supplied_rng(self) -> None:
+        from app.analyzer.data_prep import _sample_rows
+
+        rows = [
+            {"_row_ref": str(i), "name": "same", "group": "normal"}
+            for i in range(800)
+        ]
+
+        first = _sample_rows(rows, max_flagged=10, max_normal=10, rng=random.Random(42))
+        second = _sample_rows(rows, max_flagged=10, max_normal=10, rng=random.Random(42))
+        third = _sample_rows(rows, max_flagged=10, max_normal=10, rng=random.Random(7))
+
+        self.assertEqual([row["_row_ref"] for row in first], [row["_row_ref"] for row in second])
+        self.assertNotEqual([row["_row_ref"] for row in first], [row["_row_ref"] for row in third])
+        self.assertLessEqual(len(first), 20)
 
 
 class TestReadIntSetting(unittest.TestCase):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,40 @@ __all__ = [
     "timestamp_found_in_csv",
     "match_column_name",
 ]
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    """Deduplicate citation strings while preserving first occurrence."""
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(text)
+    return selected
+
+
+def _select_spot_checks(values: list[str], limit: int) -> list[str]:
+    """Select deterministic citation checks across the full citation list."""
+    if limit <= 0:
+        return []
+    if len(values) <= limit:
+        return list(values)
+    if limit == 1:
+        return [values[0]]
+
+    indices: list[int] = []
+    last_index = len(values) - 1
+    for slot in range(limit):
+        index = round(slot * last_index / (limit - 1))
+        if index not in indices:
+            indices.append(index)
+    return [values[index] for index in indices]
 
 
 def timestamp_lookup_keys(value: str) -> set[str]:
@@ -52,6 +87,8 @@ def timestamp_lookup_keys(value: str) -> set[str]:
     if match:
         token = match.group()
         keys.add(token)
+        if len(token) >= 10:
+            keys.add(token[:10])
         normalized_token = token.replace(" ", "T")
         keys.add(normalized_token)
 
@@ -83,6 +120,7 @@ def timestamp_lookup_keys(value: str) -> set[str]:
     if parsed is not None:
         if parsed.tzinfo is not None:
             parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        keys.add(parsed.date().isoformat())
         keys.add(parsed.isoformat(timespec="seconds"))
         keys.add(parsed.isoformat(timespec="microseconds"))
 
@@ -103,7 +141,15 @@ def timestamp_found_in_csv(cited: str, csv_timestamp_lookup: set[str]) -> bool:
     """
     if not csv_timestamp_lookup:
         return False
-    return any(key in csv_timestamp_lookup for key in timestamp_lookup_keys(cited))
+    cited_text = cited.strip()
+    cited_keys = timestamp_lookup_keys(cited_text)
+    date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", cited_text))
+    if not date_only:
+        cited_keys = {
+            key for key in cited_keys
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", key)
+        }
+    return any(key in csv_timestamp_lookup for key in cited_keys)
 
 
 def match_column_name(
@@ -170,39 +216,40 @@ def validate_citations(
     if analysis_text.startswith("Analysis failed:"):
         return []
 
-    cited_timestamps: list[str] = CITED_ISO_TIMESTAMP_RE.findall(analysis_text)
-    cited_row_refs: list[str] = CITED_ROW_REF_RE.findall(analysis_text)
+    cited_timestamps = _dedupe_preserve_order(CITED_ISO_TIMESTAMP_RE.findall(analysis_text))
+    cited_row_refs = _dedupe_preserve_order(CITED_ROW_REF_RE.findall(analysis_text))
 
     cited_columns: list[str] = []
     for match in CITED_COLUMN_REF_RE.finditer(analysis_text):
         cited_col = match.group(1) or match.group(2) or match.group(3)
         if cited_col and cited_col.strip():
             cited_columns.append(cited_col.strip())
-    seen_cols: set[str] = set()
-    unique_cited_columns: list[str] = []
-    for col in cited_columns:
-        if col not in seen_cols:
-            seen_cols.add(col)
-            unique_cited_columns.append(col)
-    cited_columns = unique_cited_columns
-
-    if not cited_timestamps and not cited_row_refs and not cited_columns:
-        return []
+    cited_columns = _dedupe_preserve_order(cited_columns)
 
     csv_timestamp_lookup: set[str] = set()
     csv_row_refs: set[str] = set()
     csv_columns: list[str] = []
+    row_ref_header_count = 0
+    missing_row_ref_count = 0
+    duplicate_row_ref_count = 0
     try:
         with csv_path.open("r", newline="", encoding="utf-8-sig", errors="replace") as fh:
             reader = csv.DictReader(fh)
             csv_columns = [str(c) for c in (reader.fieldnames or []) if c not in (None, "")]
+            row_ref_header_count = sum(1 for c in (reader.fieldnames or []) if str(c or "").strip() == "row_ref")
             ts_columns = [c for c in csv_columns if looks_like_timestamp_column(c)]
             has_row_ref_col = "row_ref" in csv_columns
+            seen_row_refs: set[str] = set()
             for row_number, raw_row in enumerate(reader, start=1):
                 if has_row_ref_col:
                     ref_val = stringify_value(raw_row.get("row_ref"))
                     if ref_val:
+                        if ref_val in seen_row_refs:
+                            duplicate_row_ref_count += 1
+                        seen_row_refs.add(ref_val)
                         csv_row_refs.add(ref_val)
+                    else:
+                        missing_row_ref_count += 1
                 else:
                     csv_row_refs.add(str(row_number))
                 for col in ts_columns:
@@ -215,19 +262,32 @@ def validate_citations(
     warnings: list[str] = []
     column_match_results: list[dict[str, str]] = []
 
-    for ts in cited_timestamps[:citation_spot_check_limit]:
+    if row_ref_header_count > 1:
+        warnings.append(
+            "Note: analysis-input CSV has duplicate row_ref headers; row citation validation may be ambiguous."
+        )
+    if missing_row_ref_count:
+        warnings.append(
+            f"Note: analysis-input CSV has {missing_row_ref_count} rows with missing row_ref values."
+        )
+    if duplicate_row_ref_count:
+        warnings.append(
+            f"Note: analysis-input CSV has {duplicate_row_ref_count} duplicate row_ref values."
+        )
+
+    for ts in _select_spot_checks(cited_timestamps, citation_spot_check_limit):
         if not timestamp_found_in_csv(ts, csv_timestamp_lookup):
             warnings.append(
                 f"Note: AI cited timestamp {ts} which could not be verified in the source data."
             )
 
-    for ref in cited_row_refs[:citation_spot_check_limit]:
+    for ref in _select_spot_checks(cited_row_refs, citation_spot_check_limit):
         if ref not in csv_row_refs:
             warnings.append(
                 f"Note: AI cited row {ref} which could not be verified in the source data."
             )
 
-    for cited_col in cited_columns[:citation_spot_check_limit]:
+    for cited_col in _select_spot_checks(cited_columns, citation_spot_check_limit):
         match_status, matched_header = match_column_name(cited_col, csv_columns)
         column_match_results.append({
             "cited": cited_col,

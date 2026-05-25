@@ -749,6 +749,30 @@ class TestBuildCrossImagePromptEdgeCases:
         )
         assert "No investigation context provided" in result
 
+    def test_metadata_table_escapes_pipes_and_newlines(self) -> None:
+        result = build_cross_image_prompt(
+            template="{{image_metadata_table}}",
+            investigation_context="ctx",
+            images=[
+                {
+                    "image_id": "img|1",
+                    "label": "Workstation\nOne",
+                    "metadata": {
+                        "hostname": "host|name",
+                        "os_version": "Windows\n11",
+                        "domain": "corp|local",
+                        "ips": "10.0.0.1\n10.0.0.2",
+                    },
+                }
+            ],
+            image_summaries={},
+        )
+        rows = result.splitlines()
+        assert len(rows) == 3
+        assert r"img\|1" in rows[2]
+        assert "Workstation One" in rows[2]
+        assert r"host\|name" in rows[2]
+
 
 class TestArtifactCsvPathsClearedBetweenImages:
     """Regression test for stale CSV paths leaking across image iterations.
@@ -809,6 +833,71 @@ class TestArtifactCsvPathsClearedBetweenImages:
         assert str(path1) != str(path2), (
             f"img2 used the same CSV path as img1: {path1}"
         )
+
+    def test_same_artifact_key_outputs_are_image_scoped(self, tmp_path: Path) -> None:
+        """Same-key artifacts across images produce distinct prompts, CSVs, and attachments."""
+        img1 = _make_image(tmp_path, "img1", "WS01", ["runkeys"])
+        img2 = _make_image(tmp_path, "img2", "SRV01", ["runkeys"])
+
+        class AttachmentTrackingProvider(FakeProvider):
+            def __init__(self) -> None:
+                super().__init__(responses=["a1", "a2", "s1", "s2", "cross"])
+                self.attachments: list[list[dict[str, str]]] = []
+
+            def analyze_with_attachments(
+                self,
+                system_prompt: str,
+                user_prompt: str,
+                attachments: list[dict[str, str]] | None,
+                max_tokens: int = 4096,
+            ) -> str:
+                self.attachments.append(list(attachments or []))
+                return self.analyze(system_prompt, user_prompt, max_tokens)
+
+        provider = AttachmentTrackingProvider()
+        analyzer = _build_analyzer(tmp_path)
+        analyzer.ai_provider = provider
+
+        analyzer.run_multi_image_analysis(
+            images=[img1, img2],
+            investigation_context="Test collision-safe outputs",
+        )
+
+        scoped_csvs = {
+            path.name for path in (tmp_path / "parsed_deduplicated").glob("*.csv")
+        }
+        assert {"img1__runkeys.csv", "img2__runkeys.csv"}.issubset(scoped_csvs)
+
+        prompt_names = {path.name for path in (tmp_path / "prompts").glob("*.md")}
+        assert "artifact_img1__runkeys.md" in prompt_names
+        assert "artifact_img2__runkeys.md" in prompt_names
+
+        attachment_names = {
+            attachment["name"]
+            for call in provider.attachments
+            for attachment in call
+        }
+        assert {"img1__runkeys.csv", "img2__runkeys.csv"} == attachment_names
+
+    def test_duplicate_image_ids_are_made_unique(self, tmp_path: Path) -> None:
+        """Duplicate descriptors do not overwrite image result entries."""
+        img1 = _make_image(tmp_path, "raw1", "WS01", ["runkeys"])
+        img2 = _make_image(tmp_path, "raw2", "SRV01", ["runkeys"])
+        img1["image_id"] = "duplicate"
+        img2["image_id"] = "duplicate"
+
+        provider = FakeProvider(responses=["a1", "a2", "s1", "s2", "cross"])
+        analyzer = _build_analyzer(tmp_path)
+        analyzer.ai_provider = provider
+
+        result = analyzer.run_multi_image_analysis(
+            images=[img1, img2],
+            investigation_context="Test duplicate IDs",
+        )
+
+        assert set(result["images"]) == {"duplicate", "duplicate_2"}
+        assert result["images"]["duplicate"]["label"] == "WS01"
+        assert result["images"]["duplicate_2"]["label"] == "SRV01"
 
 
 class TestWrapImageProgressCallback:

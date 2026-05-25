@@ -599,6 +599,86 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("InRange", runkeys_prompt)
         self.assertNotIn("OutOfRange", runkeys_prompt)
 
+    def test_date_filter_without_projection_writes_authoritative_attachment_csv(self) -> None:
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+
+            csv_path = temp_path / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "name"])
+                writer.writeheader()
+                writer.writerow({"ts": "2026-01-15T12:00:00+00:00", "name": "InRange"})
+                writer.writerow({"ts": "2025-11-30T12:00:00+00:00", "name": "OutOfRange"})
+
+            provider = FakeAttachmentProvider(
+                responses=["At 2025-11-30T12:00:00Z see row 2."]
+            )
+            with patch("app.analyzer.core.create_provider", return_value=provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=temp_dir,
+                    config={
+                        "ai": {"provider": "local"},
+                        "analysis": {"artifact_deduplication_enabled": False},
+                    },
+                    audit_logger=FakeAuditLogger(),
+                    artifact_csv_paths={"custom": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                analyzer.analysis_date_range = ("2026-01-01", "2026-01-31")
+                result = analyzer.analyze_artifact("custom", "Focus on January 2026.")
+
+            expected_path = temp_path / "parsed_deduplicated" / "custom.csv"
+            exists_before_cleanup = expected_path.exists()
+            written = expected_path.read_text(encoding="utf-8")
+
+        self.assertTrue(exists_before_cleanup)
+        self.assertIn("InRange", written)
+        self.assertNotIn("OutOfRange", written)
+        self.assertIn("row_ref,ts,name", written.splitlines()[0])
+        self.assertEqual(provider.attachments_calls[0][0]["path"], str(expected_path))
+        self.assertTrue(any("row 2" in warning for warning in result.get("citation_warnings", [])))
+
+    def test_date_filter_runs_before_projection_that_omits_timestamp(self) -> None:
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+
+            projection_path = temp_path / "artifact_ai_columns.yaml"
+            projection_path.write_text(
+                "artifact_ai_columns:\n  custom:\n    - name\n    - command\n",
+                encoding="utf-8",
+            )
+            csv_path = temp_path / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "name", "command"])
+                writer.writeheader()
+                writer.writerow({"ts": "2026-01-15T12:00:00+00:00", "name": "InRange", "command": "good.exe"})
+                writer.writerow({"ts": "2025-11-30T12:00:00+00:00", "name": "Old", "command": "old.exe"})
+                writer.writerow({"ts": "", "name": "NoTimestamp", "command": "mystery.exe"})
+
+            analyzer = ForensicAnalyzer(
+                case_dir=temp_dir,
+                config={
+                    "analysis": {
+                        "artifact_deduplication_enabled": False,
+                        "artifact_ai_columns_config_path": str(projection_path),
+                    }
+                },
+                artifact_csv_paths={"custom": csv_path},
+                prompts_dir=prompts_dir,
+            )
+            analyzer.analysis_date_range = ("2026-01-01", "2026-01-31")
+            prompt = analyzer._prepare_artifact_data("custom", "Focus on January 2026.")
+
+        self.assertIn("row_ref,name,command", prompt)
+        self.assertIn("InRange", prompt)
+        self.assertIn("NoTimestamp", prompt)
+        self.assertNotIn("old.exe", prompt)
+        self.assertIn("Start=2026-01-15T12:00:00", prompt)
+
     def test_init_loads_prompt_templates_and_creates_provider(self) -> None:
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             prompts_dir = Path(temp_dir) / "prompts"
@@ -1339,9 +1419,14 @@ class AnalyzerTests(unittest.TestCase):
 
         self.assertEqual(len(output["per_artifact"]), 2)
         self.assertTrue(output["per_artifact"][0]["analysis"].startswith("Analysis failed: provider-failure-"))
+        self.assertEqual(output["per_artifact"][0]["status"], "failed")
+        self.assertFalse(output["per_artifact"][0]["analysis_available"])
         self.assertEqual(output["per_artifact"][1]["analysis"], "tasks-analysis")
+        self.assertEqual(output["per_artifact"][1]["status"], "success")
         self.assertEqual(output["summary"], "summary-analysis")
         self.assertEqual(output["model_info"]["model"], "fake-model-1")
+        self.assertNotIn("Analysis failed:", fake_provider.calls[-1]["user_prompt"])
+        self.assertIn("Analysis Failures / Data Gaps", fake_provider.calls[-1]["user_prompt"])
         # Each artifact emits "started" + "complete" = 4 events for 2 artifacts
         self.assertEqual(len(progress_events), 4)
         self.assertEqual(progress_events[0][0], "runkeys")
