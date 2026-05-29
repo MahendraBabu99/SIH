@@ -6,6 +6,7 @@ existing evidence and parsing logic but operate on per-image directories
 managed by :class:`~app.case_manager.CaseManager`.
 
 Attributes:
+    LOGGER: Module-level logger for image route diagnostics.
     images_bp: Flask Blueprint for multi-image routes.
 """
 
@@ -161,7 +162,7 @@ def _rebuild_case_parse_state_from_images(case: dict[str, Any]) -> bool:
             continue
         parse_results = image_state.get("parse_results") or []
         csv_map = image_state.get("artifact_csv_paths") or {}
-        has_parsed = bool(parse_results or csv_map)
+        has_parsed = bool(csv_map)
         if not has_parsed:
             continue
         for entry in parse_results:
@@ -780,7 +781,11 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
     if not isinstance(payload, dict):
         return error_response("Request body must be a JSON object.", 400)
 
-    from .artifacts import extract_parse_selection_payload, validate_analysis_date_range
+    from .artifacts import (
+        extract_parse_selection_payload,
+        validate_analysis_date_range,
+        validate_requested_parse_artifacts,
+    )
 
     try:
         artifact_options, parse_artifacts, analysis_artifacts = extract_parse_selection_payload(payload)
@@ -789,6 +794,21 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
 
     if not parse_artifacts:
         return error_response("Provide at least one artifact key to parse.", 400)
+
+    with STATE_LOCK:
+        image_states = case.get("image_states", {})
+        img_state = image_states.get(image_id, {}) if isinstance(image_states, dict) else {}
+        available_artifacts = copy.deepcopy(img_state.get("available_artifacts", []))
+        os_type = str(img_state.get("os_type") or case.get("os_type") or "windows")
+    try:
+        validate_requested_parse_artifacts(
+            parse_artifacts,
+            available_artifacts,
+            os_type,
+            required_available_artifacts=analysis_artifacts,
+        )
+    except ValueError as error:
+        return error_response(str(error), 400)
 
     try:
         analysis_date_range = validate_analysis_date_range(payload.get("analysis_date_range"))
@@ -1086,6 +1106,36 @@ def _run_image_parse(
             img_state = image_states.setdefault(image_id, {})
             img_state["parse_results"] = results
             img_state["artifact_csv_paths"] = csv_map
+
+        completed = len(csv_map)
+        failed = len(results) - completed
+        if completed == 0:
+            user_message = "No requested artifacts produced usable parsed output."
+            with STATE_LOCK:
+                image_states = case.setdefault("image_states", {})
+                img_state = image_states.setdefault(image_id, {})
+                img_state["csv_output_dir"] = ""
+            aggregate_status = _finish_image_parse_progress(
+                case_id,
+                image_id,
+                "failed",
+                {
+                    "type": "parse_failed",
+                    "reason": "zero_success",
+                    "error": user_message,
+                    "total_artifacts": len(results),
+                    "successful_artifacts": 0,
+                    "failed_artifacts": failed,
+                },
+                error=user_message,
+            )
+            if aggregate_status is not None:
+                mark_case_status(case_id, "evidence_loaded")
+            return
+
+        with STATE_LOCK:
+            image_states = case.setdefault("image_states", {})
+            img_state = image_states.setdefault(image_id, {})
             img_state["csv_output_dir"] = parsed_dir
 
             # Merge artifacts across images into case-level lists for
@@ -1125,11 +1175,10 @@ def _run_image_parse(
             if not case.get("csv_output_dir"):
                 case["csv_output_dir"] = parsed_dir
 
-        completed = sum(1 for item in results if item.get("success"))
-        failed = len(results) - completed
         completion_event: dict[str, Any] = {
             "type": "parse_completed",
             "image_id": image_id,
+            "outcome": "full_success" if completed == len(results) else "partial_success",
             "total_artifacts": len(results),
             "successful_artifacts": completed,
             "failed_artifacts": failed,

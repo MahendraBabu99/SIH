@@ -19,6 +19,7 @@ Key responsibilities:
   rewritten once to ensure a consistent header row.
 
 Attributes:
+    logger: Module-level logger for parser diagnostics.
     UNKNOWN_VALUE: Sentinel string used when a target attribute cannot be read.
     EVTX_MAX_RECORDS_PER_FILE: Maximum rows per EVTX CSV part file.
     MAX_RECORDS_PER_ARTIFACT: Default cap on rows written for any single
@@ -273,6 +274,9 @@ class ForensicParser:
             Result dictionary with keys ``csv_path``, ``record_count``,
             ``duration_seconds``, ``success``, and ``error``.  EVTX
             results also include a ``csv_paths`` list.
+
+        Raises:
+            ParserCancelledError: If *cancel_check* requests cancellation.
         """
         registry = get_artifact_registry(self.os_type)
         artifact = registry.get(artifact_key)
@@ -358,16 +362,23 @@ class ForensicParser:
             return result
         except ParserCancelledError:
             self._cleanup_partial_csv_files(created_csv_paths, artifact_key)
-            self.audit_logger.log(
-                "parsing_cancelled",
-                {
-                    "artifact_key": artifact_key,
-                    "artifact_name": artifact.get("name", artifact_key),
-                    "function": function_name,
-                    "record_count": record_count,
-                    "duration_seconds": round(perf_counter() - start_time, 6),
-                },
-            )
+            try:
+                self.audit_logger.log(
+                    "parsing_cancelled",
+                    {
+                        "artifact_key": artifact_key,
+                        "artifact_name": artifact.get("name", artifact_key),
+                        "function": function_name,
+                        "record_count": record_count,
+                        "duration_seconds": round(perf_counter() - start_time, 6),
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to audit cancellation for artifact '%s'",
+                    artifact_key,
+                    exc_info=True,
+                )
             raise
         except UnsupportedPluginError:
             duration = perf_counter() - start_time

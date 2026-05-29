@@ -11,6 +11,7 @@ public names (``EWF_SEGMENT_RE``, ``SPLIT_RAW_SEGMENT_RE``,
 helpers) are re-exported here for backward compatibility.
 
 Attributes:
+    LOGGER: Module-level logger for evidence and CSV route diagnostics.
     evidence_bp: Flask Blueprint for evidence-related routes.
 """
 
@@ -195,7 +196,9 @@ def build_csv_map(parse_results: list[dict[str, Any]]) -> dict[str, str | list[s
 
     Split artifacts (e.g. EVTX) that produce multiple CSV files are
     represented as a ``list[str]`` value.  Single-file artifacts remain
-    a plain ``str`` so existing callers are unaffected.
+    a plain ``str`` so existing callers are unaffected.  Results that
+    explicitly report ``record_count`` as zero are skipped because they
+    did not produce usable parsed records.
 
     Args:
         parse_results: List of per-artifact parse result dicts.
@@ -209,6 +212,13 @@ def build_csv_map(parse_results: list[dict[str, Any]]) -> dict[str, str | list[s
         artifact = str(result.get("artifact_key", "")).strip()
         if not artifact or not result.get("success"):
             continue
+        if "record_count" in result:
+            try:
+                record_count = int(result.get("record_count", 0))
+            except (TypeError, ValueError):
+                record_count = 0
+            if record_count <= 0:
+                continue
         csv_paths = result.get("csv_paths")
         if isinstance(csv_paths, list) and csv_paths:
             non_empty = [str(p) for p in csv_paths if str(p).strip()]

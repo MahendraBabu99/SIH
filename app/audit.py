@@ -15,6 +15,8 @@ The audit log is designed for forensic defensibility:
 * Tool and Dissect versions are embedded in every record.
 
 Attributes:
+    _FILE_LOCKS: Registry of per-audit-file locks keyed by resolved path.
+    _FILE_LOCKS_GUARD: Lock protecting updates to :data:`_FILE_LOCKS`.
     ACTION_TYPES: Closed set of valid action strings accepted by
         :meth:`AuditLogger.log`.
     DEFAULT_TOOL_VERSION: Version string embedded in audit records when
@@ -67,6 +69,7 @@ ACTION_TYPES = frozenset(
         "parsing_started",
         "parsing_completed",
         "parsing_failed",
+        "parsing_cancelled",
         "parsing_capped",
         "analysis_started",
         "analysis_completed",
@@ -97,12 +100,21 @@ DEFAULT_TOOL_VERSION = TOOL_VERSION
 
 
 def _utc_now_iso8601_ms() -> str:
-    """Return UTC timestamp in ISO 8601 format with millisecond precision."""
+    """Return UTC timestamp in ISO 8601 format with millisecond precision.
+
+    Returns:
+        UTC timestamp ending in ``"Z"`` with millisecond precision.
+    """
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _resolve_dissect_version() -> str:
-    """Best-effort detection of the installed Dissect version."""
+    """Detect the installed Dissect version on a best-effort basis.
+
+    Returns:
+        Installed package version for ``dissect`` or ``dissect.target``, or
+        ``"unknown"`` when neither package can be resolved.
+    """
     for pkg in ("dissect", "dissect.target"):
         try:
             return metadata.version(pkg)
@@ -112,7 +124,14 @@ def _resolve_dissect_version() -> str:
 
 
 def _json_default(value: Any) -> str:
-    """Best-effort conversion for non-JSON-native audit detail values."""
+    """Convert non-JSON-native audit detail values to strings.
+
+    Args:
+        value: Object that ``json.dumps`` could not serialize directly.
+
+    Returns:
+        String representation suitable for audit JSON output.
+    """
     if isinstance(value, (datetime, date, time)):
         return value.isoformat()
     if isinstance(value, Path):

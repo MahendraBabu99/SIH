@@ -5,12 +5,15 @@ and report generation — without Flask or a browser.  This module is the
 shared core used by both the REST API endpoint and the CLI tool.
 
 Attributes:
+    LOGGER: Module-level logger for automation diagnostics.
     PROFILE_DIR_NAME: Subdirectory name for artifact profiles.
     DEFAULT_PROFILE_NAME: Fallback profile when none specified.
+    _PROJECT_ROOT: Resolved project root used for case and profile paths.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import shutil
@@ -36,7 +39,8 @@ from app.hasher import (
     verify_hash,
     verify_hashes_for_report,
 )
-from app.parser.core import ForensicParser
+from app.parser.core import ForensicParser, ParserCancelledError
+from app.parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
 from app.reporter.generator import ReportGenerator
 from app.artifact_profiles import (
     artifact_options_to_lists,
@@ -300,6 +304,138 @@ def _available_artifact_keys(available_artifacts: list[dict[str, Any]]) -> set[s
     return keys
 
 
+def _validate_profile_artifact_keys(
+    parse_artifacts: list[str],
+    analysis_artifacts: list[str],
+) -> list[str]:
+    """Return validation errors for profile artifact keys unknown to AIFT.
+
+    Args:
+        parse_artifacts: Artifact keys selected for parser execution.
+        analysis_artifacts: Artifact keys selected for AI analysis.
+
+    Returns:
+        List of human-readable validation error strings.
+    """
+    known_keys = set(WINDOWS_ARTIFACT_REGISTRY) | set(LINUX_ARTIFACT_REGISTRY)
+    requested = list(dict.fromkeys([*parse_artifacts, *analysis_artifacts]))
+    unknown = [artifact for artifact in requested if artifact not in known_keys]
+    if not unknown:
+        return []
+    return [f"Unknown artifact key(s) in selected profile: {', '.join(unknown)}."]
+
+
+def _callable_accepts_keyword(callable_obj: Any, keyword: str) -> bool:
+    """Return whether a callable accepts a specific keyword argument.
+
+    Args:
+        callable_obj: Callable object to inspect.
+        keyword: Keyword argument name to check.
+
+    Returns:
+        ``True`` if the callable accepts the keyword directly or via
+        ``**kwargs``.
+    """
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters
+
+
+def _parse_result_has_usable_output(parse_result: dict[str, Any]) -> bool:
+    """Return whether a parser result contains usable parsed records.
+
+    Args:
+        parse_result: Result dictionary returned by
+            :meth:`ForensicParser.parse_artifact`.
+
+    Returns:
+        ``True`` when the result succeeded, includes at least one record
+        when ``record_count`` is present, and reports one or more CSV paths.
+    """
+    if not parse_result.get("success"):
+        return False
+    if "record_count" in parse_result:
+        try:
+            if int(parse_result.get("record_count", 0)) <= 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    csv_paths = parse_result.get("csv_paths")
+    if isinstance(csv_paths, list) and any(str(path).strip() for path in csv_paths):
+        return True
+    return bool(str(parse_result.get("csv_path", "")).strip())
+
+
+def _extract_parser_record_count(args: tuple[Any, ...]) -> int:
+    """Extract a parser progress record count from callback arguments.
+
+    Args:
+        args: Positional arguments received by an automation parser
+            progress callback.
+
+    Returns:
+        Parsed record count, or ``0`` when no count is available.
+    """
+    value: Any = 0
+    if len(args) == 1 and isinstance(args[0], dict):
+        value = args[0].get("record_count", 0)
+    elif len(args) >= 2:
+        value = args[1]
+    elif args:
+        value = args[0]
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_artifact_for_automation(
+    parser: ForensicParser,
+    artifact_key: str,
+    img_label: str,
+    progress_callback: Callable[[str, str, float], None] | None,
+    cancel_check: Callable[[], bool] | None,
+    percentage: float,
+) -> dict[str, Any]:
+    """Parse one artifact with automation progress and cancellation wiring.
+
+    Args:
+        parser: Open parser instance.
+        artifact_key: Artifact key to parse.
+        img_label: Human-readable image label for progress messages.
+        progress_callback: Optional automation progress callback.
+        cancel_check: Optional cancellation probe.
+        percentage: Current parsing phase percentage.
+
+    Returns:
+        Parser result dictionary.
+
+    Raises:
+        ParserCancelledError: If parser cancellation is requested.
+        Exception: Any parser error raised by the underlying implementation.
+    """
+
+    def _parser_progress(*args: Any, **_kwargs: Any) -> None:
+        """Forward parser record progress to the automation callback."""
+        record_count = _extract_parser_record_count(args)
+        _notify(
+            progress_callback,
+            "parsing",
+            f"Parsing {artifact_key} from {img_label}: {record_count:,} records...",
+            percentage,
+        )
+
+    parse_kwargs: dict[str, Any] = {"progress_callback": _parser_progress}
+    if _callable_accepts_keyword(parser.parse_artifact, "cancel_check"):
+        parse_kwargs["cancel_check"] = cancel_check
+    return parser.parse_artifact(artifact_key, **parse_kwargs)
+
+
 def _read_audit_log(case_dir: Path) -> list[dict[str, Any]]:
     """Read and parse the case audit.jsonl file into a list of dicts.
 
@@ -550,7 +686,7 @@ def run_automation(
     cancellation was requested, or an event-like object exposing
     ``is_set()``.  Cancellation is checked between major phases and between
     per-image/per-artifact work items, and is passed through to analyzer
-    calls.
+    and parser calls.
 
     Error handling:
 
@@ -580,6 +716,12 @@ def run_automation(
     audit_logger: AuditLogger | None = None
 
     def _stop_if_cancelled() -> AutomationResult | None:
+        """Return a cancelled result when the shared probe is set.
+
+        Returns:
+            Cancelled automation result, or ``None`` when execution should
+            continue.
+        """
         if safe_cancel_check is not None and safe_cancel_check():
             return _cancelled_result(result, start_time, audit_logger)
         return None
@@ -636,6 +778,14 @@ def run_automation(
         request.profile_name
     )
     result.warnings.extend(profile_warnings)
+    profile_errors = _validate_profile_artifact_keys(
+        parse_artifacts,
+        analysis_artifacts,
+    )
+    if profile_errors:
+        result.errors.extend(profile_errors)
+        result.duration_seconds = time.monotonic() - start_time
+        return result
 
     if not parse_artifacts:
         result.errors.append("No artifacts to parse after profile resolution.")
@@ -851,15 +1001,35 @@ def run_automation(
                         return cancelled
 
                     try:
-                        parse_result = parser.parse_artifact(artifact_key)
-                        if (
-                            parse_result.get("success")
-                            and parse_result.get("csv_path")
-                        ):
+                        parse_result = _parse_artifact_for_automation(
+                            parser=parser,
+                            artifact_key=artifact_key,
+                            img_label=img_label,
+                            progress_callback=progress_callback,
+                            cancel_check=safe_cancel_check,
+                            percentage=pct,
+                        )
+                        if _parse_result_has_usable_output(parse_result):
                             csv_paths[artifact_key] = parse_result["csv_path"]
                             # Handle EVTX multi-part CSVs.
                             if parse_result.get("csv_paths"):
                                 csv_paths[artifact_key] = parse_result["csv_paths"]
+                        else:
+                            msg = (
+                                f"Parse produced no usable output for "
+                                f"{artifact_key} on {img_label}."
+                            )
+                            if parse_result.get("error"):
+                                msg = f"{msg} {parse_result.get('error')}"
+                            LOGGER.warning(msg)
+                            result.warnings.append(msg)
+                    except ParserCancelledError:
+                        LOGGER.info(
+                            "Automation parsing cancelled during %s on %s",
+                            artifact_key,
+                            img_label,
+                        )
+                        return _cancelled_result(result, start_time, audit_logger)
                     except Exception as exc:
                         msg = (
                             f"Parse failed for {artifact_key} on {img_label}: {exc}"
@@ -872,10 +1042,21 @@ def run_automation(
                         return cancelled
 
                 if not csv_paths:
-                    msg = f"All artifact parsing failed for {img_label}."
+                    msg = (
+                        f"All artifact parsing failed for {img_label}; "
+                        "no usable artifact output was produced."
+                    )
                     LOGGER.warning(msg)
                     result.warnings.append(msg)
                     continue
+                if len(csv_paths) < len(image_parse):
+                    msg = (
+                        f"Partial artifact parsing for {img_label}: "
+                        f"{len(csv_paths)}/{len(image_parse)} artifacts "
+                        "produced usable output."
+                    )
+                    LOGGER.warning(msg)
+                    result.warnings.append(msg)
 
                 successful_images += 1
                 all_metadata.append(metadata)
@@ -884,7 +1065,11 @@ def run_automation(
                     "image_id": image_id,
                     "label": img_label,
                     "metadata": metadata,
-                    "artifact_keys": image_analysis,
+                    "artifact_keys": [
+                        artifact_key
+                        for artifact_key in image_analysis
+                        if artifact_key in csv_paths
+                    ],
                     "parsed_dir": str(parsed_dir),
                     "os_type": os_type,
                     "csv_paths": csv_paths,
@@ -908,6 +1093,9 @@ def run_automation(
                         ),
                     },
                 })
+        except ParserCancelledError:
+            LOGGER.info("Automation parsing cancelled while processing %s", img_label)
+            return _cancelled_result(result, start_time, audit_logger)
         except Exception as exc:
             msg = f"Failed to open evidence {img_label}: {exc}"
             LOGGER.warning(msg)

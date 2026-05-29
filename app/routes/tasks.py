@@ -14,6 +14,9 @@ re-exported here for backward compatibility.
 Each runner emits SSE progress events through the shared progress stores
 defined in :mod:`routes_state` and uses a case-log-context wrapper to
 ensure log messages are tagged with the case ID.
+
+Attributes:
+    LOGGER: Module-level logger for background task diagnostics.
 """
 
 from __future__ import annotations
@@ -201,6 +204,30 @@ def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
     return keyword in signature.parameters
 
 
+def _parse_result_has_usable_output(result: dict[str, Any]) -> bool:
+    """Return whether a parser result produced records and CSV output.
+
+    Args:
+        result: Parser result dictionary returned by ``parse_artifact``.
+
+    Returns:
+        ``True`` when the result succeeded, reported at least one record
+        when ``record_count`` is present, and includes a CSV path.
+    """
+    if not result.get("success"):
+        return False
+    if "record_count" in result:
+        try:
+            if int(result.get("record_count", 0)) <= 0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    csv_paths = result.get("csv_paths")
+    if isinstance(csv_paths, list) and any(str(path).strip() for path in csv_paths):
+        return True
+    return bool(str(result.get("csv_path", "")).strip())
+
+
 # ---------------------------------------------------------------------------
 # Shared parse loop
 # ---------------------------------------------------------------------------
@@ -308,12 +335,13 @@ def run_parse_loop(
             result_entry = {"artifact_key": artifact, **result}
             results.append(result_entry)
 
+            usable_output = _parse_result_has_usable_output(result)
             emit_progress(
                 PARSE_PROGRESS, progress_key,
                 {
                     "type": (
                         "artifact_completed"
-                        if result.get("success")
+                        if usable_output
                         else "artifact_failed"
                     ),
                     "artifact_key": artifact,
@@ -322,7 +350,11 @@ def run_parse_loop(
                         result.get("duration_seconds", 0.0),
                     ),
                     "csv_path": str(result.get("csv_path", "")),
-                    "error": result.get("error"),
+                    "error": (
+                        result.get("error")
+                        if usable_output
+                        else result.get("error") or "No usable parsed output."
+                    ),
                 },
             )
 
@@ -400,13 +432,35 @@ def run_parse(
             case["artifact_csv_paths"] = csv_map
             case["csv_output_dir"] = str(csv_output_dir)
 
-        completed = sum(1 for item in results if item.get("success"))
+        completed = len(csv_map)
         failed = len(results) - completed
+        if completed == 0:
+            message = "No requested artifacts produced usable parsed output."
+            with STATE_LOCK:
+                case["artifact_csv_paths"] = {}
+                case["csv_output_dir"] = ""
+            mark_case_status(case_id, "evidence_loaded")
+            set_progress_status(PARSE_PROGRESS, case_id, "failed", message)
+            emit_progress(
+                PARSE_PROGRESS, case_id,
+                {
+                    "type": "parse_failed",
+                    "reason": "zero_success",
+                    "error": message,
+                    "total_artifacts": len(results),
+                    "successful_artifacts": 0,
+                    "failed_artifacts": failed,
+                },
+            )
+            return
+
+        outcome = "full_success" if completed == len(results) else "partial_success"
         set_progress_status(PARSE_PROGRESS, case_id, "completed")
         emit_progress(
             PARSE_PROGRESS, case_id,
             {
                 "type": "parse_completed",
+                "outcome": outcome,
                 "total_artifacts": len(results),
                 "successful_artifacts": completed,
                 "failed_artifacts": failed,

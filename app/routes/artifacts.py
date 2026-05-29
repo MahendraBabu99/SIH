@@ -13,6 +13,7 @@ Attributes:
     PROFILE_FILE_SUFFIX: File extension for profile files.
     RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS: Artifacts excluded from the
         recommended profile.
+    LOGGER: Module-level logger for artifact route diagnostics.
     artifact_bp: Flask Blueprint for artifact and parse routes.
 """
 
@@ -51,6 +52,11 @@ from ..artifact_profiles import (
     _load_profile_file,
     _recommended_artifact_options,
     _recommended_profile_payload,
+)
+from ..parser.registry import (
+    LINUX_ARTIFACT_REGISTRY,
+    WINDOWS_ARTIFACT_REGISTRY,
+    get_artifact_registry,
 )
 from .state import (
     PARSE_PROGRESS,
@@ -100,6 +106,87 @@ LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 artifact_bp = Blueprint("artifacts", __name__)
+
+
+def _available_artifact_key_sets(
+    available_artifacts: Any,
+) -> tuple[set[str], set[str]]:
+    """Extract known and currently available artifact keys from route state.
+
+    Args:
+        available_artifacts: Case or image ``available_artifacts`` payload.
+
+    Returns:
+        Tuple of ``(known_keys, available_keys)``.  ``known_keys`` includes
+        keys present in the payload regardless of availability.
+    """
+    known_keys: set[str] = set()
+    available_keys: set[str] = set()
+    if not isinstance(available_artifacts, list):
+        return known_keys, available_keys
+
+    for item in available_artifacts:
+        if not isinstance(item, dict):
+            continue
+        for key_field in ("key", "artifact_key"):
+            artifact_key = str(item.get(key_field, "")).strip()
+            if artifact_key:
+                known_keys.add(artifact_key)
+                if item.get("available"):
+                    available_keys.add(artifact_key)
+    return known_keys, available_keys
+
+
+def validate_requested_parse_artifacts(
+    parse_artifacts: list[str],
+    available_artifacts: Any,
+    os_type: str,
+    required_available_artifacts: list[str] | None = None,
+) -> None:
+    """Validate artifact keys before a parse worker is started.
+
+    Args:
+        parse_artifacts: Artifact keys requested by the client.
+        available_artifacts: Availability payload captured during evidence
+            intake.
+        os_type: Detected operating system type for registry lookup.
+        required_available_artifacts: Artifact keys that must be available
+            because they feed downstream AI.  Defaults to *parse_artifacts*.
+
+    Raises:
+        ValueError: If a requested key is unknown or unavailable for the
+            current evidence image.
+    """
+    payload_known_keys, available_keys = _available_artifact_key_sets(
+        available_artifacts,
+    )
+    supported_keys = set(WINDOWS_ARTIFACT_REGISTRY) | set(LINUX_ARTIFACT_REGISTRY)
+    known_keys = set(get_artifact_registry(os_type)) | (
+        payload_known_keys & supported_keys
+    )
+
+    unknown = [key for key in parse_artifacts if key not in known_keys]
+    if unknown:
+        joined = ", ".join(unknown)
+        raise ValueError(f"Unknown artifact key(s): {joined}.")
+
+    if payload_known_keys:
+        availability_required = (
+            required_available_artifacts
+            if required_available_artifacts is not None
+            else parse_artifacts
+        )
+        unsupported = [
+            key
+            for key in availability_required
+            if key in payload_known_keys and key not in available_keys
+        ]
+        if unsupported:
+            joined = ", ".join(unsupported)
+            raise ValueError(
+                "Unsupported artifact key(s) for this evidence image: "
+                f"{joined}."
+            )
 
 
 def _purge_stale_parsed_data(case_dir: Path, prev_csv_output_dir: str) -> None:
@@ -180,6 +267,18 @@ def start_parse(case_id: str) -> tuple[Response, int]:
 
     if not parse_artifacts:
         return error_response("Provide at least one artifact key to parse.", 400)
+    with STATE_LOCK:
+        available_artifacts = copy.deepcopy(case.get("available_artifacts", []))
+        os_type = str(case.get("os_type") or "windows")
+    try:
+        validate_requested_parse_artifacts(
+            parse_artifacts,
+            available_artifacts,
+            os_type,
+            required_available_artifacts=analysis_artifacts,
+        )
+    except ValueError as error:
+        return error_response(str(error), 400)
     try:
         analysis_date_range = validate_analysis_date_range(payload.get("analysis_date_range"))
     except ValueError as error:
