@@ -125,7 +125,8 @@ class ForensicAnalyzer:
                 method.
             artifact_csv_paths: Mapping of artifact keys to CSV paths.
             prompts_dir: Directory containing prompt template files.
-            random_seed: Optional seed for the internal RNG.
+            random_seed: Retained for compatibility; artifact data is no
+                longer sampled.
             os_type: Detected operating system type (``"windows"``,
                 ``"linux"``, etc.).  Controls which artifact instruction
                 prompts are loaded.
@@ -155,9 +156,6 @@ class ForensicAnalyzer:
         self.analysis_date_range: tuple[str, str] | None = None
         self.prompts_dir = Path(prompts_dir) if prompts_dir is not None else PROJECT_ROOT / "prompts"
         self.os_type = normalize_os_type(os_type)
-        import random
-        self._random_seed = random_seed
-        self._random = random.Random(random_seed)
         self._load_analysis_settings()
         self.artifact_ai_column_projections = self._load_artifact_ai_column_projections()
         self.system_prompt = self._load_prompt_template("system_prompt.md", default=DEFAULT_SYSTEM_PROMPT)
@@ -847,8 +845,6 @@ class ForensicAnalyzer:
             audit_log_fn=self._audit_log,
             date_range=self.analysis_date_range,
             host_metadata=getattr(self, "_host_metadata", None),
-            rng=self._random,
-            random_seed=self._random_seed,
             analysis_scope_id=self._current_analysis_scope_id() or None,
         )
         self._set_analysis_input_csv_path(artifact_key=artifact_key, csv_path=analysis_csv_path)

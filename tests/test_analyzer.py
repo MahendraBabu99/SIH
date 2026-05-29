@@ -186,6 +186,39 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("{{artifact_name}}", filled_prompt)
         self.assertNotIn("{{data_csv}}", filled_prompt)
 
+    def test_prepare_artifact_data_does_not_sample_large_csv(self) -> None:
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+
+            csv_path = temp_path / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["name", "command"])
+                writer.writeheader()
+                for index in range(1, 801):
+                    writer.writerow(
+                        {
+                            "name": f"Entry{index}",
+                            "command": fr"C:\Tools\tool_{index}.exe",
+                        }
+                    )
+
+            analyzer = ForensicAnalyzer(
+                config={"analysis": {"artifact_deduplication_enabled": False}},
+                artifact_csv_paths={"custom": csv_path},
+                prompts_dir=prompts_dir,
+            )
+            filled_prompt = analyzer._prepare_artifact_data(
+                artifact_key="custom",
+                investigation_context="Review every row.",
+            )
+
+        self.assertIn("Total=800", filled_prompt)
+        self.assertIn("Entry1", filled_prompt)
+        self.assertIn("Entry700", filled_prompt)
+        self.assertIn("Entry800", filled_prompt)
+
     def test_prepare_artifact_data_includes_priority_directives_and_ioc_targets(self) -> None:
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)

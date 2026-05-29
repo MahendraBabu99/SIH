@@ -1,9 +1,8 @@
 """Data preparation pipeline for forensic artifact analysis.
 
 Handles date extraction from investigation context, CSV reading,
-column projection, deduplication, date filtering, anomaly flagging,
-sampling, statistics computation, and final prompt assembly for
-AI analysis.
+column projection, deduplication, date filtering, statistics computation,
+and final prompt assembly for AI analysis.
 
 Attributes:
     LOGGER: Module-level logger instance.
@@ -14,7 +13,6 @@ from __future__ import annotations
 import csv
 import io
 import logging
-import random
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -60,8 +58,6 @@ __all__ = [
     "deduplicate_rows_for_analysis",
     "build_full_data_csv",
     "_filter_by_date_range",
-    "_flag_anomalous_rows",
-    "_sample_rows",
 ]
 
 
@@ -290,7 +286,7 @@ def deduplicate_rows_for_analysis(
 
 
 # ---------------------------------------------------------------------------
-# Data feeding: date filtering, anomaly flagging, and sampling
+# Data feeding: date filtering
 # ---------------------------------------------------------------------------
 
 
@@ -350,125 +346,6 @@ def _filter_by_date_range(
         len(rows), len(filtered), start_str, end_str, buffer_days,
     )
     return filtered
-
-
-def _flag_anomalous_rows(
-    rows: list[dict[str, str]],
-    threshold: float = 0.01,
-) -> list[bool]:
-    """Flag rows containing statistically rare column values.
-
-    A row is flagged as anomalous if any of its cell values appears in
-    fewer than ``threshold`` fraction of all rows for that column.  This
-    is a simple frequency-based anomaly detector that highlights
-    potentially interesting records for the AI.
-
-    Args:
-        rows: List of row dicts to evaluate.
-        threshold: Fraction below which a value count is considered rare.
-            Defaults to 0.01 (1%).
-
-    Returns:
-        A list of booleans parallel to ``rows``, where ``True`` means
-        the row is flagged as anomalous.
-    """
-    if not rows:
-        return []
-
-    total = len(rows)
-    min_count = max(1, int(total * threshold))
-
-    # Build per-column frequency counts (union of all row keys for heterogeneous schemas).
-    all_keys: set[str] = set()
-    for row in rows:
-        all_keys.update(row.keys())
-    columns = [c for c in all_keys if c not in ("_row_ref", DEDUP_COMMENT_COLUMN)]
-    counters: dict[str, Counter[str]] = {col: Counter() for col in columns}
-    for row in rows:
-        for col in columns:
-            val = row.get(col, "").strip()
-            if val:
-                counters[col][val] += 1
-
-    # Build per-column sets of rare values for fast lookup.
-    rare_values: dict[str, set[str]] = {}
-    for col, counter in counters.items():
-        rare_values[col] = {val for val, cnt in counter.items() if cnt <= min_count}
-
-    flags: list[bool] = []
-    for row in rows:
-        flagged = False
-        for col in columns:
-            val = row.get(col, "").strip()
-            if val and val in rare_values.get(col, set()):
-                flagged = True
-                break
-        flags.append(flagged)
-
-    flagged_count = sum(flags)
-    LOGGER.debug(
-        "Anomaly flagging: %d of %d rows flagged (threshold=%.3f)",
-        flagged_count, total, threshold,
-    )
-    return flags
-
-
-def _sample_rows(
-    rows: list[dict[str, str]],
-    max_flagged: int = 500,
-    max_normal: int = 200,
-    rng: random.Random | None = None,
-) -> list[dict[str, str]]:
-    """Down-sample rows using anomaly flags to prioritize interesting data.
-
-    If the total number of rows is at most ``max_flagged + max_normal``,
-    all rows are returned unchanged.  Otherwise, anomalous rows are
-    prioritized (up to ``max_flagged``), supplemented by a random sample
-    of normal rows (up to ``max_normal``).
-
-    Args:
-        rows: List of row dicts to sample from.
-        max_flagged: Maximum number of anomaly-flagged rows to keep.
-        max_normal: Maximum number of non-flagged rows to keep.
-        rng: Optional random number generator.  When omitted, a local
-            deterministic generator is used so sampling is reproducible.
-
-    Returns:
-        A sampled list of row dicts, preserving original row order.
-    """
-    max_total = max_flagged + max_normal
-    if len(rows) <= max_total:
-        return list(rows)
-
-    flags = _flag_anomalous_rows(rows)
-
-    flagged_indices: list[int] = []
-    normal_indices: list[int] = []
-    for idx, is_flagged in enumerate(flags):
-        if is_flagged:
-            flagged_indices.append(idx)
-        else:
-            normal_indices.append(idx)
-
-    sampler = rng if rng is not None else random.Random(0)
-
-    # Cap flagged rows.
-    if len(flagged_indices) > max_flagged:
-        flagged_indices = sampler.sample(flagged_indices, max_flagged)
-
-    # Cap normal rows.
-    if len(normal_indices) > max_normal:
-        normal_indices = sampler.sample(normal_indices, max_normal)
-
-    # Merge and sort to preserve original row order.
-    selected = sorted(set(flagged_indices) | set(normal_indices))
-    sampled = [rows[i] for i in selected]
-
-    LOGGER.debug(
-        "Sampling: %d -> %d rows (%d flagged, %d normal)",
-        len(rows), len(sampled), len(flagged_indices), len(normal_indices),
-    )
-    return sampled
 
 
 # ---------------------------------------------------------------------------
@@ -623,22 +500,18 @@ def prepare_artifact_data(
     audit_log_fn: Any = None,
     date_range: tuple[str, str] | None = None,
     host_metadata: Mapping[str, Any] | None = None,
-    rng: random.Random | None = None,
-    random_seed: int | None = None,
     analysis_scope_id: str | None = None,
 ) -> tuple[str, Path, list[str]]:
     """Prepare one artifact CSV as an analysis-ready prompt.
 
     Reads the full artifact CSV, applies column projection,
-    deduplication, date filtering, anomaly-based sampling, and
-    statistics computation.  Fills the appropriate prompt template
-    with all gathered data.
+    deduplication, date filtering, and statistics computation.  Fills
+    the appropriate prompt template with all gathered data.
 
     When ``date_range`` is provided, rows outside the range (with a
-    7-day buffer) are excluded.  Large datasets are then down-sampled
-    using anomaly flagging: up to 500 flagged rows and 200 random
-    normal rows are kept, reducing prompt size while preserving
-    forensically interesting records.
+    7-day buffer) are excluded.  Large datasets are kept intact here
+    and handled later by row-boundary chunking if the prompt exceeds
+    the model input budget.
 
     Args:
         artifact_key: Unique identifier for the artifact.
@@ -658,9 +531,6 @@ def prepare_artifact_data(
             for date-based row filtering.  ``None`` skips date filtering.
         host_metadata: Optional host metadata mapping with ``hostname``,
             ``domain``, and ``ips`` keys for populating prompt context.
-        rng: Optional random number generator for deterministic sampling.
-        random_seed: Optional seed value recorded in audit metadata when
-            sampling occurs.
         analysis_scope_id: Optional image/scope identifier for collision-safe
             analysis-input CSV output.
 
@@ -705,9 +575,6 @@ def prepare_artifact_data(
             deduplicate_rows_for_analysis(rows=analysis_rows, columns=analysis_columns)
         )
 
-    pre_sample_count = len(analysis_rows)
-    analysis_rows = _sample_rows(rows=analysis_rows, rng=rng)
-    sampled_away_count = pre_sample_count - len(analysis_rows)
     source_rows_by_ref = {row.get("_row_ref", ""): row for row in filtered_rows}
     source_rows_for_analysis = [
         source_rows_by_ref.get(row.get("_row_ref", ""), row)
@@ -719,7 +586,6 @@ def prepare_artifact_data(
         projection_applied
         or artifact_deduplication_enabled
         or date_filtered_count
-        or sampled_away_count
     )
     if transformed_for_analysis:
         try:
@@ -734,7 +600,7 @@ def prepare_artifact_data(
             analysis_csv_path = csv_path
             dedup_write_error = str(error)
 
-    if (date_filtered_count or sampled_away_count) and audit_log_fn is not None:
+    if date_filtered_count and audit_log_fn is not None:
         feed_details: dict[str, Any] = {
             "artifact_key": artifact_key,
             "source_csv": str(csv_path),
@@ -742,10 +608,6 @@ def prepare_artifact_data(
             "rows_before_date_filter": pre_filter_count,
             "rows_removed_by_date_filter": date_filtered_count,
             "rows_after_date_filter": len(filtered_rows),
-            "rows_before_sampling": pre_sample_count,
-            "rows_removed_by_sampling": sampled_away_count,
-            "rows_after_sampling": len(analysis_rows),
-            "sampling_seed": random_seed if random_seed is not None else "deterministic-default",
         }
         if dedup_write_error:
             feed_details["write_error"] = dedup_write_error
