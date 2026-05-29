@@ -51,6 +51,7 @@ from .prompts import (
     resolve_artifact_ai_columns_config_path,
 )
 from .utils import (
+    build_scoped_artifact_stem,
     build_datetime, coerce_projection_columns, emit_analysis_progress,
     estimate_tokens, is_dedup_safe_identifier_column, normalize_artifact_key,
     normalize_os_type, read_bool_setting, read_int_setting, read_path_setting,
@@ -238,7 +239,16 @@ class ForensicAnalyzer:
         user_prompt: str,
         attachments: list[Mapping[str, str]] | None,
     ) -> int | None:
-        """Estimate the provider fallback prompt when attachments are inlined."""
+        """Estimate the provider fallback prompt when attachments are inlined.
+
+        Args:
+            user_prompt: Prompt text before any attachment fallback.
+            attachments: Optional CSV attachment descriptors.
+
+        Returns:
+            Estimated prompt token count when attachments would be
+            inlined, or ``None`` when no inlining would occur.
+        """
         inlined_prompt, was_inlined = _inline_attachment_data_into_prompt(user_prompt, attachments)
         if not was_inlined:
             return None
@@ -409,16 +419,27 @@ class ForensicAnalyzer:
             self.logger.warning("Failed to save prompt to %s", prompts_dir / filename)
 
     def _current_analysis_scope_id(self) -> str:
-        """Return the active analysis scope ID, if any."""
+        """Return the active analysis scope ID, if any.
+
+        Returns:
+            The current analysis scope ID, or an empty string when the
+            analyzer is running without an image scope.
+        """
         return str(getattr(self, "_analysis_scope_id", "") or "").strip()
 
     def _scoped_artifact_filename_stem(self, artifact_key: str) -> str:
-        """Build a collision-safe filename stem for the current scope."""
-        safe_key = sanitize_filename(artifact_key)
-        scope_id = self._current_analysis_scope_id()
-        if not scope_id:
-            return safe_key
-        return f"{sanitize_filename(scope_id)}__{safe_key}"
+        """Build a collision-safe filename stem for the current scope.
+
+        Args:
+            artifact_key: Artifact identifier.
+
+        Returns:
+            Filename-safe stem scoped to the active image when present.
+        """
+        return build_scoped_artifact_stem(
+            self._current_analysis_scope_id() or None,
+            artifact_key,
+        )
 
     # ------------------------------------------------------------------
     # Delegation methods — thin wrappers for backward compatibility.
@@ -427,7 +448,14 @@ class ForensicAnalyzer:
     # ------------------------------------------------------------------
 
     def _estimate_tokens(self, text: str) -> int:
-        """Estimate the token count of *text* using model-specific info."""
+        """Estimate the token count of text using model-specific info.
+
+        Args:
+            text: Text to estimate.
+
+        Returns:
+            Approximate token count for the analyzer's current model.
+        """
         return estimate_tokens(text, model_info=self.model_info)
 
     # These are also exposed as staticmethods on the class (see above)
@@ -672,8 +700,10 @@ class ForensicAnalyzer:
         if scope_id:
             scoped_key = f"{scope_id}::{artifact_key}"
             scoped_normalized = f"{scope_id}::{normalized}"
+            scoped_stem = build_scoped_artifact_stem(scope_id, artifact_key)
             self._analysis_input_csv_paths[scoped_key] = csv_path
             self._analysis_input_csv_paths[scoped_normalized] = csv_path
+            self._analysis_input_csv_paths[scoped_stem] = csv_path
             return
         self._analysis_input_csv_paths[artifact_key] = csv_path
         self._analysis_input_csv_paths[normalized] = csv_path
@@ -695,6 +725,11 @@ class ForensicAnalyzer:
             if mapped is not None:
                 return mapped
             mapped = self._analysis_input_csv_paths.get(f"{scope_id}::{normalized}")
+            if mapped is not None:
+                return mapped
+            mapped = self._analysis_input_csv_paths.get(
+                build_scoped_artifact_stem(scope_id, artifact_key)
+            )
             if mapped is not None:
                 return mapped
 
@@ -934,7 +969,8 @@ class ForensicAnalyzer:
                 )
                 if progress_callback is not None:
                     emit_analysis_progress(progress_callback, artifact_key, "started", {
-                        "artifact_key": artifact_key, "artifact_name": artifact_name, "model": model,
+                        "artifact_key": artifact_key, "artifact_name": artifact_name,
+                        "scoped_artifact_key": safe_key, "model": model,
                     })
                 analysis_text = analyze_artifact_chunked(
                     artifact_prompt=artifact_prompt,
@@ -966,6 +1002,7 @@ class ForensicAnalyzer:
                 citation_warnings = self._validate_citations(artifact_key, analysis_text)
                 result: dict[str, Any] = {
                     "artifact_key": artifact_key, "artifact_name": artifact_name,
+                    "scoped_artifact_key": self._scoped_artifact_filename_stem(artifact_key),
                     "analysis": analysis_text, "model": model,
                     "status": "success", "error": None, "analysis_available": True,
                 }
@@ -976,15 +1013,22 @@ class ForensicAnalyzer:
             analyze_with_progress = getattr(self.ai_provider, "analyze_with_progress", None)
             if callable(analyze_with_progress) and progress_callback is not None:
                 emit_analysis_progress(progress_callback, artifact_key, "started", {
-                    "artifact_key": artifact_key, "artifact_name": artifact_name, "model": model,
+                    "artifact_key": artifact_key, "artifact_name": artifact_name,
+                    "scoped_artifact_key": safe_key, "model": model,
                 })
 
                 def _provider_progress(payload: Mapping[str, Any]) -> None:
-                    """Forward provider progress to the frontend."""
+                    """Forward provider progress to the frontend.
+
+                    Args:
+                        payload: Provider progress mapping with optional
+                            thinking and partial response text.
+                    """
                     if not isinstance(payload, Mapping):
                         return
                     emit_analysis_progress(progress_callback, artifact_key, "thinking", {
                         "artifact_key": artifact_key, "artifact_name": artifact_name,
+                        "scoped_artifact_key": safe_key,
                         "thinking_text": str(payload.get("thinking_text", "")),
                         "partial_text": str(payload.get("partial_text", "")),
                         "model": model,
@@ -1023,7 +1067,8 @@ class ForensicAnalyzer:
             else:
                 if progress_callback is not None:
                     emit_analysis_progress(progress_callback, artifact_key, "started", {
-                        "artifact_key": artifact_key, "artifact_name": artifact_name, "model": model,
+                        "artifact_key": artifact_key, "artifact_name": artifact_name,
+                        "scoped_artifact_key": safe_key, "model": model,
                     })
                 analyze_with_attachments = getattr(self.ai_provider, "analyze_with_attachments", None)
                 if callable(analyze_with_attachments):
@@ -1072,6 +1117,7 @@ class ForensicAnalyzer:
 
         result = {
             "artifact_key": artifact_key, "artifact_name": artifact_name,
+            "scoped_artifact_key": self._scoped_artifact_filename_stem(artifact_key),
             "analysis": analysis_text, "model": model,
             "status": status, "error": error_text,
             "analysis_available": analysis_available,
@@ -1170,6 +1216,7 @@ class ForensicAnalyzer:
         if isinstance(self.ai_provider, UnavailableProvider):
             raise AIProviderError(self.ai_provider._error_message)
 
+        self._analysis_input_csv_paths.clear()
         self._register_artifact_paths_from_metadata(metadata)
         self._host_metadata: Mapping[str, Any] | None = metadata
         per_artifact_results: list[dict[str, Any]] = []
@@ -1244,6 +1291,7 @@ class ForensicAnalyzer:
         if isinstance(self.ai_provider, UnavailableProvider):
             raise AIProviderError(self.ai_provider._error_message)
 
+        self._analysis_input_csv_paths.clear()
         return run_multi_image_analysis(
             analyzer=self,
             images=images,

@@ -298,6 +298,7 @@ def create_case() -> tuple[Response, int]:
         "analysis_date_range": None,
         "csv_output_dir": "",
         "parse_results": [],
+        "image_artifact_csv_paths": {},
         "artifact_csv_paths": {},
         "investigation_context": "",
         "analysis_results": {},

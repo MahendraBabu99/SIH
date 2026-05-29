@@ -35,11 +35,13 @@ from typing import Any, Callable
 
 from .prompts import load_prompt_template
 from .utils import (
+    build_scoped_artifact_stem,
     emit_analysis_progress,
     estimate_tokens,
     normalize_table_cell,
     normalize_os_type,
     sanitize_filename,
+    stable_identity_hash,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -64,7 +66,15 @@ DEFAULT_CROSS_IMAGE_PROMPT_TEMPLATE = (
 
 
 def _normalize_image_descriptors(images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return copies of image descriptors with stable unique image IDs."""
+    """Return copies of image descriptors with stable unique image IDs.
+
+    Args:
+        images: Raw image descriptor dictionaries.
+
+    Returns:
+        Copies with sanitized unique ``image_id`` values and an internal
+        ``_analysis_scope_id`` used for collision-safe artifact outputs.
+    """
     normalized_images: list[dict[str, Any]] = []
     used_ids: set[str] = set()
     for index, image in enumerate(images, start=1):
@@ -81,6 +91,13 @@ def _normalize_image_descriptors(images: list[dict[str, Any]]) -> list[dict[str,
             suffix += 1
         used_ids.add(unique_id)
         copied["image_id"] = unique_id
+        if raw_id and raw_id == candidate and unique_id == candidate:
+            copied["_analysis_scope_id"] = unique_id
+        else:
+            hash_seed = f"{raw_id}\0{unique_id}\0{index}"
+            copied["_analysis_scope_id"] = (
+                f"{unique_id}__{stable_identity_hash(hash_seed)}"
+            )
         if not str(copied.get("label") or "").strip():
             copied["label"] = unique_id
         normalized_images.append(copied)
@@ -88,7 +105,14 @@ def _normalize_image_descriptors(images: list[dict[str, Any]]) -> list[dict[str,
 
 
 def _markdown_table_cell(value: Any) -> str:
-    """Normalize a value for safe use inside a Markdown table cell."""
+    """Normalize a value for safe use inside a Markdown table cell.
+
+    Args:
+        value: Raw cell value.
+
+    Returns:
+        Markdown-safe cell text.
+    """
     return normalize_table_cell(str(value), cell_limit=240)
 
 
@@ -126,7 +150,16 @@ def _image_os_type(
     metadata: dict[str, Any],
     default: str = "unknown",
 ) -> str:
-    """Return an image OS type from metadata, then descriptor fallback."""
+    """Return an image OS type from metadata, then descriptor fallback.
+
+    Args:
+        image: Image descriptor with an optional ``os_type`` key.
+        metadata: Image metadata mapping with an optional ``os_type`` key.
+        default: Value to return when neither source has an OS type.
+
+    Returns:
+        The first meaningful OS type from metadata, descriptor, or default.
+    """
     metadata_os = str(metadata.get("os_type") or "").strip()
     if metadata_os and metadata_os.lower() != "unknown":
         return metadata_os
@@ -203,6 +236,7 @@ def _wrap_image_progress_callback(
     callback: Any,
     image_id: str,
     image_label: str,
+    analysis_scope_id: str | None = None,
 ) -> Callable[..., None]:
     """Wrap a progress callback to inject image_id and image_label.
 
@@ -215,13 +249,21 @@ def _wrap_image_progress_callback(
         callback: The original progress callback.
         image_id: Image identifier to inject.
         image_label: Human-readable image label to inject.
+        analysis_scope_id: Optional collision-resistant scope ID used for
+            ``scoped_artifact_key`` payloads.
 
     Returns:
         A wrapped callback with the same calling convention.
     """
+    scope_id = analysis_scope_id or image_id
 
     def _enriched(*args: Any) -> None:
-        """Forward to the real callback with image fields injected."""
+        """Forward to the real callback with image fields injected.
+
+        Args:
+            *args: Progress callback arguments in one of the supported
+                analyzer progress conventions.
+        """
         if len(args) >= 3:
             # Three-arg convention: (artifact_key, status, payload_dict)
             artifact_key, status, payload = args[0], args[1], args[2]
@@ -230,6 +272,8 @@ def _wrap_image_progress_callback(
                     **payload,
                     "image_id": image_id,
                     "image_label": image_label,
+                    "scoped_artifact_key": payload.get("scoped_artifact_key")
+                    or build_scoped_artifact_stem(scope_id, str(artifact_key)),
                 }
             callback(artifact_key, status, payload)
         elif len(args) == 1 and isinstance(args[0], dict):
@@ -237,10 +281,17 @@ def _wrap_image_progress_callback(
             enriched = dict(args[0])
             result = enriched.get("result")
             if isinstance(result, dict):
+                artifact_key = str(
+                    result.get("artifact_key")
+                    or enriched.get("artifact_key")
+                    or ""
+                )
                 enriched["result"] = {
                     **result,
                     "image_id": image_id,
                     "image_label": image_label,
+                    "scoped_artifact_key": result.get("scoped_artifact_key")
+                    or build_scoped_artifact_stem(scope_id, artifact_key),
                 }
             callback(enriched)
         else:
@@ -334,6 +385,7 @@ def run_multi_image_analysis(
         try:
             for image in images:
                 image_id = str(image.get("image_id", "unknown"))
+                analysis_scope_id = str(image.get("_analysis_scope_id") or image_id)
                 label = str(image.get("label", image_id))
                 metadata = dict(image.get("metadata") or {})
                 os_type = _image_os_type(image, metadata)
@@ -349,7 +401,7 @@ def run_multi_image_analysis(
                 # and prompt host context use the correct values.
                 analyzer.os_type = normalize_os_type(os_type)
                 analyzer._host_metadata = metadata
-                analyzer._analysis_scope_id = image_id
+                analyzer._analysis_scope_id = analysis_scope_id
 
                 # Apply the user-configured date range filter so that
                 # per-artifact data preparation honours it, matching
@@ -364,7 +416,12 @@ def run_multi_image_analysis(
                 analyzer.artifact_csv_paths.clear()
 
                 # Register the image's parsed CSV paths into the analyzer
-                _register_image_csv_paths(analyzer, artifact_keys, parsed_dir)
+                _register_image_csv_paths(
+                    analyzer,
+                    artifact_keys,
+                    parsed_dir,
+                    artifact_csv_paths=image.get("artifact_csv_paths"),
+                )
 
                 # Build investigation context with image label prefix
                 image_context = (
@@ -377,7 +434,7 @@ def run_multi_image_analysis(
                 # from analyze_artifact() lack image context and the
                 # frontend groups them under "__single__".
                 image_cb = _wrap_image_progress_callback(
-                    progress_callback, image_id, label,
+                    progress_callback, image_id, label, analysis_scope_id,
                 ) if progress_callback is not None else None
 
                 per_artifact_results: list[dict[str, Any]] = []
@@ -397,7 +454,13 @@ def run_multi_image_analysis(
                             progress_callback,
                             str(artifact_key),
                             "complete",
-                            {**result, "image_id": image_id, "image_label": label},
+                            {
+                                **result,
+                                "image_id": image_id,
+                                "image_label": label,
+                                "scoped_artifact_key": result.get("scoped_artifact_key")
+                                or build_scoped_artifact_stem(analysis_scope_id, str(artifact_key)),
+                            },
                         )
 
                 image_results[image_id] = {
@@ -405,6 +468,7 @@ def run_multi_image_analysis(
                     "per_artifact": per_artifact_results,
                     "summary": "",
                     "metadata": metadata,
+                    "analysis_scope_id": analysis_scope_id,
                 }
         finally:
             # Restore analyzer state before the lock is released so the
@@ -430,8 +494,9 @@ def run_multi_image_analysis(
         metadata = img_data.get("metadata") or {}
         per_artifact = img_data["per_artifact"]
         label = img_data["label"]
+        analysis_scope_id = str(img_data.get("analysis_scope_id") or image_id)
         saved_scope_id = getattr(analyzer, "_analysis_scope_id", None)
-        analyzer._analysis_scope_id = image_id
+        analyzer._analysis_scope_id = analysis_scope_id
 
         try:
             if progress_callback is not None:
@@ -440,6 +505,7 @@ def run_multi_image_analysis(
                     f"summary_{image_id}",
                     "started",
                     {"artifact_key": f"summary_{image_id}",
+                     "scoped_artifact_key": build_scoped_artifact_stem(analysis_scope_id, "summary"),
                      "artifact_name": f"Summary: {label}",
                      "image_id": image_id, "image_label": label,
                      "status": "Generating per-image summary"},
@@ -464,6 +530,7 @@ def run_multi_image_analysis(
                 f"summary_{image_id}",
                 "complete",
                 {"artifact_key": f"summary_{image_id}",
+                 "scoped_artifact_key": build_scoped_artifact_stem(analysis_scope_id, "summary"),
                  "artifact_name": f"Summary: {label}",
                  "image_id": image_id, "image_label": label,
                  "summary": summary},
@@ -510,17 +577,35 @@ def _register_image_csv_paths(
     analyzer: Any,
     artifact_keys: list[str],
     parsed_dir: str,
+    artifact_csv_paths: Any = None,
 ) -> None:
     """Register artifact CSV paths from an image's parsed directory.
 
-    Scans the parsed directory for CSV files matching each artifact key
-    and registers them in the analyzer's ``artifact_csv_paths`` dict.
+    Uses an explicit image-scoped artifact CSV map when provided, then
+    falls back to scanning the parsed directory for matching CSV files.
 
     Args:
         analyzer: The ``ForensicAnalyzer`` instance.
         artifact_keys: List of artifact key strings to look for.
         parsed_dir: Path to the image's parsed directory.
+        artifact_csv_paths: Optional mapping of artifact keys to CSV path
+            strings or lists for the current image.
     """
+    explicit_map = artifact_csv_paths if isinstance(artifact_csv_paths, dict) else {}
+    for artifact_key in artifact_keys:
+        key = str(artifact_key)
+        explicit_value = explicit_map.get(key)
+        if explicit_value is None:
+            continue
+        if isinstance(explicit_value, list):
+            paths = [Path(str(path)) for path in explicit_value if str(path).strip()]
+            if len(paths) == 1:
+                analyzer.artifact_csv_paths[key] = paths[0]
+            elif paths:
+                analyzer.artifact_csv_paths[key] = paths
+        elif str(explicit_value).strip():
+            analyzer.artifact_csv_paths[key] = Path(str(explicit_value))
+
     if not parsed_dir:
         return
 
@@ -531,6 +616,8 @@ def _register_image_csv_paths(
 
     for artifact_key in artifact_keys:
         key = str(artifact_key)
+        if key in analyzer.artifact_csv_paths:
+            continue
         safe_key = sanitize_filename(key)
 
         # Look for exact match first, then prefixed variants

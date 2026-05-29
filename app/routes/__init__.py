@@ -85,9 +85,13 @@ from .evidence import (  # noqa: F401
     EWF_SEGMENT_RE,
     SPLIT_RAW_SEGMENT_RE,
     build_csv_map,
+    build_image_artifact_csv_paths,
+    build_legacy_artifact_csv_paths,
     collect_case_csv_paths,
+    collect_case_image_csv_paths,
     evidence_bp,
     read_audit_entries,
+    rebuild_case_parse_artifacts,
     resolve_case_csv_output_dir,
     resolve_evidence_payload,
     resolve_hash_verification_path,
@@ -119,6 +123,7 @@ from .artifacts import (  # noqa: F401
 # Background task runners:
 from .tasks import (  # noqa: F401
     load_case_analysis_results,
+    build_multi_image_analysis_payload_from_case,
     resolve_case_investigation_context,
     resolve_case_parsed_dir,
     run_analysis,

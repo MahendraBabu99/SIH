@@ -309,6 +309,7 @@ def start_parse(case_id: str) -> tuple[Response, int]:
         # Invalidate prior parse-derived outputs so a failed rerun
         # cannot leave stale data usable by downstream analysis.
         case["parse_results"] = []
+        case["image_artifact_csv_paths"] = {}
         case["artifact_csv_paths"] = {}
         case["analysis_results"] = {}
         case["csv_output_dir"] = ""

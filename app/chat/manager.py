@@ -33,7 +33,11 @@ from typing import Any, Mapping
 
 from ..audit import _utc_now_iso8601_ms
 from ._utils import stringify_chat_value as _stringify
-from .csv_retrieval import retrieve_csv_data as _retrieve_csv_data
+from .csv_retrieval import (
+    contains_heuristic_term as _contains_heuristic_term,
+    retrieve_csv_data as _retrieve_csv_data,
+    retrieve_csv_data_from_paths as _retrieve_csv_data_from_paths,
+)
 
 __all__ = ["ChatManager"]
 
@@ -339,12 +343,15 @@ class ChatManager:
         question: str,
         parsed_dir: str | Path,
         additional_parsed_dirs: list[str | Path] | None = None,
+        csv_path_groups: list[tuple[str, list[Path]] | tuple[str, str, list[Path]]] | None = None,
     ) -> dict[str, Any]:
         """Best-effort retrieval of raw CSV rows for data-centric chat questions.
 
         Delegates to :func:`~app.chat.csv_retrieval.retrieve_csv_data`.
         For multi-image cases, also searches ``additional_parsed_dirs``
-        and merges the results.
+        and merges the results.  When ``csv_path_groups`` is provided,
+        it is preferred because those groups preserve image ownership for
+        same-named artifacts across multiple images.
 
         Args:
             question: The user's chat question text.
@@ -352,12 +359,23 @@ class ChatManager:
                 artifact CSV files.
             additional_parsed_dirs: Optional list of additional parsed
                 directories (one per extra image) to search for CSV data.
+            csv_path_groups: Optional list of ``(image_label, csv_paths)``
+                or ``(image_id, image_label, csv_paths)`` tuples from the
+                canonical image-scoped CSV map.
 
         Returns:
             A dictionary with a ``retrieved`` boolean.  When *True*, also
             includes ``artifacts`` (list of matched CSV filenames) and
             ``data`` (formatted row text).
         """
+        if csv_path_groups:
+            grouped_result = self._retrieve_grouped_csv_data(
+                question=question,
+                csv_path_groups=csv_path_groups,
+            )
+            if grouped_result.get("retrieved"):
+                return grouped_result
+
         primary = _retrieve_csv_data(question, parsed_dir)
 
         if not additional_parsed_dirs:
@@ -385,6 +403,103 @@ class ChatManager:
 
         if not data_parts:
             return primary
+
+        return {
+            "retrieved": True,
+            "artifacts": all_artifacts,
+            "data": "\n\n".join(data_parts),
+        }
+
+    @staticmethod
+    def _retrieve_grouped_csv_data(
+        question: str,
+        csv_path_groups: list[tuple[str, list[Path]] | tuple[str, str, list[Path]]],
+    ) -> dict[str, Any]:
+        """Retrieve CSV rows from image-scoped path groups.
+
+        Args:
+            question: The user's chat question text.
+            csv_path_groups: List of ``(image_label, csv_paths)`` or
+                ``(image_id, image_label, csv_paths)`` tuples.
+
+        Returns:
+            A merged retrieval payload that keeps image labels in artifact
+            names and data block headings.
+        """
+        normalized_groups: list[tuple[str, str, list[Path]]] = []
+        for group in csv_path_groups:
+            if len(group) == 3:
+                image_id_raw, label_raw, paths_raw = group
+            else:
+                image_id_raw = ""
+                label_raw, paths_raw = group
+            normalized_groups.append((
+                str(image_id_raw).strip(),
+                str(label_raw).strip(),
+                [Path(path) for path in paths_raw],
+            ))
+
+        label_counts: dict[str, int] = {}
+        for _image_id, label, _paths in normalized_groups:
+            label_key = label.lower()
+            if label_key:
+                label_counts[label_key] = label_counts.get(label_key, 0) + 1
+
+        question_lower = _stringify(question).lower()
+        groups_with_alias_match: list[tuple[str, str, list[Path]]] = []
+        for image_id, label, paths in normalized_groups:
+            aliases = {
+                alias.lower()
+                for alias in (image_id, label)
+                if alias and len(alias.strip()) >= 3
+            }
+            if any(_contains_heuristic_term(question_lower, alias) for alias in aliases):
+                groups_with_alias_match.append((image_id, label, paths))
+        group_alias_filter_active = bool(groups_with_alias_match)
+        groups_to_search = groups_with_alias_match or normalized_groups
+
+        all_artifacts: list[str] = []
+        data_parts: list[str] = []
+
+        for image_id, label, paths in groups_to_search:
+            valid_paths = [Path(path) for path in paths if Path(path).is_file()]
+            if not valid_paths:
+                continue
+            display_label = label or image_id
+            if image_id and label_counts.get(label.lower(), 0) > 1:
+                display_label = f"{display_label} ({image_id})"
+            display_names = {
+                path: f"{display_label}/{path.name}" if display_label else path.name
+                for path in valid_paths
+            }
+            group_aliases = {
+                alias.lower()
+                for alias in (image_id, label, display_label)
+                if alias and len(alias.strip()) >= 3
+            }
+            extra_aliases = {
+                path: set() if group_alias_filter_active else set(group_aliases)
+                for path in valid_paths
+            }
+            result = _retrieve_csv_data_from_paths(
+                question=question,
+                csv_paths=valid_paths,
+                display_name_by_path=display_names,
+                extra_aliases_by_path=extra_aliases,
+            )
+            if not result.get("retrieved"):
+                continue
+            all_artifacts.extend(
+                str(item)
+                for item in result.get("artifacts", [])
+                if str(item).strip()
+            )
+            data_text = str(result.get("data", "")).strip()
+            if data_text:
+                data_parts.append(data_text)
+
+        if not data_parts:
+            return {"retrieved": False}
 
         return {
             "retrieved": True,

@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -80,7 +81,11 @@ __all__ = [
     "resolve_hash_verification_path",
     "resolve_case_csv_output_dir",
     "collect_case_csv_paths",
+    "collect_case_image_csv_paths",
     "build_csv_map",
+    "build_image_artifact_csv_paths",
+    "build_legacy_artifact_csv_paths",
+    "rebuild_case_parse_artifacts",
     "read_audit_entries",
     "generate_case_report",
 ]
@@ -151,7 +156,11 @@ def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
     seen: set[str] = set()
 
     def _add_path(candidate: Any) -> None:
-        """Add a CSV path if it exists and is not a duplicate."""
+        """Add an existing CSV path when it has not been collected.
+
+        Args:
+            candidate: Candidate path-like value.
+        """
         path_text = str(candidate or "").strip()
         if not path_text:
             return
@@ -164,14 +173,20 @@ def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
         seen.add(key)
         collected.append(path)
 
+    nested_csv_map = case.get("image_artifact_csv_paths")
+    if isinstance(nested_csv_map, Mapping):
+        for image_csv_map in nested_csv_map.values():
+            if not isinstance(image_csv_map, Mapping):
+                continue
+            for csv_value in image_csv_map.values():
+                for csv_path in _iter_csv_path_values(csv_value):
+                    _add_path(csv_path)
+
     csv_map = case.get("artifact_csv_paths")
-    if isinstance(csv_map, dict):
+    if isinstance(csv_map, Mapping):
         for csv_path in csv_map.values():
-            if isinstance(csv_path, list):
-                for p in csv_path:
-                    _add_path(p)
-            else:
-                _add_path(csv_path)
+            for path in _iter_csv_path_values(csv_path):
+                _add_path(path)
 
     parse_results = case.get("parse_results")
     if isinstance(parse_results, list):
@@ -189,6 +204,127 @@ def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
 
     parsed_dir = Path(case["case_dir"]) / "parsed"
     return sorted(path for path in parsed_dir.glob("*.csv") if path.is_file())
+
+
+def collect_case_image_csv_paths(case: dict[str, Any]) -> list[tuple[str, str, Path]]:
+    """Collect parsed CSV file paths with their owning image identity.
+
+    The canonical source is ``image_artifact_csv_paths``, which maps
+    ``image_id -> artifact_key -> csv path`` and therefore preserves
+    same-artifact CSVs from multiple images.  Older cases that do not
+    have the canonical map fall back to image parsed directories.
+
+    Args:
+        case: The in-memory case state dictionary or a case snapshot.
+
+    Returns:
+        A sorted list of ``(image_id, image_label, csv_path)`` tuples for
+        existing CSV files.
+    """
+    image_states = case.get("image_states")
+    images_list = case.get("images")
+    if not isinstance(image_states, Mapping):
+        image_states = {}
+
+    label_map: dict[str, str] = {}
+    if isinstance(images_list, list):
+        for image in images_list:
+            if isinstance(image, Mapping):
+                image_id = str(image.get("image_id", "")).strip()
+                if image_id:
+                    label_map[image_id] = str(image.get("label", "")).strip()
+
+    collected: list[tuple[str, str, Path]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(image_id: str, candidate: Any) -> None:
+        """Add an existing CSV path for an image if not already present.
+
+        Args:
+            image_id: Image identifier that owns the CSV.
+            candidate: Candidate path-like value.
+        """
+        path_text = str(candidate or "").strip()
+        if not path_text:
+            return
+        path = Path(path_text)
+        if not path.exists() or not path.is_file():
+            return
+        key = (image_id, str(path.resolve()))
+        if key in seen:
+            return
+        seen.add(key)
+        label = label_map.get(image_id, "") or image_id
+        collected.append((image_id, label, path))
+
+    nested_csv_map = case.get("image_artifact_csv_paths")
+    if isinstance(nested_csv_map, Mapping):
+        for image_id_raw, image_csv_map in nested_csv_map.items():
+            image_id = str(image_id_raw).strip()
+            if not image_id or not isinstance(image_csv_map, Mapping):
+                continue
+            for csv_value in image_csv_map.values():
+                for csv_path in _iter_csv_path_values(csv_value):
+                    _add(image_id, csv_path)
+
+    if collected:
+        return sorted(
+            collected,
+            key=lambda item: (item[1].lower(), item[2].name.lower()),
+        )
+
+    for image_id_raw, image_state in image_states.items():
+        image_id = str(image_id_raw).strip()
+        if not image_id or not isinstance(image_state, Mapping):
+            continue
+        csv_dir_text = str(image_state.get("csv_output_dir", "")).strip()
+        if not csv_dir_text:
+            continue
+        csv_dir = Path(csv_dir_text)
+        if not csv_dir.is_dir():
+            continue
+        for csv_file in sorted(csv_dir.glob("*.csv")):
+            _add(image_id, csv_file)
+
+    return sorted(
+        collected,
+        key=lambda item: (item[1].lower(), item[2].name.lower()),
+    )
+
+
+def _iter_csv_path_values(value: Any) -> list[str]:
+    """Return CSV path strings from a scalar or list-valued path field.
+
+    Args:
+        value: A path string, path-like object, list of paths, or empty
+            value.
+
+    Returns:
+        A list of non-empty path strings.
+    """
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _coerce_csv_path_value(value: Any) -> str | list[str] | None:
+    """Normalize one CSV path value while preserving split artifacts.
+
+    Args:
+        value: A path string, path-like object, list of paths, or empty
+            value.
+
+    Returns:
+        ``None`` for no usable paths, a string for one path, or a list of
+        strings for split artifacts.
+    """
+    paths = _iter_csv_path_values(value)
+    if not paths:
+        return None
+    if len(paths) == 1:
+        return paths[0]
+    return paths
 
 
 def build_csv_map(parse_results: list[dict[str, Any]]) -> dict[str, str | list[str]]:
@@ -232,6 +368,176 @@ def build_csv_map(parse_results: list[dict[str, Any]]) -> dict[str, str | list[s
         if csv_path:
             mapping[artifact] = csv_path
     return mapping
+
+
+def build_image_artifact_csv_paths(
+    image_states: Mapping[str, Any],
+) -> dict[str, dict[str, str | list[str]]]:
+    """Build the canonical non-lossy per-image artifact CSV path map.
+
+    Args:
+        image_states: Mapping of image IDs to image state dictionaries.
+
+    Returns:
+        Nested mapping of ``image_id -> artifact_key -> csv path``.
+        Split artifacts keep a ``list[str]`` value.  Images without
+        usable parsed CSV output are omitted.
+    """
+    image_artifact_csv_paths: dict[str, dict[str, str | list[str]]] = {}
+
+    for image_id_raw, image_state in image_states.items():
+        image_id = str(image_id_raw).strip()
+        if not image_id or not isinstance(image_state, Mapping):
+            continue
+
+        raw_csv_map = image_state.get("artifact_csv_paths")
+        if not isinstance(raw_csv_map, Mapping):
+            parse_results = image_state.get("parse_results")
+            raw_csv_map = build_csv_map(parse_results) if isinstance(parse_results, list) else {}
+
+        image_csv_map: dict[str, str | list[str]] = {}
+        for artifact_key_raw, csv_value in raw_csv_map.items():
+            artifact_key = str(artifact_key_raw).strip()
+            if not artifact_key:
+                continue
+            normalized_value = _coerce_csv_path_value(csv_value)
+            if normalized_value is not None:
+                image_csv_map[artifact_key] = normalized_value
+
+        if image_csv_map:
+            image_artifact_csv_paths[image_id] = image_csv_map
+
+    return image_artifact_csv_paths
+
+
+def build_legacy_artifact_csv_paths(
+    image_artifact_csv_paths: Mapping[str, Any],
+) -> dict[str, str | list[str]]:
+    """Build the legacy flat artifact CSV path view.
+
+    This compatibility view is keyed only by artifact key, so it cannot
+    represent two images that both parsed the same artifact.  It is kept
+    for old callers that do not understand image-scoped CSV maps.  New
+    multi-image code must use ``image_artifact_csv_paths`` instead.
+
+    Args:
+        image_artifact_csv_paths: Canonical nested image/artifact CSV map.
+
+    Returns:
+        Flat ``artifact_key -> csv path`` mapping.  When multiple images
+        share an artifact key, later image entries overwrite earlier
+        entries to preserve the historical last-writer behavior.
+    """
+    legacy: dict[str, str | list[str]] = {}
+    for image_csv_map in image_artifact_csv_paths.values():
+        if not isinstance(image_csv_map, Mapping):
+            continue
+        for artifact_key_raw, csv_value in image_csv_map.items():
+            artifact_key = str(artifact_key_raw).strip()
+            if not artifact_key:
+                continue
+            normalized_value = _coerce_csv_path_value(csv_value)
+            if normalized_value is not None:
+                legacy[artifact_key] = normalized_value
+    return legacy
+
+
+def rebuild_case_parse_artifacts(case: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild aggregate parse fields from per-image state.
+
+    The canonical aggregate is ``case["image_artifact_csv_paths"]``.
+    The flat ``case["artifact_csv_paths"]`` field is retained only as a
+    legacy compatibility view for callers that cannot address an image.
+
+    Args:
+        case: Mutable in-memory case state dictionary to update.
+
+    Returns:
+        A dict containing the rebuilt parse fields.
+    """
+    image_states = case.get("image_states")
+    if not isinstance(image_states, Mapping):
+        image_states = {}
+
+    image_artifact_csv_paths = build_image_artifact_csv_paths(image_states)
+    legacy_artifact_csv_paths = build_legacy_artifact_csv_paths(image_artifact_csv_paths)
+
+    existing_analysis = case.get("analysis_artifacts")
+    existing_analysis_set = {
+        str(item).strip()
+        for item in existing_analysis
+        if str(item).strip()
+    } if isinstance(existing_analysis, list) else set()
+
+    existing_options = case.get("artifact_options")
+    existing_options_by_key: dict[str, dict[str, Any]] = {}
+    if isinstance(existing_options, list):
+        for option in existing_options:
+            if not isinstance(option, Mapping):
+                continue
+            option_key = str(option.get("artifact_key", "")).strip()
+            if option_key:
+                existing_options_by_key[option_key] = dict(option)
+
+    merged_results: list[dict[str, Any]] = []
+    selected_artifacts: set[str] = set()
+    analysis_artifacts: set[str] = set()
+    options_by_key: dict[str, dict[str, Any]] = {}
+    csv_output_dir = ""
+
+    for image_id, image_csv_map in image_artifact_csv_paths.items():
+        image_state = image_states.get(image_id, {})
+        if not isinstance(image_state, Mapping):
+            continue
+
+        parse_results = image_state.get("parse_results")
+        if isinstance(parse_results, list):
+            for entry in parse_results:
+                if isinstance(entry, Mapping):
+                    merged_entry = dict(entry)
+                    merged_entry.setdefault("image_id", image_id)
+                    merged_results.append(merged_entry)
+
+        image_artifact_keys = {str(key) for key in image_csv_map if str(key).strip()}
+        selected_artifacts.update(image_artifact_keys)
+
+        image_analysis = image_state.get("analysis_artifacts")
+        if isinstance(image_analysis, list):
+            analysis_artifacts.update(
+                str(item)
+                for item in image_analysis
+                if str(item).strip() in image_artifact_keys
+            )
+        else:
+            analysis_artifacts.update(existing_analysis_set & image_artifact_keys)
+
+        image_options = image_state.get("artifact_options")
+        if isinstance(image_options, list):
+            for option in image_options:
+                if not isinstance(option, Mapping):
+                    continue
+                option_key = str(option.get("artifact_key", "")).strip()
+                if option_key in image_artifact_keys:
+                    options_by_key[option_key] = dict(option)
+        for option_key, option in existing_options_by_key.items():
+            if option_key in image_artifact_keys and option_key not in options_by_key:
+                options_by_key[option_key] = dict(option)
+
+        if not csv_output_dir:
+            csv_output_dir = str(image_state.get("csv_output_dir", "")).strip()
+
+    aggregate = {
+        "parse_results": merged_results,
+        "image_artifact_csv_paths": image_artifact_csv_paths,
+        "artifact_csv_paths": legacy_artifact_csv_paths,
+        "selected_artifacts": sorted(selected_artifacts),
+        "analysis_artifacts": sorted(analysis_artifacts),
+        "artifact_options": list(options_by_key.values()),
+        "csv_output_dir": csv_output_dir,
+    }
+
+    case.update(aggregate)
+    return aggregate
 
 
 def read_audit_entries(case_dir: Path) -> list[dict[str, Any]]:
@@ -616,32 +922,24 @@ def download_csv_bundle(case_id: str) -> Response | tuple[Response, int]:
 
     # Check for multi-image layout: gather per-image CSV paths organized
     # into subdirectories named by image label.
-    image_states = case_snapshot.get("image_states", {})
-    images_list = case_snapshot.get("images", [])
     multi_image_csvs: list[tuple[str, Path]] = []
+    image_csv_entries = collect_case_image_csv_paths(case_snapshot)
+    image_ids_with_csv = {image_id for image_id, _label, _path in image_csv_entries}
 
-    if isinstance(image_states, dict) and len(image_states) > 1:
-        # Build a label lookup from the images list.
-        label_map: dict[str, str] = {}
-        for img in images_list:
-            if isinstance(img, dict):
-                label_map[str(img.get("image_id", ""))] = str(img.get("label", ""))
-
-        for image_id, img_state in image_states.items():
-            if not isinstance(img_state, dict):
-                continue
-            label = label_map.get(image_id, "").strip() or image_id
-            # Sanitize label for use as a directory name.
-            safe_label = SAFE_NAME_RE.sub("_", label).strip("_") or image_id
-
-            # Collect CSVs from the image's parsed directory.
-            csv_dir_str = str(img_state.get("csv_output_dir", "")).strip()
-            if csv_dir_str:
-                csv_dir = Path(csv_dir_str)
-                if csv_dir.is_dir():
-                    for csv_file in sorted(csv_dir.glob("*.csv")):
-                        if csv_file.is_file():
-                            multi_image_csvs.append((safe_label, csv_file))
+    if len(image_ids_with_csv) > 1:
+        safe_labels = {
+            image_id: SAFE_NAME_RE.sub("_", label).strip("_") or image_id
+            for image_id, label, _path in image_csv_entries
+        }
+        label_counts: dict[str, int] = {}
+        for label in safe_labels.values():
+            label_counts[label] = label_counts.get(label, 0) + 1
+        for image_id, _label, csv_file in image_csv_entries:
+            safe_label = safe_labels[image_id]
+            if label_counts.get(safe_label, 0) > 1:
+                safe_image_id = SAFE_NAME_RE.sub("_", image_id).strip("_") or image_id
+                safe_label = f"{safe_label}_{safe_image_id}"
+            multi_image_csvs.append((safe_label, csv_file))
 
     if not csv_paths and not multi_image_csvs:
         return error_response("No parsed CSV files available for this case.", 404)

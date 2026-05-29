@@ -50,6 +50,7 @@ from .state import (
 )
 from ..chat.csv_retrieval import invalidate_header_cache
 from ..automation import discover_evidence, validate_evidence_path
+from .evidence import rebuild_case_parse_artifacts
 
 __all__ = ["images_bp", "get_case_manager"]
 
@@ -156,56 +157,10 @@ def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) ->
     Returns:
         ``True`` when at least one image still has parsed output.
     """
-    image_states = case.get("image_states", {})
-    if not isinstance(image_states, dict):
-        image_states = {}
-
-    merged_results: list[dict[str, Any]] = []
-    merged_csv_map: dict[str, Any] = {}
-    selected: set[str] = set()
-    analysis: set[str] = set()
-    options: dict[str, dict[str, str]] = {}
-    csv_output_dir = ""
-
-    for image_state in image_states.values():
-        if not isinstance(image_state, dict):
-            continue
-        parse_results = image_state.get("parse_results") or []
-        csv_map = image_state.get("artifact_csv_paths") or {}
-        has_parsed = bool(csv_map)
-        if not has_parsed:
-            continue
-        for entry in parse_results:
-            if isinstance(entry, dict):
-                merged_results.append(entry)
-                artifact_key = str(entry.get("artifact_key", "")).strip()
-                if artifact_key:
-                    selected.add(artifact_key)
-        if isinstance(csv_map, dict):
-            merged_csv_map.update(csv_map)
-            selected.update(str(key) for key in csv_map if str(key).strip())
-        if not csv_output_dir:
-            csv_output_dir = str(image_state.get("csv_output_dir", "")).strip()
-
-    case["parse_results"] = merged_results
-    case["artifact_csv_paths"] = merged_csv_map
-    case["selected_artifacts"] = sorted(selected)
-    existing_analysis = case.get("analysis_artifacts")
-    if isinstance(existing_analysis, list):
-        analysis = {str(item) for item in existing_analysis if str(item) in selected}
-    case["analysis_artifacts"] = sorted(analysis)
-    existing_options = case.get("artifact_options")
-    if isinstance(existing_options, list):
-        for opt in existing_options:
-            if isinstance(opt, dict):
-                key = str(opt.get("artifact_key", "")).strip()
-                if key in selected:
-                    options[key] = dict(opt)
-    case["artifact_options"] = list(options.values())
-    case["csv_output_dir"] = csv_output_dir
+    aggregate = rebuild_case_parse_artifacts(case)
     case["analysis_results"] = {}
     case["investigation_context"] = ""
-    if not merged_results and not merged_csv_map:
+    if not aggregate["parse_results"] and not aggregate["image_artifact_csv_paths"]:
         case["analysis_date_range"] = None
         mark_case_status(case_id, "evidence_loaded")
         return False
@@ -936,6 +891,8 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         # analysis.
         img_state_lock["parse_results"] = []
         img_state_lock["artifact_csv_paths"] = {}
+        img_state_lock["analysis_artifacts"] = list(analysis_artifacts)
+        img_state_lock["artifact_options"] = list(artifact_options)
         img_state_lock["csv_output_dir"] = ""
 
         # Also invalidate case-level aggregated state from this image,
@@ -1194,6 +1151,8 @@ def _run_image_parse(
             img_state = image_states.setdefault(image_id, {})
             img_state["parse_results"] = results
             img_state["artifact_csv_paths"] = csv_map
+            img_state["analysis_artifacts"] = list(analysis_artifacts)
+            img_state["artifact_options"] = list(artifact_options)
 
         completed = len(csv_map)
         failed = len(results) - completed
@@ -1246,22 +1205,16 @@ def _run_image_parse(
             case["analysis_artifacts"] = sorted(existing_analysis)
             case["artifact_options"] = list(existing_options.values())
 
-            # Rebuild case-level parse_results and artifact_csv_paths by
-            # aggregating from ALL images' per-image states.  This handles
-            # both concurrent multi-image parses (merge) and re-parses of the
-            # same image with different artifacts (replace stale entries).
-            merged_results: list[dict[str, Any]] = []
-            merged_csv_map: dict[str, Any] = {}
-            for iid, ist in image_states.items():
-                for entry in ist.get("parse_results") or []:
-                    merged_results.append(entry)
-                ist_csv = ist.get("artifact_csv_paths") or {}
-                merged_csv_map.update(ist_csv)
-            case["parse_results"] = merged_results
-            case["artifact_csv_paths"] = merged_csv_map
+            # Rebuild parse aggregates from all images.  The canonical
+            # image_artifact_csv_paths map preserves same-artifact CSVs
+            # across images; artifact_csv_paths remains a legacy flat view.
+            aggregate = rebuild_case_parse_artifacts(case)
 
             if not case.get("csv_output_dir"):
                 case["csv_output_dir"] = parsed_dir
+            image_artifact_csv_paths = copy.deepcopy(
+                aggregate.get("image_artifact_csv_paths", {})
+            )
 
         completion_event: dict[str, Any] = {
             "type": "parse_completed",
@@ -1270,6 +1223,7 @@ def _run_image_parse(
             "total_artifacts": len(results),
             "successful_artifacts": completed,
             "failed_artifacts": failed,
+            "image_artifact_csv_paths": image_artifact_csv_paths,
         }
         aggregate_status = _finish_image_parse_progress(case_id, image_id, "completed", completion_event)
         if aggregate_status is not None:

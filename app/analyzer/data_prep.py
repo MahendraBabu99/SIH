@@ -39,7 +39,7 @@ from .utils import (
     normalize_csv_row,
     normalize_table_cell,
     parse_datetime_value,
-    sanitize_filename,
+    build_scoped_artifact_stem,
     stringify_value,
     time_range_for_rows,
 )
@@ -403,12 +403,20 @@ def resolve_analysis_input_output_dir(case_dir: Path | None, source_csv_path: Pa
 
 
 def _analysis_input_filename(source_csv_path: Path, analysis_scope_id: str | None = None) -> str:
-    """Build a collision-safe analysis-input CSV filename."""
-    source_name = source_csv_path.name
-    scope = sanitize_filename(str(analysis_scope_id or "").strip())
-    if not analysis_scope_id or scope == "artifact":
-        return source_name
-    return f"{scope}__{source_name}"
+    """Build a collision-safe analysis-input CSV filename.
+
+    Args:
+        source_csv_path: Source parsed CSV path.
+        analysis_scope_id: Optional image/scope identifier.
+
+    Returns:
+        A filename that preserves the source suffix and includes a
+        collision-resistant scope prefix when needed.
+    """
+    if not analysis_scope_id:
+        return source_csv_path.name
+    suffix = source_csv_path.suffix or ".csv"
+    return f"{build_scoped_artifact_stem(analysis_scope_id, source_csv_path.stem)}{suffix}"
 
 
 def write_analysis_input_csv(
@@ -471,10 +479,7 @@ def build_artifact_csv_attachment(
     Returns:
         A dict with ``path``, ``name``, and ``mime_type`` keys.
     """
-    scope = sanitize_filename(str(analysis_scope_id or "").strip())
-    filename_stem = sanitize_filename(artifact_key)
-    if analysis_scope_id and scope != "artifact":
-        filename_stem = f"{scope}__{filename_stem}"
+    filename_stem = build_scoped_artifact_stem(analysis_scope_id, artifact_key)
     filename = f"{filename_stem}.csv" if not filename_stem.lower().endswith(".csv") else filename_stem
     return {"path": str(csv_path), "name": filename, "mime_type": "text/csv"}
 

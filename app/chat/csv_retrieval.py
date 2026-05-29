@@ -35,6 +35,7 @@ from ._utils import stringify_chat_value as _stringify
 
 __all__ = [
     "retrieve_csv_data",
+    "retrieve_csv_data_from_paths",
     "build_csv_aliases",
     "contains_heuristic_term",
     "invalidate_header_cache",
@@ -112,18 +113,61 @@ def retrieve_csv_data(
         return {"retrieved": False}
 
     csv_paths = sorted(path for path in parsed_path.glob("*.csv") if path.is_file())
+    return retrieve_csv_data_from_paths(
+        question=question_text,
+        csv_paths=csv_paths,
+        row_limit=row_limit,
+    )
+
+
+def retrieve_csv_data_from_paths(
+    question: str,
+    csv_paths: list[Path],
+    row_limit: int = CSV_ROW_LIMIT,
+    display_name_by_path: dict[Path, str] | None = None,
+    extra_aliases_by_path: dict[Path, set[str]] | None = None,
+) -> dict[str, Any]:
+    """Retrieve raw CSV rows from an explicit set of CSV paths.
+
+    Args:
+        question: The user's chat question text.
+        csv_paths: Candidate CSV files to search.
+        row_limit: Maximum total rows to include across matched CSVs.
+        display_name_by_path: Optional path-to-display-name map used in
+            returned artifact labels and formatted block headings.
+        extra_aliases_by_path: Optional path-to-aliases map used during
+            heuristic matching, such as image labels in multi-image cases.
+
+    Returns:
+        A dictionary with a ``retrieved`` boolean.  When *True*, also
+        includes ``artifacts`` and formatted ``data``.
+    """
+    question_text = _stringify(question)
+    if not question_text:
+        return {"retrieved": False}
+
+    csv_paths = sorted(
+        [Path(path) for path in csv_paths if Path(path).is_file()],
+        key=lambda path: path.name.lower(),
+    )
     if not csv_paths:
         return {"retrieved": False}
 
     question_lower = question_text.lower()
     keyword_detected = any(kw in question_lower for kw in CSV_RETRIEVAL_KEYWORDS)
 
-    target_paths = _match_target_paths(csv_paths, question_lower, keyword_detected)
+    target_paths = _match_target_paths(
+        csv_paths,
+        question_lower,
+        keyword_detected,
+        extra_aliases_by_path=extra_aliases_by_path,
+    )
     if target_paths is None:
         return {"retrieved": False}
 
     target_paths = list(dict.fromkeys(target_paths))
-    artifacts = [path.name for path in target_paths]
+    display_names = display_name_by_path or {}
+    artifacts = [display_names.get(path, path.name) for path in target_paths]
     formatted_blocks: list[str] = []
     rows_remaining = row_limit
 
@@ -136,7 +180,12 @@ def retrieve_csv_data(
 
         rows_remaining -= len(rows)
         formatted_blocks.append(
-            _format_csv_block(csv_path.name, headers, rows, total_row_count)
+            _format_csv_block(
+                display_names.get(csv_path, csv_path.name),
+                headers,
+                rows,
+                total_row_count,
+            )
         )
 
     if not formatted_blocks:
@@ -157,6 +206,7 @@ def _match_target_paths(
     csv_paths: list[Path],
     question_lower: str,
     keyword_detected: bool,
+    extra_aliases_by_path: dict[Path, set[str]] | None = None,
 ) -> list[Path] | None:
     """Determine which CSV files match the user's question.
 
@@ -169,11 +219,21 @@ def _match_target_paths(
         question_lower: Lowercased question text.
         keyword_detected: Whether retrieval keywords were found in
             the question.
+        extra_aliases_by_path: Optional additional lowercase aliases per
+            path, such as image IDs or labels.
 
     Returns:
         A list of matched paths, or *None* when no match is found.
     """
-    aliases_by_path = {path: build_csv_aliases(path) for path in csv_paths}
+    extra_aliases_by_path = extra_aliases_by_path or {}
+    aliases_by_path = {
+        path: build_csv_aliases(path) | {
+            alias.strip().lower()
+            for alias in extra_aliases_by_path.get(path, set())
+            if alias.strip()
+        }
+        for path in csv_paths
+    }
     artifact_matches = [
         path
         for path, aliases in aliases_by_path.items()

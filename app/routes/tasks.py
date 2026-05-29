@@ -53,6 +53,7 @@ from .artifacts import (
 from .tasks_chat import run_chat  # noqa: F401
 from .evidence import (
     build_csv_map,
+    build_image_artifact_csv_paths,
     collect_case_csv_paths,
     generate_case_report,
     resolve_case_csv_output_dir,
@@ -70,6 +71,7 @@ __all__ = [
     "load_case_analysis_results",
     "resolve_case_investigation_context",
     "resolve_case_parsed_dir",
+    "build_multi_image_analysis_payload_from_case",
 ]
 
 LOGGER = logging.getLogger(__name__)
@@ -149,6 +151,72 @@ def resolve_case_parsed_dir(case: dict[str, Any]) -> Path:
         return csv_paths[0].parent
 
     return Path(case["case_dir"]) / "parsed"
+
+
+def build_multi_image_analysis_payload_from_case(
+    case: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Build a multi-image analysis payload from parsed case state.
+
+    This supports legacy callers that POST to the case-level analyze
+    route without an explicit ``images`` payload.  When multiple parsed
+    images exist, the returned payload preserves each image's artifact
+    selection instead of falling back to the lossy flat
+    ``artifact_csv_paths`` view.
+
+    Args:
+        case: In-memory case state dictionary or a case snapshot.
+
+    Returns:
+        A list of ``{"image_id": str, "artifacts": list[str]}``
+        dictionaries when multiple parsed images are available, or
+        ``None`` when the case can safely use the single-image path.
+    """
+    image_artifact_csv_paths = case.get("image_artifact_csv_paths")
+    image_states = case.get("image_states")
+    if not isinstance(image_states, dict):
+        image_states = {}
+    if (
+        not isinstance(image_artifact_csv_paths, dict)
+        or (not image_artifact_csv_paths and image_states)
+    ):
+        image_artifact_csv_paths = build_image_artifact_csv_paths(image_states)
+    if not isinstance(image_artifact_csv_paths, dict) or len(image_artifact_csv_paths) <= 1:
+        return None
+
+    case_analysis_artifacts = case.get("analysis_artifacts")
+    case_analysis_set = {
+        str(item).strip()
+        for item in case_analysis_artifacts
+        if str(item).strip()
+    } if isinstance(case_analysis_artifacts, list) else set()
+
+    payload: list[dict[str, Any]] = []
+    for image_id_raw, image_csv_map in image_artifact_csv_paths.items():
+        image_id = str(image_id_raw).strip()
+        if not image_id or not isinstance(image_csv_map, dict):
+            continue
+        available_artifacts = {str(key) for key in image_csv_map if str(key).strip()}
+        if not available_artifacts:
+            continue
+
+        image_state = image_states.get(image_id, {})
+        image_analysis = image_state.get("analysis_artifacts") if isinstance(image_state, dict) else None
+        if isinstance(image_analysis, list):
+            artifacts = [
+                str(item)
+                for item in image_analysis
+                if str(item).strip() in available_artifacts
+            ]
+        elif case_analysis_set:
+            artifacts = sorted(case_analysis_set & available_artifacts)
+        else:
+            artifacts = sorted(available_artifacts)
+
+        if artifacts:
+            payload.append({"image_id": image_id, "artifacts": artifacts})
+
+    return payload or None
 
 
 
@@ -452,6 +520,7 @@ def run_parse(
             case["analysis_artifacts"] = list(analysis_artifacts)
             case["artifact_options"] = list(artifact_options)
             case["parse_results"] = results
+            case["image_artifact_csv_paths"] = {}
             case["artifact_csv_paths"] = csv_map
             case["csv_output_dir"] = str(csv_output_dir)
 
@@ -461,6 +530,7 @@ def run_parse(
             message = "No requested artifacts produced usable parsed output."
             with STATE_LOCK:
                 case["artifact_csv_paths"] = {}
+                case["image_artifact_csv_paths"] = {}
                 case["csv_output_dir"] = ""
             mark_case_status(case_id, "evidence_loaded")
             set_progress_status(PARSE_PROGRESS, case_id, "failed", message)
@@ -643,6 +713,8 @@ def run_analysis(case_id: str, prompt: str, config_snapshot: dict[str, Any]) -> 
 
     with STATE_LOCK:
         csv_map = dict(case.get("artifact_csv_paths", {}))
+        image_artifact_csv_paths_snapshot = copy.deepcopy(case.get("image_artifact_csv_paths", {}))
+        image_states_snapshot = copy.deepcopy(case.get("image_states", {}))
         parse_results_snapshot = list(case.get("parse_results", []))
         analysis_artifacts_state = case.get("analysis_artifacts")
         selected_artifacts_snapshot = list(case.get("selected_artifacts", []))
@@ -652,6 +724,20 @@ def run_analysis(case_id: str, prompt: str, config_snapshot: dict[str, Any]) -> 
         os_type_snapshot = str(case.get("os_type") or "unknown")
         artifact_options_snapshot = list(case.get("artifact_options", []))
         analysis_date_range = case.get("analysis_date_range")
+
+    multi_image_payload = build_multi_image_analysis_payload_from_case({
+        "image_artifact_csv_paths": image_artifact_csv_paths_snapshot,
+        "image_states": image_states_snapshot,
+        "analysis_artifacts": analysis_artifacts_state,
+    })
+    if multi_image_payload:
+        run_multi_image_analysis_task(
+            case_id=case_id,
+            prompt=prompt,
+            images_payload=multi_image_payload,
+            config_snapshot=config_snapshot,
+        )
+        return
 
     if not csv_map:
         csv_map = build_csv_map(parse_results_snapshot)
@@ -777,8 +863,17 @@ def run_multi_image_analysis_task(
         case_dir = case["case_dir"]
         audit_logger = case["audit"]
         image_states = copy.deepcopy(case.get("image_states", {}))
+        image_artifact_csv_paths = copy.deepcopy(case.get("image_artifact_csv_paths", {}))
         case_images_list = list(case.get("images", []))
         analysis_date_range = case.get("analysis_date_range")
+
+    if not isinstance(image_states, dict):
+        image_states = {}
+    if (
+        not isinstance(image_artifact_csv_paths, dict)
+        or (not image_artifact_csv_paths and image_states)
+    ):
+        image_artifact_csv_paths = build_image_artifact_csv_paths(image_states)
 
     # Build a label lookup from the case images list.
     label_lookup: dict[str, str] = {}
@@ -798,6 +893,29 @@ def run_multi_image_analysis_task(
             continue
 
         img_state = image_states.get(image_id, {})
+        image_csv_map = image_artifact_csv_paths.get(image_id, {})
+        if not isinstance(image_csv_map, dict):
+            image_csv_map = dict(img_state.get("artifact_csv_paths", {})) if isinstance(img_state, dict) else {}
+        if image_csv_map:
+            artifacts = [
+                artifact
+                for artifact in artifacts
+                if artifact in image_csv_map
+            ]
+            if not artifacts:
+                skip_label = label_lookup.get(image_id, image_id)
+                skipped_images.append({
+                    "image_id": image_id,
+                    "label": skip_label,
+                    "reason": "No requested artifacts have parsed CSV output.",
+                })
+                emit_progress(ANALYSIS_PROGRESS, case_id, {
+                    "type": "image_skipped",
+                    "image_id": image_id,
+                    "label": skip_label,
+                    "reason": "No requested artifacts have parsed CSV output.",
+                })
+                continue
         metadata = dict(img_state.get("image_metadata", {}))
         os_type = str(img_state.get("os_type", metadata.get("os_type", "unknown")))
         metadata["os_type"] = os_type
@@ -837,6 +955,7 @@ def run_multi_image_analysis_task(
             "metadata": metadata,
             "artifact_keys": artifacts,
             "parsed_dir": parsed_dir,
+            "artifact_csv_paths": image_csv_map,
         })
 
     if not images:

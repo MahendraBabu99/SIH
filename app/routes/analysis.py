@@ -29,7 +29,12 @@ from .state import (
     stream_sse,
 )
 from .artifacts import sanitize_prompt
-from .tasks import run_task_with_case_log_context, run_analysis, run_multi_image_analysis_task
+from .tasks import (
+    build_multi_image_analysis_payload_from_case,
+    run_task_with_case_log_context,
+    run_analysis,
+    run_multi_image_analysis_task,
+)
 
 __all__ = ["analysis_bp"]
 
@@ -54,7 +59,11 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
     # acquisition to prevent a TOCTOU window where the status could go stale
     # between the read and the mutation.
     with STATE_LOCK:
-        has_results = bool(case.get("parse_results") or case.get("artifact_csv_paths"))
+        has_results = bool(
+            case.get("parse_results")
+            or case.get("artifact_csv_paths")
+            or case.get("image_artifact_csv_paths")
+        )
         analysis_artifacts_state = case.get("analysis_artifacts")
         case_dir = case["case_dir"]
         analysis_date_range = case.get("analysis_date_range")
@@ -95,6 +104,12 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         ]
         if not images_payload:
             images_payload = None
+
+    if images_payload is None:
+        with STATE_LOCK:
+            images_payload = build_multi_image_analysis_payload_from_case(
+                copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
+            )
 
     prompt_path = Path(case_dir) / "prompt.txt"
     prompt_details: dict[str, Any] = {"prompt": sanitize_prompt(prompt)}

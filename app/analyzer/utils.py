@@ -7,6 +7,7 @@ analyzer sub-modules.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 import re
@@ -33,6 +34,8 @@ __all__ = [
     "format_datetime",
     "normalize_table_cell",
     "sanitize_filename",
+    "stable_identity_hash",
+    "build_scoped_artifact_stem",
     "build_datetime",
     "parse_int",
     "normalize_datetime",
@@ -122,6 +125,63 @@ def sanitize_filename(value: str) -> str:
     """
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
     return cleaned or "artifact"
+
+
+def stable_identity_hash(value: str, length: int = 10) -> str:
+    """Return a stable short hash for an identity string.
+
+    Args:
+        value: Raw identity text to hash.
+        length: Number of hexadecimal characters to return.
+
+    Returns:
+        A deterministic lowercase hexadecimal hash prefix.
+    """
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+    return digest[: max(1, int(length))]
+
+
+def build_scoped_artifact_stem(
+    scope_id: str | None,
+    artifact_key: str,
+) -> str:
+    """Build a collision-resistant image/artifact filename stem.
+
+    The readable portion is built from sanitized scope and artifact
+    identifiers.  A stable hash is appended when sanitization or boundary
+    separators could collapse distinct raw values, such as ``"img/1"``
+    and ``"img 1"``.
+
+    Args:
+        scope_id: Optional image or analysis scope identifier.
+        artifact_key: Artifact identifier.
+
+    Returns:
+        A filename-safe stem suitable for prompts, CSVs, attachments, and
+        scoped lookup keys.
+    """
+    raw_scope = str(scope_id or "").strip()
+    raw_artifact = str(artifact_key or "").strip()
+    safe_artifact = sanitize_filename(raw_artifact)
+    if not raw_scope:
+        if raw_artifact != safe_artifact or "__" in safe_artifact:
+            return f"{safe_artifact}__{stable_identity_hash(raw_artifact)}"
+        return safe_artifact
+
+    safe_scope = sanitize_filename(raw_scope)
+    stem = f"{safe_scope}__{safe_artifact}"
+
+    needs_hash = (
+        raw_scope != safe_scope
+        or raw_artifact != safe_artifact
+        or safe_scope.endswith("_")
+        or safe_artifact.startswith("_")
+        or "__" in safe_artifact
+    )
+    if needs_hash:
+        hash_seed = f"{raw_scope}\0{raw_artifact}"
+        stem = f"{stem}__{stable_identity_hash(hash_seed)}"
+    return stem
 
 
 def truncate_for_prompt(value: str, limit: int) -> str:

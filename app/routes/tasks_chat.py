@@ -31,6 +31,7 @@ from .state import (
     get_case,
     set_progress_status,
 )
+from .evidence import collect_case_image_csv_paths
 from .artifacts import sanitize_prompt
 
 __all__ = [
@@ -212,12 +213,21 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
         case_id: UUID of the case.
         message: The user's chat message.
         config_snapshot: Deep copy of application config.
+
+    Returns:
+        None. Results are emitted to the chat progress stream and written
+        to the per-case chat history.
     """
     # Import here to avoid circular dependency with tasks.py.
     from .tasks import load_case_analysis_results, resolve_case_investigation_context, resolve_case_parsed_dir
     cancel_event = get_cancel_event(CHAT_PROGRESS, case_id)
 
     def _cancel_requested() -> bool:
+        """Return whether the current chat run has been cancelled.
+
+        Returns:
+            ``True`` when the progress cancel event is set.
+        """
         return cancel_event is not None and cancel_event.is_set()
 
     case = get_case(case_id)
@@ -301,8 +311,19 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
         # excluding the primary parsed dir to avoid searching it twice.
         primary_parsed_dir = resolve_case_parsed_dir(case_snapshot)
         additional_parsed_dirs: list[str] = []
+        csv_path_groups: list[tuple[str, str, list[Path]]] = []
+        image_csv_paths = collect_case_image_csv_paths(case_snapshot)
+        image_ids_with_csv = {image_id for image_id, _label, _path in image_csv_paths}
+        if len(image_ids_with_csv) > 1:
+            grouped_paths: dict[tuple[str, str], list[Path]] = {}
+            for image_id, label, csv_path in image_csv_paths:
+                grouped_paths.setdefault((image_id, label), []).append(csv_path)
+            csv_path_groups = [
+                (image_id, label, paths)
+                for (image_id, label), paths in grouped_paths.items()
+            ]
         image_states = case_snapshot.get("image_states", {})
-        if isinstance(image_states, dict) and len(image_states) > 1:
+        if not csv_path_groups and isinstance(image_states, dict) and len(image_states) > 1:
             primary_resolved = str(primary_parsed_dir.resolve())
             for img_state in image_states.values():
                 if isinstance(img_state, dict):
@@ -314,6 +335,7 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
             question=message,
             parsed_dir=primary_parsed_dir,
             additional_parsed_dirs=additional_parsed_dirs if additional_parsed_dirs else None,
+            csv_path_groups=csv_path_groups if csv_path_groups else None,
         )
         retrieved_artifacts: list[str] = []
         if isinstance(retrieved_payload.get("artifacts"), list):
