@@ -66,6 +66,7 @@ from .state import (
     emit_progress,
     error_response,
     get_case,
+    mark_case_status,
     new_progress,
     stream_sse,
     success_response,
@@ -295,7 +296,7 @@ def start_parse(case_id: str) -> tuple[Response, int]:
         previous_progress = PARSE_PROGRESS.get(case_id)
         case_dir = Path(case["case_dir"])
         PARSE_PROGRESS[case_id] = new_progress(status="running")
-        case["status"] = "running"
+        mark_case_status(case_id, "running")
         case["selected_artifacts"] = list(parse_artifacts)
         case["analysis_artifacts"] = list(analysis_artifacts)
         case["artifact_options"] = list(artifact_options)

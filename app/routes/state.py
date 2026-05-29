@@ -282,7 +282,12 @@ def set_progress_status(
 
 
 def _append_progress_event_locked(state: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Append a progress event to *state* while ``STATE_LOCK`` is held."""
+    """Append a progress event to *state* while ``STATE_LOCK`` is held.
+
+    Args:
+        state: Progress entry dictionary receiving the event.
+        payload: Event payload to copy and append.
+    """
     event = dict(payload)
     event.setdefault("timestamp", now_iso())
     event["sequence"] = len(state.setdefault("events", []))
@@ -296,7 +301,15 @@ def set_progress_status_and_emit(
     payload: dict[str, Any],
     error: str | None = None,
 ) -> None:
-    """Atomically update progress status and append one SSE event."""
+    """Atomically update progress status and append one SSE event.
+
+    Args:
+        store: Progress store containing the case entry.
+        case_id: UUID of the case or composite progress key.
+        status: New status for the progress entry.
+        payload: Event payload to append after updating the status.
+        error: Optional error message to store with the progress entry.
+    """
     with STATE_LOCK:
         state = store.setdefault(case_id, new_progress())
         state["status"] = status
@@ -406,11 +419,59 @@ def emit_progress(
         _append_progress_event_locked(state, payload)
 
 
+def _case_id_from_progress_key(progress_key: str) -> str:
+    """Return the owning case ID for a progress-store key.
+
+    Args:
+        progress_key: Case-level key or composite key such as
+            ``"<case_id>::<image_id>"``.
+
+    Returns:
+        The case ID portion of the key.
+    """
+    return progress_key.split("::", 1)[0]
+
+
+def _progress_key_matches_case(progress_key: str, case_id: str) -> bool:
+    """Return whether *progress_key* belongs to *case_id*.
+
+    Args:
+        progress_key: Progress-store key to test.
+        case_id: Case ID that may own the key.
+
+    Returns:
+        ``True`` for exact case keys and composite image keys owned by
+        the case.
+    """
+    return progress_key == case_id or progress_key.startswith(f"{case_id}::")
+
+
+def _remove_case_progress_entries_locked(case_id: str) -> None:
+    """Remove all progress entries owned by a case while locked.
+
+    Args:
+        case_id: UUID of the case whose case-level and composite progress
+            entries should be removed.
+    """
+    for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
+        for progress_key in [
+            key for key in store
+            if _progress_key_matches_case(key, case_id)
+        ]:
+            store.pop(progress_key, None)
+
+
 def active_operations_for_case(case_id: str) -> list[dict[str, Any]]:
     """Return active parse/analysis/chat/delete-style operations for a case.
 
     Must be called without holding slow I/O. The returned dictionaries are
     intentionally small so route handlers can produce clear 409 responses.
+
+    Args:
+        case_id: UUID of the case to inspect.
+
+    Returns:
+        Active operation descriptors for the case.
     """
     operations: list[dict[str, Any]] = []
     with STATE_LOCK:
@@ -450,7 +511,15 @@ def active_operations_for_case(case_id: str) -> list[dict[str, Any]]:
 
 
 def case_has_active_operation(case_id: str) -> bool:
-    """Return ``True`` if any active operation is registered for *case_id*."""
+    """Return whether any active operation is registered for a case.
+
+    Args:
+        case_id: UUID of the case to inspect.
+
+    Returns:
+        ``True`` if an operation is running, cancelling, deleting, or
+        replacing evidence.
+    """
     return bool(active_operations_for_case(case_id))
 
 
@@ -463,7 +532,7 @@ def _cleanup_progress_store(store: dict[str, dict[str, Any]], case_id: str) -> N
 
     Args:
         store: One of the progress dicts.
-        case_id: UUID of the case.
+        case_id: UUID of the case or composite progress key.
     """
     with STATE_LOCK:
         entry = store.get(case_id)
@@ -476,14 +545,18 @@ def stream_sse(store: dict[str, dict[str, Any]], case_id: str) -> Response:
 
     Args:
         store: One of the progress dicts.
-        case_id: UUID of the case.
+        case_id: UUID of the case or composite progress key.
 
     Returns:
         A Flask ``Response`` with ``text/event-stream`` MIME type.
     """
     @stream_with_context
     def stream() -> Any:
-        """Generate SSE data frames by polling the progress event store."""
+        """Generate SSE data frames by polling the progress event store.
+
+        Returns:
+            Iterator yielding encoded SSE frame strings.
+        """
         last = 0
         initial_idle_deadline = time.monotonic() + SSE_INITIAL_IDLE_GRACE_SECONDS
         try:
@@ -496,7 +569,7 @@ def stream_sse(store: dict[str, dict[str, Any]], case_id: str) -> Response:
                         # already drained/cleaned; tell the client the
                         # operation finished rather than emitting a
                         # misleading "Case not found" error.
-                        case_exists = case_id in CASE_STATES
+                        case_exists = _case_id_from_progress_key(case_id) in CASE_STATES
                         if case_exists:
                             synthetic = {"type": "complete", "message": "Already completed."}
                         else:
@@ -577,8 +650,9 @@ def get_case(case_id: str) -> dict[str, Any] | None:
 def mark_case_status(case_id: str, status: str) -> None:
     """Update the in-memory status of a case. No-op if case missing.
 
-    When transitioning to a terminal status, records the monotonic timestamp
-    in ``_terminal_since`` so cleanup can apply a TTL grace period.
+    Non-terminal transitions clear stale ``_terminal_since`` values.  Terminal
+    transitions record a fresh monotonic timestamp so cleanup applies the TTL
+    from the latest completed lifecycle.
 
     Args:
         case_id: UUID of the case.
@@ -588,9 +662,25 @@ def mark_case_status(case_id: str, status: str) -> None:
     with STATE_LOCK:
         case = CASE_STATES.get(case_id)
         if case is not None:
+            previous = normalize_case_status(case.get("status"))
             case["status"] = normalized
-            if normalized in TERMINAL_CASE_STATUSES and "_terminal_since" not in case:
-                case["_terminal_since"] = time.monotonic()
+            if normalized in TERMINAL_CASE_STATUSES:
+                try:
+                    terminal_since = float(case.get("_terminal_since") or 0.0)
+                except (TypeError, ValueError):
+                    terminal_since = 0.0
+                terminal_expired = (
+                    bool(terminal_since)
+                    and (time.monotonic() - terminal_since) > CASE_TTL_SECONDS
+                )
+                if (
+                    previous != normalized
+                    or "_terminal_since" not in case
+                    or terminal_expired
+                ):
+                    case["_terminal_since"] = time.monotonic()
+            else:
+                case.pop("_terminal_since", None)
 
 
 def cleanup_case_entries(case_id: str) -> None:
@@ -601,9 +691,7 @@ def cleanup_case_entries(case_id: str) -> None:
     """
     with STATE_LOCK:
         CASE_STATES.pop(case_id, None)
-        PARSE_PROGRESS.pop(case_id, None)
-        ANALYSIS_PROGRESS.pop(case_id, None)
-        CHAT_PROGRESS.pop(case_id, None)
+        _remove_case_progress_entries_locked(case_id)
     unregister_case_log_handler(case_id)
 
 
@@ -621,9 +709,9 @@ def _is_case_expired(case_id: str, now: float) -> bool:
     """
     latest_created = 0.0
     for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
-        entry = store.get(case_id)
-        if entry is not None:
-            latest_created = max(latest_created, entry.get("created_at", 0.0))
+        for progress_key, entry in store.items():
+            if _progress_key_matches_case(progress_key, case_id):
+                latest_created = max(latest_created, entry.get("created_at", 0.0))
     if latest_created == 0.0:
         return False
     return (now - latest_created) > CASE_TTL_SECONDS
@@ -640,7 +728,7 @@ def _evict_orphaned_progress(now: float) -> None:
     for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
         orphan_ids = [
             cid for cid in store
-            if cid not in CASE_STATES
+            if _case_id_from_progress_key(cid) not in CASE_STATES
             and (now - store[cid].get("created_at", 0.0)) > CASE_TTL_SECONDS
         ]
         for cid in orphan_ids:
@@ -675,9 +763,7 @@ def cleanup_terminal_cases(exclude_case_id: str | None = None) -> None:
                 evict_case_ids.append(case_id)
         for case_id in evict_case_ids:
             CASE_STATES.pop(case_id, None)
-            PARSE_PROGRESS.pop(case_id, None)
-            ANALYSIS_PROGRESS.pop(case_id, None)
-            CHAT_PROGRESS.pop(case_id, None)
+            _remove_case_progress_entries_locked(case_id)
         _evict_orphaned_progress(now)
     for case_id in evict_case_ids:
         unregister_case_log_handler(case_id)

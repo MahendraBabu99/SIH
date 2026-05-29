@@ -33,6 +33,7 @@ from .evidence_utils import (
 
 from .state import (
     ANALYSIS_PROGRESS,
+    ACTIVE_PROGRESS_STATUSES,
     CASES_ROOT,
     CHAT_PROGRESS,
     PARSE_PROGRESS,
@@ -125,7 +126,12 @@ def _progress_key(case_id: str, image_id: str) -> str:
 
 
 def _purge_case_downstream_files(case_dir: Path) -> None:
-    """Remove analysis, chat, prompt, and generated reports for stale state."""
+    """Remove analysis, chat, prompt, and generated reports for stale state.
+
+    Args:
+        case_dir: Path to the case directory whose downstream files should
+            be removed.
+    """
     for stale_name in ("analysis_results.json", "prompt.txt", "chat_history.jsonl"):
         try:
             (case_dir / stale_name).unlink(missing_ok=True)
@@ -140,8 +146,12 @@ def _purge_case_downstream_files(case_dir: Path) -> None:
                 LOGGER.warning("Failed to remove stale report: %s", report_path, exc_info=True)
 
 
-def _rebuild_case_parse_state_from_images(case: dict[str, Any]) -> bool:
+def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) -> bool:
     """Rebuild aggregate parse fields from remaining per-image state.
+
+    Args:
+        case_id: UUID of the case being rebuilt.
+        case: In-memory case state dictionary to mutate.
 
     Returns:
         ``True`` when at least one image still has parsed output.
@@ -197,9 +207,9 @@ def _rebuild_case_parse_state_from_images(case: dict[str, Any]) -> bool:
     case["investigation_context"] = ""
     if not merged_results and not merged_csv_map:
         case["analysis_date_range"] = None
-        case["status"] = "evidence_loaded"
+        mark_case_status(case_id, "evidence_loaded")
         return False
-    case["status"] = "parsed"
+    mark_case_status(case_id, "parsed")
     return True
 
 
@@ -210,7 +220,19 @@ def _finish_image_parse_progress(
     event: dict[str, Any],
     error: str | None = None,
 ) -> str | None:
-    """Finish one image parse and atomically update aggregate case progress."""
+    """Finish one image parse and atomically update aggregate case progress.
+
+    Args:
+        case_id: UUID of the case that owns the image.
+        image_id: UUID of the parsed image.
+        status: Terminal status for the image-level parse progress.
+        event: SSE event payload to append to image and aggregate progress.
+        error: Optional error message for failed aggregate progress.
+
+    Returns:
+        The aggregate case-level parse status when no related image parses
+        remain active, or ``None`` while other image parses are still active.
+    """
     progress_key = _progress_key(case_id, image_id)
     event = {**event, "image_id": image_id}
     with STATE_LOCK:
@@ -458,7 +480,7 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
         # Remove from image_states.
         image_states = case.get("image_states", {})
         image_states.pop(image_id, None)
-        has_remaining_parse = _rebuild_case_parse_state_from_images(case)
+        has_remaining_parse = _rebuild_case_parse_state_from_images(case_id, case)
 
         # Clear per-image progress keys.
         img_progress_key = _progress_key(case_id, image_id)
@@ -514,21 +536,61 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
     except ValueError:
         return error_response("Invalid image identifier.", 400)
 
+    case_snapshot: dict[str, Any] = {}
+    progress_snapshots: list[tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]] = []
+    replacement_committed = False
     with STATE_LOCK:
         if active_operations_for_case(case_id):
             return error_response(
                 "Cannot replace evidence while parsing, analysis, or chat is running.", 409,
             )
+        case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
+        progress_prefix = f"{case_id}::"
+        progress_snapshots = [
+            (
+                store,
+                {
+                    key: value
+                    for key, value in store.items()
+                    if key == case_id or key.startswith(progress_prefix)
+                },
+            )
+            for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS)
+        ]
         case_dir = case["case_dir"]
         audit_logger = case["audit"]
+        image_states = case.setdefault("image_states", {})
+        existing_img_state = image_states.get(image_id, {})
+        original_img_state: dict[str, Any] = {}
+        if isinstance(existing_img_state, dict):
+            original_img_state = copy.deepcopy(existing_img_state)
+        marker_state = copy.deepcopy(original_img_state)
+        marker_state["status"] = "replacing"
+        image_states[image_id] = marker_state
 
     # Use the image-specific evidence directory.
     evidence_dir = image_dir / "evidence"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
 
-    from .evidence import resolve_evidence_payload
+    def restore_replacement_state() -> None:
+        """Restore in-memory case state captured before evidence replacement."""
+        with STATE_LOCK:
+            audit = case.get("audit")
+            case.clear()
+            case.update(copy.deepcopy(case_snapshot))
+            if audit is not None:
+                case["audit"] = audit
+            progress_prefix = f"{case_id}::"
+            for store, snapshot in progress_snapshots:
+                for key in [
+                    key for key in store
+                    if key == case_id or key.startswith(progress_prefix)
+                ]:
+                    store.pop(key, None)
+                store.update(snapshot)
 
     try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+
         # Temporarily point the case_dir to the image_dir so
         # resolve_evidence_payload writes to the correct location.
         evidence_payload = _resolve_evidence_for_image(image_dir)
@@ -631,10 +693,11 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
                 "extracted_from": evidence_payload.get("extracted_from", ""),
                 "extraction_root": evidence_payload.get("extraction_root", ""),
+                "status": "replacing",
             }
             image_states[image_id] = new_img_state
 
-            other_images_have_results = _rebuild_case_parse_state_from_images(case)
+            other_images_have_results = _rebuild_case_parse_state_from_images(case_id, case)
 
             # Set top-level evidence fields for backward compatibility
             # with V1 code paths.  Only overwrite when this is the first
@@ -704,6 +767,12 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         if prev_csv_output_dir:
             invalidate_header_cache(prev_csv_output_dir)
 
+        with STATE_LOCK:
+            image_states = case.setdefault("image_states", {})
+            current_img_state = image_states.get(image_id)
+            if isinstance(current_img_state, dict):
+                current_img_state.pop("status", None)
+
         os_warning = ""
         if detected_os_type == "unknown":
             os_warning = (
@@ -728,11 +797,16 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         if os_warning:
             response_data["os_warning"] = os_warning
 
+        replacement_committed = True
         return success_response(response_data)
     except (ValueError, FileNotFoundError) as error:
+        if not replacement_committed:
+            restore_replacement_state()
         return error_response(str(error), 400)
     except Exception:
         LOGGER.exception("Evidence intake failed for case %s image %s", case_id, image_id)
+        if not replacement_committed:
+            restore_replacement_state()
         return error_response(
             "Evidence intake failed due to an unexpected error. "
             "Confirm the evidence file is supported and try again.",
@@ -845,7 +919,7 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         case_progress["status"] = "running"
         case_progress["error"] = None
 
-        case["status"] = "running"
+        mark_case_status(case_id, "running")
         case["selected_artifacts"] = list(parse_artifacts)
         case["analysis_artifacts"] = list(analysis_artifacts)
         case["artifact_options"] = list(artifact_options)
@@ -868,9 +942,9 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         # then rebuild from any other images that are still parsed.
         case["analysis_results"] = {}
         case["investigation_context"] = ""
-        _rebuild_case_parse_state_from_images(case)
+        _rebuild_case_parse_state_from_images(case_id, case)
         case["analysis_date_range"] = analysis_date_range
-        case["status"] = "running"
+        mark_case_status(case_id, "running")
 
         case_dir = Path(case["case_dir"])
 
@@ -958,9 +1032,16 @@ def stream_image_parse_progress(case_id: str, image_id: str) -> Response | tuple
         return error_response(f"Case not found: {case_id}", 404)
 
     progress_key = _progress_key(case_id, image_id)
-    # Fall back to case-level if image-specific key doesn't exist.
+    # Fall back only while the aggregate case-level parse is actively
+    # running.  After image progress is cleaned up, keep the composite key
+    # so stream_sse can emit a reconnect-safe completion frame.
     with STATE_LOCK:
-        if progress_key not in PARSE_PROGRESS:
+        case_progress = PARSE_PROGRESS.get(case_id)
+        case_progress_status = str((case_progress or {}).get("status", "")).strip().lower()
+        if (
+            progress_key not in PARSE_PROGRESS
+            and case_progress_status in ACTIVE_PROGRESS_STATUSES
+        ):
             progress_key = case_id
 
     return stream_sse(PARSE_PROGRESS, progress_key)
@@ -972,7 +1053,14 @@ def stream_image_parse_progress(case_id: str, image_id: str) -> Response | tuple
 
 
 def _discovery_label_for_path(path: Path) -> str:
-    """Return a friendly default image label for a discovered evidence path."""
+    """Return a friendly default image label for a discovered evidence path.
+
+    Args:
+        path: Discovered evidence file or directory path.
+
+    Returns:
+        Human-readable label derived from the path.
+    """
     label = path.stem if path.is_file() else path.name
     return str(label or path.name or "Image").strip() or "Image"
 

@@ -109,7 +109,14 @@ def stream_chat_progress(case_id: str) -> Response | tuple[Response, int]:
 
 @chat_bp.post("/api/cases/<case_id>/chat/cancel")
 def cancel_chat(case_id: str) -> tuple[Response, int]:
-    """Cancel a running chat response for a case."""
+    """Cancel a running chat response for a case.
+
+    Args:
+        case_id: UUID of the case.
+
+    Returns:
+        ``(Response, 200)`` confirming cancellation, or error.
+    """
     if get_case(case_id) is None:
         return error_response(f"Case not found: {case_id}", 404)
     cancelled = cancel_progress(CHAT_PROGRESS, case_id, "chat_cancel_requested")
@@ -151,6 +158,11 @@ def clear_case_chat_history(case_id: str) -> Response | tuple[Response, int]:
     if case is None:
         return error_response(f"Case not found: {case_id}", 404)
     with STATE_LOCK:
+        if active_operations_for_case(case_id):
+            return error_response(
+                "Cannot clear chat history while another case operation is running.",
+                409,
+            )
         case_dir = case["case_dir"]
         audit_logger = case["audit"]
     manager = ChatManager(case_dir)

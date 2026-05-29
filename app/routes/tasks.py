@@ -178,7 +178,14 @@ def run_task_with_case_log_context(
 
 
 def resolve_artifact_csv_row_limit(config_snapshot: dict[str, Any]) -> int:
-    """Return the configured per-artifact CSV row cap; ``0`` means unlimited."""
+    """Return the configured per-artifact CSV row cap.
+
+    Args:
+        config_snapshot: Application configuration snapshot.
+
+    Returns:
+        Non-negative row cap, where ``0`` means unlimited.
+    """
     config = config_snapshot if isinstance(config_snapshot, dict) else {}
     analysis = config.get("analysis", {}) if isinstance(config, dict) else {}
     raw_value = (
@@ -193,7 +200,16 @@ def resolve_artifact_csv_row_limit(config_snapshot: dict[str, Any]) -> int:
 
 
 def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
-    """Return whether *callable_obj* accepts a keyword argument."""
+    """Return whether a callable accepts a keyword argument.
+
+    Args:
+        callable_obj: Callable or class to inspect.
+        keyword: Keyword parameter name to check for.
+
+    Returns:
+        ``True`` when the callable explicitly accepts the keyword or
+        accepts arbitrary keyword arguments.
+    """
     try:
         signature = inspect.signature(callable_obj)
     except (TypeError, ValueError):
@@ -304,7 +320,14 @@ def run_parse_loop(
             def _progress_callback(
                 *args: Any, _art: str = artifact, **_kwargs: Any,
             ) -> None:
-                """Emit per-artifact parse progress events."""
+                """Emit per-artifact parse progress events.
+
+                Args:
+                    *args: Parser callback arguments containing progress
+                        details.
+                    _art: Artifact key bound for the current parse loop item.
+                    **_kwargs: Ignored parser callback keyword arguments.
+                """
                 artifact_key, record_count = extract_parse_progress(_art, args)
                 emit_progress(
                     PARSE_PROGRESS, progress_key,
@@ -488,17 +511,24 @@ def _purge_stale_analysis(case: dict[str, Any], case_dir: str) -> None:
 
     This prevents stale findings from a prior successful analysis from
     being served via chat, report, or download routes after a re-analysis
-    fails or is cancelled.
+    fails or is cancelled.  Cleanup is best-effort: failures are logged but
+    never propagated so callers can always publish terminal progress.
 
     Args:
         case: The in-memory case state dictionary.
         case_dir: Path string to the case directory.
     """
-    with STATE_LOCK:
-        case["analysis_results"] = {}
-    results_path = Path(case_dir) / "analysis_results.json"
-    if results_path.exists():
-        results_path.unlink(missing_ok=True)
+    try:
+        with STATE_LOCK:
+            case["analysis_results"] = {}
+    except Exception:
+        LOGGER.warning("Failed to clear stale in-memory analysis results.", exc_info=True)
+    try:
+        results_path = Path(case_dir) / "analysis_results.json"
+        if results_path.exists():
+            results_path.unlink(missing_ok=True)
+    except Exception:
+        LOGGER.warning("Failed to remove stale analysis results from disk.", exc_info=True)
 
 
 def _make_analysis_progress_callback(case_id: str) -> Callable[..., None]:
@@ -520,7 +550,12 @@ def _make_analysis_progress_callback(case_id: str) -> Callable[..., None]:
     """
 
     def _analysis_progress(*args: Any) -> None:
-        """Emit per-artifact analysis progress events."""
+        """Emit per-artifact analysis progress events.
+
+        Args:
+            *args: Analyzer callback payload in one of the supported calling
+                conventions.
+        """
         artifact_key = ""
         status = ""
         result: dict[str, Any] = {}

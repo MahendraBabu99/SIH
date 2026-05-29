@@ -23,6 +23,7 @@ from .state import (
     error_response,
     success_response,
     get_case,
+    mark_case_status,
     new_progress,
     emit_progress,
     stream_sse,
@@ -119,7 +120,7 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
         previous_progress = ANALYSIS_PROGRESS.get(case_id)
         ANALYSIS_PROGRESS[case_id] = new_progress(status="running")
-        case["status"] = "running"
+        mark_case_status(case_id, "running")
         case["investigation_context"] = prompt
         # Invalidate prior analysis outputs so a subsequent failure cannot
         # leave stale results accessible via chat/report/download routes.
