@@ -205,7 +205,7 @@ class AnalyzerTests(unittest.TestCase):
                     )
 
             analyzer = ForensicAnalyzer(
-                config={"analysis": {"artifact_deduplication_enabled": False}},
+                case_dir=temp_dir,
                 artifact_csv_paths={"custom": csv_path},
                 prompts_dir=prompts_dir,
             )
@@ -213,11 +213,16 @@ class AnalyzerTests(unittest.TestCase):
                 artifact_key="custom",
                 investigation_context="Review every row.",
             )
+            analysis_csv_path = temp_path / "parsed_deduplicated" / "custom.csv"
+            with analysis_csv_path.open(newline="", encoding="utf-8") as handle:
+                retained_rows = list(csv.DictReader(handle))
 
         self.assertIn("Total=800", filled_prompt)
-        self.assertIn("Entry1", filled_prompt)
-        self.assertIn("Entry700", filled_prompt)
-        self.assertIn("Entry800", filled_prompt)
+        self.assertEqual(len(retained_rows), 800)
+        self.assertEqual(
+            {row["name"] for row in retained_rows},
+            {f"Entry{index}" for index in range(1, 801)},
+        )
 
     def test_prepare_artifact_data_includes_priority_directives_and_ioc_targets(self) -> None:
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
@@ -496,6 +501,53 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("OldEntry", filled_prompt)
         self.assertIn("Total=3", filled_prompt)
 
+    def test_run_full_analysis_does_not_infer_date_filter_from_prompt_text(self) -> None:
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+
+            csv_path = temp_path / "runkeys.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "name", "command", "key"])
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "ts": "2026-01-15T12:00:00+00:00",
+                        "name": "PromptDateRow",
+                        "command": r"C:\Users\Public\evil.exe",
+                        "key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "ts": "2024-05-01T12:00:00+00:00",
+                        "name": "OlderButStillInScopeWithoutExplicitFilter",
+                        "command": r"C:\Program Files\Legit\app.exe",
+                        "key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    }
+                )
+
+            fake_provider = FakeProvider(responses=["runkeys-analysis", "summary-analysis"])
+            with patch("app.analyzer.core.create_provider", return_value=fake_provider):
+                analyzer = ForensicAnalyzer(
+                    artifact_csv_paths={"runkeys": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                analyzer.run_full_analysis(
+                    artifact_keys=["runkeys"],
+                    investigation_context=(
+                        "Focus on January 15, 2026. This date is investigation context, "
+                        "not an instruction to filter artifact rows."
+                    ),
+                    metadata={},
+                )
+
+        runkeys_prompt = fake_provider.calls[0]["user_prompt"]
+        self.assertIn("PromptDateRow", runkeys_prompt)
+        self.assertIn("OlderButStillInScopeWithoutExplicitFilter", runkeys_prompt)
+        self.assertIn("Total=2", runkeys_prompt)
+
     def test_prepare_artifact_data_includes_rows_with_aware_timestamps(self) -> None:
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
@@ -631,6 +683,67 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Total=1", runkeys_prompt)
         self.assertIn("InRange", runkeys_prompt)
         self.assertNotIn("OutOfRange", runkeys_prompt)
+
+    def test_explicit_analysis_date_range_filters_every_selected_artifact(self) -> None:
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+
+            mft_path = temp_path / "mft.csv"
+            with mft_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "path"])
+                writer.writeheader()
+                writer.writerow({"ts": "2026-01-15T12:00:00+00:00", "path": r"C:\Temp\mft-in-range.exe"})
+                writer.writerow({"ts": "2025-11-01T12:00:00+00:00", "path": r"C:\Temp\mft-old.exe"})
+
+            runkeys_path = temp_path / "runkeys.csv"
+            with runkeys_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "name", "command", "key"])
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "ts": "2026-01-16T12:00:00+00:00",
+                        "name": "RunKeyInRange",
+                        "command": r"C:\Temp\runkey-in-range.exe",
+                        "key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "ts": "2025-11-01T12:00:00+00:00",
+                        "name": "RunKeyOld",
+                        "command": r"C:\Temp\runkey-old.exe",
+                        "key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                    }
+                )
+
+            fake_provider = FakeProvider(responses=["mft-analysis", "runkeys-analysis", "summary-analysis"])
+            with patch("app.analyzer.core.create_provider", return_value=fake_provider):
+                analyzer = ForensicAnalyzer(
+                    artifact_csv_paths={"mft": mft_path, "runkeys": runkeys_path},
+                    prompts_dir=prompts_dir,
+                )
+                analyzer.run_full_analysis(
+                    artifact_keys=["mft", "runkeys"],
+                    investigation_context="",
+                    metadata={
+                        "analysis_date_range": {
+                            "start_date": "2026-01-01",
+                            "end_date": "2026-01-31",
+                        }
+                    },
+                )
+
+        artifact_prompts = {
+            call["user_prompt"].split("Key=", 1)[1].splitlines()[0]: call["user_prompt"]
+            for call in fake_provider.calls
+            if "Data:" in call["user_prompt"]
+        }
+        self.assertIn(r"C:\Temp\mft-in-range.exe", artifact_prompts["mft"])
+        self.assertNotIn(r"C:\Temp\mft-old.exe", artifact_prompts["mft"])
+        self.assertIn("RunKeyInRange", artifact_prompts["runkeys"])
+        self.assertNotIn("RunKeyOld", artifact_prompts["runkeys"])
 
     def test_date_filter_without_projection_writes_authoritative_attachment_csv(self) -> None:
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
@@ -946,7 +1059,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(projected_header, "row_ref,ts,name,command,username")
         self.assertEqual(fake_provider.attachments_calls[0][0]["mime_type"], "text/csv")
 
-    def test_analyze_artifact_chunks_when_attachment_fallback_would_exceed_budget(self) -> None:
+    def test_attachment_fallback_uses_chunking_contract_for_large_retained_data(self) -> None:
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -963,12 +1076,12 @@ class AnalyzerTests(unittest.TestCase):
             with csv_path.open("w", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(handle, fieldnames=["ts", "name", "command", "key", "username"])
                 writer.writeheader()
-                for index in range(1, 41):
+                for index in range(1, 66):
                     writer.writerow(
                         {
                             "ts": "2026-01-15T12:00:00+00:00",
                             "name": f"Entry{index}",
-                            "command": f"C:\\Temp\\tool-{index}.exe " + ("x" * 100),
+                            "command": f"C:\\Temp\\tool-{index}.exe " + ("x" * 160),
                             "key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
                             "username": "testuser",
                         }
@@ -980,36 +1093,17 @@ class AnalyzerTests(unittest.TestCase):
                     case_dir=temp_dir,
                     config={
                         "ai": {"provider": "local"},
-                        "analysis": {"artifact_deduplication_enabled": False},
+                        "analysis": {
+                            "ai_max_tokens": 6000,
+                            "ai_response_max_tokens": 1000,
+                            "ai_input_safety_margin_tokens": 0,
+                            "artifact_deduplication_enabled": False,
+                        },
                     },
                     audit_logger=FakeAuditLogger(),
                     artifact_csv_paths={"runkeys": csv_path},
                     prompts_dir=prompts_dir,
                 )
-                prepared_prompt = analyzer._prepare_artifact_data(
-                    artifact_key="runkeys",
-                    investigation_context="",
-                    csv_path=csv_path,
-                )
-                analysis_csv_path = analyzer._resolve_analysis_input_csv_path(
-                    artifact_key="runkeys",
-                    fallback=csv_path,
-                )
-                attachments = [
-                    {"path": str(analysis_csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
-                ]
-                base_estimate = analyzer._estimate_tokens(prepared_prompt) + analyzer._estimate_tokens(
-                    analyzer.system_prompt
-                )
-                inlined_estimate = analyzer._estimate_inlined_attachment_prompt_tokens(
-                    prepared_prompt,
-                    attachments,
-                )
-                self.assertIsNotNone(inlined_estimate)
-                self.assertGreater(inlined_estimate or 0, base_estimate)
-
-                analyzer.ai_input_max_tokens = (base_estimate + int(inlined_estimate or 0)) // 2
-                analyzer.chunk_csv_budget = 800
                 result = analyzer.analyze_artifact(
                     artifact_key="runkeys",
                     investigation_context="",
@@ -1024,7 +1118,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(fake_provider.attachments_calls, [])
         self.assertGreater(len(csv_prompts), 1)
-        for index in range(1, 41):
+        for index in range(1, 66):
             self.assertEqual(
                 sum(f",Entry{index}," in prompt_text for prompt_text in csv_prompts),
                 1,
