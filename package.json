@@ -1,0 +1,29 @@
+{
+  "name": "aift",
+  "version": "1.0.0",
+  "description": "<p align=\"center\">\r   <img src=\"images/AIFT Logo - White Text.png\" alt=\"AIFT Logo\" width=\"400\">\r </p>",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "jest --verbose"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FlipForensics/AIFT.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "AGPL-3.0-or-later",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/FlipForensics/AIFT/issues"
+  },
+  "homepage": "https://github.com/FlipForensics/AIFT#readme",
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
+    "jsdom": "^29.0.1"
+  }
+}

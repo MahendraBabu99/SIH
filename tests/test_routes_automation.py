@@ -463,6 +463,41 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
 
     @patch("app.routes.automation.run_automation")
     @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_split_e01_upload_passes_staged_directory_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Split image uploads are staged together for engine discovery."""
+        mock_run.return_value = _make_successful_result()
+        upload_root = Path(self.temp_dir.name) / "cases"
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": [
+                        (BytesIO(b"seg1"), "Evidence/Suspect.E01"),
+                        (BytesIO(b"seg2"), "Evidence/Suspect.E02"),
+                        (BytesIO(b"seg3"), "Evidence/Suspect.E03"),
+                    ],
+                    "prompt": "Investigate split evidence",
+                    "skip_hashing": "true",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        req = mock_run.call_args.args[0]
+        evidence_path = Path(req.evidence_path)
+        self.assertTrue(evidence_path.is_dir())
+        self.assertTrue(evidence_path.is_relative_to(upload_root.resolve()))
+        self.assertEqual((evidence_path / "Evidence/Suspect.E01").read_bytes(), b"seg1")
+        self.assertEqual((evidence_path / "Evidence/Suspect.E02").read_bytes(), b"seg2")
+        self.assertEqual((evidence_path / "Evidence/Suspect.E03").read_bytes(), b"seg3")
+        self.assertTrue(req.skip_hashing)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_multipart_upload_rejects_unsafe_relative_filename(
         self,
         mock_run: MagicMock,
@@ -482,6 +517,52 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
             )
 
         self.assertEqual(resp.status_code, 400)
+        mock_run.assert_not_called()
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_upload_rejects_windows_absolute_filename(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Folder uploads reject Windows absolute paths as unsafe input."""
+        mock_run.return_value = _make_successful_result()
+        upload_root = Path(self.temp_dir.name) / "cases"
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": (BytesIO(b"bad"), "C:\\Evidence\\disk.E01"),
+                    "prompt": "Investigate upload",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        mock_run.assert_not_called()
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_upload_rejects_invalid_date_range_json(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """Multipart options reject malformed date_range values early."""
+        mock_run.return_value = _make_successful_result()
+
+        resp = self.client.post(
+            "/api/automation/run",
+            data={
+                "evidence_file": (BytesIO(b"evidence"), "uploaded.E01"),
+                "prompt": "Investigate upload",
+                "date_range": "{not-json",
+            },
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("date_range", resp.get_json()["error"])
         mock_run.assert_not_called()
 
 
@@ -728,7 +809,10 @@ class TestReportDownload(AutomationRoutesTestBase):
     def test_html_report_download(self) -> None:
         """Download HTML report when run is completed and file exists."""
         html_file = Path(self.temp_dir.name) / "report.html"
-        html_file.write_text("<html><body>Report</body></html>", encoding="utf-8")
+        html_file.write_text(
+            "<html><body>AIFT Forensic Report: Run/RunOnce Keys</body></html>",
+            encoding="utf-8",
+        )
 
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-ok"] = {
@@ -750,12 +834,21 @@ class TestReportDownload(AutomationRoutesTestBase):
 
         resp = self.client.get("/api/automation/run/run-ok/report/html")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"Report", resp.data)
+        self.assertEqual(resp.mimetype, "text/html")
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        self.assertIn("report.html", resp.headers["Content-Disposition"])
+        self.assertIn(b"AIFT Forensic Report", resp.data)
+        self.assertNotIn(b"Report not available", resp.data)
 
     def test_json_report_download(self) -> None:
         """Download JSON report when run is completed and file exists."""
         json_file = Path(self.temp_dir.name) / "report.json"
-        json_file.write_text('{"case_id": "test"}', encoding="utf-8")
+        json_file.write_text(
+            '{"report_metadata": {"tool": "AIFT", "case_name": "Download Case"}, '
+            '"analysis": {"images": {"default": {"artifacts": '
+            '[{"artifact_key": "runkeys", "analysis_text": "Persistence found."}]}}}}',
+            encoding="utf-8",
+        )
 
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-j"] = {
@@ -777,7 +870,15 @@ class TestReportDownload(AutomationRoutesTestBase):
 
         resp = self.client.get("/api/automation/run/run-j/report/json")
         self.assertEqual(resp.status_code, 200)
-        self.assertIn(b"case_id", resp.data)
+        self.assertIn(resp.mimetype, {"application/json", "application/octet-stream"})
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        self.assertIn("report.json", resp.headers["Content-Disposition"])
+        body = json.loads(resp.data)
+        self.assertEqual(body["report_metadata"]["tool"], "AIFT")
+        self.assertEqual(
+            body["analysis"]["images"]["default"]["artifacts"][0]["artifact_key"],
+            "runkeys",
+        )
 
     def test_failed_run_html_report_download_when_file_exists(self) -> None:
         """Failed runs can still serve partial HTML report outputs."""

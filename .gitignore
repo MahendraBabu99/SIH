@@ -16,6 +16,7 @@ pip-wheel-metadata/
 .ruff_cache/
 .coverage
 .coverage.*
+coverage/
 htmlcov/
 test_data/
 
@@ -37,9 +38,11 @@ cases/
 
 # Node.js (JS test tooling only)
 node_modules/
-package.json
-package-lock.json
-jest.config.js
+
+# Local test outputs
+local_tests/.runs/
+local_tests/.pytest_cache/
+local_tests/**/__pycache__/
 
 # IDE and OS files
 .vscode/

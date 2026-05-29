@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run public pytest suite
+        run: python -m pytest -q
+
+      - name: Run Python coverage gate
+        # Current-floor gate; raise --cov-fail-under as public coverage grows.
+        run: >
+          python -m pytest
+          --cov=app
+          --cov=aift
+          --cov=aift_cli
+          --cov=runtime_compat
+          --cov-report=term-missing
+          --cov-fail-under=60
+          -q
+
+  javascript:
+    name: JavaScript Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest suite
+        run: npm test -- --runInBand
+
+      - name: Run Jest coverage gate
+        run: npm test -- --runInBand --coverage

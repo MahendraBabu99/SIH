@@ -52,10 +52,24 @@ function installBrowserStubs() {
   return { openSources };
 }
 
+function clearStaticRequireCache() {
+  productionScripts().forEach((script) => {
+    const absPath = path.join(STATIC, script);
+    try {
+      delete require.cache[require.resolve(absPath)];
+    } catch (_error) {
+      // Ignore scripts that are not resolvable in a focused harness setup.
+    }
+  });
+}
+
 function evalScript(relPath) {
+  const absPath = path.join(STATIC, relPath);
   try {
-    const fn = new Function(readStatic(relPath));
-    fn.call(window);
+    delete require.cache[require.resolve(absPath)];
+    jest.isolateModules(() => {
+      require(absPath);
+    });
   } catch (error) {
     throw new Error(`Failed to evaluate ${relPath}: ${error.message}`);
   }
@@ -70,6 +84,7 @@ function loadTemplate() {
 }
 
 function setupAift(options = {}) {
+  clearStaticRequireCache();
   loadTemplate();
   const stubs = installBrowserStubs();
   const omitted = new Set(options.omitScripts || []);
@@ -95,6 +110,7 @@ function setupAift(options = {}) {
 }
 
 function setupUtilsOnly() {
+  clearStaticRequireCache();
   loadTemplate();
   installBrowserStubs();
   evalScript("js/utils.js");
@@ -142,6 +158,7 @@ function cleanupAift() {
   document.body.innerHTML = "";
   document.head.innerHTML = "";
   if (jest.isMockFunction(global.fetch)) global.fetch.mockReset();
+  clearStaticRequireCache();
   jest.restoreAllMocks();
   try {
     jest.clearAllTimers();
