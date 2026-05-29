@@ -140,11 +140,12 @@ def _purge_case_downstream_files(case_dir: Path) -> None:
             LOGGER.warning("Failed to remove stale case artifact: %s", case_dir / stale_name, exc_info=True)
     reports_dir = case_dir / "reports"
     if reports_dir.is_dir():
-        for report_path in reports_dir.glob("report_*.html"):
-            try:
-                report_path.unlink(missing_ok=True)
-            except OSError:
-                LOGGER.warning("Failed to remove stale report: %s", report_path, exc_info=True)
+        for suffix in ("html", "json"):
+            for report_path in reports_dir.glob(f"report_*.{suffix}"):
+                try:
+                    report_path.unlink(missing_ok=True)
+                except OSError:
+                    LOGGER.warning("Failed to remove stale report: %s", report_path, exc_info=True)
 
 
 def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) -> bool:

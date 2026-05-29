@@ -204,7 +204,8 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertTrue(path.exists())
         expected_keys = {
             "report_metadata", "investigation_context", "evidence",
-            "analysis", "audit_trail", "disclaimer",
+            "hash_verification", "processing_notes", "analysis",
+            "audit_trail", "disclaimer",
         }
         self.assertEqual(set(data.keys()), expected_keys)
 
@@ -308,6 +309,73 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(evidence["img-2"]["hostname"], "workstation")
         self.assertEqual(evidence["img-2"]["hashes"]["sha256"], "2" * 64)
 
+    def test_missing_and_unmatched_records_are_reported(self) -> None:
+        """Partial metadata/hash inputs become processing notes."""
+        analysis = _make_multi_image_analysis()
+        metadata = [
+            {
+                **_make_metadata(),
+                "image_id": "img-1",
+                "hostname": "server",
+            },
+            {
+                **_make_metadata(),
+                "image_id": "img-extra",
+                "hostname": "orphan",
+            },
+        ]
+        hashes = [
+            {**_make_hashes(), "image_id": "img-1", "sha256": "1" * 64},
+        ]
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        evidence = {entry["image_id"]: entry for entry in data["evidence"]}
+        self.assertEqual(evidence["img-2"]["hashes"]["sha256"], "")
+        notes = " ".join(note["message"] for note in data["processing_notes"])
+        self.assertIn("No metadata record matched Workstation Image", notes)
+        self.assertIn("No hash record matched Workstation Image", notes)
+        self.assertIn("image_id 'img-extra'", notes)
+
+    def test_skipped_images_and_processing_warnings_are_reported(self) -> None:
+        """Skipped images and warnings are included in processing notes."""
+        analysis = _make_multi_image_analysis()
+        analysis["skipped_images"] = [
+            {
+                "image_id": "img-3",
+                "label": "Damaged Image",
+                "reason": "All artifact parsing failed.",
+            }
+        ]
+        analysis["processing_warnings"] = [
+            "Partial artifact parsing for Server Image.",
+        ]
+        metadata = [
+            {**_make_metadata(), "image_id": "img-1", "hostname": "server"},
+            {**_make_metadata(), "image_id": "img-2", "hostname": "workstation"},
+        ]
+        hashes = [
+            {**_make_hashes(), "image_id": "img-1", "sha256": "1" * 64},
+            {**_make_hashes(), "image_id": "img-2", "sha256": "2" * 64},
+        ]
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        notes = " ".join(note["message"] for note in data["processing_notes"])
+        self.assertIn("Skipped Damaged Image", notes)
+        self.assertIn("All artifact parsing failed", notes)
+        self.assertIn("Partial artifact parsing for Server Image", notes)
+        skipped = [entry for entry in data["evidence"] if entry["image_id"] == "img-3"]
+        self.assertEqual(skipped[0]["skip_reason"], "All artifact parsing failed.")
+
     def test_embedded_image_metadata_preferred(self) -> None:
         """Analysis image metadata wins over supplied positional metadata."""
         analysis = _make_multi_image_analysis()
@@ -361,6 +429,12 @@ class TestExportJsonReport(unittest.TestCase):
         img = data["analysis"]["images"]["default"]
         self.assertEqual(len(img["artifacts"]), 1)
         self.assertEqual(img["artifacts"][0]["artifact_key"], "runkeys")
+
+    def test_v1_legacy_inputs_do_not_emit_unmatched_notes(self) -> None:
+        """Single legacy metadata/hash records do not become warnings."""
+        _, data = self._export(analysis=_make_v1_analysis())
+
+        self.assertEqual(data["processing_notes"], [])
 
     def test_v1_single_image_export_still_includes_evidence(self) -> None:
         """V1 single-image export remains backwards compatible."""

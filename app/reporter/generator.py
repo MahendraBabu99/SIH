@@ -29,6 +29,7 @@ import base64
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -40,18 +41,25 @@ from ..utils import stringify as _stringify_impl
 from ..version import TOOL_VERSION
 from .markdown import format_block, format_markdown_block
 from .normalization import (
+    build_evidence_summary,
     coerce_per_artifact_iterable,
     convert_v1_to_multi_image,
+    format_file_size,
     looks_like_single_finding,
     mapping_to_kv_text,
     nested_lookup,
+    normalize_report_inputs,
     normalize_key_data_points,
     normalize_per_artifact_findings,
     normalize_to_list,
+    resolve_hash_verification,
     resolve_confidence,
+    stringify_ips,
 )
 
 __all__ = ["ReportGenerator"]
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CASE_NAME = "Untitled Investigation"
 DEFAULT_TOOL_VERSION = TOOL_VERSION
@@ -160,24 +168,18 @@ class ReportGenerator:
         """
         analysis = dict(analysis_results or {})
         audit_entries = self._normalize_audit_entries(audit_log_entries)
+        normalized_inputs = normalize_report_inputs(
+            analysis,
+            image_metadata,
+            evidence_hashes,
+            default_label=self._resolve_case_name(analysis),
+        )
+        for warning in normalized_inputs.warnings:
+            LOGGER.warning("Report input normalization warning: %s", warning)
 
-        # Detect multi-image vs V1 format.  The caller passes an "images"
-        # dict when the case involves more than one disk image.
-        has_images_key = "images" in analysis and isinstance(analysis["images"], Mapping)
-
-        if has_images_key:
-            multi_analysis = analysis
-        else:
-            multi_analysis = self._convert_v1_to_multi_image(analysis)
-
-        # Normalize metadata and hashes to lists
-        metadata_list = self._normalize_to_list(image_metadata)
-        hashes_list = self._normalize_to_list(evidence_hashes)
-
-        # The first metadata/hashes entry is used to resolve case-level
-        # identifiers (case_id) which are shared across all images.
-        first_metadata = dict(metadata_list[0]) if metadata_list else {}
-        first_hashes = dict(hashes_list[0]) if hashes_list else {}
+        multi_analysis = normalized_inputs.analysis
+        first_metadata = normalized_inputs.first_metadata
+        first_hashes = normalized_inputs.first_hashes
 
         case_id = self._resolve_case_id(analysis, first_metadata, first_hashes)
         case_name = self._resolve_case_name(analysis)
@@ -186,25 +188,18 @@ class ReportGenerator:
         report_timestamp = generated_at.strftime("%Y%m%d_%H%M%S")
 
         # Build per-image data for the template
-        images_data = multi_analysis.get("images", {})
-        image_count = len(images_data)
+        images_data = normalized_inputs.images_data
 
         # Determine whether the template should render multi-image sections.
-        # This must be True whenever multiple images are present -- either from
-        # the analysis "images" dict, or from multiple metadata/hashes entries
-        # (which indicates the caller supplied per-image lists even if the
-        # analysis structure was not fully populated).
-        is_multi = (
-            image_count > 1
-            or len(metadata_list) > 1
-            or len(hashes_list) > 1
-        )
+        # The shared normalizer keeps compatibility with legacy callers that
+        # supplied multiple positional metadata/hash records.
+        is_multi = normalized_inputs.is_multi_image
 
         # Build evidence rows (one per image)
-        evidence_rows = self._build_evidence_rows(metadata_list, hashes_list, images_data)
+        evidence_rows = normalized_inputs.evidence_rows
 
         # Build hash verification rows (one per image)
-        hash_rows = self._build_hash_verification_rows(hashes_list, images_data)
+        hash_rows = normalized_inputs.hash_rows
 
         # Build per-image sections for the template
         image_sections = self._build_image_sections(images_data)
@@ -263,6 +258,7 @@ class ReportGenerator:
             "hash_rows": hash_rows,
             "image_sections": image_sections,
             "cross_image_summary": cross_image_summary,
+            "processing_notes": normalized_inputs.processing_notes,
         }
 
         rendered = self.template.render(**render_context)
@@ -322,41 +318,13 @@ class ReportGenerator:
             List of dicts with ``label``, ``hostname``, ``os_version``,
             ``sha256``, ``md5``, and ``filename`` keys.
         """
-        image_entries = list(images_data.values())
-        row_count = max(len(metadata_list), len(hashes_list), len(image_entries))
-        rows: list[dict[str, str]] = []
-
-        for i in range(row_count):
-            meta = metadata_list[i] if i < len(metadata_list) else {}
-            hashes = hashes_list[i] if i < len(hashes_list) else {}
-            img = image_entries[i] if i < len(image_entries) else {}
-
-            label = self._stringify(
-                img.get("label") or meta.get("label") or meta.get("hostname"),
-                default=f"Image {i + 1}",
-            )
-            hostname = self._stringify(meta.get("hostname"), default="Unknown")
-            os_version = self._stringify(
-                meta.get("os_version") or meta.get("os") or meta.get("os_type"),
-                default="Unknown",
-            )
-            sha256 = self._stringify(hashes.get("sha256"), default="N/A")
-            md5 = self._stringify(hashes.get("md5"), default="N/A")
-            filename = self._stringify(
-                hashes.get("filename") or hashes.get("file_name") or meta.get("filename"),
-                default="Unknown",
-            )
-
-            rows.append({
-                "label": label,
-                "hostname": hostname,
-                "os_version": os_version,
-                "sha256": sha256,
-                "md5": md5,
-                "filename": filename,
-            })
-
-        return rows
+        normalized = normalize_report_inputs(
+            {"images": self._legacy_image_mapping(metadata_list, hashes_list, images_data)},
+            metadata_list,
+            hashes_list,
+            default_label="Evidence Image",
+        )
+        return normalized.evidence_rows
 
     def _build_hash_verification_rows(
         self,
@@ -373,22 +341,42 @@ class ReportGenerator:
             List of dicts with ``label``, ``passed``, ``label_text``,
             ``detail``, and optional ``skipped`` keys.
         """
-        image_entries = list(images_data.values())
-        row_count = max(len(hashes_list), len(image_entries))
-        rows: list[dict[str, Any]] = []
+        normalized = normalize_report_inputs(
+            {"images": self._legacy_image_mapping([], hashes_list, images_data)},
+            [],
+            hashes_list,
+            default_label="Evidence Image",
+        )
+        return normalized.hash_rows
 
-        for i in range(row_count):
-            hashes = hashes_list[i] if i < len(hashes_list) else {}
-            img = image_entries[i] if i < len(image_entries) else {}
+    def _legacy_image_mapping(
+        self,
+        metadata_list: list[dict[str, Any]],
+        hashes_list: list[dict[str, Any]],
+        images_data: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Build image entries for legacy helper compatibility.
 
-            label = self._stringify(
-                img.get("label"), default=f"Image {i + 1}"
-            )
-            verification = self._resolve_hash_verification(hashes)
-            verification["image_label"] = label
-            rows.append(verification)
+        Args:
+            metadata_list: Legacy positional metadata records.
+            hashes_list: Legacy positional hash records.
+            images_data: Existing image analysis mapping.
 
-        return rows
+        Returns:
+            Image mapping with enough placeholder entries to cover all
+            supplied positional records.
+        """
+        if images_data:
+            return {
+                str(image_id): dict(image_data) if isinstance(image_data, Mapping) else {}
+                for image_id, image_data in images_data.items()
+            }
+
+        row_count = max(len(metadata_list), len(hashes_list), 1)
+        return {
+            f"legacy-{index}": {"label": f"Image {index + 1}"}
+            for index in range(row_count)
+        }
 
     def _build_image_sections(
         self,
@@ -479,6 +467,14 @@ class ReportGenerator:
     ) -> str:
         """Extract and sanitise a case ID from the available data sources.
 
+        Args:
+            analysis: Analysis result mapping.
+            metadata: Matched evidence metadata mapping.
+            hashes: Matched evidence hashes mapping.
+
+        Returns:
+            Sanitized case identifier safe for filesystem paths.
+
         Raises:
             ValueError: If no case identifier can be determined.
         """
@@ -503,7 +499,14 @@ class ReportGenerator:
         raise ValueError("Unable to determine case identifier for report generation.")
 
     def _resolve_case_name(self, analysis: Mapping[str, Any]) -> str:
-        """Determine a human-readable case name, falling back to a default."""
+        """Determine a human-readable case name.
+
+        Args:
+            analysis: Analysis result mapping.
+
+        Returns:
+            Case display name, falling back to ``DEFAULT_CASE_NAME``.
+        """
         nested_case = analysis.get("case")
         if isinstance(nested_case, Mapping):
             nested_name = self._stringify(nested_case.get("name"), default="")
@@ -517,7 +520,15 @@ class ReportGenerator:
         analysis: Mapping[str, Any],
         audit_entries: list[dict[str, str]],
     ) -> str:
-        """Determine the tool version from analysis data or audit entries."""
+        """Determine the tool version from analysis data or audit entries.
+
+        Args:
+            analysis: Analysis result mapping.
+            audit_entries: Normalized audit log entries.
+
+        Returns:
+            Tool version string for the report header.
+        """
         explicit_version = self._stringify(analysis.get("tool_version"), default="")
         if explicit_version:
             return explicit_version
@@ -530,7 +541,14 @@ class ReportGenerator:
         return DEFAULT_TOOL_VERSION
 
     def _resolve_ai_provider(self, analysis: Mapping[str, Any]) -> str:
-        """Determine the AI provider label for the report header."""
+        """Determine the AI provider label for the report header.
+
+        Args:
+            analysis: Analysis result mapping.
+
+        Returns:
+            Provider label, optionally including the model name.
+        """
         explicit = self._stringify(analysis.get("ai_provider"), default="")
         if explicit:
             return explicit
@@ -552,124 +570,36 @@ class ReportGenerator:
     ) -> dict[str, str]:
         """Assemble evidence summary fields for the report template.
 
+        Args:
+            metadata: Matched evidence metadata mapping.
+            hashes: Matched evidence hash mapping.
+
         Returns:
             Dictionary with ``filename``, ``sha256``, ``md5``, ``file_size``,
             ``hostname``, ``os_version``, ``domain``, and ``ips``.
         """
-        hostname = self._stringify(metadata.get("hostname"), default="Unknown")
-        os_value = self._stringify(metadata.get("os_version") or metadata.get("os"), default="Unknown")
-        domain = self._stringify(metadata.get("domain"), default="Unknown")
-        ips = self._stringify_ips(metadata.get("ips") or metadata.get("ip_addresses") or metadata.get("ip"))
-
-        size_value = hashes.get("size_bytes")
-        if size_value is None:
-            size_value = hashes.get("file_size_bytes")
-
-        return {
-            "filename": self._stringify(
-                hashes.get("filename") or hashes.get("file_name") or metadata.get("filename"),
-                default="Unknown",
-            ),
-            "sha256": self._stringify(hashes.get("sha256"), default="N/A"),
-            "md5": self._stringify(hashes.get("md5"), default="N/A"),
-            "file_size": self._format_file_size(size_value),
-            "hostname": hostname,
-            "os_version": os_value,
-            "domain": domain,
-            "ips": ips,
-        }
+        return build_evidence_summary(metadata, hashes)
 
     def _resolve_hash_verification(self, hashes: Mapping[str, Any]) -> dict[str, str | bool]:
         """Determine hash verification PASS/FAIL status for the report.
+
+        Args:
+            hashes: Evidence hash mapping.
 
         Returns:
             Dictionary with ``passed`` (bool), ``label`` (``"PASS"`` or
             ``"FAIL"``), and ``detail`` (human-readable explanation).
         """
-        status_raw = self._stringify(
-            hashes.get("verification_status") or hashes.get("status"),
-            default="",
-        ).strip().upper()
-        if status_raw in {"PASS", "FAIL", "SKIPPED", "UNAVAILABLE"}:
-            details = {
-                "PASS": "Re-verified SHA-256 matches intake hash.",
-                "FAIL": "Re-verified SHA-256 does not match intake hash.",
-                "SKIPPED": "Hash computation was skipped at user request during evidence intake.",
-                "UNAVAILABLE": "No hash verification data was provided.",
-            }
-            detail = self._stringify(
-                hashes.get("verification_detail"),
-                default=details[status_raw],
-            )
-            if status_raw == "PASS":
-                return {"passed": True, "label": "PASS", "detail": detail}
-            if status_raw == "FAIL":
-                return {"passed": False, "label": "FAIL", "detail": detail}
-            return {
-                "passed": True,
-                "skipped": True,
-                "label": status_raw,
-                "detail": detail,
-            }
-
-        explicit = hashes.get("hash_verified")
-        if explicit is None:
-            explicit = hashes.get("verification_passed")
-        if explicit is None:
-            explicit = hashes.get("verified")
-
-        if isinstance(explicit, str) and explicit.strip().lower() == "skipped":
-            return {
-                "passed": True,
-                "skipped": True,
-                "label": "SKIPPED",
-                "detail": "Hash computation was skipped at user request during evidence intake.",
-            }
-        if isinstance(explicit, bool):
-            passed = explicit
-            detail = "Hash verification explicitly reported by workflow."
-            return {"passed": passed, "label": "PASS" if passed else "FAIL", "detail": detail}
-        if isinstance(explicit, str):
-            normalized_explicit = explicit.strip().lower()
-            if normalized_explicit in {"true", "pass", "passed", "ok", "yes"}:
-                return {
-                    "passed": True,
-                    "label": "PASS",
-                    "detail": "Hash verification explicitly reported by workflow.",
-                }
-            if normalized_explicit in {"false", "fail", "failed", "no"}:
-                return {
-                    "passed": False,
-                    "label": "FAIL",
-                    "detail": "Hash verification explicitly reported by workflow.",
-                }
-
-        expected = self._stringify(
-            hashes.get("expected_sha256") or hashes.get("intake_sha256") or hashes.get("original_sha256"),
-            default="",
-        ).lower()
-        observed = self._stringify(
-            hashes.get("reverified_sha256") or hashes.get("current_sha256") or hashes.get("computed_sha256"),
-            default="",
-        ).lower()
-
-        if expected and observed:
-            passed = expected == observed
-            detail = "Re-verified SHA-256 matches intake hash." if passed else "Re-verified SHA-256 does not match intake hash."
-            return {"passed": passed, "label": "PASS" if passed else "FAIL", "detail": detail}
-
-        return {
-            "passed": True,
-            "skipped": True,
-            "label": "UNAVAILABLE",
-            "detail": "No hash verification data was provided.",
-        }
+        return resolve_hash_verification(hashes)
 
     def _normalize_per_artifact_findings(self, analysis: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Normalise per-artifact findings into a uniform list of dicts.
 
         Accepts lists, dicts keyed by artifact name, or single-finding
         mappings and coerces them into a list with consistent keys.
+
+        Args:
+            analysis: Per-image or legacy analysis mapping.
 
         Returns:
             List of dicts with ``artifact_name``, ``artifact_key``,
@@ -680,20 +610,48 @@ class ReportGenerator:
         return normalize_per_artifact_findings(analysis)
 
     def _coerce_per_artifact_iterable(self, raw_findings: Any) -> Sequence[Any]:
-        """Coerce various per-artifact finding shapes into a sequence."""
+        """Coerce various per-artifact finding shapes into a sequence.
+
+        Args:
+            raw_findings: Raw findings value from analysis results.
+
+        Returns:
+            Sequence of raw finding values.
+        """
         return coerce_per_artifact_iterable(raw_findings)
 
     @staticmethod
     def _looks_like_single_finding(value: Mapping[str, Any]) -> bool:
-        """Return *True* if *value* appears to be a single finding mapping."""
+        """Return whether a mapping appears to be a single finding.
+
+        Args:
+            value: Candidate finding mapping.
+
+        Returns:
+            ``True`` when known finding keys are present.
+        """
         return looks_like_single_finding(value)
 
     def _normalize_key_data_points(self, raw_points: Any) -> list[dict[str, str]]:
-        """Normalise key data points into a list of ``{timestamp, value}`` dicts."""
+        """Normalise key data points into timestamp/value dictionaries.
+
+        Args:
+            raw_points: Raw key data point value.
+
+        Returns:
+            List of ``{"timestamp": str, "value": str}`` dictionaries.
+        """
         return normalize_key_data_points(raw_points)
 
     def _normalize_audit_entries(self, entries: Sequence[Any] | None) -> list[dict[str, str]]:
-        """Normalise raw audit log entries into template-ready dicts."""
+        """Normalise raw audit log entries into template-ready dicts.
+
+        Args:
+            entries: Raw audit log entries.
+
+        Returns:
+            List of normalized audit entry dictionaries.
+        """
         if entries is None:
             return []
 
@@ -730,6 +688,10 @@ class ReportGenerator:
     def _resolve_confidence(explicit_value: str, analysis_text: str) -> tuple[str, str]:
         """Determine confidence label and CSS class from explicit value or text.
 
+        Args:
+            explicit_value: Explicit confidence value.
+            analysis_text: Analysis text to scan as a fallback.
+
         Returns:
             Tuple of ``(label, css_class)`` -- e.g. ``("HIGH", "confidence-high")``.
         """
@@ -737,12 +699,27 @@ class ReportGenerator:
 
     @staticmethod
     def _nested_lookup(mapping: Mapping[str, Any], path: tuple[str, str]) -> Any:
-        """Traverse a nested mapping using a two-element key path."""
+        """Traverse a nested mapping using a two-element key path.
+
+        Args:
+            mapping: Mapping to traverse.
+            path: Two-key path to follow.
+
+        Returns:
+            Nested value, or ``None``.
+        """
         return nested_lookup(mapping, path)
 
     @staticmethod
     def _coerce_mapping(value: Any) -> dict[str, Any] | None:
-        """Attempt to coerce *value* into a plain dict, or return *None*."""
+        """Attempt to coerce a value into a plain dict.
+
+        Args:
+            value: Mapping or JSON object string.
+
+        Returns:
+            Plain dictionary, or ``None`` when coercion fails.
+        """
         if isinstance(value, Mapping):
             return dict(value)
         if isinstance(value, str):
@@ -759,41 +736,38 @@ class ReportGenerator:
 
     @staticmethod
     def _format_file_size(size_value: Any) -> str:
-        """Format a byte count as a human-readable size string (e.g. ``1.50 GB``)."""
-        if size_value is None:
-            return "N/A"
+        """Format a byte count as a human-readable size string.
 
-        try:
-            size = int(size_value)
-        except (TypeError, ValueError):
-            return str(size_value)
+        Args:
+            size_value: Byte count or unsupported value.
 
-        units = ["B", "KB", "MB", "GB", "TB"]
-        working = float(size)
-        unit = units[0]
-        for candidate in units:
-            unit = candidate
-            if working < 1024.0 or candidate == units[-1]:
-                break
-            working /= 1024.0
-
-        if unit == "B":
-            return f"{int(working)} {unit}"
-        return f"{working:.2f} {unit} ({size} bytes)"
+        Returns:
+            Human-readable size string.
+        """
+        return format_file_size(size_value)
 
     @staticmethod
     def _stringify_ips(value: Any) -> str:
-        """Format IP addresses as a comma-separated string."""
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            cleaned = [str(item).strip() for item in value if str(item).strip()]
-            return ", ".join(cleaned) if cleaned else "Unknown"
+        """Format IP addresses as a comma-separated string.
 
-        text = str(value).strip() if value is not None else ""
-        return text or "Unknown"
+        Args:
+            value: IP metadata value.
+
+        Returns:
+            Comma-separated IP string, or ``"Unknown"``.
+        """
+        return stringify_ips(value)
 
     @staticmethod
     def _mapping_to_kv_text(value: Mapping[str, Any]) -> str:
-        """Convert a mapping to a ``key=value; ...`` text representation."""
+        """Convert a mapping to a ``key=value; ...`` text representation.
+
+        Args:
+            value: Mapping to serialize.
+
+        Returns:
+            Compact key/value text.
+        """
         return mapping_to_kv_text(value)
 
     @staticmethod
@@ -801,5 +775,12 @@ class ReportGenerator:
         """Convert *value* to a stripped string, returning *default* if empty.
 
         Delegates to the canonical :func:`app.utils.stringify` implementation.
+
+        Args:
+            value: Value to convert.
+            default: Fallback for empty values.
+
+        Returns:
+            Stripped string, or ``default``.
         """
         return _stringify_impl(value, default)

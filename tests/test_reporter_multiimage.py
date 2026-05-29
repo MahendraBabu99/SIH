@@ -213,6 +213,7 @@ class TestSingleImageBackwardCompat(unittest.TestCase):
             # No multi-image sections
             self.assertNotIn("Cross-System Analysis", html)
             self.assertNotIn('class="image-section"', html)
+            self.assertNotIn("Processing Notes", html)
 
             # Artifact findings present
             self.assertIn("Run/RunOnce Keys", html)
@@ -330,6 +331,117 @@ class TestMultiImageReport(unittest.TestCase):
             # Hash values
             self.assertIn("a" * 64, html)
             self.assertIn("c" * 64, html)
+
+    def test_evidence_rows_match_shuffled_image_id_records(self) -> None:
+        """Shuffled metadata and hashes are matched by image_id."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            metadata = [
+                {
+                    "image_id": "img-002",
+                    "hostname": "DC01",
+                    "os_version": "Windows Server 2022",
+                    "label": "Server-DC01",
+                },
+                {
+                    "image_id": "img-001",
+                    "hostname": "PC01",
+                    "os_version": "Windows 10 Pro",
+                    "label": "Workstation-PC01",
+                },
+            ]
+            hashes = [
+                {
+                    "image_id": "img-002",
+                    "filename": "dc01-correct.E01",
+                    "sha256": "2" * 64,
+                    "md5": "2" * 32,
+                },
+                {
+                    "image_id": "img-001",
+                    "filename": "pc01-correct.E01",
+                    "sha256": "1" * 64,
+                    "md5": "1" * 32,
+                },
+            ]
+
+            report_path = reporter.generate(
+                analysis_results=_multi_image_analysis_results(),
+                image_metadata=metadata,
+                evidence_hashes=hashes,
+                investigation_context="Shuffled inputs.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+            self.assertRegex(
+                html,
+                r"(?s)Workstation-PC01 \(Windows 10\).*pc01-correct\.E01.*"
+                + ("1" * 64),
+            )
+            self.assertRegex(
+                html,
+                r"(?s)Server-DC01 \(Windows Server 2022\).*dc01-correct\.E01.*"
+                + ("2" * 64),
+            )
+
+    def test_processing_notes_include_partial_record_failures(self) -> None:
+        """Missing and unmatched report records are shown as processing notes."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            metadata = [
+                {"image_id": "img-001", "hostname": "PC01"},
+                {"image_id": "img-orphan", "hostname": "ORPHAN"},
+            ]
+            hashes = [
+                {"image_id": "img-001", "filename": "pc01.E01", "sha256": "1" * 64},
+            ]
+
+            report_path = reporter.generate(
+                analysis_results=_multi_image_analysis_results(),
+                image_metadata=metadata,
+                evidence_hashes=hashes,
+                investigation_context="Partial inputs.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+            self.assertIn("Processing Notes", html)
+            self.assertIn("No metadata record matched Server-DC01", html)
+            self.assertIn("No hash record matched Server-DC01", html)
+            self.assertIn("image_id &#39;img-orphan&#39;", html)
+
+    def test_processing_notes_include_skipped_images(self) -> None:
+        """Structured skipped images are shown in the HTML report."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            analysis = _multi_image_analysis_results()
+            analysis["skipped_images"] = [
+                {
+                    "image_id": "img-003",
+                    "label": "Damaged Disk",
+                    "reason": "Parsed data directory not found.",
+                }
+            ]
+
+            report_path = reporter.generate(
+                analysis_results=analysis,
+                image_metadata=_multi_image_metadata(),
+                evidence_hashes=_multi_image_hashes(),
+                investigation_context="Skipped image.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+            self.assertIn("Processing Notes", html)
+            self.assertIn("Skipped Damaged Disk", html)
+            self.assertIn("Parsed data directory not found", html)
 
     def test_multi_image_hash_verification_per_image(self) -> None:
         """Hash verification shows per-image PASS/FAIL status."""

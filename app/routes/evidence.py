@@ -28,6 +28,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 from flask import Blueprint, Response, make_response, send_file
 
+from ..automation.json_export import export_json_report
 from ..hasher import (
     compute_hashes,
     summarize_hash_verification_results,
@@ -637,13 +638,13 @@ def intake_evidence(case_id: str) -> Response | tuple[Response, int]:
 
 
 def generate_case_report(case_id: str) -> dict[str, Any]:
-    """Generate the HTML forensic report for a case and save it to disk.
+    """Generate HTML and JSON forensic reports for a case.
 
     Performs hash verification for every image, assembles analysis
-    context, renders the report via :class:`ReportGenerator`, and logs
-    the result to the audit trail.  This function can be called from
-    both the download route and from background tasks (e.g.
-    auto-generation after analysis).
+    context, renders the HTML report via :class:`ReportGenerator`, exports
+    the matching JSON report, and logs the result to the audit trail. This
+    function can be called from both download routes and from background
+    tasks (for example, auto-generation after analysis).
 
     For multi-image cases, per-image metadata and hashes are collected
     from ``image_states`` so the report correctly represents all images.
@@ -652,9 +653,8 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
         case_id: UUID of the case.
 
     Returns:
-        A result dict with keys ``success`` (bool), and on success:
-        ``report_path`` (:class:`~pathlib.Path`), ``hash_ok`` (bool).
-        On failure: ``error`` (str).
+        Result dict with ``success`` (HTML success), ``report_path``,
+        ``json_report_path``, ``hash_ok``, and optional ``errors``.
     """
     case = get_case(case_id)
     if case is None:
@@ -684,11 +684,15 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
         # Build an ordered list of image IDs from the images list so the
         # metadata/hashes lists align with the analysis "images" dict.
         ordered_image_ids: list[str] = []
+        image_labels: dict[str, str] = {}
         for img_entry in images_list:
             if isinstance(img_entry, dict):
                 img_id = str(img_entry.get("image_id", ""))
+                label = str(img_entry.get("label", "")).strip()
                 if img_id and img_id in image_states:
                     ordered_image_ids.append(img_id)
+                    if label:
+                        image_labels[img_id] = label
         # Include any image_states keys not in images_list.
         for img_id in image_states:
             if img_id not in ordered_image_ids:
@@ -704,6 +708,13 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
             img_hashes = dict(img_st.get("evidence_hashes", {}))
             img_file_hashes = list(img_st.get("evidence_file_hashes", []))
             img_metadata = dict(img_st.get("image_metadata", {}))
+            img_label = image_labels.get(img_id) or str(
+                img_metadata.get("label")
+                or img_metadata.get("hostname")
+                or img_hashes.get("label")
+                or img_hashes.get("filename")
+                or img_id
+            )
 
             img_verification = verify_hashes_for_report(
                 img_hashes,
@@ -716,6 +727,10 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
                 hash_ok = False
 
             img_hashes["case_id"] = case_id
+            img_hashes.setdefault("image_id", img_id)
+            img_hashes.setdefault("label", img_label)
+            img_metadata.setdefault("image_id", img_id)
+            img_metadata.setdefault("label", img_label)
             metadata_list.append(img_metadata)
             hashes_list.append(img_hashes)
 
@@ -803,21 +818,104 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
         if prompt_path.exists():
             investigation_context = prompt_path.read_text(encoding="utf-8")
 
-    report_generator = ReportGenerator(cases_root=CASES_ROOT)
-    report_path = report_generator.generate(
-        analysis_results=analysis_results,
-        image_metadata=image_metadata_arg,
-        evidence_hashes=evidence_hashes_arg,
-        investigation_context=investigation_context,
-        audit_log_entries=read_audit_entries(Path(case_dir)),
-    )
-    audit_logger.log(
-        "report_generated",
-        {"report_filename": report_path.name, "hash_verified": hash_ok},
-    )
-    mark_case_status(case_id, "completed")
+    audit_entries = read_audit_entries(Path(case_dir))
+    errors: list[str] = []
+    report_path: Path | None = None
+    json_report_path: Path | None = None
 
-    return {"success": True, "report_path": report_path, "hash_ok": hash_ok}
+    try:
+        report_generator = ReportGenerator(cases_root=CASES_ROOT)
+        report_path = report_generator.generate(
+            analysis_results=analysis_results,
+            image_metadata=image_metadata_arg,
+            evidence_hashes=evidence_hashes_arg,
+            investigation_context=investigation_context,
+            audit_log_entries=audit_entries,
+        )
+    except Exception as exc:
+        LOGGER.error("HTML report generation failed for case %s: %s", case_id, exc, exc_info=True)
+        errors.append(f"HTML report generation failed: {exc}")
+
+    reports_dir = Path(case_dir) / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    if report_path is not None:
+        json_output_path = report_path.with_suffix(".json")
+    else:
+        report_timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        json_output_path = reports_dir / f"report_{report_timestamp}.json"
+
+    try:
+        json_report_path = export_json_report(
+            case_id=case_id,
+            case_name=str(case_snapshot.get("case_name", "")),
+            analysis_results=analysis_results,
+            image_metadata=image_metadata_arg,
+            evidence_hashes=evidence_hashes_arg,
+            investigation_context=investigation_context,
+            audit_log_entries=audit_entries,
+            output_path=json_output_path,
+        )
+    except Exception as exc:
+        LOGGER.error("JSON report generation failed for case %s: %s", case_id, exc, exc_info=True)
+        errors.append(f"JSON report generation failed: {exc}")
+
+    if report_path is not None or json_report_path is not None:
+        audit_details: dict[str, Any] = {
+            "report_filename": report_path.name if report_path is not None else "",
+            "json_report_filename": json_report_path.name if json_report_path is not None else "",
+            "hash_verified": hash_ok,
+        }
+        if errors:
+            audit_details["format_errors"] = list(errors)
+        audit_logger.log("report_generated", audit_details)
+        mark_case_status(case_id, "completed")
+    else:
+        audit_logger.log(
+            "report_generation_failed",
+            {"errors": list(errors), "hash_verified": hash_ok},
+        )
+
+    result: dict[str, Any] = {
+        "success": report_path is not None,
+        "report_path": report_path,
+        "json_report_path": json_report_path,
+        "hash_ok": hash_ok,
+    }
+    if errors:
+        result["errors"] = errors
+        result["error"] = "; ".join(errors)
+    return result
+
+
+def _latest_report_file(case_dir: str | Path, suffix: str) -> Path | None:
+    """Return the latest generated report file for a case and suffix.
+
+    Args:
+        case_dir: Case directory path.
+        suffix: File suffix without a leading dot, such as ``"html"``.
+
+    Returns:
+        Latest report path, or ``None`` when no matching file exists.
+    """
+    reports_dir = Path(case_dir) / "reports"
+    if not reports_dir.is_dir():
+        return None
+    existing = sorted(reports_dir.glob(f"report_*.{suffix}"))
+    return existing[-1] if existing else None
+
+
+def _report_is_stale(report_path: Path, case_dir: str | Path) -> bool:
+    """Return whether a report is older than analysis results.
+
+    Args:
+        report_path: Existing report path.
+        case_dir: Case directory path containing ``analysis_results.json``.
+
+    Returns:
+        ``True`` when the analysis results file is newer than the report.
+    """
+    analysis_path = Path(case_dir) / "analysis_results.json"
+    return analysis_path.is_file() and report_path.stat().st_mtime < analysis_path.stat().st_mtime
 
 
 @evidence_bp.get("/api/cases/<case_id>/report")
@@ -840,48 +938,42 @@ def download_report(case_id: str) -> Response | tuple[Response, int]:
     # Check if a report was already auto-generated after analysis.
     with STATE_LOCK:
         case_dir = case["case_dir"]
-    reports_dir = Path(case_dir) / "reports"
-    if reports_dir.is_dir():
-        existing = sorted(reports_dir.glob("report_*.html"))
-        if existing:
-            report_path = existing[-1]
-            # Regenerate stale reports before serving so GUI downloads
-            # reflect the latest analysis results. If regeneration fails,
-            # keep serving the existing file and mark it as stale.
-            stale = False
-            analysis_path = Path(case_dir) / "analysis_results.json"
-            if analysis_path.is_file():
-                report_mtime = report_path.stat().st_mtime
-                analysis_mtime = analysis_path.stat().st_mtime
-                if report_mtime < analysis_mtime:
-                    stale = True
-                    LOGGER.warning(
-                        "Report %s is older than analysis_results.json "
-                        "for case %s - regenerating before download",
-                        report_path.name,
-                        case_id,
-                    )
-                    result = generate_case_report(case_id)
-                    if result.get("success"):
-                        report_path = result["report_path"]
-                        stale = False
-                    else:
-                        LOGGER.warning(
-                            "Failed to regenerate stale report for case %s: %s",
-                            case_id,
-                            result.get("error"),
-                        )
-            response = make_response(
-                send_file(
-                    report_path,
-                    as_attachment=True,
-                    download_name=report_path.name,
-                    mimetype="text/html",
-                )
+    report_path = _latest_report_file(case_dir, "html")
+    if report_path is not None:
+        # Regenerate stale reports before serving so GUI downloads reflect
+        # the latest analysis results. If regeneration fails, keep serving
+        # the existing file and mark it as stale.
+        stale = False
+        if _report_is_stale(report_path, case_dir):
+            stale = True
+            LOGGER.warning(
+                "Report %s is older than analysis_results.json "
+                "for case %s - regenerating before download",
+                report_path.name,
+                case_id,
             )
-            if stale:
-                response.headers["X-Report-Stale"] = "true"
-            return response
+            result = generate_case_report(case_id)
+            regenerated_path = result.get("report_path")
+            if result.get("success") and isinstance(regenerated_path, Path):
+                report_path = regenerated_path
+                stale = False
+            else:
+                LOGGER.warning(
+                    "Failed to regenerate stale report for case %s: %s",
+                    case_id,
+                    result.get("error"),
+                )
+        response = make_response(
+            send_file(
+                report_path,
+                as_attachment=True,
+                download_name=report_path.name,
+                mimetype="text/html",
+            )
+        )
+        if stale:
+            response.headers["X-Report-Stale"] = "true"
+        return response
 
     result = generate_case_report(case_id)
     if not result["success"]:
@@ -893,6 +985,69 @@ def download_report(case_id: str) -> Response | tuple[Response, int]:
         as_attachment=True,
         download_name=report_path.name,
         mimetype="text/html",
+    )
+
+
+@evidence_bp.get("/api/cases/<case_id>/report/json")
+def download_json_report(case_id: str) -> Response | tuple[Response, int]:
+    """Generate or download the JSON forensic analysis report.
+
+    Args:
+        case_id: UUID of the case.
+
+    Returns:
+        JSON report as an attachment, or an error response.
+    """
+    case = get_case(case_id)
+    if case is None:
+        return error_response(f"Case not found: {case_id}", 404)
+
+    with STATE_LOCK:
+        case_dir = case["case_dir"]
+    report_path = _latest_report_file(case_dir, "json")
+    if report_path is not None:
+        stale = False
+        if _report_is_stale(report_path, case_dir):
+            stale = True
+            LOGGER.warning(
+                "JSON report %s is older than analysis_results.json "
+                "for case %s - regenerating before download",
+                report_path.name,
+                case_id,
+            )
+            result = generate_case_report(case_id)
+            regenerated_path = result.get("json_report_path")
+            if isinstance(regenerated_path, Path) and regenerated_path.is_file():
+                report_path = regenerated_path
+                stale = False
+            else:
+                LOGGER.warning(
+                    "Failed to regenerate stale JSON report for case %s: %s",
+                    case_id,
+                    result.get("error"),
+                )
+        response = make_response(
+            send_file(
+                report_path,
+                as_attachment=True,
+                download_name=report_path.name,
+                mimetype="application/json",
+            )
+        )
+        if stale:
+            response.headers["X-Report-Stale"] = "true"
+        return response
+
+    result = generate_case_report(case_id)
+    report_path = result.get("json_report_path")
+    if not isinstance(report_path, Path) or not report_path.is_file():
+        return error_response(str(result.get("error", "JSON report was not generated.")), 400)
+
+    return send_file(
+        report_path,
+        as_attachment=True,
+        download_name=report_path.name,
+        mimetype="application/json",
     )
 
 

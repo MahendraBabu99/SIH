@@ -599,6 +599,14 @@ def _purge_stale_analysis(case: dict[str, Any], case_dir: str) -> None:
             results_path.unlink(missing_ok=True)
     except Exception:
         LOGGER.warning("Failed to remove stale analysis results from disk.", exc_info=True)
+    try:
+        reports_dir = Path(case_dir) / "reports"
+        if reports_dir.is_dir():
+            for suffix in ("html", "json"):
+                for report_path in reports_dir.glob(f"report_*.{suffix}"):
+                    report_path.unlink(missing_ok=True)
+    except Exception:
+        LOGGER.warning("Failed to remove stale generated reports from disk.", exc_info=True)
 
 
 def _make_analysis_progress_callback(case_id: str) -> Callable[..., None]:

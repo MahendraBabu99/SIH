@@ -185,6 +185,29 @@
       padding: 12px;
     }
 
+    .processing-note-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .processing-note {
+      background: var(--panel-alt);
+      border: 1px solid rgba(159, 177, 199, 0.2);
+      border-left: 4px solid var(--medium);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+
+    .processing-note strong {
+      display: block;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-bottom: 3px;
+      text-transform: uppercase;
+    }
+
     .markdown-output > :first-child {
       margin-top: 0;
     }
@@ -691,6 +714,22 @@
       <h2>Investigation Context</h2>
       <div class="content-block markdown-output">{{ investigation_context | format_markdown_block }}</div>
     </section>
+
+    {% if processing_notes %}
+    <section class="panel">
+      <h2>Processing Notes</h2>
+      <div class="processing-note-list">
+        {% for note in processing_notes %}
+        <div class="processing-note">
+          <strong>
+            {% if note.image_label %}{{ note.image_label }}{% elif note.image_id %}{{ note.image_id }}{% else %}{{ note.category | replace("_", " ") | title }}{% endif %}
+          </strong>
+          <span>{{ note.message }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
 
     {% if is_multi_image and cross_image_summary %}
     <section class="panel cross-system-panel">

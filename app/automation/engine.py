@@ -166,7 +166,14 @@ def _normalize_cancel_check(
 
 
 def _cancel_requested(cancel_check: Callable[[], bool] | None) -> bool:
-    """Evaluate a cancellation probe without letting callback errors escape."""
+    """Evaluate a cancellation probe without letting errors escape.
+
+    Args:
+        cancel_check: Optional zero-argument cancellation callback.
+
+    Returns:
+        ``True`` when cancellation is requested.
+    """
     if cancel_check is None:
         return False
     try:
@@ -181,7 +188,16 @@ def _cancelled_result(
     start_time: float,
     audit_logger: AuditLogger | None = None,
 ) -> AutomationResult:
-    """Mark an automation result as cancelled and return it."""
+    """Mark an automation result as cancelled.
+
+    Args:
+        result: Mutable automation result to update.
+        start_time: Monotonic start time for duration calculation.
+        audit_logger: Optional audit logger for cancellation records.
+
+    Returns:
+        The updated automation result.
+    """
     message = "Automation cancelled by user."
     if message not in result.errors:
         result.errors.append(message)
@@ -230,7 +246,14 @@ def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], l
 
 
 def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
-    """Return the configured per-artifact CSV row cap; ``0`` means unlimited."""
+    """Return the configured per-artifact CSV row cap.
+
+    Args:
+        config: Loaded application configuration.
+
+    Returns:
+        Non-negative row cap, where ``0`` means unlimited.
+    """
     analysis = config.get("analysis", {}) if isinstance(config, dict) else {}
     raw_value = (
         analysis.get("artifact_csv_row_limit", 0)
@@ -292,7 +315,14 @@ def _load_profile(
 
 
 def _available_artifact_keys(available_artifacts: list[dict[str, Any]]) -> set[str]:
-    """Return artifact keys that are explicitly available on an image."""
+    """Return artifact keys that are explicitly available on an image.
+
+    Args:
+        available_artifacts: Parser availability records.
+
+    Returns:
+        Set of available artifact keys.
+    """
     keys: set[str] = set()
     for artifact in available_artifacts:
         if not artifact.get("available"):
@@ -421,7 +451,12 @@ def _parse_artifact_for_automation(
     """
 
     def _parser_progress(*args: Any, **_kwargs: Any) -> None:
-        """Forward parser record progress to the automation callback."""
+        """Forward parser record progress to the automation callback.
+
+        Args:
+            *args: Parser progress callback arguments.
+            **_kwargs: Ignored parser progress keyword arguments.
+        """
         record_count = _extract_parser_record_count(args)
         _notify(
             progress_callback,
@@ -473,7 +508,14 @@ def _generate_report_basename(case_id: str) -> str:
 
 
 def _coerce_evidence_descriptor(value: Any) -> EvidenceDescriptor:
-    """Return an evidence descriptor for discovery results or legacy paths."""
+    """Return an evidence descriptor for discovery results or legacy paths.
+
+    Args:
+        value: Existing descriptor or legacy path-like discovery result.
+
+    Returns:
+        Evidence descriptor for automation processing.
+    """
     if isinstance(value, EvidenceDescriptor):
         return value
     return descriptor_for_path(Path(value), source_mode="path")
@@ -485,7 +527,16 @@ def _hash_evidence_descriptor(
     skip_hashing: bool,
     audit_logger: AuditLogger,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Compute intake hash records for all files in an evidence descriptor."""
+    """Compute intake hash records for an evidence descriptor.
+
+    Args:
+        descriptor: Evidence descriptor to hash.
+        skip_hashing: Whether hashing was disabled for this run.
+        audit_logger: Audit logger that receives per-file hash events.
+
+    Returns:
+        Tuple of aggregate hash record and per-file hash records.
+    """
     source_path = descriptor.source_path
     base_entry: dict[str, Any] = {
         "filename": source_path.name,
@@ -634,7 +685,12 @@ def _verify_hashes_before_report(
     hashes_list: list[dict[str, Any]],
     audit_logger: AuditLogger,
 ) -> None:
-    """Re-verify file evidence hashes immediately before report generation."""
+    """Re-verify file evidence hashes before report generation.
+
+    Args:
+        hashes_list: Mutable per-image hash records to verify and annotate.
+        audit_logger: Audit logger for the verification summary.
+    """
     results = [
         verify_hashes_for_report(
             hashes,
@@ -874,6 +930,7 @@ def run_automation(
     image_descriptors: list[dict[str, Any]] = []
     all_metadata: list[dict[str, Any]] = []
     all_hashes: list[dict[str, Any]] = []
+    skipped_images: list[dict[str, str]] = []
     successful_images = 0
 
     for img_idx, descriptor in enumerate(evidence_descriptors):
@@ -892,6 +949,11 @@ def run_automation(
             msg = f"Failed to add image for {img_label}: {exc}"
             LOGGER.warning(msg)
             result.warnings.append(msg)
+            skipped_images.append({
+                "image_id": "",
+                "label": img_label,
+                "reason": msg,
+            })
             continue
 
         image_dir = case_manager.get_image_dir(case_id, image_id)
@@ -909,6 +971,11 @@ def run_automation(
             )
             LOGGER.warning(msg)
             result.warnings.append(msg)
+            skipped_images.append({
+                "image_id": image_id,
+                "label": img_label,
+                "reason": msg,
+            })
             continue
 
         # Open Dissect target and get metadata.
@@ -989,6 +1056,11 @@ def run_automation(
                     msg = f"No matching artifacts available for {img_label}."
                     LOGGER.warning(msg)
                     result.warnings.append(msg)
+                    skipped_images.append({
+                        "image_id": image_id,
+                        "label": img_label,
+                        "reason": msg,
+                    })
                     continue
 
                 # Parse artifacts.
@@ -1048,6 +1120,11 @@ def run_automation(
                     )
                     LOGGER.warning(msg)
                     result.warnings.append(msg)
+                    skipped_images.append({
+                        "image_id": image_id,
+                        "label": img_label,
+                        "reason": msg,
+                    })
                     continue
                 if len(csv_paths) < len(image_parse):
                     msg = (
@@ -1059,6 +1136,10 @@ def run_automation(
                     result.warnings.append(msg)
 
                 successful_images += 1
+                metadata.setdefault("image_id", image_id)
+                metadata.setdefault("label", img_label)
+                hashes_entry.setdefault("image_id", image_id)
+                hashes_entry.setdefault("label", img_label)
                 all_metadata.append(metadata)
                 all_hashes.append(hashes_entry)
                 image_descriptors.append({
@@ -1100,6 +1181,11 @@ def run_automation(
             msg = f"Failed to open evidence {img_label}: {exc}"
             LOGGER.warning(msg)
             result.warnings.append(msg)
+            skipped_images.append({
+                "image_id": image_id,
+                "label": img_label,
+                "reason": msg,
+            })
             continue
 
     cancelled = _stop_if_cancelled()
@@ -1184,6 +1270,27 @@ def run_automation(
         cancelled = _stop_if_cancelled()
         if cancelled is not None:
             return cancelled
+
+        if skipped_images:
+            existing_skipped = analysis_results.get("skipped_images")
+            combined_skipped = (
+                list(existing_skipped)
+                if isinstance(existing_skipped, list)
+                else []
+            )
+            combined_skipped.extend(skipped_images)
+            analysis_results["skipped_images"] = combined_skipped
+        if result.warnings:
+            existing_warnings = analysis_results.get("processing_warnings")
+            combined_warnings = (
+                list(existing_warnings)
+                if isinstance(existing_warnings, list)
+                else []
+            )
+            for warning in result.warnings:
+                if warning not in combined_warnings:
+                    combined_warnings.append(warning)
+            analysis_results["processing_warnings"] = combined_warnings
 
         # Persist analysis_results.json in case dir.
         results_file = case_dir / "analysis_results.json"

@@ -13,15 +13,15 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.reporter.normalization import (
-    convert_v1_to_multi_image,
+    build_json_evidence_entries,
     extract_confidence_label,
+    normalize_report_inputs,
     normalize_per_artifact_findings,
     stringify,
 )
@@ -34,17 +34,6 @@ DISCLAIMER_TEXT = (
     "independently verified by a qualified forensic examiner before being "
     "used in any legal or formal proceeding."
 )
-
-UNKNOWN_IP_VALUES = {"", "unknown", "n/a", "na", "none", "null", "unavailable"}
-
-
-@dataclass(frozen=True)
-class _RecordIndex:
-    """Indexed report input records plus legacy order fallback."""
-
-    by_image_id: dict[str, dict[str, Any]]
-    ordered: list[dict[str, Any]]
-    has_image_ids: bool
 
 
 def _resolve_confidence(text: str) -> str | None:
@@ -71,203 +60,6 @@ def _stringify(value: Any) -> str:
         String representation.
     """
     return stringify(value)
-
-
-def _convert_v1_to_multi_image(analysis: dict[str, Any]) -> dict[str, Any]:
-    """Convert a V1 single-image analysis result to multi-image format.
-
-    Wraps V1 per-artifact findings and summary into a single-image entry
-    under the ``images`` key, matching the normalisation logic in
-    :class:`~app.reporter.generator.ReportGenerator`.
-
-    Args:
-        analysis: V1-format analysis results dict.
-
-    Returns:
-        Dict in multi-image format with a single ``"default"`` image entry.
-    """
-    return convert_v1_to_multi_image(
-        analysis,
-        default_label=stringify(analysis.get("case_name"), "Evidence Image"),
-    )
-
-
-def _record_image_id(record: Mapping[str, Any]) -> str:
-    """Return a normalized image_id from a metadata/hash record."""
-    image_id = record.get("image_id")
-    if image_id is None:
-        return ""
-    return str(image_id).strip()
-
-
-def _looks_like_image_id_mapping(value: Mapping[str, Any]) -> bool:
-    """Return True when a mapping appears keyed by image_id."""
-    return bool(value) and all(
-        isinstance(item, Mapping) for item in value.values()
-    )
-
-
-def _normalize_records(value: Any) -> _RecordIndex:
-    """Normalize report input records into image-id and order indexes.
-
-    Accepts:
-        - a dict keyed by image_id,
-        - a list/tuple of dicts, optionally with image_id fields,
-        - a legacy single metadata/hash dict.
-
-    Returns:
-        _RecordIndex with image-id lookup and legacy positional records.
-    """
-    by_image_id: dict[str, dict[str, Any]] = {}
-    ordered: list[dict[str, Any]] = []
-
-    if isinstance(value, Mapping):
-        if _looks_like_image_id_mapping(value):
-            for raw_image_id, raw_record in value.items():
-                image_id = str(raw_image_id).strip()
-                if not image_id or not isinstance(raw_record, Mapping):
-                    continue
-                record = dict(raw_record)
-                record.setdefault("image_id", image_id)
-                by_image_id[image_id] = record
-                ordered.append(record)
-            return _RecordIndex(by_image_id, ordered, bool(by_image_id))
-
-        record = dict(value)
-        if record:
-            ordered.append(record)
-            image_id = _record_image_id(record)
-            if image_id:
-                by_image_id[image_id] = record
-        return _RecordIndex(by_image_id, ordered, bool(by_image_id))
-
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        for raw_record in value:
-            if not isinstance(raw_record, Mapping):
-                continue
-            record = dict(raw_record)
-            ordered.append(record)
-            image_id = _record_image_id(record)
-            if image_id:
-                by_image_id[image_id] = record
-        return _RecordIndex(by_image_id, ordered, bool(by_image_id))
-
-    return _RecordIndex({}, [], False)
-
-
-def _normalize_metadata(image_metadata: Any) -> _RecordIndex:
-    """Normalize image metadata to image-id lookup plus legacy order."""
-    return _normalize_records(image_metadata)
-
-
-def _normalize_hashes(evidence_hashes: Any) -> _RecordIndex:
-    """Normalize evidence hashes to image-id lookup plus legacy order."""
-    return _normalize_records(evidence_hashes)
-
-
-def _lookup_record(
-    records: _RecordIndex,
-    image_id: str,
-    idx: int,
-) -> dict[str, Any]:
-    """Look up a record by image_id, then legacy list order when safe."""
-    if image_id in records.by_image_id:
-        return records.by_image_id[image_id]
-
-    # V1 analyses are normalized to image_id="default"; keep single-image
-    # callers working even if their lone metadata/hash record has an image_id.
-    if image_id == "default" and len(records.ordered) == 1:
-        return records.ordered[0]
-
-    if not records.has_image_ids and idx < len(records.ordered):
-        return records.ordered[idx]
-
-    return {}
-
-
-def _normalize_ips(value: Any) -> list[str]:
-    """Normalize IP metadata to the JSON schema's list[str] shape."""
-    if value is None:
-        return []
-
-    if isinstance(value, str):
-        parts = value.split(",")
-    elif isinstance(value, (list, tuple, set)):
-        parts = list(value)
-    else:
-        parts = [value]
-
-    cleaned: list[str] = []
-    for part in parts:
-        text = "" if part is None else str(part).strip()
-        if text.lower() in UNKNOWN_IP_VALUES:
-            continue
-        cleaned.append(text)
-    return cleaned
-
-
-def _resolve_metadata(
-    idx: int,
-    image_id: str,
-    image_data: Mapping[str, Any],
-    metadata_index: _RecordIndex,
-) -> dict[str, Any]:
-    """Resolve metadata for an image, preferring embedded image metadata."""
-    supplied = _lookup_record(metadata_index, image_id, idx)
-    embedded_raw = image_data.get("metadata")
-    if isinstance(embedded_raw, Mapping):
-        return {**supplied, **dict(embedded_raw)}
-    return supplied
-
-
-def _build_evidence_entry(
-    idx: int,
-    image_id: str,
-    image_data: Mapping[str, Any],
-    metadata_index: _RecordIndex,
-    hashes_index: _RecordIndex,
-) -> dict[str, Any]:
-    """Build a single evidence entry for the JSON report.
-
-    Args:
-        idx: Index for looking up metadata/hashes.
-        image_id: Image identifier string.
-        image_data: Analysis data for this image.
-        metadata_index: Indexed image metadata records.
-        hashes_index: Indexed evidence hash records.
-
-    Returns:
-        Evidence entry dict.
-    """
-    meta = _resolve_metadata(idx, image_id, image_data, metadata_index)
-    hashes = _lookup_record(hashes_index, image_id, idx)
-
-    return {
-        "image_id": image_id,
-        "label": image_data.get("label", ""),
-        "filename": meta.get(
-            "filename",
-            meta.get(
-                "evidence_file",
-                hashes.get("filename", hashes.get("file_name", "")),
-            ),
-        ),
-        "hostname": meta.get("hostname", ""),
-        "os_version": meta.get("os_version", ""),
-        "domain": meta.get("domain", ""),
-        "ips": _normalize_ips(
-            meta.get("ips") or meta.get("ip_addresses") or meta.get("ip")
-        ),
-        "hashes": {
-            "sha256": hashes.get("sha256", ""),
-            "md5": hashes.get("md5", ""),
-            "size_bytes": hashes.get("size_bytes", 0),
-            "verification_status": hashes.get(
-                "verification_status",
-                hashes.get("status", "UNAVAILABLE"),
-            ),
-        },
-    }
 
 
 def _build_artifact_entry(finding: dict[str, Any]) -> dict[str, Any]:
@@ -341,31 +133,22 @@ def export_json_report(
         OSError: If output_path is not writable.
     """
     version = tool_version or TOOL_VERSION
-    analysis = dict(analysis_results)
+    analysis_input = dict(analysis_results or {})
+    normalized_inputs = normalize_report_inputs(
+        analysis_input,
+        image_metadata,
+        evidence_hashes,
+        default_label=stringify(analysis_input.get("case_name"), "Evidence Image"),
+    )
+    for warning in normalized_inputs.warnings:
+        LOGGER.warning("Report input normalization warning: %s", warning)
 
-    # Normalise to multi-image format.
-    if "images" not in analysis:
-        analysis = _convert_v1_to_multi_image(analysis)
-
-    images_data: dict[str, Any] = analysis.get("images", {})
+    analysis = normalized_inputs.analysis
+    images_data: dict[str, Any] = normalized_inputs.images_data
     model_info = analysis.get("model_info", {})
-    metadata_index = _normalize_metadata(image_metadata)
-    hashes_index = _normalize_hashes(evidence_hashes)
 
     # Build evidence entries.
-    evidence_entries: list[dict[str, Any]] = []
-    for idx, (image_id, image_data) in enumerate(images_data.items()):
-        if not isinstance(image_data, Mapping):
-            image_data = {}
-        evidence_entries.append(
-            _build_evidence_entry(
-                idx,
-                image_id,
-                image_data,
-                metadata_index,
-                hashes_index,
-            )
-        )
+    evidence_entries = build_json_evidence_entries(normalized_inputs)
 
     # Build analysis section.
     analysis_section: dict[str, Any] = {"images": {}, "cross_image_summary": None}
@@ -404,6 +187,18 @@ def export_json_report(
         },
         "investigation_context": investigation_context,
         "evidence": evidence_entries,
+        "hash_verification": [
+            {
+                "image_id": row.get("image_id", ""),
+                "image_label": row.get("image_label", ""),
+                "status": row.get("label", ""),
+                "passed": bool(row.get("passed")),
+                "skipped": bool(row.get("skipped", False)),
+                "detail": row.get("detail", ""),
+            }
+            for row in normalized_inputs.hash_rows
+        ],
+        "processing_notes": normalized_inputs.processing_notes,
         "analysis": analysis_section,
         "audit_trail": audit_trail,
         "disclaimer": DISCLAIMER_TEXT,
