@@ -18,7 +18,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 import py7zr
 
@@ -26,6 +26,7 @@ from app import create_app
 from tests.conftest import FakeParser, FAKE_HASHES
 import app.routes as routes
 import app.routes.evidence as routes_evidence
+import app.routes.evidence_archive as routes_evidence_archive
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state
@@ -245,6 +246,29 @@ class TestExtractZip(unittest.TestCase):
         with self.assertRaises(ValueError, msg="unsafe paths"):
             routes_evidence._extract_zip(zip_path, dest)
 
+    def test_zip_rejects_windows_unsafe_member_names(self) -> None:
+        """Reject ZIP members that Windows would reinterpret unsafely."""
+        unsafe_names = [
+            "disk.E01:ads",
+            "CON.txt",
+            "nested/PRN.E01",
+            "aux.raw",
+            "NUL",
+            "COM1.bin",
+            "LPT9.dd",
+            "disk.E01 ",
+            "disk.E01.",
+        ]
+        for index, member_name in enumerate(unsafe_names):
+            with self.subTest(member_name=member_name):
+                zip_path = self.root / f"unsafe-{index}.zip"
+                dest = self.root / "extracted"
+                with ZipFile(zip_path, "w") as zf:
+                    zf.writestr(member_name, b"data")
+                with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+                    routes_evidence._extract_zip(zip_path, dest)
+                self.assertFalse(dest.exists())
+
     def test_zip_rejects_windows_drive_path(self) -> None:
         zip_path = self.root / "evil-drive.zip"
         dest = self.root / "extracted"
@@ -252,6 +276,82 @@ class TestExtractZip(unittest.TestCase):
             zf.writestr("C:\\Windows\\System32\\config\\SAM", b"sam")
         with self.assertRaises(ValueError):
             routes_evidence._extract_zip(zip_path, dest)
+
+    def test_zip_rejects_duplicate_normalized_targets(self) -> None:
+        """Reject ZIP members that collide after slash normalization."""
+        zip_path = self.root / "duplicate.zip"
+        dest = self.root / "extracted"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("case/Disk.E01", b"one")
+            zf.writestr("case\\Disk.E01", b"two")
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_zip(zip_path, dest)
+        self.assertFalse(dest.exists())
+
+    def test_zip_rejects_case_insensitive_target_collision(self) -> None:
+        """Reject ZIP members that collide on case-insensitive filesystems."""
+        zip_path = self.root / "duplicate-case.zip"
+        dest = self.root / "extracted"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("case/Disk.E01", b"one")
+            zf.writestr("CASE/disk.e01", b"two")
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_zip(zip_path, dest)
+        self.assertFalse(dest.exists())
+
+    def test_zip_nested_archive_selects_inner_evidence(self) -> None:
+        """Select evidence discovered inside a nested ZIP archive."""
+        zip_path = self.root / "outer.zip"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w") as inner:
+            inner.writestr("nested/Disk.E01", b"EWF-DATA")
+        with ZipFile(zip_path, "w") as outer:
+            outer.writestr("inner.zip", inner_bytes.getvalue())
+        dest = self.root / "extracted"
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = routes_evidence._extract_zip(zip_path, dest)
+
+        self.assertEqual(result.name, "Disk.E01")
+        self.assertTrue(result.is_relative_to(dest.resolve()))
+
+    def test_zip_rejects_unsafe_nested_archive_and_cleans_destination(self) -> None:
+        """Reject unsafe nested ZIP extraction instead of falling back."""
+        zip_path = self.root / "outer-unsafe-nested.zip"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w") as inner:
+            inner.writestr("../escape.E01", b"escape")
+        with ZipFile(zip_path, "w") as outer:
+            outer.writestr("disk.E01", b"EWF-DATA")
+            outer.writestr("inner.zip", inner_bytes.getvalue())
+        dest = self.root / "extracted"
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+                routes_evidence._extract_zip(zip_path, dest)
+
+        self.assertFalse(dest.exists())
+        self.assertFalse((self.root / "escape.E01").exists())
+
+    def test_zip_rejects_symlink_metadata_on_directory_entries(self) -> None:
+        """Reject ZIP symlink metadata even when the name ends as a directory."""
+        zip_path = self.root / "symlink-dir.zip"
+        dest = self.root / "extracted"
+        symlink_dir = ZipInfo("link/")
+        symlink_dir.external_attr = 0o120777 << 16
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr(symlink_dir, b"target")
+
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_zip(zip_path, dest)
+
+        self.assertFalse(dest.exists())
 
     def test_zip_rejects_total_extracted_size_and_cleans_destination(self) -> None:
         zip_path = self.root / "too-large.zip"
@@ -286,6 +386,26 @@ class TestExtractZip(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             routes_evidence._extract_zip(zip_path, dest)
+
+        self.assertTrue(marker.exists())
+
+    def test_archive_descriptor_symlink_destination_does_not_delete_target(self) -> None:
+        """Refuse symlink extraction destinations without deleting targets."""
+        zip_path = self.root / "evidence.zip"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("disk.E01", b"EWF-DATA")
+        target = self.root / "descriptor-outside-target"
+        target.mkdir()
+        marker = target / "keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+        dest = self.root / "descriptor-extracted-link"
+        try:
+            dest.symlink_to(target, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            self.skipTest("Symlinks are not available in this environment")
+
+        with self.assertRaises(ValueError):
+            extract_archive_descriptor(zip_path, dest)
 
         self.assertTrue(marker.exists())
 
@@ -343,6 +463,89 @@ class TestExtractTar(unittest.TestCase):
         with self.assertRaises(ValueError, msg="unsafe paths"):
             routes_evidence._extract_tar(tar_path, dest)
 
+    def test_tar_rejects_windows_unsafe_member_names(self) -> None:
+        """Reject tar members that Windows would reinterpret unsafely."""
+        unsafe_names = [
+            "disk.E01:ads",
+            "CON.txt",
+            "nested/PRN.E01",
+            "aux.raw",
+            "NUL",
+            "COM1.bin",
+            "LPT9.dd",
+            "disk.E01 ",
+            "disk.E01.",
+        ]
+        for index, member_name in enumerate(unsafe_names):
+            with self.subTest(member_name=member_name):
+                tar_path = self._make_tar(
+                    f"unsafe-{index}.tar",
+                    {member_name: b"data"},
+                )
+                dest = self.root / "extracted"
+                with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+                    routes_evidence._extract_tar(tar_path, dest)
+                self.assertFalse(dest.exists())
+
+    def test_tar_rejects_duplicate_normalized_targets(self) -> None:
+        """Reject tar members that collide after slash normalization."""
+        tar_path = self._make_tar(
+            "duplicate.tar",
+            {
+                "case/Disk.E01": b"one",
+                "case\\Disk.E01": b"two",
+            },
+        )
+        dest = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_tar(tar_path, dest)
+        self.assertFalse(dest.exists())
+
+    def test_tar_rejects_case_insensitive_target_collision(self) -> None:
+        """Reject tar members that collide on case-insensitive filesystems."""
+        tar_path = self._make_tar(
+            "duplicate-case.tar",
+            {
+                "case/Disk.E01": b"one",
+                "CASE/disk.e01": b"two",
+            },
+        )
+        dest = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_tar(tar_path, dest)
+        self.assertFalse(dest.exists())
+
+    def test_tar_empty_raises(self) -> None:
+        """Reject tar archives that contain no regular files."""
+        tar_path = self.root / "empty.tar"
+        with tarfile.open(tar_path, "w"):
+            pass
+        dest = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "empty"):
+            routes_evidence._extract_tar(tar_path, dest)
+
+    def test_tar_nested_archive_selects_inner_evidence(self) -> None:
+        """Select evidence discovered inside a nested tar member archive."""
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w") as inner:
+            inner.writestr("nested/Disk.E01", b"EWF-DATA")
+        tar_path = self.root / "outer.tar"
+        with tarfile.open(tar_path, "w") as tar_file:
+            data = inner_bytes.getvalue()
+            info = tarfile.TarInfo(name="inner.zip")
+            info.size = len(data)
+            tar_file.addfile(info, io.BytesIO(data))
+        dest = self.root / "extracted"
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = routes_evidence._extract_tar(tar_path, dest)
+
+        self.assertEqual(result.name, "Disk.E01")
+        self.assertTrue(result.is_relative_to(dest.resolve()))
+
     def test_tar_rejects_symlink_member(self) -> None:
         tar_path = self.root / "evil-link.tar"
         with tarfile.open(tar_path, "w") as tf:
@@ -365,10 +568,16 @@ class TestExtract7z(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def _make_7z(self, name: str, files: dict[str, bytes]) -> Path:
+    def _make_7z(
+        self,
+        name: str,
+        files: dict[str, bytes] | list[tuple[str, bytes]],
+    ) -> Path:
+        """Create a 7z fixture from a mapping or ordered file list."""
         archive_path = self.root / name
+        file_items = files.items() if isinstance(files, dict) else files
         with py7zr.SevenZipFile(archive_path, mode="w") as szf:
-            for fname, data in files.items():
+            for fname, data in file_items:
                 szf.writestr(data, fname)
         return archive_path
 
@@ -412,6 +621,125 @@ class TestExtract7z(unittest.TestCase):
         dest = (self.root / "extracted").resolve()
         with self.assertRaises(ValueError):
             validate_archive_member_target(dest, "..\\escape.E01")
+
+    def test_shared_member_validator_rejects_windows_unsafe_components(self) -> None:
+        """Reject unsafe Windows components in the shared validator."""
+        dest = (self.root / "extracted").resolve()
+        unsafe_names = [
+            "disk.E01:ads",
+            "CON.txt",
+            "nested/PRN.E01",
+            "AUX.raw",
+            "NUL",
+            "COM9.bin",
+            "LPT1.dd",
+            "disk.E01 ",
+            "disk.E01.",
+        ]
+        for member_name in unsafe_names:
+            with self.subTest(member_name=member_name):
+                with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+                    validate_archive_member_target(dest, member_name)
+
+    def test_7z_rejects_windows_unsafe_member_names(self) -> None:
+        """Reject 7z members that Windows would reinterpret unsafely."""
+        unsafe_names = [
+            "disk.E01:ads",
+            "CON.txt",
+            "nested/PRN.E01",
+            "aux.raw",
+            "NUL",
+            "COM1.bin",
+            "LPT9.dd",
+            "disk.E01 ",
+            "disk.E01.",
+        ]
+        for index, member_name in enumerate(unsafe_names):
+            with self.subTest(member_name=member_name):
+                archive_path = self._make_7z(
+                    f"unsafe-{index}.7z",
+                    [(member_name, b"data")],
+                )
+                dest = self.root / "extracted"
+                with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+                    routes_evidence._extract_7z(archive_path, dest)
+                self.assertFalse(dest.exists())
+
+    def test_7z_rejects_duplicate_normalized_targets(self) -> None:
+        """Reject 7z members that collide after slash normalization."""
+        archive_path = self._make_7z(
+            "duplicate.7z",
+            [
+                ("case/Disk.E01", b"one"),
+                ("case\\Disk.E01", b"two"),
+            ],
+        )
+        dest = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_7z(archive_path, dest)
+        self.assertFalse(dest.exists())
+
+    def test_7z_rejects_case_insensitive_target_collision(self) -> None:
+        """Reject 7z members that collide on case-insensitive filesystems."""
+        archive_path = self._make_7z(
+            "duplicate-case.7z",
+            [
+                ("case/Disk.E01", b"one"),
+                ("CASE/disk.e01", b"two"),
+            ],
+        )
+        dest = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "unsafe file paths"):
+            routes_evidence._extract_7z(archive_path, dest)
+        self.assertFalse(dest.exists())
+
+    def test_7z_empty_raises(self) -> None:
+        """Reject 7z archives that contain no files."""
+        archive_path = self.root / "empty.7z"
+        with py7zr.SevenZipFile(archive_path, mode="w"):
+            pass
+        dest = self.root / "extracted"
+        with self.assertRaisesRegex(ValueError, "empty"):
+            routes_evidence._extract_7z(archive_path, dest)
+
+    def test_7z_nested_archive_selects_inner_evidence(self) -> None:
+        """Select evidence discovered inside a nested 7z member archive."""
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w") as inner:
+            inner.writestr("nested/Disk.E01", b"EWF-DATA")
+        archive_path = self._make_7z(
+            "outer.7z",
+            [("inner.zip", inner_bytes.getvalue())],
+        )
+        dest = self.root / "extracted"
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = routes_evidence._extract_7z(archive_path, dest)
+
+        self.assertEqual(result.name, "Disk.E01")
+        self.assertTrue(result.is_relative_to(dest.resolve()))
+
+
+class TestArchiveCompatibilityExports(unittest.TestCase):
+    """Verify legacy route extraction exports still point at hardened helpers."""
+
+    def test_legacy_extract_exports_remain_available(self) -> None:
+        """Keep route compatibility exports pointed at hardened helpers."""
+        self.assertIs(
+            routes_evidence._extract_zip,
+            routes_evidence_archive.extract_zip,
+        )
+        self.assertIs(
+            routes_evidence._extract_tar,
+            routes_evidence_archive.extract_tar,
+        )
+        self.assertIs(
+            routes_evidence._extract_7z,
+            routes_evidence_archive.extract_7z,
+        )
 
 
 # ---------------------------------------------------------------------------

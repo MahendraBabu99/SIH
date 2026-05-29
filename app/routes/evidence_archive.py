@@ -7,6 +7,7 @@ selection for Dissect.
 Attributes:
     EVIDENCE_FILE_EXTENSIONS: Frozenset of file extensions recognized as
         forensic evidence files inside extracted archives.
+    LOGGER: Module logger used for best-effort archive discovery diagnostics.
 """
 
 from __future__ import annotations
@@ -15,19 +16,18 @@ import gc
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Callable
 
-from ..evidence_descriptor import EvidenceDescriptor, descriptor_for_path
+from ..evidence_archive_selection import select_best_extracted_descriptor
+from ..evidence_descriptor import EvidenceDescriptor
 from ..evidence_archives import (
     ArchiveExtractionLimits,
     DEFAULT_ARCHIVE_LIMITS,
     extract_archive_to_directory,
-    validate_archive_member_target,
 )
 from ..evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
+
 __all__ = [
     "EVIDENCE_FILE_EXTENSIONS",
-    "extract_archive_members",
     "extract_archive_descriptor",
     "extract_zip",
     "extract_tar",
@@ -40,194 +40,86 @@ EVIDENCE_FILE_EXTENSIONS = NON_ARCHIVE_EVIDENCE_EXTENSIONS
 LOGGER = logging.getLogger(__name__)
 
 
-def _ensure_target_within_root(descriptor: EvidenceDescriptor, root: Path) -> None:
-    """Reject a discovered archive target that escaped the extraction root."""
-    resolved_root = root.resolve()
-    paths = [descriptor.dissect_path]
-    if descriptor.extraction_root is not None:
-        paths.append(descriptor.extraction_root)
-    for path in paths:
-        resolved = path.resolve()
-        try:
-            if not resolved.is_relative_to(resolved_root):
-                raise ValueError(
-                    "Nested archive extraction returned a target outside "
-                    "the evidence extraction root."
-                )
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "Nested archive extraction returned a target outside "
-                "the evidence extraction root."
-            ) from error
+def _discover_extracted_descriptors(destination: Path) -> list[EvidenceDescriptor]:
+    """Return descriptors from Dissect-aware discovery, if available.
 
+    Args:
+        destination: Extracted archive root to scan recursively.
 
-def _discover_extracted_descriptor(destination: Path) -> EvidenceDescriptor | None:
-    """Return the best descriptor from Dissect-aware discovery, if available."""
+    Returns:
+        Descriptors discovered under ``destination``. Returns an empty list if
+        non-security discovery fails so callers can fall back to static target
+        selection.
+
+    Raises:
+        ValueError: If recursive discovery rejects an unsafe nested archive.
+    """
     try:
         from app.automation.discovery import discover_evidence
 
         discovered = discover_evidence(destination, workspace_dir=destination)
+    except ValueError as error:
+        if str(error).startswith("Archive rejected:"):
+            raise
+        LOGGER.debug(
+            "Dissect-aware archive discovery failed for %s",
+            destination,
+            exc_info=True,
+        )
+        return []
     except Exception:
         LOGGER.debug(
             "Dissect-aware archive discovery failed for %s",
             destination,
             exc_info=True,
         )
-        return None
+        return []
     finally:
         gc.collect()
 
-    if not discovered:
-        return None
-
-    root = destination.resolve()
-    for descriptor in discovered:
-        _ensure_target_within_root(descriptor, root)
-        if descriptor.dissect_path.suffix.lower() == ".e01":
-            return descriptor
-    first = discovered[0]
-    _ensure_target_within_root(first, root)
-    return first
+    return list(discovered)
 
 
 def _discover_extracted_target(destination: Path) -> Path | None:
-    """Return the best target from Dissect-aware discovery, if available."""
-    descriptor = _discover_extracted_descriptor(destination)
-    if descriptor is None:
-        return None
-    return descriptor.dissect_path
-
-
-def extract_archive_members(
-    destination: Path,
-    members: list[tuple[str, Any]],
-    *,
-    empty_message: str,
-    unsafe_paths_message: str,
-    no_files_message: str,
-    extract_member: Callable[[Any, Path], None] | None = None,
-    extract_all_members: Callable[[list[tuple[Any, Path]]], None] | None = None,
-) -> Path:
-    """Extract archive members safely and return the best Dissect target path.
-
-    Validates path traversal, extracts, then locates the best evidence file.
-    Exactly one of *extract_member* or *extract_all_members* must be provided.
+    """Return the best target from Dissect-aware discovery, if available.
 
     Args:
-        destination: Root directory to extract into.
-        members: List of ``(member_name, member_object)`` tuples.
-        empty_message: Error for empty archives.
-        unsafe_paths_message: Error for path traversal.
-        no_files_message: Error when extraction produces no files.
-        extract_member: Callback to extract a single member.
-        extract_all_members: Callback to extract all members at once.
+        destination: Extracted archive root to scan recursively.
 
     Returns:
-        Path to the best evidence file or extraction directory.
+        Preferred Dissect path from recursive discovery, or ``None`` when
+        discovery finds no candidates.
 
     Raises:
-        ValueError: On empty, unsafe, or failed extraction.
+        ValueError: If discovery returns a descriptor outside ``destination``.
     """
-    if (extract_member is None) == (extract_all_members is None):
-        raise ValueError("Exactly one extraction callback must be provided.")
-
-    root = destination.resolve()
-    root.mkdir(parents=True, exist_ok=True)
-
-    if not members:
-        raise ValueError(empty_message)
-
-    validated_members: list[tuple[Any, Path]] = []
-    for member_name, member in members:
-        try:
-            _relative, target = validate_archive_member_target(root, member_name)
-        except ValueError as error:
-            raise ValueError(unsafe_paths_message) from error
-        try:
-            if not target.is_relative_to(root):
-                raise ValueError(unsafe_paths_message)
-        except (TypeError, ValueError) as error:
-            raise ValueError(unsafe_paths_message)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        validated_members.append((member, target))
-
-    if extract_all_members is not None:
-        extract_all_members(validated_members)
-    else:
-        for member, target in validated_members:
-            extract_member(member, target)
-
-    files = sorted(path for path in destination.rglob("*") if path.is_file())
-    if not files:
-        raise ValueError(no_files_message)
-
-    discovered_target = _discover_extracted_target(destination)
-    if discovered_target is not None:
-        return discovered_target
-
-    evidence_files = [
-        path for path in files if path.suffix.lower() in EVIDENCE_FILE_EXTENSIONS
-    ]
-    if evidence_files:
-        for ef in evidence_files:
-            if ef.suffix.lower() == ".e01":
-                return ef
-        return evidence_files[0]
-
-    top_level_entries: set[str] = set()
-    has_top_level_file = False
-    for file_path in files:
-        relative_parts = file_path.relative_to(destination).parts
-        if not relative_parts:
-            continue
-        top_level_entries.add(relative_parts[0])
-        if len(relative_parts) == 1:
-            has_top_level_file = True
-
-    if not has_top_level_file and len(top_level_entries) == 1:
-        wrapper_dir = destination / sorted(top_level_entries)[0]
-        if wrapper_dir.is_dir():
-            return wrapper_dir
-
-    return destination
+    discovered = _discover_extracted_descriptors(destination)
+    if not discovered:
+        return None
+    return select_best_extracted_descriptor(
+        destination,
+        discovered_descriptors=discovered,
+    ).dissect_path
 
 
 def _select_extracted_target(destination: Path) -> Path:
-    """Return the best evidence target within an extracted archive."""
+    """Return the best evidence target within an extracted archive.
 
-    files = sorted(path for path in destination.rglob("*") if path.is_file())
-    if not files:
-        raise ValueError("Evidence archive extraction produced no files.")
+    Args:
+        destination: Extracted archive root.
 
-    discovered_target = _discover_extracted_target(destination)
-    if discovered_target is not None:
-        return discovered_target
+    Returns:
+        Preferred Dissect path inside the extracted archive tree.
 
-    evidence_files = [
-        path for path in files if path.suffix.lower() in EVIDENCE_FILE_EXTENSIONS
-    ]
-    if evidence_files:
-        for evidence_file in evidence_files:
-            if evidence_file.suffix.lower() == ".e01":
-                return evidence_file
-        return evidence_files[0]
+    Raises:
+        ValueError: If extraction produced no files or discovery returns an
+            escaped descriptor.
+    """
 
-    top_level_entries: set[str] = set()
-    has_top_level_file = False
-    for file_path in files:
-        relative_parts = file_path.relative_to(destination).parts
-        if not relative_parts:
-            continue
-        top_level_entries.add(relative_parts[0])
-        if len(relative_parts) == 1:
-            has_top_level_file = True
-
-    if not has_top_level_file and len(top_level_entries) == 1:
-        wrapper_dir = destination / sorted(top_level_entries)[0]
-        if wrapper_dir.is_dir():
-            return wrapper_dir
-
-    return destination
+    return select_best_extracted_descriptor(
+        destination,
+        discovered_descriptors=_discover_extracted_descriptors(destination),
+    ).dissect_path
 
 
 def _select_extracted_descriptor(
@@ -236,27 +128,31 @@ def _select_extracted_descriptor(
     *,
     source_mode: str,
 ) -> EvidenceDescriptor:
-    """Return an evidence descriptor for a safely extracted archive."""
-    files = sorted(path for path in destination.rglob("*") if path.is_file())
-    if not files:
-        raise ValueError("Evidence archive extraction produced no files.")
+    """Return an evidence descriptor for a safely extracted archive.
 
-    discovered_descriptor = _discover_extracted_descriptor(destination)
-    if discovered_descriptor is not None:
-        return discovered_descriptor.with_archive_source(
-            archive_path,
-            destination.resolve(),
-            source_mode=source_mode,
-        )
+    Args:
+        destination: Extracted archive root.
+        archive_path: Original archive file that should be hashed/reported.
+        source_mode: Source provenance mode, such as ``"path"`` or
+            ``"upload"``.
 
-    target = _select_extracted_target(destination)
-    return descriptor_for_path(
-        target,
-        source_path=archive_path,
+    Returns:
+        Descriptor for the selected extracted target, wrapped so hash/report
+        provenance points at ``archive_path``.
+
+    Raises:
+        ValueError: If no extractable target is available or discovery escapes
+            the extraction root.
+    """
+
+    selected = select_best_extracted_descriptor(
+        destination,
+        discovered_descriptors=_discover_extracted_descriptors(destination),
+    )
+    return selected.with_archive_source(
+        archive_path,
+        destination.resolve(),
         source_mode=source_mode,
-        files_to_hash=[archive_path],
-        extracted_from=archive_path,
-        extraction_root=destination.resolve(),
     )
 
 
@@ -266,12 +162,31 @@ def _extract_and_select(
     *,
     limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
 ) -> Path:
-    extracted_root = extract_archive_to_directory(
-        archive_path,
-        destination,
-        limits=limits,
-    )
-    return _select_extracted_target(extracted_root)
+    """Extract an archive and return the selected Dissect target path.
+
+    Args:
+        archive_path: Archive file to extract.
+        destination: Directory to replace with extracted contents.
+        limits: Extraction limit values.
+
+    Returns:
+        Preferred Dissect path from the extracted archive contents.
+
+    Raises:
+        ValueError: If extraction fails or target selection finds no evidence.
+        OSError: If extraction paths cannot be created or removed.
+    """
+    try:
+        extracted_root = extract_archive_to_directory(
+            archive_path,
+            destination,
+            limits=limits,
+        )
+        return _select_extracted_target(extracted_root)
+    except Exception:
+        if destination.exists() and not destination.is_symlink():
+            shutil.rmtree(destination, ignore_errors=True)
+        raise
 
 
 def extract_archive_descriptor(
@@ -281,7 +196,22 @@ def extract_archive_descriptor(
     limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
     source_mode: str = "path",
 ) -> EvidenceDescriptor:
-    """Extract an archive and return a descriptor for the selected target."""
+    """Extract an archive and return a descriptor for the selected target.
+
+    Args:
+        archive_path: Archive file to extract.
+        destination: Directory to replace with extracted contents.
+        limits: Extraction limit values.
+        source_mode: Source provenance mode to preserve on the descriptor.
+
+    Returns:
+        Descriptor for the selected extracted target with archive provenance.
+
+    Raises:
+        ValueError: If the archive is invalid, unsafe, empty, or has no
+            selectable target.
+        OSError: If extraction cleanup or filesystem operations fail.
+    """
     try:
         extracted_root = extract_archive_to_directory(
             archive_path,
@@ -294,9 +224,8 @@ def extract_archive_descriptor(
             source_mode=source_mode,
         )
     except Exception:
-        resolved_destination = destination.resolve()
-        if resolved_destination.exists():
-            shutil.rmtree(resolved_destination, ignore_errors=True)
+        if destination.exists() and not destination.is_symlink():
+            shutil.rmtree(destination, ignore_errors=True)
         raise
 
 

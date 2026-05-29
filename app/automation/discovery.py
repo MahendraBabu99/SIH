@@ -15,6 +15,7 @@ from pathlib import Path
 
 from dissect.target import Target
 
+from app.evidence_archive_selection import select_best_extracted_descriptor
 from app.evidence_descriptor import EvidenceDescriptor, descriptor_for_path
 from app.evidence_archives import ARCHIVE_EXTENSIONS, extract_archive_to_directory
 from app.evidence_constants import DISSECT_EVIDENCE_EXTENSIONS
@@ -200,7 +201,12 @@ def _discover_file(
     *,
     strict_extension: bool,
 ) -> list[EvidenceDescriptor]:
-    """Discover evidence for a single file path."""
+    """Discover evidence for a single file path.
+
+    Archive fallback scans use the archive's extracted root as the temporary
+    workspace while recursing so nested archive outputs remain contained by
+    the parent extraction tree selected later.
+    """
     if not _has_supported_extension(path):
         if strict_extension:
             raise ValueError(
@@ -227,11 +233,17 @@ def _discover_file(
 
     extract_dir = context.next_extraction_dir(path)
     extracted_root = _safe_extract_archive(path, extract_dir)
-    discovered = _discover_path(extracted_root, context, strict_extension=False)
-    return [
-        descriptor.with_archive_source(path, extracted_root)
-        for descriptor in discovered
-    ]
+    previous_workspace_root = context.workspace_root
+    context.workspace_root = extracted_root
+    try:
+        discovered = _discover_path(extracted_root, context, strict_extension=False)
+    finally:
+        context.workspace_root = previous_workspace_root
+    selected = select_best_extracted_descriptor(
+        extracted_root,
+        discovered_descriptors=discovered,
+    )
+    return [selected.with_archive_source(path, extracted_root)]
 
 
 def _discover_directory(path: Path, context: _DiscoveryContext) -> list[EvidenceDescriptor]:

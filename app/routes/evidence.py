@@ -52,7 +52,6 @@ from .state import (
 # Backward-compatible re-exports from the split-out modules.
 from .evidence_archive import (  # noqa: F401
     EVIDENCE_FILE_EXTENSIONS as _EVIDENCE_FILE_EXTENSIONS,
-    extract_archive_members as _extract_archive_members,
     extract_zip as _extract_zip,
     extract_tar as _extract_tar,
     extract_7z as _extract_7z,

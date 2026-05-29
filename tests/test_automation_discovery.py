@@ -10,6 +10,7 @@ Attributes:
 
 from __future__ import annotations
 
+import io
 import tarfile
 import unittest
 from pathlib import Path
@@ -194,6 +195,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         (child / "data.bin").write_bytes(b"")
 
         def fake_open(path: Path):
+            """Open only the wrapper and child paths in the fixture."""
             if path in {wrapper.resolve(), child.resolve()}:
                 return MagicMock()
             raise RuntimeError("not loadable")
@@ -323,6 +325,47 @@ class TestDiscoverEvidence(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].name, "evidence.E01")
         self.assertTrue(result[0].is_relative_to(workspace.resolve()))
+
+    def test_archive_fallback_prefers_best_extracted_target(self) -> None:
+        """Archive fallback uses the same extracted-target selection as intake."""
+        archive = self.root / "mixed.zip"
+        workspace = self.root / "case" / "evidence"
+        with ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("disk.vmdk", b"vm")
+            zip_file.writestr("disk.E01", b"ewf")
+
+        result = self._discover_with_dissect_fail(
+            archive,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].dissect_path.name, "disk.E01")
+        self.assertEqual(result[0].source_path, archive.resolve())
+        self.assertEqual(result[0].files_to_hash, (archive.resolve(),))
+
+    def test_nested_archive_fallback_keeps_selection_inside_outer_root(self) -> None:
+        """Nested archive fallback keeps selected targets under the outer root."""
+        archive = self.root / "outer.zip"
+        workspace = self.root / "case" / "evidence"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w") as inner_zip:
+            inner_zip.writestr("nested/disk.E01", b"ewf")
+        with ZipFile(archive, "w") as outer_zip:
+            outer_zip.writestr("inner.zip", inner_bytes.getvalue())
+
+        result = self._discover_with_dissect_fail(
+            archive,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        descriptor = result[0]
+        self.assertEqual(descriptor.dissect_path.name, "disk.E01")
+        self.assertTrue(
+            descriptor.dissect_path.is_relative_to(descriptor.extraction_root)
+        )
+        self.assertTrue(descriptor.extraction_root.is_relative_to(workspace.resolve()))
 
     def test_archive_descriptor_hashes_original_container(self) -> None:
         """Archive fallback descriptors verify the archive, not extracted file."""
