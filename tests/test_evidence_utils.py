@@ -138,6 +138,15 @@ class TestShouldSkipHashing(unittest.TestCase):
         ):
             self.assertFalse(should_skip_hashing())
 
+    def test_json_skip_hashing_string_false(self) -> None:
+        """JSON string skip_hashing='false' returns False."""
+        with self.app.test_request_context(
+            "/test",
+            method="POST",
+            json={"skip_hashing": "false"},
+        ):
+            self.assertFalse(should_skip_hashing())
+
     def test_json_no_skip_hashing_key(self) -> None:
         """JSON body without skip_hashing returns False."""
         with self.app.test_request_context(
@@ -161,6 +170,16 @@ class TestShouldSkipHashing(unittest.TestCase):
             data={"skip_hashing": "1"},
         ):
             self.assertTrue(should_skip_hashing())
+
+    def test_multipart_skip_hashing_false(self) -> None:
+        """Multipart form skip_hashing=false returns False."""
+        with self.app.test_request_context(
+            "/test",
+            method="POST",
+            content_type="multipart/form-data",
+            data={"skip_hashing": "false"},
+        ):
+            self.assertFalse(should_skip_hashing())
 
 
 # ---------------------------------------------------------------------------

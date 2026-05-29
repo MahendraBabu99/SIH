@@ -181,6 +181,32 @@ class MultiImageRoutesTests(unittest.TestCase):
         labels = {item["label"] for item in data["evidence"]}
         self.assertEqual(labels, {"pc01", "pc02"})
 
+    def test_discover_evidence_directory_returns_descriptor_fields(self) -> None:
+        """GUI discovery returns descriptor fields for split evidence."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        for segment in range(1, 3):
+            (evidence_dir / f"pc01.E{segment:02d}").write_bytes(b"segment")
+
+        with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+            resp = self.client.post(
+                "/api/evidence/discover",
+                json={"path": str(evidence_dir)},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["count"], 1)
+        entry = data["evidence"][0]
+        self.assertEqual(Path(entry["dissect_path"]).name, "pc01.E01")
+        self.assertEqual(Path(entry["path"]).name, "pc01.E01")
+        self.assertEqual(Path(entry["source_path"]).name, "pc01.E01")
+        self.assertEqual(
+            [Path(path).name for path in entry["files_to_hash"]],
+            ["pc01.E01", "pc01.E02"],
+        )
+        self.assertEqual(entry["source_mode"], "path")
+
     def test_discover_evidence_rejects_missing_path(self) -> None:
         """POST /api/evidence/discover validates the required path field."""
         resp = self.client.post("/api/evidence/discover", json={})

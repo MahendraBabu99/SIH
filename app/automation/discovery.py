@@ -15,9 +15,14 @@ from pathlib import Path
 
 from dissect.target import Target
 
+from app.evidence_descriptor import EvidenceDescriptor, descriptor_for_path
 from app.evidence_archives import ARCHIVE_EXTENSIONS, extract_archive_to_directory
 from app.evidence_constants import DISSECT_EVIDENCE_EXTENSIONS
-from app.evidence_segments import segment_identity, validate_segment_group_paths
+from app.evidence_segments import (
+    collect_segment_group_paths,
+    segment_identity,
+    validate_segment_group_paths,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -110,7 +115,10 @@ def _is_hidden_or_skipped(path: Path) -> bool:
 
 def _has_supported_extension(path: Path) -> bool:
     """Return True if *path* has a supported evidence extension."""
-    return path.suffix.lower() in DISSECT_EVIDENCE_EXTENSIONS
+    return (
+        path.suffix.lower() in DISSECT_EVIDENCE_EXTENSIONS
+        or segment_identity(path) is not None
+    )
 
 
 def _is_archive(path: Path) -> bool:
@@ -149,8 +157,8 @@ def _safe_extract_archive(archive_path: Path, destination: Path) -> Path:
     return extract_archive_to_directory(archive_path, destination)
 
 
-def _deduplicate_segments(paths: list[Path]) -> list[Path]:
-    """Remove duplicate split-image segments, keeping only the first."""
+def _deduplicate_segments(paths: list[Path]) -> list[EvidenceDescriptor]:
+    """Return descriptors for files, deduplicating split-image segments."""
     groups: dict[tuple[str, str], list[Path]] = {}
     non_segments: list[Path] = []
 
@@ -163,10 +171,19 @@ def _deduplicate_segments(paths: list[Path]) -> list[Path]:
         kind, base, _segment_number = segment
         groups.setdefault((kind, base), []).append(path)
 
-    first_segments: list[Path] = []
+    descriptors: list[EvidenceDescriptor] = [
+        descriptor_for_path(path, source_mode="path") for path in non_segments
+    ]
     for group in groups.values():
         ordered_group = validate_segment_group_paths(group)
-        first_segments.append(ordered_group[0])
+        descriptors.append(
+            descriptor_for_path(
+                ordered_group[0],
+                source_mode="path",
+                files_to_hash=ordered_group,
+                primary_dissect_path=ordered_group[0],
+            )
+        )
         if len(group) > 1:
             LOGGER.debug(
                 "Segment group with %d parts, keeping: %s",
@@ -174,7 +191,7 @@ def _deduplicate_segments(paths: list[Path]) -> list[Path]:
                 group[0].name,
             )
 
-    return non_segments + first_segments
+    return descriptors
 
 
 def _discover_file(
@@ -182,7 +199,7 @@ def _discover_file(
     context: _DiscoveryContext,
     *,
     strict_extension: bool,
-) -> list[Path]:
+) -> list[EvidenceDescriptor]:
     """Discover evidence for a single file path."""
     if not _has_supported_extension(path):
         if strict_extension:
@@ -193,17 +210,31 @@ def _discover_file(
         return []
 
     if not _is_archive(path):
-        return [path]
+        if segment_identity(path) is not None:
+            segment_paths = collect_segment_group_paths(path)
+            return [
+                descriptor_for_path(
+                    path,
+                    source_mode="path",
+                    files_to_hash=segment_paths,
+                    primary_dissect_path=segment_paths[0],
+                )
+            ]
+        return [descriptor_for_path(path, source_mode="path")]
 
     if _can_open_with_dissect(path):
-        return [path]
+        return [descriptor_for_path(path, source_mode="path")]
 
     extract_dir = context.next_extraction_dir(path)
     extracted_root = _safe_extract_archive(path, extract_dir)
-    return _discover_path(extracted_root, context, strict_extension=False)
+    discovered = _discover_path(extracted_root, context, strict_extension=False)
+    return [
+        descriptor.with_archive_source(path, extracted_root)
+        for descriptor in discovered
+    ]
 
 
-def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Path]:
+def _discover_directory(path: Path, context: _DiscoveryContext) -> list[EvidenceDescriptor]:
     """Discover evidence targets in a directory."""
     directory = path.resolve()
     if not context.contains_allowed_path(directory):
@@ -214,7 +245,7 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Path]:
     context.visited_directories.add(directory)
 
     if _can_open_with_dissect(directory):
-        return [directory]
+        return [descriptor_for_path(directory, source_mode="path")]
 
     file_candidates: list[Path] = []
     recursive_candidates: list[Path] = []
@@ -246,7 +277,7 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Path]:
     for child_path in recursive_candidates:
         result.extend(_discover_path(child_path, context, strict_extension=False))
 
-    return sorted(result, key=lambda item: str(item))
+    return sorted(result, key=lambda item: str(item.dissect_path))
 
 
 def _discover_path(
@@ -254,7 +285,7 @@ def _discover_path(
     context: _DiscoveryContext,
     *,
     strict_extension: bool,
-) -> list[Path]:
+) -> list[EvidenceDescriptor]:
     """Dispatch discovery based on path type."""
     resolved = path.resolve()
     if not context.contains_allowed_path(resolved):
@@ -271,7 +302,7 @@ def discover_evidence(
     source_path: str | Path,
     *,
     workspace_dir: str | Path | None = None,
-) -> list[Path]:
+) -> list[EvidenceDescriptor]:
     """Discover all forensic evidence targets at the given path.
 
     Discovery uses target-aware recursion: image files are returned directly,
@@ -285,8 +316,8 @@ def discover_evidence(
             files become stable case-owned evidence targets.
 
     Returns:
-        Sorted list of unique Path objects, each pointing to a viable evidence
-        file or directory target. Empty list if no evidence found.
+        Sorted list of unique evidence descriptors, each pointing to a viable
+        evidence file or directory target. Empty list if no evidence found.
 
     Raises:
         FileNotFoundError: If source_path does not exist.
@@ -303,7 +334,7 @@ def discover_evidence(
     )
     context = _DiscoveryContext(source_root=resolved, workspace_root=workspace_root)
     result = _discover_path(resolved, context, strict_extension=True)
-    result = sorted(set(result), key=lambda item: str(item))
+    result = sorted(set(result), key=lambda item: str(item.dissect_path))
 
     LOGGER.info("Discovered %d evidence target(s) in %s", len(result), resolved)
     return result

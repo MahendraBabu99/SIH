@@ -28,6 +28,7 @@ from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.case_manager import CaseManager
 from app.config import load_config
+from app.evidence_descriptor import EvidenceDescriptor, descriptor_for_path
 from app.hasher import (
     apply_hash_verification_result,
     compute_hashes,
@@ -335,6 +336,100 @@ def _generate_report_basename(case_id: str) -> str:
     return f"AIFT_report_{case_id}_{ts}"
 
 
+def _coerce_evidence_descriptor(value: Any) -> EvidenceDescriptor:
+    """Return an evidence descriptor for discovery results or legacy paths."""
+    if isinstance(value, EvidenceDescriptor):
+        return value
+    return descriptor_for_path(Path(value), source_mode="path")
+
+
+def _hash_evidence_descriptor(
+    descriptor: EvidenceDescriptor,
+    *,
+    skip_hashing: bool,
+    audit_logger: AuditLogger,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Compute intake hash records for all files in an evidence descriptor."""
+    source_path = descriptor.source_path
+    base_entry: dict[str, Any] = {
+        "filename": source_path.name,
+        "_source_path": str(source_path),
+        "source_path": str(source_path),
+        "dissect_path": str(descriptor.dissect_path),
+        "source_mode": descriptor.source_mode,
+        "label": descriptor.label,
+        "sha256": "N/A (skipped)" if skip_hashing else "",
+        "md5": "N/A (skipped)" if skip_hashing else "",
+        "size_bytes": 0,
+        "verification_status": "SKIPPED" if skip_hashing else "UNAVAILABLE",
+    }
+    if descriptor.extracted_from is not None:
+        base_entry["extracted_from"] = str(descriptor.extracted_from)
+    if descriptor.extraction_root is not None:
+        base_entry["extraction_root"] = str(descriptor.extraction_root)
+
+    if skip_hashing:
+        apply_hash_verification_result(
+            base_entry,
+            status="SKIPPED",
+            expected_sha256="N/A (skipped)",
+            computed_sha256="N/A (skipped)",
+            detail=(
+                "Hash computation was skipped at user request "
+                "during evidence intake."
+            ),
+        )
+        base_entry["evidence_file_hashes"] = []
+        return base_entry, []
+
+    files_to_hash = list(descriptor.files_to_hash)
+    if not files_to_hash:
+        base_entry.update({
+            "sha256": "N/A (directory)",
+            "md5": "N/A (directory)",
+        })
+        apply_hash_verification_result(
+            base_entry,
+            status="UNAVAILABLE",
+            expected_sha256="N/A (directory)",
+            detail="Hash verification is unavailable for directory evidence.",
+        )
+        base_entry["evidence_file_hashes"] = []
+        return base_entry, []
+
+    file_hashes: list[dict[str, Any]] = []
+    for file_path in files_to_hash:
+        h = dict(compute_hashes(file_path))
+        entry = {
+            "path": str(file_path),
+            "filename": file_path.name,
+            "sha256": h["sha256"],
+            "md5": h["md5"],
+            "size_bytes": h["size_bytes"],
+        }
+        file_hashes.append(entry)
+        audit_logger.log("evidence_intake_file_hashed", entry)
+
+    first = file_hashes[0]
+    base_entry.update({
+        "sha256": first["sha256"],
+        "md5": first["md5"],
+        "size_bytes": sum(int(item["size_bytes"]) for item in file_hashes),
+        "verification_status": "UNAVAILABLE",
+        "evidence_file_hashes": file_hashes,
+    })
+    audit_logger.log("evidence_intake", {
+        "file": str(source_path),
+        "dissect_path": str(descriptor.dissect_path),
+        "source_mode": descriptor.source_mode,
+        "sha256": base_entry["sha256"],
+        "md5": base_entry["md5"],
+        "size_bytes": base_entry["size_bytes"],
+        "evidence_file_hashes": file_hashes,
+    })
+    return base_entry, file_hashes
+
+
 def _prepare_output_dir(
     output_dir_value: str | Path,
 ) -> tuple[Path | None, str | None]:
@@ -407,6 +502,7 @@ def _verify_hashes_before_report(
     results = [
         verify_hashes_for_report(
             hashes,
+            file_hash_entries=hashes.get("evidence_file_hashes", []),
             fallback_path=hashes.get("_source_path") or hashes.get("path"),
             verifier=verify_hash,
         )
@@ -580,7 +676,7 @@ def run_automation(
     # --- 5. Discover evidence ---
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)
     try:
-        evidence_files = discover_evidence(
+        discovered_evidence = discover_evidence(
             evidence_path,
             workspace_dir=discovery_workspace,
         )
@@ -589,16 +685,22 @@ def run_automation(
         result.duration_seconds = time.monotonic() - start_time
         return result
 
-    if not evidence_files:
+    evidence_descriptors = [
+        _coerce_evidence_descriptor(item) for item in discovered_evidence
+    ]
+
+    if not evidence_descriptors:
         result.errors.append("No evidence files found at the specified path.")
         result.duration_seconds = time.monotonic() - start_time
         return result
 
-    result.evidence_files = evidence_files
+    result.evidence_files = [
+        descriptor.dissect_path for descriptor in evidence_descriptors
+    ]
     _notify(
         progress_callback,
         "discovery",
-        f"Found {len(evidence_files)} evidence file(s).",
+        f"Found {len(evidence_descriptors)} evidence file(s).",
         100.0,
     )
 
@@ -611,7 +713,7 @@ def run_automation(
         "evidence_path": str(evidence_path),
         "profile": request.profile_name or DEFAULT_PROFILE_NAME,
         "skip_hashing": request.skip_hashing,
-        "evidence_count": len(evidence_files),
+        "evidence_count": len(evidence_descriptors),
     })
 
     cancelled = _stop_if_cancelled()
@@ -624,13 +726,15 @@ def run_automation(
     all_hashes: list[dict[str, Any]] = []
     successful_images = 0
 
-    for img_idx, ev_file in enumerate(evidence_files):
+    for img_idx, descriptor in enumerate(evidence_descriptors):
         cancelled = _stop_if_cancelled()
         if cancelled is not None:
             return cancelled
 
-        img_label = ev_file.name
-        pct = (img_idx / len(evidence_files)) * 100.0
+        ev_file = descriptor.dissect_path
+        source_file = descriptor.source_path
+        img_label = descriptor.label
+        pct = (img_idx / len(evidence_descriptors)) * 100.0
 
         try:
             image_id = case_manager.add_image(case_id, label=img_label)
@@ -679,73 +783,46 @@ def run_automation(
                 if cancelled is not None:
                     return cancelled
 
-                # Hash evidence.
-                hashes_entry: dict[str, Any] = {
-                    "filename": ev_file.name,
-                    "_source_path": str(ev_file),
-                    "sha256": "N/A (skipped)" if request.skip_hashing else "",
-                    "md5": "N/A (skipped)" if request.skip_hashing else "",
-                    "size_bytes": 0,
-                    "verification_status": "SKIPPED" if request.skip_hashing else "UNAVAILABLE",
-                }
-                if request.skip_hashing:
-                    apply_hash_verification_result(
-                        hashes_entry,
-                        status="SKIPPED",
-                        expected_sha256="N/A (skipped)",
-                        computed_sha256="N/A (skipped)",
-                        detail=(
-                            "Hash computation was skipped at user request "
-                            "during evidence intake."
-                        ),
+                # Hash the descriptor's source files. Split groups include
+                # every validated segment; archive fallback verifies the
+                # original container while Dissect reads the extracted target.
+                cancelled = _stop_if_cancelled()
+                if cancelled is not None:
+                    return cancelled
+
+                _notify(
+                    progress_callback,
+                    "hashing",
+                    f"Hashing {source_file.name}...",
+                    pct,
+                )
+                try:
+                    hashes_entry, _file_hashes = _hash_evidence_descriptor(
+                        descriptor,
+                        skip_hashing=request.skip_hashing,
+                        audit_logger=audit_logger,
                     )
-                elif ev_file.is_dir():
-                    hashes_entry.update({
-                        "sha256": "N/A (directory)",
-                        "md5": "N/A (directory)",
-                    })
+                except Exception as exc:
+                    msg = f"Hashing failed for {source_file.name}: {exc}"
+                    LOGGER.warning(msg)
+                    result.warnings.append(msg)
+                    hashes_entry = {
+                        "filename": source_file.name,
+                        "_source_path": str(source_file),
+                        "source_path": str(source_file),
+                        "dissect_path": str(ev_file),
+                        "source_mode": descriptor.source_mode,
+                        "sha256": "",
+                        "md5": "",
+                        "size_bytes": 0,
+                        "verification_status": "UNAVAILABLE",
+                        "evidence_file_hashes": [],
+                    }
                     apply_hash_verification_result(
                         hashes_entry,
                         status="UNAVAILABLE",
-                        expected_sha256="N/A (directory)",
-                        detail="Hash verification is unavailable for directory evidence.",
+                        detail=f"Hash computation failed during intake: {exc}",
                     )
-                else:
-                    cancelled = _stop_if_cancelled()
-                    if cancelled is not None:
-                        return cancelled
-
-                    _notify(
-                        progress_callback,
-                        "hashing",
-                        f"Hashing {img_label}...",
-                        pct,
-                    )
-                    try:
-                        h = compute_hashes(ev_file)
-                        hashes_entry = {
-                            "filename": ev_file.name,
-                            "_source_path": str(ev_file),
-                            "sha256": h["sha256"],
-                            "md5": h["md5"],
-                            "size_bytes": h["size_bytes"],
-                            "verification_status": "UNAVAILABLE",
-                        }
-                        audit_logger.log("evidence_intake", {
-                            "file": str(ev_file),
-                            "sha256": h["sha256"],
-                            "md5": h["md5"],
-                            "size_bytes": h["size_bytes"],
-                        })
-                    except Exception as exc:
-                        msg = f"Hashing failed for {img_label}: {exc}"
-                        LOGGER.warning(msg)
-                        result.warnings.append(msg)
-                        apply_hash_verification_result(
-                            hashes_entry,
-                            status="UNAVAILABLE",
-                            detail=f"Hash computation failed during intake: {exc}",
-                        )
 
                 cancelled = _stop_if_cancelled()
                 if cancelled is not None:
@@ -811,6 +888,25 @@ def run_automation(
                     "parsed_dir": str(parsed_dir),
                     "os_type": os_type,
                     "csv_paths": csv_paths,
+                    "evidence_descriptor": {
+                        "dissect_path": str(descriptor.dissect_path),
+                        "source_path": str(descriptor.source_path),
+                        "label": descriptor.label,
+                        "source_mode": descriptor.source_mode,
+                        "files_to_hash": [
+                            str(path) for path in descriptor.files_to_hash
+                        ],
+                        "extracted_from": (
+                            str(descriptor.extracted_from)
+                            if descriptor.extracted_from is not None
+                            else ""
+                        ),
+                        "extraction_root": (
+                            str(descriptor.extraction_root)
+                            if descriptor.extraction_root is not None
+                            else ""
+                        ),
+                    },
                 })
         except Exception as exc:
             msg = f"Failed to open evidence {img_label}: {exc}"
@@ -1005,7 +1101,7 @@ def run_automation(
     if result.success:
         audit_logger.log("automation_completed", {
             "case_id": case_id,
-            "evidence_count": len(evidence_files),
+            "evidence_count": len(evidence_descriptors),
             "duration_seconds": round(result.duration_seconds, 2),
         })
     else:

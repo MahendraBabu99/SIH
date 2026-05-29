@@ -32,6 +32,7 @@ import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
 from app.evidence_archives import ArchiveExtractionLimits, validate_archive_member_target
 from app.evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
+from app.routes.evidence_archive import extract_archive_descriptor
 
 
 # ---------------------------------------------------------------------------
@@ -956,6 +957,75 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
         self.assertEqual(file_hashes[0]["path"], str(zip_path))
         self.assertEqual(file_hashes[0]["sha256"], "a" * 64)
 
+    def test_uploaded_archive_descriptor_preserves_upload_source_mode(self) -> None:
+        """Uploaded archive descriptors keep upload provenance after discovery."""
+        case_id = self._create_case()
+        archive_bytes = io.BytesIO()
+        with ZipFile(archive_bytes, "w") as zf:
+            zf.writestr("Disk.E01", b"EWF-DATA")
+        archive_bytes.seek(0)
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
+            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch(
+                "app.automation.discovery.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                data={"evidence_file": (archive_bytes, "evidence.zip")},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(resp.status_code, 200)
+            payload = resp.get_json()
+
+        descriptor = payload["evidence_descriptor"]
+        self.assertEqual(payload["source_mode"], "upload")
+        self.assertEqual(descriptor["source_mode"], "upload")
+        self.assertEqual(Path(descriptor["dissect_path"]).name, "Disk.E01")
+        self.assertEqual(Path(descriptor["files_to_hash"][0]).name, "evidence.zip")
+
+        with routes.STATE_LOCK:
+            case = routes.CASE_STATES[case_id]
+            case_descriptor = case.get("evidence_descriptor", {})
+
+        self.assertEqual(case.get("source_mode"), "upload")
+        self.assertEqual(case_descriptor.get("source_mode"), "upload")
+
+    def test_nested_archive_fallback_stays_under_extraction_root(self) -> None:
+        """Nested archive fallback extracts under the case extraction root."""
+        outer_zip = Path(self.temp_dir.name) / "outer.zip"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w") as inner:
+            inner.writestr("case/Disk.E01", b"EWF-DATA")
+        with ZipFile(outer_zip, "w") as outer:
+            outer.writestr("nested/inner.zip", inner_bytes.getvalue())
+
+        destination = Path(self.temp_dir.name) / "case-evidence" / "extracted"
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            descriptor = extract_archive_descriptor(
+                outer_zip,
+                destination,
+                source_mode="path",
+            )
+
+        self.assertEqual(descriptor.dissect_path.name, "Disk.E01")
+        self.assertTrue(descriptor.dissect_path.is_relative_to(destination.resolve()))
+        self.assertEqual(descriptor.source_path, outer_zip)
+        self.assertEqual(descriptor.files_to_hash, (outer_zip,))
+        self.assertEqual(descriptor.extracted_from, outer_zip)
+        self.assertEqual(descriptor.extraction_root, destination.resolve())
+
     def test_archive_report_verifies_via_evidence_file_hashes(self) -> None:
         """Report generation for archived evidence must verify using the stored
         evidence_file_hashes, calling verify_hash for each entry."""
@@ -1062,6 +1132,47 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             file_hashes = routes.CASE_STATES[case_id].get("evidence_file_hashes", [])
         self.assertEqual(len(file_hashes), 2)
 
+    def test_split_upload_e10_hashes_all_segments_and_opens_primary(self) -> None:
+        """Uploading E01..E10 hashes every segment but analyzes E01 only."""
+        case_id = self._create_case()
+        call_count = {"n": 0}
+
+        def _fake_compute(filepath, progress_callback=None):
+            del filepath, progress_callback
+            call_count["n"] += 1
+            return {"sha256": f"{call_count['n']:0>64x}", "md5": f"{call_count['n']:0>32x}", "size_bytes": 4}
+
+        uploads = [
+            (io.BytesIO(f"seg{segment}".encode("ascii")), f"Disk.E{segment:02d}")
+            for segment in range(1, 11)
+        ]
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
+            patch("app.hasher.compute_hashes", side_effect=_fake_compute),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                data={"evidence_file": uploads},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(call_count["n"], 10)
+        with routes.STATE_LOCK:
+            case = routes.CASE_STATES[case_id]
+            file_hashes = case.get("evidence_file_hashes", [])
+            evidence_path = Path(case["evidence_path"])
+
+        self.assertEqual(len(file_hashes), 10)
+        self.assertEqual(evidence_path.name, "Disk.E01")
+        self.assertIn("Disk.E10", {Path(entry["path"]).name for entry in file_hashes})
+
     def test_split_report_verifies_all_segments(self) -> None:
         """Report generation must verify every segment, not just the primary."""
         case_id = self._create_case()
@@ -1141,6 +1252,48 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
         self.assertEqual(
             {entry["path"] for entry in file_hashes},
             {str(disk_e01), str(disk_e02)},
+        )
+
+    def test_split_path_e10_hashes_all_segments_and_opens_primary(self) -> None:
+        """Path intake from E10 analyzes E01 and hashes E01 through E10."""
+        case_id = self._create_case()
+        segments = []
+        for segment in range(1, 11):
+            path = Path(self.temp_dir.name) / f"Disk.E{segment:02d}"
+            path.write_bytes(f"seg{segment}".encode("ascii"))
+            segments.append(path)
+        call_count = {"n": 0}
+
+        def _fake_compute(filepath, progress_callback=None):
+            del filepath, progress_callback
+            call_count["n"] += 1
+            return {"sha256": f"{call_count['n']:0>64x}", "md5": f"{call_count['n']:0>32x}", "size_bytes": 4}
+
+        with (
+            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
+            patch("app.hasher.compute_hashes", side_effect=_fake_compute),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(segments[-1])},
+            )
+            self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(call_count["n"], 10)
+        with routes.STATE_LOCK:
+            case = routes.CASE_STATES[case_id]
+            file_hashes = case.get("evidence_file_hashes", [])
+            evidence_path = Path(case["evidence_path"])
+
+        self.assertEqual(evidence_path, segments[0])
+        self.assertEqual(
+            [Path(entry["path"]).name for entry in file_hashes],
+            [f"Disk.E{segment:02d}" for segment in range(1, 11)],
         )
 
     def test_split_path_rejects_gapped_segments_before_hashing(self) -> None:

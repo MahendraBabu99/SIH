@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import gc
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Callable
 
+from ..evidence_descriptor import EvidenceDescriptor, descriptor_for_path
 from ..evidence_archives import (
     ArchiveExtractionLimits,
     DEFAULT_ARCHIVE_LIMITS,
@@ -26,6 +28,7 @@ from ..evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
 __all__ = [
     "EVIDENCE_FILE_EXTENSIONS",
     "extract_archive_members",
+    "extract_archive_descriptor",
     "extract_zip",
     "extract_tar",
     "extract_7z",
@@ -37,12 +40,33 @@ EVIDENCE_FILE_EXTENSIONS = NON_ARCHIVE_EVIDENCE_EXTENSIONS
 LOGGER = logging.getLogger(__name__)
 
 
-def _discover_extracted_target(destination: Path) -> Path | None:
-    """Return the best target from Dissect-aware discovery, if available."""
+def _ensure_target_within_root(descriptor: EvidenceDescriptor, root: Path) -> None:
+    """Reject a discovered archive target that escaped the extraction root."""
+    resolved_root = root.resolve()
+    paths = [descriptor.dissect_path]
+    if descriptor.extraction_root is not None:
+        paths.append(descriptor.extraction_root)
+    for path in paths:
+        resolved = path.resolve()
+        try:
+            if not resolved.is_relative_to(resolved_root):
+                raise ValueError(
+                    "Nested archive extraction returned a target outside "
+                    "the evidence extraction root."
+                )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Nested archive extraction returned a target outside "
+                "the evidence extraction root."
+            ) from error
+
+
+def _discover_extracted_descriptor(destination: Path) -> EvidenceDescriptor | None:
+    """Return the best descriptor from Dissect-aware discovery, if available."""
     try:
         from app.automation.discovery import discover_evidence
 
-        discovered = discover_evidence(destination)
+        discovered = discover_evidence(destination, workspace_dir=destination)
     except Exception:
         LOGGER.debug(
             "Dissect-aware archive discovery failed for %s",
@@ -56,10 +80,22 @@ def _discover_extracted_target(destination: Path) -> Path | None:
     if not discovered:
         return None
 
-    for path in discovered:
-        if path.suffix.lower() == ".e01":
-            return path
-    return discovered[0]
+    root = destination.resolve()
+    for descriptor in discovered:
+        _ensure_target_within_root(descriptor, root)
+        if descriptor.dissect_path.suffix.lower() == ".e01":
+            return descriptor
+    first = discovered[0]
+    _ensure_target_within_root(first, root)
+    return first
+
+
+def _discover_extracted_target(destination: Path) -> Path | None:
+    """Return the best target from Dissect-aware discovery, if available."""
+    descriptor = _discover_extracted_descriptor(destination)
+    if descriptor is None:
+        return None
+    return descriptor.dissect_path
 
 
 def extract_archive_members(
@@ -194,6 +230,36 @@ def _select_extracted_target(destination: Path) -> Path:
     return destination
 
 
+def _select_extracted_descriptor(
+    destination: Path,
+    archive_path: Path,
+    *,
+    source_mode: str,
+) -> EvidenceDescriptor:
+    """Return an evidence descriptor for a safely extracted archive."""
+    files = sorted(path for path in destination.rglob("*") if path.is_file())
+    if not files:
+        raise ValueError("Evidence archive extraction produced no files.")
+
+    discovered_descriptor = _discover_extracted_descriptor(destination)
+    if discovered_descriptor is not None:
+        return discovered_descriptor.with_archive_source(
+            archive_path,
+            destination.resolve(),
+            source_mode=source_mode,
+        )
+
+    target = _select_extracted_target(destination)
+    return descriptor_for_path(
+        target,
+        source_path=archive_path,
+        source_mode=source_mode,
+        files_to_hash=[archive_path],
+        extracted_from=archive_path,
+        extraction_root=destination.resolve(),
+    )
+
+
 def _extract_and_select(
     archive_path: Path,
     destination: Path,
@@ -206,6 +272,32 @@ def _extract_and_select(
         limits=limits,
     )
     return _select_extracted_target(extracted_root)
+
+
+def extract_archive_descriptor(
+    archive_path: Path,
+    destination: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+    source_mode: str = "path",
+) -> EvidenceDescriptor:
+    """Extract an archive and return a descriptor for the selected target."""
+    try:
+        extracted_root = extract_archive_to_directory(
+            archive_path,
+            destination,
+            limits=limits,
+        )
+        return _select_extracted_descriptor(
+            extracted_root,
+            archive_path,
+            source_mode=source_mode,
+        )
+    except Exception:
+        resolved_destination = destination.resolve()
+        if resolved_destination.exists():
+            shutil.rmtree(resolved_destination, ignore_errors=True)
+        raise
 
 
 def extract_zip(

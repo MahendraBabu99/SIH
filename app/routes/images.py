@@ -23,6 +23,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, request
 
 from ..case_manager import CaseManager
+from ..evidence_descriptor import descriptor_to_payload
 from .evidence_utils import (
     compute_evidence_hashes as _compute_evidence_hashes,
     open_dissect_target as _open_dissect_target,
@@ -346,7 +347,7 @@ def discover_evidence_paths() -> tuple[Response, int]:
             / "_managed_discovery"
             / f"discovery_{uuid.uuid4().hex[:12]}"
         )
-        evidence_paths = discover_evidence(
+        evidence_descriptors = discover_evidence(
             source_path,
             workspace_dir=discovery_workspace,
         )
@@ -362,10 +363,11 @@ def discover_evidence_paths() -> tuple[Response, int]:
 
     evidence_entries = [
         {
-            "path": str(path),
-            "label": _discovery_label_for_path(path),
+            **descriptor_to_payload(descriptor),
+            "path": str(descriptor.dissect_path),
+            "label": descriptor.label,
         }
-        for path in evidence_paths
+        for descriptor in evidence_descriptors
     ]
     return success_response({
         "source_path": str(source_path),
@@ -535,10 +537,26 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         # Determine whether the user opted to skip hashing.
         skip_hashing = _should_skip_hashing()
 
-        files_to_hash = evidence_payload.get("evidence_files_to_hash", [])
+        files_to_hash = (
+            evidence_payload.get("files_to_hash")
+            or evidence_payload.get("evidence_files_to_hash", [])
+        )
         hashes, file_hashes = _compute_evidence_hashes(
             files_to_hash, source_path, skip_hashing,
         )
+        descriptor_details = {
+            key: evidence_payload[key]
+            for key in (
+                "dissect_path",
+                "source_path",
+                "label",
+                "source_mode",
+                "files_to_hash",
+                "extracted_from",
+                "extraction_root",
+            )
+            if key in evidence_payload
+        }
 
         metadata, available_artifacts, detected_os_type = _open_dissect_target(
             dissect_path, case_dir, audit_logger, case_id,
@@ -549,11 +567,12 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             {
                 "filename": source_path.name,
                 "image_id": image_id,
-                "source_mode": evidence_payload["mode"],
+                "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
                 "source_path": evidence_payload["source_path"],
                 "stored_path": evidence_payload["stored_path"],
                 "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
                 "dissect_path": str(dissect_path),
+                "evidence_descriptor": descriptor_details,
                 "sha256": hashes["sha256"],
                 "md5": hashes["md5"],
                 "file_size_bytes": hashes["size_bytes"],
@@ -607,6 +626,10 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 "source_path": evidence_payload["source_path"],
                 "stored_path": evidence_payload["stored_path"],
                 "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
+                "evidence_descriptor": descriptor_details,
+                "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
+                "extracted_from": evidence_payload.get("extracted_from", ""),
+                "extraction_root": evidence_payload.get("extraction_root", ""),
             }
             image_states[image_id] = new_img_state
 
@@ -619,9 +642,13 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             is_first_image = len(image_states) <= 1 or not case.get("evidence_path")
             if is_first_image:
                 case["evidence_mode"] = evidence_payload["mode"]
+                case["source_mode"] = evidence_payload.get("source_mode", evidence_payload["mode"])
                 case["source_path"] = evidence_payload["source_path"]
                 case["stored_path"] = evidence_payload["stored_path"]
                 case["uploaded_files"] = list(evidence_payload.get("uploaded_files", []))
+                case["evidence_descriptor"] = descriptor_details
+                case["extracted_from"] = evidence_payload.get("extracted_from", "")
+                case["extraction_root"] = evidence_payload.get("extraction_root", "")
                 case["evidence_path"] = str(dissect_path)
                 case["evidence_hashes"] = hashes
                 case["evidence_file_hashes"] = [
@@ -687,10 +714,11 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         response_data: dict[str, Any] = {
             "case_id": case_id,
             "image_id": image_id,
-            "source_mode": evidence_payload["mode"],
+            "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
             "source_path": evidence_payload["source_path"],
             "evidence_path": str(dissect_path),
             "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
+            "evidence_descriptor": descriptor_details,
             "hashes": hashes,
             "metadata": metadata,
             "os_type": detected_os_type,

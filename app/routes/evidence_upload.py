@@ -23,6 +23,11 @@ from typing import Any
 from flask import current_app, request
 from werkzeug.utils import secure_filename
 
+from ..evidence_descriptor import (
+    EvidenceDescriptor,
+    descriptor_for_path,
+    descriptor_to_payload,
+)
 from ..evidence_segments import (
     EWF_SEGMENT_RE,
     SPLIT_RAW_SEGMENT_RE,
@@ -32,7 +37,7 @@ from ..evidence_segments import (
 )
 from ..evidence_archives import DEFAULT_ARCHIVE_LIMITS, ArchiveExtractionLimits
 from ..evidence_constants import ARCHIVE_EVIDENCE_EXTENSIONS
-from .evidence_archive import extract_zip, extract_tar, extract_7z
+from .evidence_archive import extract_archive_descriptor
 from .state import safe_name
 
 LOGGER = logging.getLogger(__name__)
@@ -354,35 +359,40 @@ def resolve_evidence_payload(case_dir: Path) -> dict[str, Any]:
             uploaded_paths = []
             mode = "path"
 
-        # Extract archives into the evidence directory.
-        _ARCHIVE_EXTRACTORS = {
-            ".zip": extract_zip,
-            ".tar": extract_tar,
-            ".gz": extract_tar,
-            ".tgz": extract_tar,
-            ".7z": extract_7z,
-        }
+        descriptor: EvidenceDescriptor
         dissect_path = source_path
         suffix = source_path.suffix.lower()
-        extractor = _ARCHIVE_EXTRACTORS.get(suffix)
-        if source_path.is_file() and extractor is not None:
+        if source_path.is_file() and suffix in ARCHIVE_EVIDENCE_EXTENSIONS:
             extract_dir = make_extract_dir(evidence_dir, source_path)
             created_paths.append(extract_dir)
-            dissect_path = extractor(source_path, extract_dir, limits=archive_limits)
-
-        # Determine the files to hash for integrity verification.
-        # Archives are intentionally verified as the original container file.
-        # Split-image uploads hash all uploaded segments, and path-based split
-        # images hash all matching sibling segments on disk. Directories get N/A.
-        if source_path.is_file() and len(uploaded_paths) > 1:
-            evidence_files_to_hash = [str(path) for path in validate_segment_group_paths(uploaded_paths)]
-        elif source_path.is_file():
-            segment_paths = collect_segment_group_paths(source_path)
-            evidence_files_to_hash = [str(path) for path in segment_paths] if segment_paths else [str(source_path)]
+            descriptor = extract_archive_descriptor(
+                source_path,
+                extract_dir,
+                limits=archive_limits,
+                source_mode=mode,
+            )
+            dissect_path = descriptor.dissect_path
+        elif source_path.is_file() and len(uploaded_paths) > 1:
+            segment_paths = validate_segment_group_paths(uploaded_paths)
+            descriptor = descriptor_for_path(
+                source_path,
+                source_mode=mode,
+                files_to_hash=segment_paths,
+                primary_dissect_path=segment_paths[0],
+            )
+            dissect_path = descriptor.dissect_path
         else:
-            evidence_files_to_hash = []
+            descriptor = descriptor_for_path(source_path, source_mode=mode)
+            dissect_path = descriptor.dissect_path
+
+        evidence_files_to_hash = [
+            str(path) for path in descriptor.files_to_hash
+        ]
+        descriptor_payload = descriptor_to_payload(descriptor)
 
         return {
+            "descriptor": descriptor,
+            **descriptor_payload,
             "mode": mode,
             "filename": source_path.name,
             "source_path": str(source_path),

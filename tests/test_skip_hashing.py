@@ -199,6 +199,22 @@ class TestSkipHashingIntake(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data["hashes"]["sha256"], FAKE_SHA256)
 
+    def test_path_mode_skip_hashing_string_false_computes_hashes(self) -> None:
+        """JSON skip_hashing='false' is parsed as False, not truthy."""
+        evidence_path = Path(self.temp_dir.name) / "sample.E01"
+        evidence_path.write_bytes(b"demo")
+
+        with _standard_patches(self.cases_root):
+            case_id = self._create_case()
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(evidence_path), "skip_hashing": "false"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["hashes"]["sha256"], FAKE_SHA256)
+
     # -- Upload mode tests -------------------------------------------------
 
     def test_upload_mode_skip_hashing_sets_na(self) -> None:
@@ -227,6 +243,23 @@ class TestSkipHashingIntake(unittest.TestCase):
                 f"/api/cases/{case_id}/evidence",
                 data={
                     "evidence_file": (BytesIO(b"demo"), "sample.E01"),
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["hashes"]["sha256"], FAKE_SHA256)
+
+    def test_upload_mode_skip_hashing_false_computes_hashes(self) -> None:
+        """Multipart skip_hashing=false is parsed as False, not truthy."""
+        with _standard_patches(self.cases_root):
+            case_id = self._create_case()
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                data={
+                    "evidence_file": (BytesIO(b"demo"), "sample.E01"),
+                    "skip_hashing": "false",
                 },
                 content_type="multipart/form-data",
             )

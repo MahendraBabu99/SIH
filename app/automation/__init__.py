@@ -7,7 +7,7 @@ Attributes:
     AutomationRequest: Dataclass describing automation run parameters.
     AutomationResult: Dataclass describing automation run outcomes.
     run_automation: Main entry point for headless pipeline execution.
-    discover_evidence: Recursive evidence file scanner.
+    discover_evidence: Recursive evidence descriptor scanner.
     validate_evidence_path: Input path sanitiser and validator.
     export_json_report: Structured JSON report writer.
 """
@@ -15,6 +15,7 @@ Attributes:
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
+from app.evidence_descriptor import EvidenceDescriptor
 
 __all__ = [
     "AutomationRequest",
@@ -23,4 +24,5 @@ __all__ = [
     "discover_evidence",
     "validate_evidence_path",
     "export_json_report",
+    "EvidenceDescriptor",
 ]

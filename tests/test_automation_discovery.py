@@ -231,6 +231,22 @@ class TestDiscoverEvidence(unittest.TestCase):
         self.assertNotIn("image.E02", names)
         self.assertNotIn("image.E03", names)
 
+    def test_segment_descriptor_hashes_all_siblings(self) -> None:
+        """Split discovery returns one descriptor carrying all segments."""
+        self._touch("image.E01")
+        self._touch("image.E02")
+        self._touch("image.E03")
+
+        result = self._discover_with_dissect_fail(self.root)
+
+        self.assertEqual(len(result), 1)
+        descriptor = result[0]
+        self.assertEqual(descriptor.dissect_path.name, "image.E01")
+        self.assertEqual(
+            [path.name for path in descriptor.files_to_hash],
+            ["image.E01", "image.E02", "image.E03"],
+        )
+
     def test_segment_deduplication_in_nested_folder(self) -> None:
         """Nested sibling segment sets keep only the first segment."""
         self._touch("outer", "image.E01")
@@ -307,6 +323,26 @@ class TestDiscoverEvidence(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].name, "evidence.E01")
         self.assertTrue(result[0].is_relative_to(workspace.resolve()))
+
+    def test_archive_descriptor_hashes_original_container(self) -> None:
+        """Archive fallback descriptors verify the archive, not extracted file."""
+        archive = self.root / "bundle.zip"
+        workspace = self.root / "case" / "evidence"
+        with ZipFile(archive, "w") as zip_file:
+            zip_file.writestr("nested/evidence.E01", b"image")
+
+        result = self._discover_with_dissect_fail(
+            archive,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        descriptor = result[0]
+        self.assertEqual(descriptor.dissect_path.name, "evidence.E01")
+        self.assertEqual(descriptor.source_path, archive.resolve())
+        self.assertEqual(descriptor.files_to_hash, (archive.resolve(),))
+        self.assertEqual(descriptor.extracted_from, archive.resolve())
+        self.assertTrue(descriptor.extraction_root.is_relative_to(workspace.resolve()))
 
     def test_tar_not_loadable_extracts_and_discovers_nested_evidence(self) -> None:
         """Archive fallback applies to tarballs as well as ZIP files."""

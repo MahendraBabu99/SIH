@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
+from app.evidence_descriptor import descriptor_for_path
 from tests.conftest import (
     FAKE_HASHES,
     FakeAnalyzer,
@@ -460,6 +461,39 @@ class TestRunAutomation(unittest.TestCase):
             hash_events[0][1]["verified_files"][0]["status"],
             "PASS",
         )
+
+    def test_split_descriptor_hashes_and_verifies_every_source_file(self) -> None:
+        """Automation analyzes the primary split path but verifies all parts."""
+        captured = self._capture_json_report_kwargs()
+        segments = [self.evidence_file]
+        for segment in range(2, 11):
+            path = self.root / f"evidence.E{segment:02d}"
+            path.write_bytes(b"\x00" * 16)
+            segments.append(path)
+        descriptor = descriptor_for_path(segments[-1], source_mode="path")
+        self.mocks["discover_evidence"].return_value = [descriptor]
+
+        result = run_automation(self._make_request(evidence_path=str(segments[-1])))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.evidence_files, [segments[0]])
+        self.assertEqual(
+            self.mocks["ForensicParser"].call_args.kwargs["evidence_path"],
+            segments[0],
+        )
+        self.assertEqual(self.mocks["compute_hashes"].call_count, 10)
+        self.assertEqual(
+            [call.args[0] for call in self.mocks["compute_hashes"].call_args_list],
+            segments,
+        )
+        self.assertEqual(self.mocks["verify_hash"].call_count, 10)
+        self.assertEqual(
+            [call.args[0] for call in self.mocks["verify_hash"].call_args_list],
+            segments,
+        )
+        hashes = captured["evidence_hashes"][0]
+        self.assertEqual(hashes["filename"], "evidence.E10")
+        self.assertEqual(len(hashes["evidence_file_hashes"]), 10)
 
     def test_pre_report_hash_verification_fail(self) -> None:
         """Mismatched pre-report SHA-256 is reported as FAIL."""

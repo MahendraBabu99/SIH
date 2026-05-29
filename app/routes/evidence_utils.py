@@ -31,6 +31,26 @@ __all__ = [
     "should_skip_hashing",
 ]
 
+_TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+_FALSE_VALUES = {"", "0", "false", "no", "n", "off"}
+
+
+def _parse_bool_flag(value: Any) -> bool:
+    """Parse request boolean values without treating any string as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in _TRUE_VALUES:
+            return True
+        if normalized in _FALSE_VALUES:
+            return False
+    return False
+
 
 def safe_rmtree(
     target_dir: Path,
@@ -175,10 +195,10 @@ def should_skip_hashing() -> bool:
         ``True`` if the user requested hashing be skipped.
     """
     if request.content_type and "multipart" in request.content_type:
-        return bool(request.form.get("skip_hashing"))
+        return _parse_bool_flag(request.form.get("skip_hashing"))
     payload = request.get_json(silent=True) or {}
     if isinstance(payload, dict):
-        return bool(payload.get("skip_hashing"))
+        return _parse_bool_flag(payload.get("skip_hashing"))
     return False
 
 
@@ -210,6 +230,7 @@ def compute_evidence_hashes(
             "size_bytes": 0,
         }
         hashes["filename"] = source_path.name
+        hashes["_source_path"] = str(source_path)
         return hashes, []
 
     if files_to_hash:
@@ -218,7 +239,8 @@ def compute_evidence_hashes(
         file_hashes: list[dict[str, Any]] = []
         for fpath in files_to_hash:
             h = dict(_compute_hashes(fpath))
-            h["path"] = fpath
+            h["path"] = str(fpath)
+            h["filename"] = Path(fpath).name
             file_hashes.append(h)
 
         if len(file_hashes) == 1:
@@ -232,6 +254,7 @@ def compute_evidence_hashes(
                 "size_bytes": sum(h["size_bytes"] for h in file_hashes),
             }
         hashes["filename"] = source_path.name
+        hashes["_source_path"] = str(source_path)
         return hashes, file_hashes
 
     hashes = {
@@ -240,6 +263,7 @@ def compute_evidence_hashes(
         "size_bytes": 0,
     }
     hashes["filename"] = source_path.name
+    hashes["_source_path"] = str(source_path)
     return hashes, []
 
 
