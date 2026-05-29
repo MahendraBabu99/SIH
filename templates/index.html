@@ -267,7 +267,7 @@
       <section id="analysis-date-range" aria-labelledby="analysis-date-range-title">
         <h3 id="analysis-date-range-title">AI Date Filter (Optional)</h3>
         <p>
-          Optionally select a date range for AI analysis of large artifacts (e.g. MFT, Event Logs, Syslog, Journal). Leave both dates empty to use no time filter. Parsing still runs on full artifacts.
+          Optionally select a date range for AI analysis. The filter applies to every artifact selected for AI, with a 7-day buffer on both sides; rows without parseable timestamps are kept. Parsing still runs on full artifacts. Leave both dates empty to use no time filter.
         </p>
         <div class="date-range-grid">
           <div class="form-row">

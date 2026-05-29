@@ -89,6 +89,7 @@ Click **Test Connection** to verify everything works. That's it - you're ready t
 - To analyze multiple systems, click **Add Image** to add more evidence sources to the same case. Each image is labeled and processed independently.
 - AIFT opens each image or Triage Package.
 - Select artifacts manually or click **Recommended**. Each image has its own artifact tab with OS-specific options. Use **Apply to All** to replicate a selection across all images. You can also save and load artifact profiles.
+- Optional: set the **AI Date Filter** before parsing if you know the incident window. The filter is applied to every artifact selected for AI analysis, with a 7-day buffer on both sides. It narrows only the AI analysis input; parsing still writes the full artifact CSVs, and rows without parseable timestamps are kept.
 - Click **Parse**. Per-image progress is shown in real time.
 - Enter your investigation context (e.g., "Suspected unauthorized access between Jan 1-15, 2026. Look for new accounts and remote access tools. IOC identified: abc.exe").
 - Click **Analyze**. Per-artifact findings stream in for each image, followed by per-image summaries and (for multi-image cases) a cross-system correlation identifying lateral movement, shared IOCs, and incident timeline across all systems.
@@ -126,6 +127,8 @@ In AIFT settings: select **Local**, set URL to `http://localhost:11434/v1`, mode
 **Important: set `Analysis Max Tokens` to match your model's context window** (Settings > Advanced). For example, `qwen3:8b` with 32K context → set to `32000`. Cloud models (Claude, OpenAI, Kimi) default to 128K and typically don't need adjustment.
 
 When an artifact's data exceeds the context budget, AIFT automatically **chunks** the CSV across multiple AI calls so every row is analyzed. Chunk findings are then merged hierarchically - grouped into batches that fit the context window, merged by the AI, and repeated until a single result remains. This ensures no data is lost regardless of model size. The maximum number of merge rounds before fallback can be configured via `Max Merge Rounds` in advanced settings (default: 5).
+
+If an AI Date Filter is set, chunking operates on the date-filtered AI analysis data for each artifact. If no date filter is set, chunking covers the full selected and deduplicated artifact data.
 
 Advanced settings also include `Artifact CSV Row Limit`, which caps rows written per artifact CSV before analysis. The default is `0`, meaning no row limit.
 
