@@ -224,6 +224,20 @@ def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], l
     return load_config(None), warnings
 
 
+def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
+    """Return the configured per-artifact CSV row cap; ``0`` means unlimited."""
+    analysis = config.get("analysis", {}) if isinstance(config, dict) else {}
+    raw_value = (
+        analysis.get("artifact_csv_row_limit", 0)
+        if isinstance(analysis, dict)
+        else 0
+    )
+    try:
+        return max(0, int(raw_value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _load_profile(
     profile_name: str | None,
 ) -> tuple[list[str], list[str], list[str]]:
@@ -515,6 +529,7 @@ def run_automation(
     # --- 2. Load configuration ---
     config, config_warnings = _load_config_safe(request.config_path)
     result.warnings.extend(config_warnings)
+    max_records_per_artifact = _artifact_csv_row_limit_from_config(config)
 
     cancelled = _stop_if_cancelled()
     if cancelled is not None:
@@ -653,6 +668,7 @@ def run_automation(
                 case_dir=case_dir,
                 audit_logger=audit_logger,
                 parsed_dir=parsed_dir,
+                max_records_per_artifact=max_records_per_artifact,
             ) as parser:
                 metadata = parser.get_image_metadata()
                 metadata["evidence_file"] = str(ev_file.name)

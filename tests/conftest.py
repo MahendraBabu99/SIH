@@ -197,6 +197,7 @@ class FakeParser:
         case_dir: str | Path = "",
         audit_logger: object = None,
         parsed_dir: str | Path | None = None,
+        **_kwargs: object,
     ) -> None:
         """Initialise the fake parser.
 
@@ -206,6 +207,7 @@ class FakeParser:
             audit_logger: Ignored.
             parsed_dir: Optional override for the parsed-CSV directory.
                 Falls back to ``<case_dir>/parsed``.
+            **_kwargs: Ignored parser options.
         """
         del evidence_path, audit_logger
         self.case_dir = Path(case_dir) if case_dir else Path(".")

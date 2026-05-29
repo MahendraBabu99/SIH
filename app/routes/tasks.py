@@ -60,6 +60,7 @@ __all__ = [
     "run_task_with_case_log_context",
     "run_parse_loop",
     "run_parse",
+    "resolve_artifact_csv_row_limit",
     "run_analysis",
     "run_multi_image_analysis_task",
     "run_chat",
@@ -173,6 +174,33 @@ def run_task_with_case_log_context(
         task_fn(*args, **kwargs)
 
 
+def resolve_artifact_csv_row_limit(config_snapshot: dict[str, Any]) -> int:
+    """Return the configured per-artifact CSV row cap; ``0`` means unlimited."""
+    config = config_snapshot if isinstance(config_snapshot, dict) else {}
+    analysis = config.get("analysis", {}) if isinstance(config, dict) else {}
+    raw_value = (
+        analysis.get("artifact_csv_row_limit", 0)
+        if isinstance(analysis, dict)
+        else 0
+    )
+    try:
+        return max(0, int(raw_value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
+    """Return whether *callable_obj* accepts a keyword argument."""
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters
+
+
 # ---------------------------------------------------------------------------
 # Shared parse loop
 # ---------------------------------------------------------------------------
@@ -185,6 +213,7 @@ def run_parse_loop(
     parsed_dir: str,
     parse_artifacts: list[str],
     progress_key: str,
+    max_records_per_artifact: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, str]] | None:
     """Execute the core artifact-parsing loop used by all parse runners.
 
@@ -206,6 +235,8 @@ def run_parse_loop(
         progress_key: Key used in :data:`PARSE_PROGRESS` for SSE events.
             For single-image cases this equals *case_id*; for per-image
             parsing it is a composite key such as ``case_id::image_id``.
+        max_records_per_artifact: Maximum records written for a single
+            artifact CSV. ``0`` means unlimited.
 
     Returns:
         A ``(results, csv_map)`` tuple on success, where *results* is a
@@ -216,12 +247,16 @@ def run_parse_loop(
     cancel_event = get_cancel_event(PARSE_PROGRESS, progress_key)
     cancel_check = (lambda: cancel_event.is_set()) if cancel_event is not None else None
 
-    with ForensicParser(
-        evidence_path=evidence_path,
-        case_dir=case_dir,
-        audit_logger=audit_logger,
-        parsed_dir=parsed_dir,
-    ) as parser:
+    parser_kwargs: dict[str, Any] = {
+        "evidence_path": evidence_path,
+        "case_dir": case_dir,
+        "audit_logger": audit_logger,
+        "parsed_dir": parsed_dir,
+    }
+    if _supports_keyword(ForensicParser, "max_records_per_artifact"):
+        parser_kwargs["max_records_per_artifact"] = max_records_per_artifact
+
+    with ForensicParser(**parser_kwargs) as parser:
         results: list[dict[str, Any]] = []
         total = len(parse_artifacts)
 
@@ -337,6 +372,7 @@ def run_parse(
         csv_output_dir = resolve_case_csv_output_dir(
             case_snapshot, config_snapshot=config_snapshot,
         )
+        max_records_per_artifact = resolve_artifact_csv_row_limit(config_snapshot)
         outcome = run_parse_loop(
             case_id=case_id,
             evidence_path=evidence_path,
@@ -345,6 +381,7 @@ def run_parse(
             parsed_dir=str(csv_output_dir),
             parse_artifacts=parse_artifacts,
             progress_key=case_id,
+            max_records_per_artifact=max_records_per_artifact,
         )
         if outcome is None:
             # Parsing was cancelled — reset case status so the user can

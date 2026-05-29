@@ -108,6 +108,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "connection_test_max_tokens": 256,
         "ai_response_max_tokens": 0,
         "citation_spot_check_limit": 20,
+        "artifact_csv_row_limit": 0,
         "artifact_deduplication_enabled": True,
         "artifact_ai_columns_config_path": "config/artifact_ai_columns.yaml",
     },
@@ -287,6 +288,13 @@ def validate_config(config: dict[str, Any]) -> list[str]:
         if not isinstance(ai_max_tokens, int) or ai_max_tokens <= 0:
             errors.append(
                 f"analysis.ai_max_tokens: must be a positive integer, got {ai_max_tokens!r}"
+            )
+
+        artifact_csv_row_limit = analysis.get("artifact_csv_row_limit")
+        if not isinstance(artifact_csv_row_limit, int) or artifact_csv_row_limit < 0:
+            errors.append(
+                "analysis.artifact_csv_row_limit: must be a non-negative integer "
+                f"(0 = unlimited), got {artifact_csv_row_limit!r}"
             )
 
     # --- evidence section ---

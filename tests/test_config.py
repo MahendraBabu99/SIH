@@ -43,6 +43,7 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(config.get("analysis", {}).get("ai_max_tokens"), 128000)
             self.assertEqual(config.get("analysis", {}).get("shortened_prompt_cutoff_tokens"), 64000)
+            self.assertEqual(config.get("analysis", {}).get("artifact_csv_row_limit"), 0)
             self.assertEqual(config.get("analysis", {}).get("artifact_deduplication_enabled"), True)
             self.assertEqual(
                 config.get("analysis", {}).get("artifact_ai_columns_config_path"),
@@ -59,6 +60,7 @@ class ConfigTests(unittest.TestCase):
             )
             self.assertEqual(persisted.get("analysis", {}).get("ai_max_tokens"), 128000)
             self.assertEqual(persisted.get("analysis", {}).get("shortened_prompt_cutoff_tokens"), 64000)
+            self.assertEqual(persisted.get("analysis", {}).get("artifact_csv_row_limit"), 0)
             self.assertEqual(persisted.get("analysis", {}).get("artifact_deduplication_enabled"), True)
             self.assertEqual(
                 persisted.get("analysis", {}).get("artifact_ai_columns_config_path"),
@@ -551,6 +553,38 @@ class ValidateConfigTests(unittest.TestCase):
         config["analysis"]["ai_max_tokens"] = 128000.5
         errors = validate_config(config)
         self.assertTrue(any("analysis.ai_max_tokens" in e for e in errors))
+
+    def test_artifact_csv_row_limit_zero_is_valid(self) -> None:
+        config = self._valid_config()
+        config["analysis"]["artifact_csv_row_limit"] = 0
+        errors = validate_config(config)
+        row_limit_errors = [e for e in errors if "artifact_csv_row_limit" in e]
+        self.assertEqual(row_limit_errors, [])
+
+    def test_artifact_csv_row_limit_positive_is_valid(self) -> None:
+        config = self._valid_config()
+        config["analysis"]["artifact_csv_row_limit"] = 1_000_000
+        errors = validate_config(config)
+        row_limit_errors = [e for e in errors if "artifact_csv_row_limit" in e]
+        self.assertEqual(row_limit_errors, [])
+
+    def test_artifact_csv_row_limit_negative(self) -> None:
+        config = self._valid_config()
+        config["analysis"]["artifact_csv_row_limit"] = -1
+        errors = validate_config(config)
+        self.assertTrue(any("analysis.artifact_csv_row_limit" in e for e in errors))
+
+    def test_artifact_csv_row_limit_not_an_int(self) -> None:
+        config = self._valid_config()
+        config["analysis"]["artifact_csv_row_limit"] = "100"
+        errors = validate_config(config)
+        self.assertTrue(any("analysis.artifact_csv_row_limit" in e for e in errors))
+
+    def test_artifact_csv_row_limit_float_rejected(self) -> None:
+        config = self._valid_config()
+        config["analysis"]["artifact_csv_row_limit"] = 10.5
+        errors = validate_config(config)
+        self.assertTrue(any("analysis.artifact_csv_row_limit" in e for e in errors))
 
     # --- evidence section ---
 

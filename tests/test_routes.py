@@ -858,6 +858,7 @@ class RoutesTests(unittest.TestCase):
                     "analysis": {
                         "ai_max_tokens": 2048,
                         "shortened_prompt_cutoff_tokens": 64000,
+                        "artifact_csv_row_limit": 123456,
                         "artifact_deduplication_enabled": False,
                     },
                     "ai": {
@@ -873,6 +874,7 @@ class RoutesTests(unittest.TestCase):
             payload = update_resp.get_json()
             self.assertEqual(payload["analysis"]["ai_max_tokens"], 2048)
             self.assertEqual(payload["analysis"]["shortened_prompt_cutoff_tokens"], 64000)
+            self.assertEqual(payload["analysis"]["artifact_csv_row_limit"], 123456)
             self.assertEqual(payload["analysis"]["artifact_deduplication_enabled"], False)
             self.assertFalse(payload["ai"]["openai"]["attach_csv_as_file"])
             self.assertFalse(payload["ai"]["local"]["attach_csv_as_file"])
@@ -881,6 +883,7 @@ class RoutesTests(unittest.TestCase):
         persisted = yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}
         self.assertEqual(persisted.get("analysis", {}).get("ai_max_tokens"), 2048)
         self.assertEqual(persisted.get("analysis", {}).get("shortened_prompt_cutoff_tokens"), 64000)
+        self.assertEqual(persisted.get("analysis", {}).get("artifact_csv_row_limit"), 123456)
         self.assertEqual(persisted.get("analysis", {}).get("artifact_deduplication_enabled"), False)
         self.assertEqual(persisted.get("ai", {}).get("openai", {}).get("attach_csv_as_file"), False)
         self.assertEqual(persisted.get("ai", {}).get("local", {}).get("attach_csv_as_file"), False)

@@ -272,6 +272,14 @@ describe("test connection button", () => {
   });
 });
 
+describe("advanced CSV row limit setting", () => {
+  test("artifact CSV row limit input is available and defaults to unlimited", () => {
+    expect(A.el.setArtifactCsvRowLimit).not.toBeNull();
+    expect(A.el.setArtifactCsvRowLimit.value).toBe("0");
+    expect(A.el.setArtifactCsvRowLimit.getAttribute("min")).toBe("0");
+  });
+});
+
 // -- Help tooltips ------------------------------------------------------------
 
 describe("help tooltips", () => {

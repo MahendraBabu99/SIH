@@ -7,7 +7,13 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
-from app.parser import WINDOWS_ARTIFACT_REGISTRY, EVTX_MAX_RECORDS_PER_FILE, ForensicParser, UnsupportedPluginError
+from app.parser import (
+    EVTX_MAX_RECORDS_PER_FILE,
+    MAX_RECORDS_PER_ARTIFACT,
+    WINDOWS_ARTIFACT_REGISTRY,
+    ForensicParser,
+    UnsupportedPluginError,
+)
 from app.parser.registry import (
     LINUX_ARTIFACT_REGISTRY,
     get_artifact_registry,
@@ -475,6 +481,30 @@ class ParserTests(unittest.TestCase):
         capped_entries = [e for e in audit.entries if e[0] == "parsing_capped"]
         self.assertEqual(len(capped_entries), 1)
 
+    def test_parse_artifact_respects_constructor_row_limit(self) -> None:
+        """A configured row limit should cap records without patching globals."""
+        records = [FakeRecord({"id": i}) for i in range(20)]
+
+        class ManyTarget:
+            def runkeys(self) -> list[FakeRecord]:
+                return records
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            with patch(_PATCH_TARGET_OPEN, return_value=ManyTarget()):
+                parser = ForensicParser(
+                    "evidence.E01",
+                    Path(temp_dir),
+                    audit,
+                    max_records_per_artifact=6,
+                )
+            result = parser.parse_artifact("runkeys")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["record_count"], 6)
+        capped_entries = [e for e in audit.entries if e[0] == "parsing_capped"]
+        self.assertEqual(capped_entries[0][1]["max_records"], 6)
+
     def test_parse_evtx_caps_at_max_records(self) -> None:
         """EVTX records should be capped at MAX_RECORDS_PER_ARTIFACT."""
         records = [
@@ -592,6 +622,9 @@ class ParserTests(unittest.TestCase):
 
     def test_evtx_default_cap_constant(self) -> None:
         self.assertEqual(EVTX_MAX_RECORDS_PER_FILE, 500_000)
+
+    def test_artifact_row_limit_default_is_unlimited(self) -> None:
+        self.assertEqual(MAX_RECORDS_PER_ARTIFACT, 0)
 
     def test_evtx_returns_csv_paths_list(self) -> None:
         class EvtxTarget:

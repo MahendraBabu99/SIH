@@ -127,6 +127,8 @@ In AIFT settings: select **Local**, set URL to `http://localhost:11434/v1`, mode
 
 When an artifact's data exceeds the context budget, AIFT automatically **chunks** the CSV across multiple AI calls so every row is analyzed. Chunk findings are then merged hierarchically - grouped into batches that fit the context window, merged by the AI, and repeated until a single result remains. This ensures no data is lost regardless of model size. The maximum number of merge rounds before fallback can be configured via `Max Merge Rounds` in advanced settings (default: 5).
 
+Advanced settings also include `Artifact CSV Row Limit`, which caps rows written per artifact CSV before analysis. The default is `0`, meaning no row limit.
+
 A minimum of 32K tokens is strongly recommended.
 
 ### Environment variables

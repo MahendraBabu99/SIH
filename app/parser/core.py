@@ -21,7 +21,8 @@ Key responsibilities:
 Attributes:
     UNKNOWN_VALUE: Sentinel string used when a target attribute cannot be read.
     EVTX_MAX_RECORDS_PER_FILE: Maximum rows per EVTX CSV part file.
-    MAX_RECORDS_PER_ARTIFACT: Hard cap on rows written for any single artifact.
+    MAX_RECORDS_PER_ARTIFACT: Default cap on rows written for any single
+        artifact. ``0`` means unlimited.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 UNKNOWN_VALUE = "Unknown"
 EVTX_MAX_RECORDS_PER_FILE = 500_000
-MAX_RECORDS_PER_ARTIFACT = 1_000_000
+MAX_RECORDS_PER_ARTIFACT = 0
 
 
 class ParserCancelledError(Exception):
@@ -77,6 +78,7 @@ class ForensicParser:
         case_dir: str | Path,
         audit_logger: Any,
         parsed_dir: str | Path | None = None,
+        max_records_per_artifact: int | None = None,
     ) -> None:
         """Initialise the parser and open the Dissect target.
 
@@ -86,12 +88,20 @@ class ForensicParser:
             audit_logger: Logger instance for writing audit trail entries.
             parsed_dir: Optional override for the CSV output directory.
                 Defaults to ``<case_dir>/parsed/``.
+            max_records_per_artifact: Optional per-artifact row cap for
+                parsed CSV output. ``0`` or ``None`` means no configured cap
+                unless the module-level default is patched.
         """
         self.evidence_path = Path(evidence_path)
         self.case_dir = Path(case_dir)
         self.audit_logger = audit_logger
         self.parsed_dir = Path(parsed_dir) if parsed_dir is not None else self.case_dir / "parsed"
         self.parsed_dir.mkdir(parents=True, exist_ok=True)
+        self._max_records_per_artifact = (
+            self._coerce_max_records(max_records_per_artifact)
+            if max_records_per_artifact is not None
+            else None
+        )
         self.target: Target | None = None
         self._closed = False
         self.target = Target.open(self.evidence_path)
@@ -100,6 +110,21 @@ class ForensicParser:
             self.os_type: str = str(self.target.os).strip().lower()
         except Exception:
             self.os_type = "unknown"
+
+    @staticmethod
+    def _coerce_max_records(value: Any) -> int:
+        """Coerce a row-cap value to a non-negative integer."""
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def max_records_per_artifact(self) -> int:
+        """Return the active per-artifact row cap; ``0`` means unlimited."""
+        if self._max_records_per_artifact is not None:
+            return self._max_records_per_artifact
+        return self._coerce_max_records(MAX_RECORDS_PER_ARTIFACT)
 
     def close(self) -> None:
         """Close the underlying Dissect target handle."""
@@ -476,6 +501,7 @@ class ForensicParser:
             Total number of records written.
         """
         record_count = 0
+        max_records = self.max_records_per_artifact
         fieldnames: list[str] = []
         fieldnames_set: set[str] = set()
         headers_expanded = False
@@ -507,14 +533,14 @@ class ForensicParser:
                     writer.writerow(row)
                     record_count += 1
 
-                if record_count >= MAX_RECORDS_PER_ARTIFACT:
+                if max_records > 0 and record_count >= max_records:
                     self.audit_logger.log(
                         "parsing_capped",
                         {
                             "artifact_key": artifact_key,
                             "record_count": record_count,
-                            "max_records": MAX_RECORDS_PER_ARTIFACT,
-                            "message": f"Artifact capped at {MAX_RECORDS_PER_ARTIFACT:,} rows",
+                            "max_records": max_records,
+                            "message": f"Artifact capped at {max_records:,} rows",
                         },
                     )
                     break
@@ -580,19 +606,20 @@ class ForensicParser:
         all_writer_states: list[dict[str, Any]] = []
         csv_paths: list[Path] = []
         record_count = 0
+        max_records = self.max_records_per_artifact
 
         try:
             for record in records:
                 if cancel_check is not None and cancel_check():
                     raise ParserCancelledError("Parsing cancelled by user.")
-                if record_count >= MAX_RECORDS_PER_ARTIFACT:
+                if max_records > 0 and record_count >= max_records:
                     self.audit_logger.log(
                         "parsing_capped",
                         {
                             "artifact_key": artifact_key,
                             "record_count": record_count,
-                            "max_records": MAX_RECORDS_PER_ARTIFACT,
-                            "message": f"Artifact capped at {MAX_RECORDS_PER_ARTIFACT:,} rows",
+                            "max_records": max_records,
+                            "message": f"Artifact capped at {max_records:,} rows",
                         },
                     )
                     break

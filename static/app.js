@@ -152,6 +152,7 @@
     el.setShortenedPromptCutoffTokens = q("setting-shortened-prompt-cutoff-tokens");
     el.setConnectionMaxTokens = q("setting-connection-max-tokens");
     el.setCitationSpotCheckLimit = q("setting-citation-spot-check-limit");
+    el.setArtifactCsvRowLimit = q("setting-artifact-csv-row-limit");
     el.setIntakeTimeoutSeconds = q("setting-intake-timeout-seconds");
     el.setLocalRequestTimeoutSeconds = q("setting-local-request-timeout-seconds");
     el.setMaxMergeRounds = q("setting-max-merge-rounds");

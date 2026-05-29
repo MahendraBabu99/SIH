@@ -200,6 +200,7 @@
     );
     setNumberInput(el.setConnectionMaxTokens, A.num(analysis.connection_test_max_tokens, 256), 256);
     setNumberInput(el.setCitationSpotCheckLimit, A.num(analysis.citation_spot_check_limit, 20), 20);
+    setNumberInput(el.setArtifactCsvRowLimit, A.num(analysis.artifact_csv_row_limit, 0), 0);
     setNumberInput(el.setIntakeTimeoutSeconds, A.num(A.obj(s.evidence).intake_timeout_seconds, 7200), 7200);
     setNumberInput(
       el.setLocalRequestTimeoutSeconds,
@@ -306,6 +307,7 @@
     base.analysis.shortened_prompt_cutoff_tokens = readIntInput(el.setShortenedPromptCutoffTokens, 64000, 1);
     base.analysis.connection_test_max_tokens = readIntInput(el.setConnectionMaxTokens, 256, 1);
     base.analysis.citation_spot_check_limit = readIntInput(el.setCitationSpotCheckLimit, 20, 1);
+    base.analysis.artifact_csv_row_limit = readIntInput(el.setArtifactCsvRowLimit, 0, 0);
     base.analysis.max_merge_rounds = readIntInput(el.setMaxMergeRounds, 5, 1);
     base.ai.local.request_timeout_seconds = readIntInput(el.setLocalRequestTimeoutSeconds, 3600, 1);
     if (el.setArtifactDeduplicationEnabled) {
