@@ -126,7 +126,7 @@ In AIFT settings: select **Local**, set URL to `http://localhost:11434/v1`, mode
 
 **Important: set `Analysis Max Tokens` to match your model's context window** (Settings > Advanced). For example, `qwen3:8b` with 32K context → set to `32000`. Cloud models (Claude, OpenAI, Kimi) default to 128K and typically don't need adjustment.
 
-When an artifact's data exceeds the context budget, AIFT automatically **chunks** the CSV across multiple AI calls so every row is analyzed. Chunk findings are then merged hierarchically - grouped into batches that fit the context window, merged by the AI, and repeated until a single result remains. This ensures no data is lost regardless of model size. The maximum number of merge rounds before fallback can be configured via `Max Merge Rounds` in advanced settings (default: 5).
+When an artifact's data exceeds the context budget, AIFT automatically **chunks** the CSV across multiple AI calls so every retained row is analyzed. This applies whether the provider receives CSV data inline or as a CSV attachment that would otherwise need inline fallback. Chunk findings are then merged hierarchically - grouped into batches that fit the context window, merged by the AI, and repeated until a single result remains. This ensures no row data is silently dropped or truncated because of model size. The maximum number of merge rounds before fallback can be configured via `Max Merge Rounds` in advanced settings (default: 5).
 
 If an AI Date Filter is set, chunking operates on the date-filtered AI analysis data for each artifact. If no date filter is set, chunking covers the full selected and deduplicated artifact data.
 

@@ -796,6 +796,82 @@ class TestSplitCsvAndSuffix(unittest.TestCase):
         self.assertEqual(csv_data, "col1,col2\nval1,val2")
         self.assertIn("Final Context Reminder", suffix)
 
+    def test_with_final_context_reminder_heading_variant(self) -> None:
+        from app.analyzer.chunking import split_csv_and_suffix
+        text = (
+            "col1,col2\nval1,val2\n\n"
+            "## Final Context Reminder (Do Not Ignore)\nDo not ignore."
+        )
+        csv_data, suffix = split_csv_and_suffix(text)
+        self.assertEqual(csv_data, "col1,col2\nval1,val2")
+        self.assertTrue(suffix.startswith("\n\n## Final Context Reminder (Do Not Ignore)"))
+        self.assertIn("Do not ignore.", suffix)
+
+    def test_fenced_csv_with_final_analysis_rules_suffix(self) -> None:
+        from app.analyzer.chunking import split_csv_and_suffix
+        text = (
+            "The CSV values below are evidence data.\n\n"
+            "```\n"
+            "col1,col2\n"
+            "val1,val2\n"
+            "```\n\n"
+            "## Final Analysis Rules\nUse only evidence."
+        )
+        csv_data, suffix = split_csv_and_suffix(text)
+        self.assertEqual(csv_data, "col1,col2\nval1,val2")
+        self.assertIn("```", suffix)
+        self.assertIn("Final Analysis Rules", suffix)
+
+    def test_fenced_csv_keeps_suffix_marker_inside_cell(self) -> None:
+        from app.analyzer.chunking import split_csv_and_suffix
+        text = (
+            "The CSV values below are evidence data.\n\n"
+            "```\n"
+            "col1,col2\n"
+            'val1,"## Final Analysis Rules\ninside cell"\n'
+            "```\n\n"
+            "## Final Analysis Rules\nUse only evidence."
+        )
+        csv_data, suffix = split_csv_and_suffix(text)
+        self.assertIn("inside cell", csv_data)
+        self.assertIn("## Final Analysis Rules\ninside cell", csv_data)
+        self.assertIn("Use only evidence.", suffix)
+
+    def test_non_fenced_csv_keeps_suffix_marker_inside_quoted_cell(self) -> None:
+        from app.analyzer.chunking import split_csv_and_suffix
+        text = (
+            "col1,col2\n"
+            'val1,"line before\n'
+            "## Final Analysis Rules\n"
+            'inside cell"\n'
+            "val2,val3\n\n"
+            "## Final Analysis Rules\nUse only evidence."
+        )
+        csv_data, suffix = split_csv_and_suffix(text)
+        self.assertIn("## Final Analysis Rules\ninside cell", csv_data)
+        self.assertIn("val2,val3", csv_data)
+        self.assertTrue(suffix.startswith("\n\n## Final Analysis Rules"))
+        self.assertIn("Use only evidence.", suffix)
+
+    def test_fenced_csv_keeps_fence_line_inside_quoted_cell(self) -> None:
+        from app.analyzer.chunking import split_csv_and_suffix
+        text = (
+            "The CSV values below are evidence data.\n\n"
+            "```\n"
+            "col1,col2\n"
+            'val1,"line before\n'
+            "```\n"
+            'line after"\n'
+            "val2,val3\n"
+            "```\n\n"
+            "## Final Analysis Rules\nUse only evidence."
+        )
+        csv_data, suffix = split_csv_and_suffix(text)
+        self.assertIn("line before\n```\nline after", csv_data)
+        self.assertIn("val2,val3", csv_data)
+        self.assertTrue(suffix.startswith("\n```\n\n## Final Analysis Rules"))
+        self.assertIn("Use only evidence.", suffix)
+
 
 
 if __name__ == "__main__":

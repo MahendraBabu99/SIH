@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from typing import Any
 
 from .constants import CSV_DATA_SECTION_RE, CSV_TRAILING_FENCE_RE, TOKEN_CHAR_RATIO
@@ -44,33 +45,6 @@ def _serialize_row(row: list[str]) -> str:
     writer = csv.writer(buf)
     writer.writerow(row)
     return buf.getvalue().rstrip("\r\n")
-
-
-def _serialized_row_within_budget(row: list[str], max_chars: int) -> str:
-    """Serialize a row, truncating oversized cells deterministically."""
-    serialized = _serialize_row(row)
-    if max_chars <= 0 or len(serialized) <= max_chars:
-        return serialized
-
-    marker = " [truncated: cell exceeded chunk budget]"
-    cell_budget = max(8, (max_chars - len(marker)) // max(1, len(row)))
-    shrunk = []
-    for value in row:
-        text = str(value)
-        if len(text) > cell_budget:
-            shrunk.append(text[:cell_budget].rstrip() + marker)
-        else:
-            shrunk.append(text)
-
-    serialized = _serialize_row(shrunk)
-    while len(serialized) > max_chars and cell_budget > 4:
-        cell_budget = max(4, int(cell_budget * 0.75))
-        shrunk = [
-            (str(value)[:cell_budget].rstrip() + marker) if len(str(value)) > cell_budget else str(value)
-            for value in row
-        ]
-        serialized = _serialize_row(shrunk)
-    return serialized
 
 
 def _estimate_prompt_tokens(
@@ -104,6 +78,89 @@ def _ensure_prompt_fits_budget(
         )
 
 
+def _suffix_start(text: str) -> int:
+    """Return the first supported post-CSV suffix position, or ``-1``."""
+    return _find_suffix_start_outside_csv(text)
+
+
+def _opening_fence_match(text: str) -> re.Match[str] | None:
+    """Return the opening Markdown fence that precedes CSV rows, if present."""
+    return re.search(r"(?:^|\n)```\s*\n", text)
+
+
+def _closing_fence_match(text: str) -> re.Match[str] | None:
+    """Return the closing Markdown fence after CSV rows, if present."""
+    return re.search(r"\n```\s*(?:\n|$)", text)
+
+
+def _line_is_fence(line: str) -> bool:
+    """Return whether *line* is a standalone Markdown code fence."""
+    return line.strip() == "```"
+
+
+def _line_is_suffix_heading(line: str) -> bool:
+    """Return whether *line* starts a supported post-CSV suffix section."""
+    stripped = line.strip()
+    context_reminder = re.match(
+        r"^##\s+Final\s+Context\s+Reminder\b",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    analysis_rules = re.match(
+        r"^##\s+Final\s+Analysis\s+Rules\b",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    return context_reminder is not None or analysis_rules is not None
+
+
+def _csv_quote_state_after_line(line: str, in_quotes: bool) -> bool:
+    """Update CSV quote state after scanning one physical line."""
+    index = 0
+    while index < len(line):
+        if line[index] != '"':
+            index += 1
+            continue
+        if in_quotes and index + 1 < len(line) and line[index + 1] == '"':
+            index += 2
+            continue
+        in_quotes = not in_quotes
+        index += 1
+    return in_quotes
+
+
+def _find_closing_fence_outside_csv(text: str) -> int:
+    """Return the closing fence position when it is outside quoted CSV cells."""
+    in_quotes = False
+    position = 0
+    for line in text.splitlines(keepends=True):
+        if not in_quotes and _line_is_fence(line):
+            return position
+        in_quotes = _csv_quote_state_after_line(line, in_quotes)
+        position += len(line)
+    return -1
+
+
+def _find_suffix_start_outside_csv(text: str) -> int:
+    """Return the suffix heading position when it is outside quoted CSV cells."""
+    in_quotes = False
+    position = 0
+    for line in text.splitlines(keepends=True):
+        if not in_quotes and _line_is_suffix_heading(line):
+            return position
+        in_quotes = _csv_quote_state_after_line(line, in_quotes)
+        position += len(line)
+    return -1
+
+
+def _csv_preamble(raw_csv_tail: str) -> str:
+    """Return explanatory text and opening fence between the heading and CSV."""
+    fence_match = _opening_fence_match(raw_csv_tail)
+    if fence_match:
+        return raw_csv_tail[: fence_match.end()]
+    return ""
+
+
 def split_csv_into_chunks(csv_text: str, max_chars: int) -> list[str]:
     """Split CSV text into chunks that each fit within *max_chars*.
 
@@ -130,9 +187,8 @@ def split_csv_into_chunks(csv_text: str, max_chars: int) -> list[str]:
     header_line = _serialize_row(header_fields)
 
     data_rows: list[str] = []
-    row_budget = max(0, max_chars - (len(header_line) + 1))
     for row in reader:
-        data_rows.append(_serialized_row_within_budget(row, row_budget))
+        data_rows.append(_serialize_row(row))
 
     if not data_rows:
         return [csv_text]
@@ -164,8 +220,10 @@ def split_csv_into_chunks(csv_text: str, max_chars: int) -> list[str]:
 def split_csv_and_suffix(raw_csv_tail: str) -> tuple[str, str]:
     """Separate CSV rows from trailing content in a rendered prompt.
 
-    File-based templates may append a Markdown code fence and/or a
-    Final Context Reminder section after the CSV data placeholder.
+    File-based templates may prepend explanatory text after the heading,
+    then wrap the CSV in a Markdown code fence. They may also append a
+    Final Context Reminder or Final Analysis Rules section after the
+    CSV data placeholder.
     This method extracts the actual CSV rows from those trailing
     elements so that only the data is chunked, while the suffix is
     appended to every chunk prompt.
@@ -179,8 +237,16 @@ def split_csv_and_suffix(raw_csv_tail: str) -> tuple[str, str]:
     """
     text = raw_csv_tail
 
-    reminder_marker = "## Final Context Reminder"
-    reminder_pos = text.find(reminder_marker)
+    opening_fence_match = _opening_fence_match(text)
+    if opening_fence_match:
+        text = text[opening_fence_match.end():]
+        closing_fence_pos = _find_closing_fence_outside_csv(text)
+        if closing_fence_pos >= 0:
+            context_suffix = "\n" + text[closing_fence_pos:].lstrip("\r\n").rstrip()
+            csv_data = text[:closing_fence_pos].strip()
+            return csv_data, context_suffix
+
+    reminder_pos = _suffix_start(text)
     context_suffix = ""
     if reminder_pos >= 0:
         context_suffix = "\n\n" + text[reminder_pos:].strip()
@@ -274,6 +340,7 @@ def analyze_artifact_chunked(
     instructions_portion = artifact_prompt[: marker_match.end()]
     raw_csv_tail = artifact_prompt[marker_match.end():]
 
+    instructions_portion = f"{instructions_portion}{_csv_preamble(raw_csv_tail)}"
     csv_data, context_suffix = split_csv_and_suffix(raw_csv_tail)
 
     suffix_chars = len(context_suffix)

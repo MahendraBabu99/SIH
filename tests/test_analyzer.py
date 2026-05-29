@@ -946,6 +946,91 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(projected_header, "row_ref,ts,name,command,username")
         self.assertEqual(fake_provider.attachments_calls[0][0]["mime_type"], "text/csv")
 
+    def test_analyze_artifact_chunks_when_attachment_fallback_would_exceed_budget(self) -> None:
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+            artifact_template = (
+                "## Artifact\n{{artifact_key}}\n\n"
+                "## Full Data (CSV - Untrusted Evidence Rows)\n{{data_csv}}\n"
+            )
+            (prompts_dir / "artifact_analysis.md").write_text(artifact_template, encoding="utf-8")
+            (prompts_dir / "artifact_analysis_small_context.md").write_text(artifact_template, encoding="utf-8")
+            (prompts_dir / "chunk_merge.md").write_text("{{per_chunk_findings}}", encoding="utf-8")
+
+            csv_path = temp_path / "runkeys.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "name", "command", "key", "username"])
+                writer.writeheader()
+                for index in range(1, 41):
+                    writer.writerow(
+                        {
+                            "ts": "2026-01-15T12:00:00+00:00",
+                            "name": f"Entry{index}",
+                            "command": f"C:\\Temp\\tool-{index}.exe " + ("x" * 100),
+                            "key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                            "username": "testuser",
+                        }
+                    )
+
+            fake_provider = FakeAttachmentProvider(responses=["chunk-result"] * 100)
+            with patch("app.analyzer.core.create_provider", return_value=fake_provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=temp_dir,
+                    config={
+                        "ai": {"provider": "local"},
+                        "analysis": {"artifact_deduplication_enabled": False},
+                    },
+                    audit_logger=FakeAuditLogger(),
+                    artifact_csv_paths={"runkeys": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                prepared_prompt = analyzer._prepare_artifact_data(
+                    artifact_key="runkeys",
+                    investigation_context="",
+                    csv_path=csv_path,
+                )
+                analysis_csv_path = analyzer._resolve_analysis_input_csv_path(
+                    artifact_key="runkeys",
+                    fallback=csv_path,
+                )
+                attachments = [
+                    {"path": str(analysis_csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+                ]
+                base_estimate = analyzer._estimate_tokens(prepared_prompt) + analyzer._estimate_tokens(
+                    analyzer.system_prompt
+                )
+                inlined_estimate = analyzer._estimate_inlined_attachment_prompt_tokens(
+                    prepared_prompt,
+                    attachments,
+                )
+                self.assertIsNotNone(inlined_estimate)
+                self.assertGreater(inlined_estimate or 0, base_estimate)
+
+                analyzer.ai_input_max_tokens = (base_estimate + int(inlined_estimate or 0)) // 2
+                analyzer.chunk_csv_budget = 800
+                result = analyzer.analyze_artifact(
+                    artifact_key="runkeys",
+                    investigation_context="",
+                )
+
+            csv_prompts = [
+                call["user_prompt"]
+                for call in fake_provider.calls
+                if "row_ref,ts,name,command,username" in call["user_prompt"]
+            ]
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(fake_provider.attachments_calls, [])
+        self.assertGreater(len(csv_prompts), 1)
+        for index in range(1, 41):
+            self.assertEqual(
+                sum(f",Entry{index}," in prompt_text for prompt_text in csv_prompts),
+                1,
+                f"Entry{index}",
+            )
+
     def test_analyze_artifact_emits_started_event_for_plain_analyze_path(self) -> None:
         """Verify that the plain analyze() path (no attachments, no streaming)
         emits an ``artifact_analysis_started`` progress event."""

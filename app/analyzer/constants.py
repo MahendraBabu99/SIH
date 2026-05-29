@@ -143,7 +143,7 @@ CITED_COLUMN_REF_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 CSV_DATA_SECTION_RE = re.compile(
-    r"#{2,3}\s+Full\s+Data\s+\(CSV\)\s*\n(?:```\s*\n)?",
+    r"#{2,3}\s+Full\s+Data\s+\(CSV(?:\s*-[^)]+)?\)\s*\n",
     flags=re.IGNORECASE,
 )
 CSV_TRAILING_FENCE_RE = re.compile(r"\n```\s*$")

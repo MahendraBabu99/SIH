@@ -27,6 +27,7 @@ from time import perf_counter, sleep
 from typing import Any, Callable, Iterable, Mapping
 
 from ..ai_providers import AIProviderError, create_provider
+from ..ai_providers.utils import _inline_attachment_data_into_prompt
 from .chunking import analyze_artifact_chunked, split_csv_and_suffix, split_csv_into_chunks
 from .citations import match_column_name, timestamp_found_in_csv, timestamp_lookup_keys, validate_citations
 from .constants import (
@@ -231,6 +232,17 @@ class ForensicAnalyzer:
     _read_int_setting = staticmethod(read_int_setting)
     _read_bool_setting = staticmethod(read_bool_setting)
     _read_path_setting = staticmethod(read_path_setting)
+
+    def _estimate_inlined_attachment_prompt_tokens(
+        self,
+        user_prompt: str,
+        attachments: list[Mapping[str, str]] | None,
+    ) -> int | None:
+        """Estimate the provider fallback prompt when attachments are inlined."""
+        inlined_prompt, was_inlined = _inline_attachment_data_into_prompt(user_prompt, attachments)
+        if not was_inlined:
+            return None
+        return self._estimate_tokens(inlined_prompt) + self._estimate_tokens(self.system_prompt)
 
     def _resolve_artifact_ai_columns_config_path(self) -> Path:
         """Resolve the artifact AI columns config path to an absolute Path.
@@ -900,10 +912,25 @@ class ForensicAnalyzer:
             self._save_case_prompt(f"artifact_{safe_key}.md", self.system_prompt, artifact_prompt)
 
             prompt_tokens_estimate = self._estimate_tokens(artifact_prompt) + self._estimate_tokens(self.system_prompt)
-            if prompt_tokens_estimate > self.ai_input_max_tokens:
+            inlined_attachment_tokens_estimate = self._estimate_inlined_attachment_prompt_tokens(
+                artifact_prompt,
+                attachments,
+            )
+            effective_prompt_tokens_estimate = max(
+                prompt_tokens_estimate,
+                inlined_attachment_tokens_estimate or 0,
+            )
+            if effective_prompt_tokens_estimate > self.ai_input_max_tokens:
+                budget_reason = "prompt"
+                if (
+                    inlined_attachment_tokens_estimate is not None
+                    and inlined_attachment_tokens_estimate > prompt_tokens_estimate
+                ):
+                    budget_reason = "prompt plus inlined CSV attachment fallback"
                 self.logger.info(
-                    "Prompt for %s (~%d input tokens) exceeds reserved input budget (%d); using chunked analysis.",
-                    artifact_key, prompt_tokens_estimate, self.ai_input_max_tokens,
+                    "%s for %s (~%d input tokens) exceeds reserved input budget (%d); using chunked analysis.",
+                    budget_reason.capitalize(), artifact_key,
+                    effective_prompt_tokens_estimate, self.ai_input_max_tokens,
                 )
                 if progress_callback is not None:
                     emit_analysis_progress(progress_callback, artifact_key, "started", {
