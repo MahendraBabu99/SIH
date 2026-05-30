@@ -159,7 +159,7 @@
    * @param {string} caseId - Active case ID.
    */
   async function submitSingleImageParse(caseId) {
-    const artifactOptions = A.selectedArtifactOptions();
+    const artifactOptions = A.serializeArtifactSelections("single");
     const arts = artifactOptions.map((option) => option.artifact_key);
     const aiArtifacts = A.selectedAiArtifacts(artifactOptions);
     if (!arts.length) return A.setMsg(el.artifactsMsg, "Select at least one artifact.", "error");
@@ -219,7 +219,7 @@
    * @param {string} caseId - Active case ID.
    */
   async function submitMultiImageParse(caseId) {
-    const selections = A.allImageArtifactSelections();
+    const selections = A.serializeArtifactSelections("all");
     const activeSelections = selections.filter((s) => s.artifact_options.length > 0);
     if (!activeSelections.length) return A.setMsg(el.artifactsMsg, "Select at least one artifact for at least one image.", "error");
 

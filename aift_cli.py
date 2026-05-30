@@ -259,6 +259,23 @@ def _resolve_date_range(
     return (validated["start_date"], validated["end_date"])
 
 
+def _early_config_path(argv: list[str]) -> str | None:
+    """Return a config path from early-exit command arguments.
+
+    Args:
+        argv: Command-line arguments excluding the executable name.
+
+    Returns:
+        The value passed to ``--config``/``-c``, or ``None`` when absent.
+    """
+    for index, arg in enumerate(argv):
+        if arg in {"--config", "-c"} and index + 1 < len(argv):
+            return argv[index + 1]
+        if arg.startswith("--config="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def _print_summary(result: Any) -> None:
     """Print the final summary block after automation completes.
 
@@ -306,16 +323,42 @@ def _print_summary(result: Any) -> None:
     print(separator)
 
 
-def _list_profiles() -> None:
+def _list_profiles(config_path: str | Path | None = None) -> None:
     """Load and print all available artifact profiles, then exit.
+
+    Args:
+        config_path: Optional config path whose sibling ``profile`` directory
+            should be listed.
 
     Raises:
         SystemExit: Always exits with code 0 after printing.
     """
-    from app.artifact_profiles import load_profiles_from_directory
+    from app.artifact_profiles import load_profiles_from_directory, resolve_profiles_root
 
-    profiles_root = _PROJECT_ROOT / "profile"
+    resolved_config_path = (
+        Path(config_path).expanduser().resolve()
+        if config_path is not None
+        else _PROJECT_ROOT / "config.yaml"
+    )
+    profiles_root = resolve_profiles_root(resolved_config_path)
     profiles = load_profiles_from_directory(profiles_root)
+    legacy_profiles_root = _PROJECT_ROOT / "profile"
+    if legacy_profiles_root.resolve() != profiles_root.resolve() and legacy_profiles_root.exists():
+        seen = {str(profile.get("name", "")).strip().lower() for profile in profiles}
+        legacy_profiles = []
+        for profile in load_profiles_from_directory(legacy_profiles_root):
+            name = str(profile.get("name", "")).strip().lower()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            legacy_profiles.append(profile)
+        if legacy_profiles:
+            print(
+                "WARNING: Including profiles from the repository profile "
+                f"directory for compatibility: {legacy_profiles_root}",
+                file=sys.stderr,
+            )
+            profiles.extend(legacy_profiles)
 
     if not profiles:
         print("No artifact profiles found.")
@@ -380,7 +423,7 @@ def main() -> None:
         _show_version()
     if "--list-profiles" in sys.argv[1:]:
         _configure_logging("--verbose" in sys.argv[1:])
-        _list_profiles()
+        _list_profiles(_early_config_path(sys.argv[1:]))
 
     parser = _build_parser()
     args = parser.parse_args()

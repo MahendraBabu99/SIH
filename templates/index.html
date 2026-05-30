@@ -19,7 +19,7 @@
   <script src="{{ url_for('static', filename='js/settings.js') }}" defer></script>
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
-<body>
+<body data-evidence-accept="{{ evidence_ui_accept }}" data-evidence-help="{{ evidence_ui_help }}">
   <noscript>
     <p style="padding:2em;color:#ff6b6b;font-size:1.2em;text-align:center;">
       JavaScript is required to use AIFT. Please enable JavaScript in your browser settings and reload the page.
@@ -129,8 +129,8 @@
             <section class="image-upload-panel" data-mode="upload" hidden>
               <h4>Upload File</h4>
               <label class="image-dropzone">
-                <span class="image-dropzone-help">Drag and drop evidence here (.E01, .dd, .raw, .vmdk, .vhd, .vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...)</span>
-                <input class="image-file-input" type="file" multiple accept=".e01,.e02,.e03,.e04,.e05,.e06,.e07,.e08,.e09,.ex01,.s01,.l01,.dd,.img,.raw,.bin,.iso,.000,.001,.vmdk,.vhd,.vhdx,.vdi,.qcow2,.hdd,.hds,.vmx,.vmwarevm,.vbox,.vmcx,.ovf,.ova,.pvm,.pvs,.utm,.xva,.vma,.vbk,.asdf,.asif,.ad1,.tar,.gz,.tgz,.zip,.7z">
+                <span class="image-dropzone-help">{{ evidence_ui_help }}</span>
+                <input class="image-file-input" type="file" multiple accept="{{ evidence_ui_accept }}">
               </label>
             </section>
 

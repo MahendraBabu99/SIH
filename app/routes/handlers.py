@@ -52,6 +52,7 @@ from ..case_logging import (
     register_case_log_handler,
 )
 from ..config import load_config, save_config, validate_config
+from ..evidence_constants import evidence_ui_metadata
 from ..hasher import compute_hashes, verify_hash  # noqa: F401 -- re-exported
 from ..parser import WINDOWS_ARTIFACT_REGISTRY, ForensicParser  # noqa: F401 -- re-exported
 from ..reporter import ReportGenerator  # noqa: F401 -- re-exported
@@ -136,10 +137,13 @@ def index() -> str:
     Returns:
         Rendered ``index.html`` template.
     """
+    evidence_metadata = evidence_ui_metadata()
     return render_template(
         "index.html",
         logo_filename=resolve_logo_filename(),
         tool_version=TOOL_VERSION,
+        evidence_ui_accept=evidence_metadata["accept"],
+        evidence_ui_help=evidence_metadata["help"],
     )
 
 

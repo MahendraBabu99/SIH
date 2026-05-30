@@ -259,7 +259,15 @@ def _recommended_artifact_options() -> list[dict[str, str]]:
 
 
 def resolve_profiles_root(config_path: str | Path) -> Path:
-    """Resolve the directory where artifact profiles are stored."""
+    """Resolve the directory where artifact profiles are stored.
+
+    Args:
+        config_path: Path to the active ``config.yaml``.
+
+    Returns:
+        The sibling ``profile`` directory used by the GUI for artifact
+        profile storage.
+    """
     return Path(config_path).parent / PROFILE_DIRNAME
 
 

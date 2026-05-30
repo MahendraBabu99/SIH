@@ -114,6 +114,14 @@ class TestHeadlessNoFlask(unittest.TestCase):
                 root = Path(td)
                 aift_cli._PROJECT_ROOT = root
                 engine._PROJECT_ROOT = root
+                config_path = root / "custom" / "config.yaml"
+                profile_root = config_path.parent / "profile"
+                profile_root.mkdir(parents=True)
+                config_path.write_text("ai_provider: fake\\n", encoding="utf-8")
+                (profile_root / "custom.json").write_text(
+                    '{"name":"custom","artifact_options":[{"artifact_key":"runkeys","mode":"parse_and_ai"}]}\\n',
+                    encoding="utf-8",
+                )
 
                 sys.argv = ["aift_cli.py", "--list-profiles"]
                 try:
@@ -122,11 +130,21 @@ class TestHeadlessNoFlask(unittest.TestCase):
                     if exc.code != 0:
                         raise AssertionError(f"CLI --list-profiles exited {exc.code!r}")
 
+                sys.argv = ["aift_cli.py", "--list-profiles", "--config", str(config_path)]
+                try:
+                    aift_cli.main()
+                except SystemExit as exc:
+                    if exc.code != 0:
+                        raise AssertionError(f"CLI custom --list-profiles exited {exc.code!r}")
+
                 parse_artifacts, analysis_artifacts, warnings = engine._load_profile("recommended")
                 if not parse_artifacts:
                     raise AssertionError("recommended profile did not load parse artifacts")
                 if parse_artifacts != analysis_artifacts:
                     raise AssertionError("recommended profile should analyze all generated artifacts")
+                parse_artifacts, analysis_artifacts, warnings = engine._load_profile("custom", config_path)
+                if parse_artifacts != ["runkeys"] or analysis_artifacts != ["runkeys"]:
+                    raise AssertionError("config-relative custom profile did not load")
                 if warnings:
                     raise AssertionError(f"unexpected warnings: {warnings!r}")
 

@@ -1003,3 +1003,121 @@ describe("renderImageSummaries", () => {
     }
   });
 });
+
+describe("profile actions with image tabs", () => {
+  test("selection maps can apply to every image tab", () => {
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+
+    A.applyArtifactSelectionMap({ runkeys: A.MODE_PARSE_ONLY }, "all");
+
+    const panel1 = document.querySelector(".artifact-image-panel[data-image-id='img-w1']");
+    const panel2 = document.querySelector(".artifact-image-panel[data-image-id='img-w2']");
+    const firstRunkeys = panel1.querySelector("input[data-artifact-key='runkeys']");
+    const secondRunkeys = panel2.querySelector("input[data-artifact-key='runkeys']");
+    const firstMode = firstRunkeys.closest("li").querySelector(".artifact-mode-select");
+    const secondMode = secondRunkeys.closest("li").querySelector(".artifact-mode-select");
+
+    expect(firstRunkeys.checked).toBe(true);
+    expect(secondRunkeys.checked).toBe(true);
+    expect(firstMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(secondMode.value).toBe(A.MODE_PARSE_ONLY);
+  });
+
+  test("single selection serialization reads the single root even while tabs exist", () => {
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+    const hiddenRunkeys = A.el.artifactsForm.querySelector("input[data-artifact-key='runkeys']");
+    hiddenRunkeys.disabled = false;
+    hiddenRunkeys.checked = true;
+
+    const activePanel = document.querySelector(".artifact-image-panel[data-image-id='img-w1']");
+    const activeShimcache = activePanel.querySelector("input[data-artifact-key='shimcache']");
+    activeShimcache.checked = true;
+
+    expect(A.serializeArtifactSelections("single")).toEqual([
+      { artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI },
+    ]);
+    expect(A.serializeArtifactSelections("active")).toEqual([
+      { artifact_key: "shimcache", mode: A.MODE_PARSE_AND_AI },
+    ]);
+  });
+
+  test("loads a profile into the active image tab only", () => {
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+    A.st.profiles = [
+      {
+        name: "focused",
+        builtin: false,
+        artifact_options: [{ artifact_key: "runkeys", mode: A.MODE_PARSE_ONLY }],
+      },
+    ];
+    A.el.profileSelect.innerHTML = '<option value="focused">focused</option>';
+    A.el.profileSelect.value = "focused";
+
+    A.el.profileLoadBtn.dispatchEvent(new Event("click"));
+
+    const panel1 = document.querySelector(".artifact-image-panel[data-image-id='img-w1']");
+    const panel2 = document.querySelector(".artifact-image-panel[data-image-id='img-w2']");
+    const firstRunkeys = panel1.querySelector("input[data-artifact-key='runkeys']");
+    const secondRunkeys = panel2.querySelector("input[data-artifact-key='runkeys']");
+    const firstMode = firstRunkeys.closest("li").querySelector(".artifact-mode-select");
+
+    expect(firstRunkeys.checked).toBe(true);
+    expect(firstMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(secondRunkeys.checked).toBe(false);
+  });
+
+  test("saves profile options from the active image tab instead of the hidden form", async () => {
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+    A.switchArtifactTab("img-w2");
+    const hiddenMain = A.el.artifactsForm.querySelector("input[data-artifact-key='runkeys']");
+    hiddenMain.disabled = false;
+    hiddenMain.checked = true;
+
+    const activePanel = document.querySelector(".artifact-image-panel[data-image-id='img-w2']");
+    const prefetch = activePanel.querySelector("input[data-artifact-key='prefetch']");
+    prefetch.checked = true;
+    const mode = prefetch.closest("li").querySelector(".artifact-mode-select");
+    mode.value = A.MODE_PARSE_ONLY;
+    A.el.profileName.value = "active-tab";
+
+    let savedBody = null;
+    global.fetch = jest.fn((_url, init = {}) => {
+      if (init.body) savedBody = JSON.parse(init.body);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          success: true,
+          profiles: [
+            { name: "recommended", builtin: true, artifact_options: [] },
+            { name: "active-tab", builtin: false, artifact_options: [{ artifact_key: "prefetch", mode: A.MODE_PARSE_ONLY }] },
+          ],
+        }),
+        text: async () => "{}",
+      });
+    });
+
+    A.el.profileSaveBtn.dispatchEvent(new Event("click"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(savedBody.name).toBe("active-tab");
+    expect(savedBody.artifact_options).toEqual([
+      { artifact_key: "prefetch", mode: A.MODE_PARSE_ONLY },
+    ]);
+  });
+
+  test("reverting from image tabs clears stale hidden single-image selections", () => {
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+    const hiddenMain = A.el.artifactsForm.querySelector("input[data-artifact-key='runkeys']");
+    hiddenMain.disabled = false;
+    hiddenMain.checked = true;
+
+    A.st.images = [{ image_id: "solo", label: "Solo", os_type: "windows", available_artifacts: [] }];
+    A.buildMultiImageArtifactTabs();
+
+    expect(A.el.artifactsForm.hidden).toBe(false);
+    expect(A.selectedArtifactOptions()).toEqual([]);
+    expect(hiddenMain.checked).toBe(false);
+  });
+});

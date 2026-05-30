@@ -76,6 +76,7 @@
    */
   function initImageForm(card) {
     if (!card) return;
+    A.applyEvidenceFormatMetadata(card);
     const modeUpload = card.querySelector(".image-mode-upload");
     const modePath = card.querySelector(".image-mode-path");
     if (modeUpload) modeUpload.addEventListener("change", () => syncImageFormMode(card));
@@ -174,7 +175,7 @@
     const inputFiles = fileInput && fileInput.files ? Array.from(fileInput.files) : [];
     const files = cachedFiles.length ? cachedFiles : inputFiles;
     if (!files.length) {
-      helpEl.textContent = A.DROP_HELP;
+      helpEl.textContent = A.evidenceFormatMetadata().help;
       return;
     }
     if (files.length === 1) {
@@ -556,6 +557,88 @@
     return selectionMap;
   }
 
+  /** Convert artifact options or state entries into a key -> state map. */
+  function normalizeArtifactSelectionMap(source) {
+    const selectionMap = new Map();
+    if (Array.isArray(source)) {
+      source.forEach((option) => {
+        if (!A.isObj(option)) return;
+        const key = String(option.artifact_key || option.key || "").trim();
+        if (!key) return;
+        selectionMap.set(key, { checked: true, mode: artifactModeValue(option.mode) });
+      });
+      return selectionMap;
+    }
+    const entries = source instanceof Map
+      ? Array.from(source.entries())
+      : (A.isObj(source) ? Object.entries(source) : []);
+    entries.forEach(([rawKey, rawValue]) => {
+      const key = String(rawKey || "").trim();
+      if (!key) return;
+      if (A.isObj(rawValue)) {
+        selectionMap.set(key, {
+          checked: !!rawValue.checked,
+          mode: artifactModeValue(rawValue.mode),
+        });
+      } else {
+        selectionMap.set(key, { checked: true, mode: artifactModeValue(rawValue) });
+      }
+    });
+    return selectionMap;
+  }
+
+  /** Return artifact selection roots for single, active-tab, or all-tab scope. */
+  function artifactSelectionRoots(scope = "active") {
+    const wanted = String(scope || "active").toLowerCase();
+    if (!A.isMultiImage() || wanted === "single") return el.artifactsForm ? [el.artifactsForm] : [];
+    const panelsContainer = q("artifact-image-panels");
+    if (!panelsContainer) return [];
+    if (wanted === "all") return Array.from(panelsContainer.querySelectorAll(".artifact-image-panel"));
+    const activeId = A.activeArtifactTabImageId();
+    if (!activeId) return [];
+    const activePanel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${CSS.escape(activeId)}"]`);
+    return activePanel ? [activePanel] : [];
+  }
+
+  /** Apply a normalized option/state map under one artifact UI root. */
+  function applyArtifactSelectionMapToRoot(root, sourceMap, opts = {}) {
+    const selectionMap = normalizeArtifactSelectionMap(sourceMap);
+    const preserveMissing = !!opts.preserveMissing;
+    artifactBoxesIn(root).forEach((cb) => {
+      const key = String(cb.dataset.artifactKey || "").trim();
+      if (!key) return;
+      const entry = selectionMap.get(key);
+      if (!entry && preserveMissing) return;
+      const mode = entry ? artifactModeValue(entry.mode) : A.MODE_PARSE_AND_AI;
+      const select = ensureArtifactModeControl(cb, mode);
+      if (cb.disabled || !entry) cb.checked = false;
+      else cb.checked = !!entry.checked;
+      if (select) select.value = mode;
+      syncArtifactModeControl(cb, select);
+    });
+  }
+
+  /** Apply an artifact option/state map to the requested selection scope. */
+  function applyArtifactSelectionMap(sourceMap, scope = "active", opts = {}) {
+    artifactSelectionRoots(scope).forEach((root) => {
+      applyArtifactSelectionMapToRoot(root, sourceMap, opts);
+    });
+    A.markParsedSelectionStale();
+    updateParseButton();
+  }
+
+  /** Serialize artifact selections from the requested scope. */
+  function serializeArtifactSelections(scope = "active") {
+    const wanted = String(scope || "active").toLowerCase();
+    if (wanted === "single") return selectedArtifactOptions();
+    if (A.isMultiImage()) {
+      if (wanted === "all") return A.allImageArtifactSelections();
+      const activeId = A.activeArtifactTabImageId();
+      return activeId ? A.selectedArtifactOptionsForImage(activeId) : [];
+    }
+    return selectedArtifactOptions();
+  }
+
   /** Return an array of selected artifact keys (all modes). */
   function selectedArtifacts() {
     return selectedArtifactOptions().map((option) => option.artifact_key);
@@ -590,6 +673,15 @@
       if (select) select.value = A.MODE_PARSE_AND_AI;
       syncArtifactModeControl(cb, select);
     });
+  }
+
+  /** Apply a checkbox preset to a single, active-tab, or all-tab scope. */
+  function applyArtifactPreset(mode, scope = "active") {
+    artifactSelectionRoots(scope).forEach((root) => {
+      applyArtifactPresetIn(root, mode);
+    });
+    A.markParsedSelectionStale();
+    updateParseButton();
   }
 
   // ── Date range ─────────────────────────────────────────────────────────────
@@ -686,29 +778,14 @@
    * @param {Object} profile - Normalised profile object.
    * @param {Object} [opts={}] - Options.
    * @param {boolean} [opts.silent] - Suppress the success toast.
+   * @param {string} [opts.scope="active"] - Selection scope to update.
    * @returns {boolean} True if the profile was applied.
    */
   function applyArtifactProfile(profile, opts = {}) {
     if (!profile) return false;
     const silent = !!opts.silent;
-    const optionMap = new Map();
     const options = Array.isArray(profile.artifact_options) ? profile.artifact_options : [];
-    options.forEach((option) => {
-      const key = String(option.artifact_key || "").trim();
-      if (!key) return;
-      optionMap.set(key, artifactModeValue(option.mode));
-    });
-    artifactBoxes().forEach((cb) => {
-      const key = String(cb.dataset.artifactKey || "").trim();
-      const mode = optionMap.get(key) || A.MODE_PARSE_AND_AI;
-      const modeSelect = ensureArtifactModeControl(cb, mode);
-      if (cb.disabled || !optionMap.has(key)) cb.checked = false;
-      else cb.checked = true;
-      if (modeSelect) modeSelect.value = mode;
-      syncArtifactModeControl(cb, modeSelect);
-    });
-    A.markParsedSelectionStale();
-    updateParseButton();
+    applyArtifactSelectionMap(options, opts.scope || "active");
     if (!silent) A.setMsg(el.artifactsMsg, `Loaded profile: ${profile.name}`, "success");
     return true;
   }
@@ -730,7 +807,7 @@
     if (profileName.toLowerCase() === A.RECOMMENDED_PROFILE) {
       return A.setMsg(el.artifactsMsg, "`recommended` is reserved. Pick a different name.", "error");
     }
-    const options = selectedArtifactOptions();
+    const options = serializeArtifactSelections("active");
     if (!options.length) return A.setMsg(el.artifactsMsg, "Select at least one artifact before saving a profile.", "error");
     try {
       const response = await A.apiJson("/api/artifact-profiles", { method: "POST", json: { name: profileName, artifact_options: options } });
@@ -800,9 +877,7 @@
    * @param {string} mode - "recommended" or "clear".
    */
   function applyPreset(mode) {
-    applyArtifactPresetIn(el.artifactsForm, mode);
-    A.markParsedSelectionStale();
-    updateParseButton();
+    applyArtifactPreset(mode, "single");
   }
 
   /** Update the parse button's disabled state, label, and cancel button visibility. */
@@ -810,7 +885,7 @@
     let hasArtifacts = false;
     if (A.isMultiImage()) {
       /* In multi-image mode, at least one image must have selections. */
-      const selections = A.allImageArtifactSelections();
+      const selections = serializeArtifactSelections("all");
       hasArtifacts = selections.some((s) => s.artifact_options.length > 0);
     } else {
       /* Ensure the main artifact form is visible and its state is current
@@ -882,8 +957,14 @@
   A.selectedArtifacts = selectedArtifacts;
   A.selectedAiArtifacts = selectedAiArtifacts;
   A.applyArtifactPresetIn = applyArtifactPresetIn;
+  A.applyArtifactPreset = applyArtifactPreset;
+  A.applyArtifactSelectionMap = applyArtifactSelectionMap;
+  A.applyArtifactSelectionMapToRoot = applyArtifactSelectionMapToRoot;
+  A.serializeArtifactSelections = serializeArtifactSelections;
+  A.artifactSelectionRoots = artifactSelectionRoots;
   A.syncArtifactModesIn = syncArtifactModesIn;
   A.artifactSelectionStateByKeyIn = artifactSelectionStateByKeyIn;
+  A.normalizeArtifactSelectionMap = normalizeArtifactSelectionMap;
   A.validateAnalysisDateRange = validateAnalysisDateRange;
   A.artifactBoxes = artifactBoxes;
   A.ensureArtifactModeControl = ensureArtifactModeControl;
@@ -896,6 +977,7 @@
   A.sanitizeEvidencePath = sanitizeEvidencePath;
   A.applyEvidence = applyEvidence;
   A.applyPreset = applyPreset;
+  A.applyArtifactProfile = applyArtifactProfile;
   A.artifactModeValue = artifactModeValue;
   A.setDroppedFilesForCard = setDroppedFilesForCard;
   A.getDroppedFilesForCard = getDroppedFilesForCard;

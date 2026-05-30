@@ -49,8 +49,8 @@
       <section class="image-upload-panel" data-mode="upload" hidden>
         <h4>Upload File</h4>
         <label class="image-dropzone">
-          <span class="image-dropzone-help">${A.DROP_HELP}</span>
-          <input class="image-file-input" type="file" multiple accept=".e01,.e02,.e03,.e04,.e05,.e06,.e07,.e08,.e09,.ex01,.s01,.l01,.dd,.img,.raw,.bin,.iso,.000,.001,.vmdk,.vhd,.vhdx,.vdi,.qcow2,.hdd,.hds,.vmx,.vmwarevm,.vbox,.vmcx,.ovf,.ova,.pvm,.pvs,.utm,.xva,.vma,.vbk,.asdf,.asif,.ad1,.tar,.gz,.tgz,.zip,.7z">
+          <span class="image-dropzone-help"></span>
+          <input class="image-file-input" type="file" multiple>
         </label>
       </section>
       <section class="image-path-panel" data-mode="path">
@@ -204,8 +204,7 @@
     const fileInput = card.querySelector(".image-file-input");
     if (fileInput) fileInput.value = "";
     A.clearDroppedFilesForCard(card);
-    const dropzoneHelp = card.querySelector(".image-dropzone-help");
-    if (dropzoneHelp) dropzoneHelp.textContent = A.DROP_HELP;
+    A.applyEvidenceFormatMetadata(card);
 
     const metaCard = card.querySelector(".image-metadata-card");
     if (metaCard) metaCard.hidden = true;
@@ -673,6 +672,8 @@
     if (_panelsChangeAC) _panelsChangeAC.abort();
     _panelsChangeAC = new AbortController();
 
+    const hadMultiPanels = !!panelsContainer.querySelector(".artifact-image-panel");
+
     /* Clean up any prior tabs. */
     const tabBar = tabContainer.querySelector(".artifact-tab-bar");
     if (tabBar) tabBar.innerHTML = "";
@@ -683,6 +684,7 @@
       panelsContainer.innerHTML = "";
       /* Show the main artifact form for single-image. */
       if (el.artifactsForm) el.artifactsForm.hidden = false;
+      if (hadMultiPanels) A.applyArtifactSelectionMap([], "single");
       /* Hide multi-image-only buttons. */
       if (el.applyRecommendedAllBtn) el.applyRecommendedAllBtn.hidden = true;
       if (el.applySelectionAllBtn) el.applySelectionAllBtn.hidden = true;
@@ -864,15 +866,7 @@
    */
   function applyPresetMultiAware(mode) {
     if (!isMultiImage()) return A.applyPreset(mode);
-    const activeId = activeArtifactTabImageId();
-    if (!activeId) return A.applyPreset(mode);
-    const panelsContainer = q("artifact-image-panels");
-    if (!panelsContainer) return;
-    const panel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${CSS.escape(activeId)}"]`);
-    if (!panel) return;
-    A.applyArtifactPresetIn(panel, mode);
-    A.markParsedSelectionStale();
-    A.updateParseButton();
+    A.applyArtifactPreset(mode, "active");
   }
 
   /**
@@ -884,14 +878,7 @@
    */
   function applyRecommendedToAllImages() {
     if (!isMultiImage()) return;
-    const panelsContainer = q("artifact-image-panels");
-    if (!panelsContainer) return;
-    const panels = panelsContainer.querySelectorAll(".artifact-image-panel");
-    panels.forEach((panel) => {
-      A.applyArtifactPresetIn(panel, "recommended");
-    });
-    A.markParsedSelectionStale();
-    A.updateParseButton();
+    A.applyArtifactPreset("recommended", "all");
   }
 
   /**

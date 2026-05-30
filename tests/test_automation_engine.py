@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import app.automation.engine as engine_module
 from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.evidence_descriptor import descriptor_for_path
@@ -217,6 +218,87 @@ class TestAutomationResult(unittest.TestCase):
         self.assertEqual(res.errors, [])
         self.assertEqual(res.warnings, [])
         self.assertEqual(res.duration_seconds, 0.0)
+
+
+class TestAutomationProfileRoots(unittest.TestCase):
+    """Tests for config-relative automation profile loading."""
+
+    def test_load_profile_uses_config_relative_profile_root(self) -> None:
+        """Automation loads profiles from the active config sibling folder."""
+        with TemporaryDirectory(prefix="aift-profile-root-") as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "settings" / "config.yaml"
+            profile_root = config_path.parent / "profile"
+            profile_root.mkdir(parents=True)
+            config_path.write_text("ai_provider: fake\n", encoding="utf-8")
+            (profile_root / "custom.json").write_text(
+                json.dumps({
+                    "name": "custom",
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_only"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with patch.object(engine_module, "_PROJECT_ROOT", root):
+                parse, analysis, warnings = engine_module._load_profile(
+                    "custom",
+                    config_path,
+                )
+
+        self.assertEqual(parse, ["runkeys"])
+        self.assertEqual(analysis, [])
+        self.assertEqual(warnings, [])
+
+    def test_load_profile_falls_back_to_repository_profile_root_with_warning(self) -> None:
+        """Automation warns when using the legacy repository profile folder."""
+        with TemporaryDirectory(prefix="aift-profile-compat-") as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "settings" / "config.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("ai_provider: fake\n", encoding="utf-8")
+            legacy_root = root / "profile"
+            legacy_root.mkdir()
+            (legacy_root / "legacy.json").write_text(
+                json.dumps({
+                    "name": "legacy",
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with patch.object(engine_module, "_PROJECT_ROOT", root):
+                parse, analysis, warnings = engine_module._load_profile(
+                    "legacy",
+                    config_path,
+                )
+
+        self.assertEqual(parse, ["runkeys"])
+        self.assertEqual(analysis, ["runkeys"])
+        self.assertTrue(any("repository profile directory" in warning for warning in warnings))
+
+    def test_load_profile_does_not_create_missing_repository_profile_root(self) -> None:
+        """Legacy profile fallback does not create a repository profile folder."""
+        with TemporaryDirectory(prefix="aift-profile-no-legacy-") as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "settings" / "config.yaml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("ai_provider: fake\n", encoding="utf-8")
+            legacy_root = root / "profile"
+
+            with patch.object(engine_module, "_PROJECT_ROOT", root):
+                parse, analysis, warnings = engine_module._load_profile(
+                    "missing",
+                    config_path,
+                )
+
+        self.assertFalse(legacy_root.exists())
+        self.assertTrue(parse)
+        self.assertEqual(parse, analysis)
+        self.assertTrue(any("Profile 'missing' not found" in warning for warning in warnings))
 
 
 class TestRunAutomation(unittest.TestCase):

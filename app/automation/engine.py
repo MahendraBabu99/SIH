@@ -45,6 +45,7 @@ from app.reporter.generator import ReportGenerator
 from app.artifact_profiles import (
     artifact_options_to_lists,
     load_profiles_from_directory,
+    resolve_profiles_root,
 )
 from app.version import TOOL_VERSION
 
@@ -245,6 +246,23 @@ def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], l
     return load_config(None), warnings
 
 
+def _effective_profile_config_path(config_path: str | Path | None) -> Path:
+    """Return the config path whose sibling profile directory should be used.
+
+    Args:
+        config_path: Optional requested config path.
+
+    Returns:
+        Existing custom config path, or the repository default config path
+        when no usable custom config was supplied.
+    """
+    if config_path is not None:
+        resolved = Path(config_path).resolve()
+        if resolved.is_file():
+            return resolved
+    return _PROJECT_ROOT / "config.yaml"
+
+
 def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
     """Return the configured per-artifact CSV row cap.
 
@@ -268,17 +286,25 @@ def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
 
 def _load_profile(
     profile_name: str | None,
+    config_path: str | Path | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Load artifact profile and split into parse/analysis lists.
 
     Args:
         profile_name: Requested profile name, or None for default.
+        config_path: Active config path used to resolve the GUI profile root.
 
     Returns:
         Tuple of ``(parse_artifacts, analysis_artifacts, warnings)``.
     """
     warnings: list[str] = []
-    profiles_root = _PROJECT_ROOT / PROFILE_DIR_NAME
+    active_config_path = (
+        Path(config_path).resolve()
+        if config_path is not None
+        else _PROJECT_ROOT / "config.yaml"
+    )
+    profiles_root = resolve_profiles_root(active_config_path)
+    legacy_profiles_root = _PROJECT_ROOT / PROFILE_DIR_NAME
     profiles = load_profiles_from_directory(profiles_root)
 
     target_name = (profile_name or "").strip().lower() or DEFAULT_PROFILE_NAME
@@ -287,6 +313,21 @@ def _load_profile(
         if str(p.get("name", "")).strip().lower() == target_name:
             matched = p
             break
+
+    if (
+        matched is None
+        and legacy_profiles_root.resolve() != profiles_root.resolve()
+        and legacy_profiles_root.exists()
+    ):
+        legacy_profiles = load_profiles_from_directory(legacy_profiles_root)
+        for p in legacy_profiles:
+            if str(p.get("name", "")).strip().lower() == target_name:
+                matched = p
+                warnings.append(
+                    "Loaded artifact profile from the repository profile "
+                    f"directory for compatibility: {legacy_profiles_root}."
+                )
+                break
 
     if matched is None:
         warnings.append(
@@ -831,7 +872,8 @@ def run_automation(
 
     # --- 3. Load profile ---
     parse_artifacts, analysis_artifacts, profile_warnings = _load_profile(
-        request.profile_name
+        request.profile_name,
+        _effective_profile_config_path(request.config_path),
     )
     result.warnings.extend(profile_warnings)
     profile_errors = _validate_profile_artifact_keys(

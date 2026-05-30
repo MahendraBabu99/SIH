@@ -32,7 +32,11 @@ import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
 from app.evidence_archives import ArchiveExtractionLimits, validate_archive_member_target
-from app.evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
+from app.evidence_constants import (
+    EVIDENCE_UI_ACCEPT,
+    EVIDENCE_UI_ACCEPT_EXTENSIONS,
+    NON_ARCHIVE_EVIDENCE_EXTENSIONS,
+)
 from app.routes.evidence_archive import extract_archive_descriptor
 
 
@@ -134,6 +138,33 @@ class TestSegmentRegexes(unittest.TestCase):
         # E01 only has 2-digit suffix, should not match 3-digit pattern
         m = routes_evidence.SPLIT_RAW_SEGMENT_RE.match("Disk.E01")
         self.assertIsNone(m)
+
+
+class TestEvidenceFormatUiMetadata(unittest.TestCase):
+    """Verify rendered evidence picker metadata matches segment support."""
+
+    def test_accept_metadata_includes_high_ewf_segments(self) -> None:
+        """Accept metadata includes .E10 and .E99 split-EWF segments."""
+        self.assertIn(".e10", EVIDENCE_UI_ACCEPT_EXTENSIONS)
+        self.assertIn(".e99", EVIDENCE_UI_ACCEPT_EXTENSIONS)
+        self.assertIn(".E10", EVIDENCE_UI_ACCEPT_EXTENSIONS)
+        self.assertIn(".E99", EVIDENCE_UI_ACCEPT_EXTENSIONS)
+        self.assertIn(".e10", EVIDENCE_UI_ACCEPT)
+        self.assertIn(".e99", EVIDENCE_UI_ACCEPT)
+
+    def test_rendered_template_uses_central_accept_metadata(self) -> None:
+        """The GUI template renders backend evidence accept metadata."""
+        with TemporaryDirectory(prefix="aift-ui-formats-") as temp_dir:
+            app = create_app(str(Path(temp_dir) / "config.yaml"))
+            app.testing = True
+            client = app.test_client()
+            response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn(f'accept="{EVIDENCE_UI_ACCEPT}"', html)
+        self.assertIn(".e10", html)
+        self.assertIn(".e99", html)
 
 
 # ---------------------------------------------------------------------------

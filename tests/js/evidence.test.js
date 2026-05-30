@@ -264,6 +264,45 @@ describe("dropped file state", () => {
   });
 });
 
+describe("evidence format metadata", () => {
+  test("initial file input uses centralized accept metadata including high EWF segments", () => {
+    const input = document.querySelector(".image-file-input");
+    const help = document.querySelector(".image-dropzone-help");
+
+    expect(input.getAttribute("accept")).toBe(A.EVIDENCE_ACCEPT);
+    expect(A.EVIDENCE_ACCEPT_EXTENSIONS).toContain(".e10");
+    expect(A.EVIDENCE_ACCEPT_EXTENSIONS).toContain(".e99");
+    expect(A.EVIDENCE_ACCEPT_EXTENSIONS).toContain(".E10");
+    expect(A.EVIDENCE_ACCEPT_EXTENSIONS).toContain(".E99");
+    expect(input.getAttribute("accept")).toContain(".e10");
+    expect(input.getAttribute("accept")).toContain(".e99");
+    expect(help.textContent).toContain(".E01-.E99");
+  });
+
+  test("dynamic image cards receive the same accept metadata", () => {
+    const card = A.addImageForm();
+    const input = card.querySelector(".image-file-input");
+    const help = card.querySelector(".image-dropzone-help");
+
+    expect(input.getAttribute("accept")).toBe(A.EVIDENCE_ACCEPT);
+    expect(input.getAttribute("accept")).toContain(".e10");
+    expect(input.getAttribute("accept")).toContain(".e99");
+    expect(help.textContent).toBe(A.DROP_HELP);
+  });
+
+  test("dynamic image cards copy rendered backend metadata", () => {
+    document.body.dataset.evidenceAccept = ".custom,.E99";
+    document.body.dataset.evidenceHelp = "Custom evidence formats";
+
+    const card = A.addImageForm();
+    const input = card.querySelector(".image-file-input");
+    const help = card.querySelector(".image-dropzone-help");
+
+    expect(input.getAttribute("accept")).toBe(".custom,.E99");
+    expect(help.textContent).toBe("Custom evidence formats");
+  });
+});
+
 // ── validateAnalysisDateRange ───────────────────────────────────────────────
 
 describe("validateAnalysisDateRange", () => {

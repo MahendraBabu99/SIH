@@ -12,7 +12,29 @@ window.AIFT = (() => {
   const MODE_PARSE_AND_AI = "parse_and_ai";
   const MODE_PARSE_ONLY = "parse_only";
   const RECOMMENDED_PROFILE = "recommended";
-  const DROP_HELP = "Drag and drop evidence here (.E01, .dd, .raw, .vmdk, .vhd, .vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...)";
+  function rangeExtensions(prefix, start, end, width) {
+    const values = [];
+    for (let i = start; i <= end; i += 1) values.push(`${prefix}${String(i).padStart(width, "0")}`);
+    return values;
+  }
+  const EVIDENCE_ACCEPT_EXTENSIONS = [
+    ...rangeExtensions(".e", 1, 99, 2),
+    ...rangeExtensions(".E", 1, 99, 2),
+    ...rangeExtensions(".ex", 1, 99, 2),
+    ...rangeExtensions(".EX", 1, 99, 2),
+    ...rangeExtensions(".s", 1, 99, 2),
+    ...rangeExtensions(".S", 1, 99, 2),
+    ...rangeExtensions(".l", 1, 99, 2),
+    ...rangeExtensions(".L", 1, 99, 2),
+    ".dd", ".img", ".raw", ".bin", ".iso",
+    ...rangeExtensions(".", 0, 999, 3),
+    ".vmdk", ".vhd", ".vhdx", ".vdi", ".qcow2", ".hdd", ".hds",
+    ".vmx", ".vmwarevm", ".vbox", ".vmcx", ".ovf", ".ova", ".pvm", ".pvs", ".utm", ".xva", ".vma",
+    ".vbk", ".asdf", ".asif", ".ad1",
+    ".tar", ".gz", ".tgz", ".zip", ".7z",
+  ];
+  const EVIDENCE_ACCEPT = EVIDENCE_ACCEPT_EXTENSIONS.join(",");
+  const DROP_HELP = "Drag and drop evidence here (.E01-.E99, .dd, .raw, .vmdk, .vhd, .vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...)";
   const CONFIDENCE_TOKEN_PATTERN = /\b(CRITICAL|HIGH|MEDIUM|LOW)\b/gi;
   const AI_MAX_TOKENS_WARNING_THRESHOLD = 32000;
   const CONFIDENCE_CLASS_MAP = {
@@ -439,6 +461,42 @@ window.AIFT = (() => {
     return true;
   }
 
+  function renderedValueOrFallback(value, fallback) {
+    const rendered = String(value || "").trim();
+    return rendered && !/\{\{/.test(rendered) ? rendered : fallback;
+  }
+
+  /** Return rendered backend evidence metadata when available. */
+  function evidenceFormatMetadata() {
+    const body = document.body || {};
+    const dataset = body.dataset || {};
+    const input = document.querySelector(".image-file-input");
+    const help = document.querySelector(".image-dropzone-help");
+    const bodyAccept = renderedValueOrFallback(dataset.evidenceAccept, "");
+    const inputAccept = renderedValueOrFallback(input ? input.getAttribute("accept") : "", "");
+    const bodyHelp = renderedValueOrFallback(dataset.evidenceHelp, "");
+    const inputHelp = renderedValueOrFallback(help ? help.textContent : "", "");
+    return {
+      accept: bodyAccept || inputAccept || EVIDENCE_ACCEPT,
+      help: bodyHelp || inputHelp || DROP_HELP,
+    };
+  }
+
+  /** Apply central evidence-format metadata to file inputs and help text. */
+  function applyEvidenceFormatMetadata(root = document) {
+    if (!root) return;
+    const metadata = evidenceFormatMetadata();
+    const scope = root.querySelectorAll ? root : document;
+    scope.querySelectorAll(".image-file-input").forEach((input) => {
+      input.setAttribute("accept", metadata.accept);
+    });
+    scope.querySelectorAll(".image-dropzone-help").forEach((help) => {
+      if (!help.textContent || help.textContent === DROP_HELP || /Drag and drop evidence here|\{\{\s*evidence_ui_help\s*\}\}/.test(help.textContent)) {
+        help.textContent = metadata.help;
+      }
+    });
+  }
+
   // ── Network ────────────────────────────────────────────────────────────────
 
   /**
@@ -827,7 +885,8 @@ window.AIFT = (() => {
   return {
     // Constants
     STEP_IDS, RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS, MODE_PARSE_AND_AI, MODE_PARSE_ONLY,
-    RECOMMENDED_PROFILE, DROP_HELP, CONFIDENCE_TOKEN_PATTERN, AI_MAX_TOKENS_WARNING_THRESHOLD,
+    RECOMMENDED_PROFILE, DROP_HELP, EVIDENCE_ACCEPT, EVIDENCE_ACCEPT_EXTENSIONS,
+    CONFIDENCE_TOKEN_PATTERN, AI_MAX_TOKENS_WARNING_THRESHOLD,
     CONFIDENCE_CLASS_MAP, SSE_MAX_RETRIES, SSE_RETRY_BASE_DELAY_MS, SSE_RETRY_MAX_DELAY_MS,
     FETCH_TIMEOUT_API_MS, FETCH_TIMEOUT_UPLOAD_MS,
     // State & DOM
@@ -842,7 +901,8 @@ window.AIFT = (() => {
     // Messages & timers
     ensureMsg, setMsg, clearMsg, showToast, ensureTimer, startTimer, stopTimer,
     // SSE
-    sseRetryDelayMs, closeSseChannel, requireModules,
+    sseRetryDelayMs, closeSseChannel, requireModules, applyEvidenceFormatMetadata,
+    evidenceFormatMetadata,
     // Network
     fetchWithTimeout, handleFetchError, apiJson, readErr,
     // Utilities
