@@ -1,6 +1,16 @@
 "use strict";
 
-const { productionScripts, setupAift, setupUtilsOnly, mustGet } = require("./harness");
+const fs = require("fs");
+const path = require("path");
+
+const { productionScripts, setupAift, setupUtilsOnly, mustGet, mustFindAll } = require("./harness");
+
+function frontendTestFiles() {
+  const testDir = __dirname;
+  return fs.readdirSync(testDir)
+    .filter((name) => name.endsWith(".test.js"))
+    .map((name) => path.join(testDir, name));
+}
 
 describe("shared frontend harness", () => {
   test("derives production script order from the template", () => {
@@ -31,6 +41,27 @@ describe("shared frontend harness", () => {
     setupAift();
     document.getElementById("parse-progress-rows").remove();
     expect(() => mustGet("parse-progress-rows")).toThrow("Required DOM node #parse-progress-rows is missing");
+  });
+
+  test("required DOM list helper fails clearly", () => {
+    setupAift();
+    expect(() => mustFindAll(document, ".definitely-missing-test-node")).toThrow(
+      'Required DOM selector ".definitely-missing-test-node" matched 0 node(s), expected at least 1'
+    );
+  });
+
+  test("Jest test bodies do not silently return before assertions", () => {
+    const offenders = [];
+    const earlyReturnPattern = new RegExp("\\breturn" + ";\\s*(?://.*)?$");
+    for (const filePath of frontendTestFiles()) {
+      const relPath = path.relative(path.join(__dirname, "..", ".."), filePath).replace(/\\/g, "/");
+      fs.readFileSync(filePath, "utf-8").split(/\r?\n/).forEach((line, index) => {
+        if (earlyReturnPattern.test(line)) {
+          offenders.push(`${relPath}:${index + 1}: ${line.trim()}`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
   });
 
   test("utility-only setup loads utils without app initialization", () => {

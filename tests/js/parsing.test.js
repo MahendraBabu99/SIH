@@ -14,7 +14,7 @@
 
 "use strict";
 
-const { setupAift, mustGet, mustQuery } = require("./harness");
+const { setupAift, mustGet, mustQuery, mustFindAll } = require("./harness");
 
 let A;
 
@@ -91,13 +91,12 @@ describe("resetParseState", () => {
   });
 
   test("clears parse error message", () => {
-    if (A.el.parseErr) {
-      A.setMsg(A.el.parseErr, "Some error", "error");
-      expect(A.el.parseErr.hidden).toBe(false);
+    const parseErr = mustGet("parse-error-message");
+    A.setMsg(parseErr, "Some error", "error");
+    expect(parseErr.hidden).toBe(false);
 
-      A.resetParseState();
-      expect(A.el.parseErr.hidden).toBe(true);
-    }
+    A.resetParseState();
+    expect(parseErr.hidden).toBe(true);
   });
 });
 
@@ -106,19 +105,17 @@ describe("resetParseState", () => {
 describe("renderParsePlaceholder", () => {
   test("creates placeholder row in parse table", () => {
     A.renderParsePlaceholder();
-    if (A.el.parseRows) {
-      const rows = A.el.parseRows.querySelectorAll("tr");
-      expect(rows).toHaveLength(1);
-      expect(rows[0].textContent).toContain("Awaiting selection");
-    }
+    const rows = mustGet("parse-progress-rows").querySelectorAll("tr");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("Awaiting selection");
   });
 
   test("resets progress bar to 0", () => {
-    if (A.el.parseProgress) {
-      A.el.parseProgress.value = 75;
-      A.renderParsePlaceholder();
-      expect(A.el.parseProgress.value).toBe(0);
-    }
+    const progress = document.createElement("progress");
+    A.el.parseProgress = progress;
+    progress.value = 75;
+    A.renderParsePlaceholder();
+    expect(progress.value).toBe(0);
   });
 
   test("clears rows and status state", () => {
@@ -418,10 +415,7 @@ describe("parse SSE ownership and retry state", () => {
 describe("showSingleImageParseTable", () => {
   test("parse-single-table is visible by default after reset", () => {
     A.renderParsePlaceholder();
-    const table = document.getElementById("parse-single-table");
-    if (table) {
-      expect(table.hidden).toBe(false);
-    }
+    expect(mustGet("parse-single-table").hidden).toBe(false);
   });
 });
 
@@ -483,10 +477,7 @@ describe("buildMultiImageArtifactTabs", () => {
   test("hides tab container for single image", () => {
     A.st.images = [{ image_id: "img1", label: "Image 1" }];
     A.buildMultiImageArtifactTabs();
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    if (tabContainer) {
-      expect(tabContainer.hidden).toBe(true);
-    }
+    expect(mustGet("artifact-image-tabs").hidden).toBe(true);
     A.st.images = [];
   });
 
@@ -496,16 +487,14 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image 2", available_artifacts: [{ key: "evtx", available: true }] },
     ];
     A.buildMultiImageArtifactTabs();
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    if (tabContainer) {
-      expect(tabContainer.hidden).toBe(false);
-      const buttons = tabContainer.querySelectorAll(".artifact-tab-bar button");
-      expect(buttons.length).toBe(2);
-      expect(buttons[0].textContent).toBe("Image 1");
-      expect(buttons[1].textContent).toBe("Image 2");
-      expect(buttons[0].classList.contains("is-active")).toBe(true);
-      expect(buttons[1].classList.contains("is-active")).toBe(false);
-    }
+    const tabContainer = mustGet("artifact-image-tabs");
+    expect(tabContainer.hidden).toBe(false);
+    const buttons = mustFindAll(tabContainer, ".artifact-tab-bar button", 2);
+    expect(buttons.length).toBe(2);
+    expect(buttons[0].textContent).toBe("Image 1");
+    expect(buttons[1].textContent).toBe("Image 2");
+    expect(buttons[0].classList.contains("is-active")).toBe(true);
+    expect(buttons[1].classList.contains("is-active")).toBe(false);
     A.st.images = [];
   });
 
@@ -515,15 +504,13 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image 2", available_artifacts: [] },
     ];
     A.buildMultiImageArtifactTabs();
-    const panels = document.getElementById("artifact-image-panels");
-    if (panels) {
-      const panelDivs = panels.querySelectorAll(".artifact-image-panel");
-      expect(panelDivs.length).toBe(2);
-      expect(panelDivs[0].dataset.imageId).toBe("img1");
-      expect(panelDivs[1].dataset.imageId).toBe("img2");
-      expect(panelDivs[0].classList.contains("is-active")).toBe(true);
-      expect(panelDivs[1].classList.contains("is-active")).toBe(false);
-    }
+    const panels = mustGet("artifact-image-panels");
+    const panelDivs = mustFindAll(panels, ".artifact-image-panel", 2);
+    expect(panelDivs.length).toBe(2);
+    expect(panelDivs[0].dataset.imageId).toBe("img1");
+    expect(panelDivs[1].dataset.imageId).toBe("img2");
+    expect(panelDivs[0].classList.contains("is-active")).toBe(true);
+    expect(panelDivs[1].classList.contains("is-active")).toBe(false);
     A.st.images = [];
   });
 
@@ -533,10 +520,7 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image 2", available_artifacts: [] },
     ];
     A.buildMultiImageArtifactTabs();
-    const form = document.getElementById("artifact-form");
-    if (form) {
-      expect(form.hidden).toBe(true);
-    }
+    expect(mustGet("artifacts-form").hidden).toBe(true);
     A.st.images = [];
   });
 });
@@ -558,22 +542,18 @@ describe("switchArtifactTab", () => {
 
   test("switches active tab button", () => {
     A.switchArtifactTab("img2");
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    if (tabContainer) {
-      const buttons = tabContainer.querySelectorAll(".artifact-tab-bar button");
-      expect(buttons[0].classList.contains("is-active")).toBe(false);
-      expect(buttons[1].classList.contains("is-active")).toBe(true);
-    }
+    const tabContainer = mustGet("artifact-image-tabs");
+    const buttons = mustFindAll(tabContainer, ".artifact-tab-bar button", 2);
+    expect(buttons[0].classList.contains("is-active")).toBe(false);
+    expect(buttons[1].classList.contains("is-active")).toBe(true);
   });
 
   test("switches active panel", () => {
     A.switchArtifactTab("img2");
-    const panels = document.getElementById("artifact-image-panels");
-    if (panels) {
-      const panelDivs = panels.querySelectorAll(".artifact-image-panel");
-      expect(panelDivs[0].classList.contains("is-active")).toBe(false);
-      expect(panelDivs[1].classList.contains("is-active")).toBe(true);
-    }
+    const panels = mustGet("artifact-image-panels");
+    const panelDivs = mustFindAll(panels, ".artifact-image-panel", 2);
+    expect(panelDivs[0].classList.contains("is-active")).toBe(false);
+    expect(panelDivs[1].classList.contains("is-active")).toBe(true);
   });
 
   test("activeArtifactTabImageId returns switched tab id", () => {

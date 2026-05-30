@@ -1,3 +1,12 @@
+"""Tests for forensic hashing and evidence verification helpers.
+
+Exercises single-file digest calculation, report re-verification summaries,
+and multi-file verification error reporting.
+
+Attributes:
+    (No module-level attributes.)
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,6 +21,8 @@ from app.hasher import (
     compute_hashes,
     compute_sha256,
     verify_hash,
+    verify_hashes_for_report,
+    verify_hashes_multi,
 )
 
 
@@ -19,6 +30,7 @@ class ChunkSizeTests(unittest.TestCase):
     """Verify the CHUNK_SIZE module-level constant."""
 
     def test_chunk_size_is_four_mib(self) -> None:
+        """Confirm hashing reads files in four-MiB chunks."""
         self.assertEqual(CHUNK_SIZE, 4 * 1024 * 1024)
 
 
@@ -26,6 +38,7 @@ class ComputeDigestsTests(unittest.TestCase):
     """Tests for the internal _compute_digests helper."""
 
     def test_single_hasher_returns_correct_digest(self) -> None:
+        """Compute the expected digest when one hasher is supplied."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "single.bin"
             content = b"hello forensics"
@@ -39,6 +52,7 @@ class ComputeDigestsTests(unittest.TestCase):
         self.assertEqual(digests["sha256"], hashlib.sha256(content).hexdigest())
 
     def test_multiple_hashers_all_computed(self) -> None:
+        """Compute all requested digest algorithms in one file pass."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "multi.bin"
             content = b"multi-hash test"
@@ -54,6 +68,7 @@ class ComputeDigestsTests(unittest.TestCase):
         self.assertEqual(total, len(content))
 
     def test_no_callback_does_not_raise(self) -> None:
+        """Allow digest computation without a progress callback."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "nocb.bin"
             test_file.write_bytes(b"data")
@@ -66,6 +81,7 @@ class ComputeDigestsTests(unittest.TestCase):
         self.assertIn("md5", digests)
 
     def test_callback_receives_zero_then_final(self) -> None:
+        """Report initial and final byte counts to the progress callback."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "cb.bin"
             test_file.write_bytes(b"abcdef")
@@ -81,6 +97,7 @@ class ComputeDigestsTests(unittest.TestCase):
         self.assertEqual(calls[-1], (6, 6))
 
     def test_accepts_string_path(self) -> None:
+        """Accept path strings as well as Path objects."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "strpath.bin"
             test_file.write_bytes(b"string path input")
@@ -93,6 +110,7 @@ class ComputeDigestsTests(unittest.TestCase):
         self.assertIsInstance(digests["sha256"], str)
 
     def test_empty_file_returns_empty_digest(self) -> None:
+        """Return the standard SHA-256 digest for an empty file."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "empty.bin"
             test_file.write_bytes(b"")
@@ -128,6 +146,7 @@ class ComputeDigestsTests(unittest.TestCase):
         self.assertGreaterEqual(len(calls), 3)
 
     def test_missing_file_raises(self) -> None:
+        """Raise a file-system error when the target file is absent."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             missing = Path(temp_dir) / "nope.bin"
             with self.assertRaises((FileNotFoundError, OSError)):
@@ -138,12 +157,14 @@ class ComputeHashesTests(unittest.TestCase):
     """Tests for the public compute_hashes function."""
 
     def test_compute_hashes_missing_file_raises_file_not_found_error(self) -> None:
+        """Raise FileNotFoundError for missing evidence paths."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             missing_path = Path(temp_dir) / "missing.bin"
             with self.assertRaises(FileNotFoundError):
                 compute_hashes(missing_path)
 
     def test_compute_hashes_empty_file_returns_expected_digests(self) -> None:
+        """Return expected MD5, SHA-256, and size for an empty file."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             empty_file = Path(temp_dir) / "empty.bin"
             empty_file.write_bytes(b"")
@@ -159,12 +180,14 @@ class ComputeHashesTests(unittest.TestCase):
         self.assertEqual(result["size_bytes"], 0)
 
     def test_compute_hashes_permission_denied_raises_permission_error(self) -> None:
+        """Surface PermissionError when the file cannot be read."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             protected_file = Path(temp_dir) / "protected.bin"
             protected_file.write_bytes(b"top-secret")
             original_open = Path.open
 
             def deny_read(self: Path, mode: str = "r", *args: object, **kwargs: object) -> object:
+                """Reject reads for the protected test path."""
                 if self == protected_file and "r" in mode:
                     raise PermissionError(f"Permission denied: {self}")
                 return original_open(self, mode, *args, **kwargs)
@@ -174,6 +197,7 @@ class ComputeHashesTests(unittest.TestCase):
                     compute_hashes(protected_file)
 
     def test_compute_hashes_known_content_produces_correct_digests(self) -> None:
+        """Return deterministic digests for known byte content."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "known.bin"
             test_file.write_bytes(b"AIFT forensic test data")
@@ -187,6 +211,7 @@ class ComputeHashesTests(unittest.TestCase):
         self.assertEqual(result["size_bytes"], len(b"AIFT forensic test data"))
 
     def test_progress_callback_is_called_with_bytes_and_total(self) -> None:
+        """Invoke the progress callback with bytes read and total bytes."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "progress.bin"
             content = b"x" * 1024
@@ -195,6 +220,7 @@ class ComputeHashesTests(unittest.TestCase):
             calls: list[tuple[int, int]] = []
 
             def on_progress(bytes_read: int, total_bytes: int) -> None:
+                """Record a hashing progress callback."""
                 calls.append((bytes_read, total_bytes))
 
             compute_hashes(test_file, progress_callback=on_progress)
@@ -205,6 +231,7 @@ class ComputeHashesTests(unittest.TestCase):
         self.assertEqual(calls[-1][1], 1024)
 
     def test_compute_hashes_with_string_path(self) -> None:
+        """Hash evidence when the path is supplied as a string."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "strpath.bin"
             content = b"string path evidence"
@@ -217,6 +244,7 @@ class ComputeHashesTests(unittest.TestCase):
         self.assertEqual(result["size_bytes"], len(content))
 
     def test_compute_hashes_returns_typed_dict_keys(self) -> None:
+        """Return exactly the public hash result keys."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "keys.bin"
             test_file.write_bytes(b"check keys")
@@ -243,6 +271,7 @@ class ComputeSha256Tests(unittest.TestCase):
     """Tests for the compute_sha256 convenience function."""
 
     def test_returns_correct_sha256(self) -> None:
+        """Return the expected SHA-256 digest for known content."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "sha.bin"
             content = b"sha256 only"
@@ -253,6 +282,7 @@ class ComputeSha256Tests(unittest.TestCase):
         self.assertEqual(digest, hashlib.sha256(content).hexdigest())
 
     def test_returns_string(self) -> None:
+        """Return SHA-256 as a 64-character string."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "sha_type.bin"
             test_file.write_bytes(b"type check")
@@ -263,6 +293,7 @@ class ComputeSha256Tests(unittest.TestCase):
         self.assertEqual(len(digest), 64)
 
     def test_empty_file(self) -> None:
+        """Return the standard SHA-256 digest for an empty file."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "empty.bin"
             test_file.write_bytes(b"")
@@ -275,6 +306,7 @@ class ComputeSha256Tests(unittest.TestCase):
         )
 
     def test_accepts_string_path(self) -> None:
+        """Accept a string path for SHA-256-only hashing."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "str.bin"
             content = b"string input"
@@ -285,6 +317,7 @@ class ComputeSha256Tests(unittest.TestCase):
         self.assertEqual(digest, hashlib.sha256(content).hexdigest())
 
     def test_missing_file_raises(self) -> None:
+        """Raise FileNotFoundError when SHA-256 target is missing."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             missing = Path(temp_dir) / "gone.bin"
             with self.assertRaises(FileNotFoundError):
@@ -295,6 +328,7 @@ class VerifyHashTests(unittest.TestCase):
     """Tests for the verify_hash function."""
 
     def test_verify_hash_passes_with_correct_hash(self) -> None:
+        """Return true when the computed digest matches the expected hash."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"evidence data")
@@ -303,6 +337,7 @@ class VerifyHashTests(unittest.TestCase):
             self.assertTrue(verify_hash(test_file, result["sha256"]))
 
     def test_verify_hash_fails_with_wrong_hash(self) -> None:
+        """Return false when the expected hash does not match."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"evidence data")
@@ -310,6 +345,7 @@ class VerifyHashTests(unittest.TestCase):
             self.assertFalse(verify_hash(test_file, "0" * 64))
 
     def test_verify_hash_returns_computed_when_requested(self) -> None:
+        """Return the computed digest with the match flag when requested."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"evidence data")
@@ -321,6 +357,7 @@ class VerifyHashTests(unittest.TestCase):
         self.assertEqual(computed, expected)
 
     def test_verify_hash_return_computed_on_mismatch(self) -> None:
+        """Return the computed digest even when verification fails."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"evidence data")
@@ -332,6 +369,7 @@ class VerifyHashTests(unittest.TestCase):
         self.assertEqual(len(computed), 64)
 
     def test_verify_hash_is_case_insensitive(self) -> None:
+        """Treat uppercase and lowercase expected digests as equivalent."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"case test")
@@ -360,6 +398,7 @@ class VerifyHashTests(unittest.TestCase):
             self.assertTrue(verify_hash(test_file, padded))
 
     def test_verify_hash_default_return_is_bool(self) -> None:
+        """Return only a boolean when computed digests are not requested."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"bool check")
@@ -370,6 +409,7 @@ class VerifyHashTests(unittest.TestCase):
         self.assertIsInstance(result, bool)
 
     def test_verify_hash_return_computed_is_tuple(self) -> None:
+        """Return a two-item tuple when computed digest output is requested."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             test_file = Path(temp_dir) / "verify.bin"
             test_file.write_bytes(b"tuple check")
@@ -381,10 +421,73 @@ class VerifyHashTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
 
     def test_verify_hash_missing_file_raises(self) -> None:
+        """Raise FileNotFoundError when the verification target is absent."""
         with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
             missing = Path(temp_dir) / "gone.bin"
             with self.assertRaises(FileNotFoundError):
                 verify_hash(missing, "a" * 64)
+
+
+class MultiFileVerificationTests(unittest.TestCase):
+    """Tests for multi-file verification details and report summaries."""
+
+    def test_verify_hashes_multi_reports_missing_file_without_raising(self) -> None:
+        """Missing entries produce a FILE_MISSING detail and fail the batch."""
+        with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
+            present = Path(temp_dir) / "present.E01"
+            present.write_bytes(b"present evidence")
+            missing = Path(temp_dir) / "missing.E02"
+            present_hash = compute_hashes(present)["sha256"]
+
+            all_passed, details = verify_hashes_multi([
+                {"path": str(present), "sha256": present_hash},
+                {"path": str(missing), "sha256": "f" * 64},
+            ])
+
+        self.assertFalse(all_passed)
+        self.assertEqual(details[0]["match"], True)
+        self.assertEqual(details[1]["match"], False)
+        self.assertEqual(details[1]["computed"], "FILE_MISSING")
+
+    def test_report_verification_summarizes_multi_file_mismatch(self) -> None:
+        """Report verification records failing file details for split evidence."""
+        with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
+            segment_a = Path(temp_dir) / "split.E01"
+            segment_b = Path(temp_dir) / "split.E02"
+            segment_a.write_bytes(b"segment-a")
+            segment_b.write_bytes(b"segment-b")
+            hash_a = compute_hashes(segment_a)["sha256"]
+            hash_b = compute_hashes(segment_b)["sha256"]
+
+            hashes: dict[str, object] = {
+                "filename": "split.E01",
+                "sha256": hash_a,
+                "_source_path": str(segment_a),
+            }
+
+            def fail_verification(
+                path: str | Path,
+                expected: str,
+                return_computed: bool = False,
+            ) -> tuple[bool, str]:
+                """Return a deterministic failed verification result."""
+                del path, expected, return_computed
+                return False, "0" * 64
+
+            summary = verify_hashes_for_report(
+                hashes,
+                [
+                    {"path": str(segment_a), "filename": "split.E01", "sha256": hash_a},
+                    {"path": str(segment_b), "filename": "split.E02", "sha256": hash_b},
+                ],
+                verifier=fail_verification,
+            )
+
+        self.assertEqual(summary["status"], "FAIL")
+        self.assertFalse(summary["match"])
+        self.assertEqual(hashes["verification_status"], "FAIL")
+        self.assertEqual(len(summary["verified_files"]), 2)
+        self.assertTrue(all(item["status"] == "FAIL" for item in summary["verified_files"]))
 
 
 if __name__ == "__main__":

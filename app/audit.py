@@ -65,6 +65,7 @@ ACTION_TYPES = frozenset(
     {
         "case_created",
         "evidence_intake",
+        "evidence_intake_file_hashed",
         "image_opened",
         "parsing_started",
         "parsing_completed",

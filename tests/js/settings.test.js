@@ -23,76 +23,78 @@ beforeEach(() => {
   A = setupAift();
 });
 
+function jsonResponse(payload, status = 200) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => (String(name || "").toLowerCase() === "content-type" ? "application/json" : "") },
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+  });
+}
+
+function flushPromises() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // ── openSettings / closeSettings ────────────────────────────────────────────
 
 describe("openSettings and closeSettings", () => {
   test("openSettings makes panel visible", () => {
-    if (!A.el.settingsPanel || !A.el.settingsBtn) return;
-    A.el.settingsPanel.hidden = true;
+    const panel = mustGet("settings-panel");
+    panel.hidden = true;
     A.openSettings();
-    expect(A.el.settingsPanel.hidden).toBe(false);
+    expect(panel.hidden).toBe(false);
   });
 
   test("openSettings sets aria-expanded to true", () => {
-    if (!A.el.settingsBtn) return;
+    const button = mustGet("settings-button");
     A.openSettings();
-    expect(A.el.settingsBtn.getAttribute("aria-expanded")).toBe("true");
+    expect(button.getAttribute("aria-expanded")).toBe("true");
   });
 
   test("openSettings shows backdrop", () => {
     A.openSettings();
-    const backdrop = document.getElementById("settings-backdrop");
-    if (backdrop) {
-      expect(backdrop.hidden).toBe(false);
-    }
+    expect(mustGet("settings-backdrop").hidden).toBe(false);
   });
 
   test("openSettings sets background inert", () => {
     A.openSettings();
-    const main = document.querySelector("main#wizard");
-    if (main) {
-      expect(main.hasAttribute("inert")).toBe(true);
-    }
+    expect(mustQuery(document, "main#wizard").hasAttribute("inert")).toBe(true);
   });
 });
 
 describe("closeSettings", () => {
   test("hides settings panel", () => {
-    if (!A.el.settingsPanel || !A.el.settingsBtn) return;
+    const panel = mustGet("settings-panel");
     A.openSettings();
     // Simulate close - need to manually call since closeSettings is internal
     // but we can trigger via Escape key
     const event = new KeyboardEvent("keydown", { key: "Escape" });
     document.dispatchEvent(event);
-    expect(A.el.settingsPanel.hidden).toBe(true);
+    expect(panel.hidden).toBe(true);
   });
 
   test("hides backdrop on Escape", () => {
     A.openSettings();
     const event = new KeyboardEvent("keydown", { key: "Escape" });
     document.dispatchEvent(event);
-    const backdrop = document.getElementById("settings-backdrop");
-    if (backdrop) {
-      expect(backdrop.hidden).toBe(true);
-    }
+    expect(mustGet("settings-backdrop").hidden).toBe(true);
   });
 
   test("removes background inert on close", () => {
     A.openSettings();
     const event = new KeyboardEvent("keydown", { key: "Escape" });
     document.dispatchEvent(event);
-    const main = document.querySelector("main#wizard");
-    if (main) {
-      expect(main.hasAttribute("inert")).toBe(false);
-    }
+    expect(mustQuery(document, "main#wizard").hasAttribute("inert")).toBe(false);
   });
 
   test("sets aria-expanded to false on close", () => {
-    if (!A.el.settingsBtn) return;
+    const button = mustGet("settings-button");
     A.openSettings();
     const event = new KeyboardEvent("keydown", { key: "Escape" });
     document.dispatchEvent(event);
-    expect(A.el.settingsBtn.getAttribute("aria-expanded")).toBe("false");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
   });
 });
 
@@ -104,58 +106,31 @@ describe("settings tab switching", () => {
   });
 
   test("switching tabs updates settingsTab state", () => {
-    if (!A.el.settingsTabButtons.length) return;
-    const advancedBtn = A.el.settingsTabButtons.find(
-      (b) => b.dataset.settingsTab === "advanced"
-    );
-    if (advancedBtn) {
-      advancedBtn.click();
-      expect(A.st.settingsTab).toBe("advanced");
-    }
+    const advancedBtn = mustQuery(document, '[data-settings-tab="advanced"]');
+    advancedBtn.click();
+    expect(A.st.settingsTab).toBe("advanced");
   });
 
   test("active tab button has is-active class", () => {
-    if (!A.el.settingsTabButtons.length) return;
-    const basicBtn = A.el.settingsTabButtons.find(
-      (b) => b.dataset.settingsTab === "basic"
-    );
-    if (basicBtn) {
-      expect(basicBtn.classList.contains("is-active")).toBe(true);
-    }
+    const basicBtn = mustQuery(document, '[data-settings-tab="basic"]');
+    expect(basicBtn.classList.contains("is-active")).toBe(true);
   });
 
   test("active tab button has aria-selected true", () => {
-    if (!A.el.settingsTabButtons.length) return;
-    const basicBtn = A.el.settingsTabButtons.find(
-      (b) => b.dataset.settingsTab === "basic"
-    );
-    if (basicBtn) {
-      expect(basicBtn.getAttribute("aria-selected")).toBe("true");
-    }
+    const basicBtn = mustQuery(document, '[data-settings-tab="basic"]');
+    expect(basicBtn.getAttribute("aria-selected")).toBe("true");
   });
 
   test("inactive tab button has aria-selected false", () => {
-    if (!A.el.settingsTabButtons.length) return;
-    const advancedBtn = A.el.settingsTabButtons.find(
-      (b) => b.dataset.settingsTab === "advanced"
-    );
-    if (advancedBtn) {
-      expect(advancedBtn.getAttribute("aria-selected")).toBe("false");
-    }
+    const advancedBtn = mustQuery(document, '[data-settings-tab="advanced"]');
+    expect(advancedBtn.getAttribute("aria-selected")).toBe("false");
   });
 
   test("only active tab panel is visible", () => {
-    if (!A.el.settingsTabPanels.length) return;
-    const basicPanel = A.el.settingsTabPanels.find(
-      (p) => p.dataset.settingsPanel === "basic"
-    );
-    const advancedPanel = A.el.settingsTabPanels.find(
-      (p) => p.dataset.settingsPanel === "advanced"
-    );
-    if (basicPanel && advancedPanel) {
-      expect(basicPanel.hidden).toBe(false);
-      expect(advancedPanel.hidden).toBe(true);
-    }
+    const basicPanel = mustQuery(document, '[data-settings-panel="basic"]');
+    const advancedPanel = mustQuery(document, '[data-settings-panel="advanced"]');
+    expect(basicPanel.hidden).toBe(false);
+    expect(advancedPanel.hidden).toBe(true);
   });
 });
 
@@ -163,28 +138,31 @@ describe("settings tab switching", () => {
 
 describe("updateCsvOutputHelp", () => {
   test("shows default path when no custom dir configured", () => {
-    if (!A.el.setCsvOutputDir || !A.el.setCsvOutputHelp) return;
-    A.el.setCsvOutputDir.value = "";
+    const input = mustGet("setting-csv-output-dir");
+    const help = mustGet("setting-csv-output-help");
+    input.value = "";
     A.updateCsvOutputHelp();
-    expect(A.el.setCsvOutputHelp.textContent).toContain("Currently using:");
-    expect(A.el.setCsvOutputHelp.textContent).toContain("parsed");
+    expect(help.textContent).toContain("Currently using:");
+    expect(help.textContent).toContain("parsed");
   });
 
   test("shows configured path when custom dir is set", () => {
-    if (!A.el.setCsvOutputDir || !A.el.setCsvOutputHelp) return;
+    const input = mustGet("setting-csv-output-dir");
+    const help = mustGet("setting-csv-output-help");
     A.setCaseId("test-case-123");
-    A.el.setCsvOutputDir.value = "/custom/output";
+    input.value = "/custom/output";
     A.updateCsvOutputHelp();
-    expect(A.el.setCsvOutputHelp.textContent).toContain("/custom/output");
-    expect(A.el.setCsvOutputHelp.textContent).toContain("test-case-123");
+    expect(help.textContent).toContain("/custom/output");
+    expect(help.textContent).toContain("test-case-123");
   });
 
   test("uses <case_id> placeholder when no case is active", () => {
-    if (!A.el.setCsvOutputDir || !A.el.setCsvOutputHelp) return;
+    const input = mustGet("setting-csv-output-dir");
+    const help = mustGet("setting-csv-output-help");
     A.setCaseId("");
-    A.el.setCsvOutputDir.value = "/custom/output";
+    input.value = "/custom/output";
     A.updateCsvOutputHelp();
-    expect(A.el.setCsvOutputHelp.textContent).toContain("<case_id>");
+    expect(help.textContent).toContain("<case_id>");
   });
 });
 
@@ -192,68 +170,69 @@ describe("updateCsvOutputHelp", () => {
 
 describe("provider field visibility", () => {
   test("hides API key row when local provider is selected", () => {
-    if (!A.el.setProvider || !A.el.setApiRow) return;
-    A.el.setProvider.value = "local";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setApiRow.hidden).toBe(true);
+    const provider = mustGet("setting-provider");
+    provider.value = "local";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustGet("setting-api-key").closest(".form-row").hidden).toBe(true);
   });
 
   test("shows API key row for anthropic provider", () => {
-    if (!A.el.setProvider || !A.el.setApiRow) return;
-    A.el.setProvider.value = "anthropic";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setApiRow.hidden).toBe(false);
+    const provider = mustGet("setting-provider");
+    provider.value = "anthropic";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustGet("setting-api-key").closest(".form-row").hidden).toBe(false);
   });
 
   test("shows endpoint row for local provider", () => {
-    if (!A.el.setProvider || !A.el.setLocalRow) return;
-    A.el.setProvider.value = "local";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setLocalRow.hidden).toBe(false);
+    const provider = mustGet("setting-provider");
+    provider.value = "local";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustGet("setting-local-url").closest(".form-row").hidden).toBe(false);
   });
 
   test("shows endpoint row for kimi provider", () => {
-    if (!A.el.setProvider || !A.el.setLocalRow) return;
-    A.el.setProvider.value = "kimi";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setLocalRow.hidden).toBe(false);
+    const provider = mustGet("setting-provider");
+    provider.value = "kimi";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustGet("setting-local-url").closest(".form-row").hidden).toBe(false);
   });
 
   test("hides endpoint row for openai provider", () => {
-    if (!A.el.setProvider || !A.el.setLocalRow) return;
-    A.el.setProvider.value = "openai";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setLocalRow.hidden).toBe(true);
+    const provider = mustGet("setting-provider");
+    provider.value = "openai";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustGet("setting-local-url").closest(".form-row").hidden).toBe(true);
   });
 
   test("updates API key label for anthropic", () => {
-    if (!A.el.setProvider || !A.el.setApiLabel) return;
-    A.el.setProvider.value = "anthropic";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setApiLabel.textContent).toContain("Anthropic");
+    const provider = mustGet("setting-provider");
+    provider.value = "anthropic";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustQuery(document, 'label[for="setting-api-key"]').textContent).toContain("Anthropic");
   });
 
   test("updates API key label for kimi", () => {
-    if (!A.el.setProvider || !A.el.setApiLabel) return;
-    A.el.setProvider.value = "kimi";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setApiLabel.textContent).toContain("Moonshot");
+    const provider = mustGet("setting-provider");
+    provider.value = "kimi";
+    provider.dispatchEvent(new Event("change"));
+    expect(mustQuery(document, 'label[for="setting-api-key"]').textContent).toContain("Moonshot");
   });
 
   test("updates model placeholder for each provider", () => {
-    if (!A.el.setProvider || !A.el.setModel) return;
+    const provider = mustGet("setting-provider");
+    const model = mustGet("setting-model");
 
-    A.el.setProvider.value = "anthropic";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setModel.placeholder).toContain("claude");
+    provider.value = "anthropic";
+    provider.dispatchEvent(new Event("change"));
+    expect(model.placeholder).toContain("claude");
 
-    A.el.setProvider.value = "openai";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setModel.placeholder).toContain("gpt");
+    provider.value = "openai";
+    provider.dispatchEvent(new Event("change"));
+    expect(model.placeholder).toContain("gpt");
 
-    A.el.setProvider.value = "local";
-    A.el.setProvider.dispatchEvent(new Event("change"));
-    expect(A.el.setModel.placeholder).toContain("llama");
+    provider.value = "local";
+    provider.dispatchEvent(new Event("change"));
+    expect(model.placeholder).toContain("llama");
   });
 });
 
@@ -261,14 +240,69 @@ describe("provider field visibility", () => {
 
 describe("test connection button", () => {
   test("test button is created during setup", () => {
-    const btn = document.getElementById("test-connection");
-    expect(btn).not.toBeNull();
+    const btn = mustGet("test-connection");
     expect(btn.textContent).toBe("Test Connection");
   });
 
   test("test button is a regular button (not submit)", () => {
-    const btn = document.getElementById("test-connection");
-    expect(btn.type).toBe("button");
+    expect(mustGet("test-connection").type).toBe("button");
+  });
+
+  test("form submit saves provider and analysis settings", async () => {
+    const savedPayload = {
+      ai: { provider: "openai", openai: { model: "gpt-test", api_key: "sk-test" } },
+      analysis: { ai_max_tokens: 64000, artifact_csv_row_limit: 250 },
+      evidence: { csv_output_dir: "E:\\cases\\csv", compute_hashes: true },
+      server: { port: 5050 },
+    };
+    global.fetch = jest.fn(() => jsonResponse(savedPayload));
+
+    mustGet("setting-provider").value = "openai";
+    mustGet("setting-api-key").value = "sk-test";
+    mustGet("setting-model").value = "gpt-test";
+    mustGet("setting-ai-max-tokens").value = "64000";
+    mustGet("setting-artifact-csv-row-limit").value = "250";
+    mustGet("setting-csv-output-dir").value = "E:\\cases\\csv";
+    mustGet("settings-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    expect(global.fetch).toHaveBeenCalledWith("/api/settings", expect.objectContaining({ method: "POST" }));
+    const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(body.ai.provider).toBe("openai");
+    expect(body.ai.openai).toMatchObject({ api_key: "sk-test", model: "gpt-test" });
+    expect(body.analysis).toMatchObject({ ai_max_tokens: 64000, artifact_csv_row_limit: 250 });
+    expect(body.evidence.csv_output_dir).toBe("E:\\cases\\csv");
+    expect(A.el.settingsMsg.textContent).toContain("Settings saved");
+  });
+
+  test("connection test saves settings before checking provider", async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/settings") {
+        return jsonResponse({
+          ai: { provider: "local", local: { base_url: "http://127.0.0.1:11434/v1", model: "llama-test" } },
+          analysis: {},
+          evidence: {},
+          server: {},
+        });
+      }
+      if (url === "/api/settings/test-connection") {
+        return jsonResponse({ success: true, model_info: { provider: "local", model: "llama-test" } });
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    const button = mustGet("test-connection");
+    button.click();
+    await flushPromises();
+    await flushPromises();
+
+    expect(global.fetch.mock.calls.map((call) => call[0])).toEqual([
+      "/api/settings",
+      "/api/settings/test-connection",
+    ]);
+    expect(A.el.settingsMsg.textContent).toContain("Connection test succeeded: Local (llama-test)");
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBeNull();
   });
 });
 
@@ -284,11 +318,8 @@ describe("advanced CSV row limit setting", () => {
 
 describe("help tooltips", () => {
   test("scan directory help appears on keyboard focus", () => {
-    const help = document.querySelector(".evidence-scan-help");
-    const tip = document.getElementById("setting-tooltip");
-
-    expect(help).not.toBeNull();
-    expect(tip).not.toBeNull();
+    const help = mustQuery(document, ".evidence-scan-help");
+    const tip = mustGet("setting-tooltip");
 
     help.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     expect(tip.classList.contains("is-visible")).toBe(true);
@@ -303,12 +334,10 @@ describe("help tooltips", () => {
 
 describe("settings panel initial state", () => {
   test("settings panel is hidden on load", () => {
-    if (A.el.settingsPanel) {
-      expect(A.el.settingsPanel.hidden).toBe(true);
-    }
+    expect(mustGet("settings-panel").hidden).toBe(true);
   });
 
   test("settings button exists", () => {
-    expect(A.el.settingsBtn).not.toBeNull();
+    expect(mustGet("settings-button")).toBe(A.el.settingsBtn);
   });
 });

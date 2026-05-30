@@ -81,56 +81,47 @@ describe("resetChatState", () => {
   });
 
   test("resets chat input to enabled and empty", () => {
-    if (A.el.chatInput) {
-      A.el.chatInput.disabled = true;
-      A.el.chatInput.value = "old message";
-    }
+    const input = mustGet("chat-input");
+    input.disabled = true;
+    input.value = "old message";
 
     A.resetChatState();
 
-    if (A.el.chatInput) {
-      expect(A.el.chatInput.disabled).toBe(false);
-      expect(A.el.chatInput.value).toBe("");
-    }
+    expect(input.disabled).toBe(false);
+    expect(input.value).toBe("");
   });
 
   test("re-enables chat send button", () => {
-    if (A.el.chatSend) {
-      A.el.chatSend.disabled = true;
-      A.resetChatState();
-      expect(A.el.chatSend.disabled).toBe(false);
-    }
+    const send = mustGet("chat-send");
+    send.disabled = true;
+    A.resetChatState();
+    expect(send.disabled).toBe(false);
   });
 
   test("shows chat panel after reset", () => {
-    if (A.el.chatPanel) {
-      A.el.chatPanel.hidden = true;
-      A.resetChatState();
-      // resetChatState opens the chat panel (hidden = false).
-      expect(A.el.chatPanel.hidden).toBe(false);
-    }
+    const panel = mustGet("chat-panel");
+    panel.hidden = true;
+    A.resetChatState();
+    // resetChatState opens the chat panel (hidden = false).
+    expect(panel.hidden).toBe(false);
   });
 
   test("resets chat toggle to open state", () => {
-    if (A.el.chatToggle) {
-      A.el.chatToggle.textContent = "Show Chat";
-      A.el.chatToggle.setAttribute("aria-expanded", "false");
+    const toggle = mustGet("chat-toggle");
+    toggle.textContent = "Show Chat";
+    toggle.setAttribute("aria-expanded", "false");
 
-      A.resetChatState();
+    A.resetChatState();
 
-      // resetChatState sets chat panel to open/visible.
-      expect(A.el.chatToggle.textContent).toBe("Hide Chat");
-      expect(A.el.chatToggle.getAttribute("aria-expanded")).toBe("true");
-    }
+    // resetChatState sets chat panel to open/visible.
+    expect(toggle.textContent).toBe("Hide Chat");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
   });
 
   test("renders empty state in chat thread", () => {
     A.resetChatState();
-    if (A.el.chatThread) {
-      const empty = A.el.chatThread.querySelector("#chat-empty-state");
-      expect(empty).not.toBeNull();
-      expect(empty.textContent).toContain("Chat history will appear here");
-    }
+    const empty = mustQuery(mustGet("chat-thread"), "#chat-empty-state");
+    expect(empty.textContent).toContain("Chat history will appear here");
   });
 });
 
@@ -138,31 +129,34 @@ describe("resetChatState", () => {
 
 describe("toggleChat", () => {
   test("opens chat panel when forced open", () => {
-    if (!A.el.chatPanel || !A.el.chatToggle) return;
-    A.el.chatPanel.hidden = true;
+    const panel = mustGet("chat-panel");
+    const toggle = mustGet("chat-toggle");
+    panel.hidden = true;
     A.toggleChat(true);
-    expect(A.el.chatPanel.hidden).toBe(false);
-    expect(A.el.chatToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(A.el.chatToggle.textContent).toBe("Hide Chat");
+    expect(panel.hidden).toBe(false);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.textContent).toBe("Hide Chat");
   });
 
   test("closes chat panel when forced closed", () => {
-    if (!A.el.chatPanel || !A.el.chatToggle) return;
-    A.el.chatPanel.hidden = false;
+    const panel = mustGet("chat-panel");
+    const toggle = mustGet("chat-toggle");
+    panel.hidden = false;
     A.toggleChat(false);
-    expect(A.el.chatPanel.hidden).toBe(true);
-    expect(A.el.chatToggle.getAttribute("aria-expanded")).toBe("false");
-    expect(A.el.chatToggle.textContent).toBe("Show Chat");
+    expect(panel.hidden).toBe(true);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.textContent).toBe("Show Chat");
   });
 
   test("toggles chat panel when no force argument", () => {
-    if (!A.el.chatPanel || !A.el.chatToggle) return;
-    A.el.chatPanel.hidden = true;
+    const panel = mustGet("chat-panel");
+    mustGet("chat-toggle");
+    panel.hidden = true;
     A.toggleChat();
-    expect(A.el.chatPanel.hidden).toBe(false);
+    expect(panel.hidden).toBe(false);
 
     A.toggleChat();
-    expect(A.el.chatPanel.hidden).toBe(true);
+    expect(panel.hidden).toBe(true);
   });
 
   test("does nothing when elements are missing", () => {
@@ -199,17 +193,13 @@ describe("closeChatSse", () => {
 
 describe("chat panel initial state", () => {
   test("chat panel is visible on initial load", () => {
-    if (A.el.chatPanel) {
-      // The HTML template renders the chat panel open by default.
-      expect(A.el.chatPanel.hidden).toBe(false);
-    }
+    // The HTML template renders the chat panel open by default.
+    expect(mustGet("chat-panel").hidden).toBe(false);
   });
 
   test("chat toggle shows 'Hide Chat' initially", () => {
-    if (A.el.chatToggle) {
-      // The HTML template renders with aria-expanded="true" and "Hide Chat".
-      expect(A.el.chatToggle.textContent).toBe("Hide Chat");
-    }
+    // The HTML template renders with aria-expanded="true" and "Hide Chat".
+    expect(mustGet("chat-toggle").textContent).toBe("Hide Chat");
   });
 
   test("chat is not running initially", () => {
@@ -217,9 +207,7 @@ describe("chat panel initial state", () => {
   });
 
   test("chat input is enabled initially", () => {
-    if (A.el.chatInput) {
-      expect(A.el.chatInput.disabled).toBe(false);
-    }
+    expect(mustGet("chat-input").disabled).toBe(false);
   });
 });
 

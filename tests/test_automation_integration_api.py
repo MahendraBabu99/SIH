@@ -21,6 +21,141 @@ from app.automation.engine import AutomationResult
 from tests.conftest import ImmediateThread
 
 
+class _RouteLevelParser:
+    """Small Dissect substitute for route-level automation tests.
+
+    Attributes:
+        case_dir: Case directory path.
+        parsed_dir: Directory where CSV output is written.
+        os_type: Operating system family reported to automation.
+    """
+
+    def __init__(
+        self,
+        evidence_path: str | Path,
+        case_dir: str | Path,
+        audit_logger: object,
+        parsed_dir: str | Path,
+        **_kwargs: object,
+    ) -> None:
+        """Initialise parser state used by the fake implementation.
+
+        Args:
+            evidence_path: Evidence path provided by automation.
+            case_dir: Case directory path.
+            audit_logger: Audit logger provided by automation.
+            parsed_dir: CSV output directory.
+            **_kwargs: Ignored compatibility keyword arguments.
+        """
+        del evidence_path, audit_logger
+        self.case_dir = Path(case_dir)
+        self.parsed_dir = Path(parsed_dir)
+        self.parsed_dir.mkdir(parents=True, exist_ok=True)
+        self.os_type = "windows"
+
+    def __enter__(self) -> "_RouteLevelParser":
+        """Enter the parser context manager."""
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        """Exit the parser context manager without suppressing errors."""
+        return False
+
+    def get_image_metadata(self) -> dict[str, str]:
+        """Return deterministic image metadata for report assertions."""
+        return {
+            "hostname": "route-host",
+            "os_version": "Windows 11",
+            "domain": "LAB",
+            "ips": "10.10.10.5",
+            "timezone": "UTC",
+            "install_date": "2026-01-02",
+        }
+
+    def get_available_artifacts(self) -> list[dict[str, object]]:
+        """Return one available artifact selected by the test profile."""
+        return [{"key": "runkeys", "name": "Run/RunOnce Keys", "available": True}]
+
+    def parse_artifact(
+        self,
+        artifact_key: str,
+        progress_callback: object | None = None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        """Write a CSV and return a parser success result.
+
+        Args:
+            artifact_key: Artifact key to parse.
+            progress_callback: Optional callback for record-count progress.
+            **_kwargs: Ignored compatibility keyword arguments.
+
+        Returns:
+            Parser result dictionary.
+        """
+        if callable(progress_callback):
+            progress_callback({"artifact_key": artifact_key, "record_count": 1})
+        csv_path = self.parsed_dir / f"{artifact_key}.csv"
+        csv_path.write_text(
+            "timestamp,path,value\n"
+            "2026-01-02T03:04:05Z,HKCU\\Software\\Run,suspicious.exe\n",
+            encoding="utf-8",
+        )
+        return {
+            "success": True,
+            "csv_path": str(csv_path),
+            "record_count": 1,
+            "duration_seconds": 0.01,
+            "error": None,
+        }
+
+
+class _RouteLevelAnalyzer:
+    """Small AI substitute for route-level automation tests."""
+
+    def __init__(self, **_kwargs: object) -> None:
+        """Accept automation analyzer constructor kwargs.
+
+        Args:
+            **_kwargs: Ignored analyzer constructor keyword arguments.
+        """
+
+    def run_full_analysis(
+        self,
+        artifact_keys: list[str],
+        investigation_context: str,
+        metadata: dict[str, object] | None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        """Return deterministic analysis with report-visible content.
+
+        Args:
+            artifact_keys: Artifact keys selected for analysis.
+            investigation_context: Analyst prompt.
+            metadata: Image metadata.
+            **_kwargs: Ignored compatibility keyword arguments.
+
+        Returns:
+            Analysis result dictionary.
+        """
+        del investigation_context, metadata
+        return {
+            "per_artifact": [
+                {
+                    "artifact_key": key,
+                    "artifact_name": "Run/RunOnce Keys",
+                    "analysis": (
+                        "Persistence entry references suspicious.exe. "
+                        "Confidence: HIGH"
+                    ),
+                    "key_data_points": ["HKCU\\Software\\Run"],
+                }
+                for key in artifact_keys
+            ],
+            "summary": "Suspicious Run key persistence was identified.",
+            "model_info": {"provider": "fake", "model": "route-model"},
+        }
+
+
 # ---------------------------------------------------------------------------
 # API integration tests
 # ---------------------------------------------------------------------------
@@ -192,6 +327,109 @@ class TestApiToReportIntegration(unittest.TestCase):
         list_resp = self.client.get("/api/automation/runs")
         body = list_resp.get_json()
         self.assertGreaterEqual(len(body["runs"]), 1)
+
+    @patch("app.automation.engine.ForensicAnalyzer", _RouteLevelAnalyzer)
+    @patch("app.automation.engine.ForensicParser", _RouteLevelParser)
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_api_run_uses_real_case_report_json_and_audit_pipeline(self) -> None:
+        """Route-level automation writes real case, report, JSON, and audit files."""
+        workspace = Path(self.temp_dir.name) / "real-route-pipeline"
+        workspace.mkdir()
+        config_path = workspace / "config.yaml"
+        config_path.write_text(
+            "ai:\n"
+            "  provider: local\n"
+            "  local:\n"
+            "    api_key: not-needed\n"
+            "    model: route-model\n"
+            "analysis:\n"
+            "  ai_max_tokens: 4096\n",
+            encoding="utf-8",
+        )
+        profile_dir = workspace / "profile"
+        profile_dir.mkdir()
+        (profile_dir / "recommended.json").write_text(
+            json.dumps({
+                "name": "recommended",
+                "artifact_options": [
+                    {"artifact_key": "runkeys", "parse": True, "analyze": True},
+                ],
+            }),
+            encoding="utf-8",
+        )
+        evidence_path = workspace / "evidence.E01"
+        evidence_path.write_bytes(b"route-level evidence bytes")
+        output_dir = workspace / "reports-out"
+
+        with patch("app.automation.engine._PROJECT_ROOT", workspace):
+            start_resp = self._post_json(
+                "/api/automation/run",
+                {
+                    "evidence_path": str(evidence_path),
+                    "prompt": "Investigate Run key persistence",
+                    "config_path": str(config_path),
+                    "output_dir": str(output_dir),
+                    "case_name": "Route Pipeline Case",
+                },
+            )
+
+        self.assertEqual(start_resp.status_code, 202)
+        run_id = start_resp.get_json()["run_id"]
+        status_resp = self.client.get(f"/api/automation/run/{run_id}/status")
+        status = status_resp.get_json()
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["phase"], "done")
+        self.assertEqual(status["percentage"], 100.0)
+        self.assertEqual(status["result"]["evidence_files_processed"], 1)
+
+        case_id = status["case_id"]
+        case_dir = workspace / "cases" / case_id
+        self.assertTrue(case_dir.is_dir())
+        image_dirs = list((case_dir / "images").iterdir())
+        self.assertEqual(len(image_dirs), 1)
+        self.assertTrue((image_dirs[0] / "parsed" / "runkeys.csv").is_file())
+
+        html_path = Path(status["result"]["html_report_path"])
+        json_path = Path(status["result"]["json_report_path"])
+        analysis_path = case_dir / "analysis_results.json"
+        audit_path = case_dir / "audit.jsonl"
+        self.assertTrue(html_path.is_file())
+        self.assertTrue(json_path.is_file())
+        self.assertTrue(analysis_path.is_file())
+        self.assertTrue(audit_path.is_file())
+
+        html_text = html_path.read_text(encoding="utf-8")
+        self.assertIn("Route Pipeline Case", html_text)
+        self.assertIn("Suspicious Run key persistence", html_text)
+        self.assertIn("PASS", html_text)
+
+        json_report = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual(json_report["report_metadata"]["case_id"], case_id)
+        self.assertEqual(json_report["report_metadata"]["case_name"], "Route Pipeline Case")
+        self.assertIn("Run key persistence", json.dumps(json_report))
+        self.assertIn("route-host", json.dumps(json_report))
+        self.assertIn("PASS", json.dumps(json_report))
+
+        audit_entries = [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        actions = [entry["action"] for entry in audit_entries]
+        self.assertIn("automation_started", actions)
+        self.assertIn("evidence_intake", actions)
+        self.assertIn("hash_verification", actions)
+        self.assertIn("automation_completed", actions)
+        hash_entries = [entry for entry in audit_entries if entry["action"] == "evidence_intake"]
+        self.assertEqual(hash_entries[0]["details"]["size_bytes"], len(b"route-level evidence bytes"))
+        self.assertEqual(hash_entries[0]["details"]["evidence_file_hashes"][0]["filename"], "evidence.E01")
+
+        html_download = self.client.get(f"/api/automation/run/{run_id}/report/html")
+        json_download = self.client.get(f"/api/automation/run/{run_id}/report/json")
+        self.assertEqual(html_download.status_code, 200)
+        self.assertEqual(json_download.status_code, 200)
+        self.assertIn(b"Suspicious Run key persistence", html_download.data)
+        self.assertEqual(json.loads(json_download.data)["report_metadata"]["case_id"], case_id)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +682,7 @@ class TestDiscoveryIntegration(unittest.TestCase):
         (subdir / "data.bin").write_bytes(b"\x00")
 
         def _target_open(path: Path) -> MagicMock:
+            """Open only the synthetic acquire directory in discovery tests."""
             if Path(path).resolve() == subdir.resolve():
                 return MagicMock()
             raise RuntimeError("not directly loadable")

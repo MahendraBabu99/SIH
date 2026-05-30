@@ -18,7 +18,7 @@
 
 "use strict";
 
-const { setupAift, mustGet, mustQuery } = require("./harness");
+const { setupAift, mustGet, mustQuery, mustFindAll } = require("./harness");
 
 let A;
 
@@ -30,14 +30,12 @@ beforeEach(() => {
 
 describe("syncMode", () => {
   test("shows upload panel when upload mode is selected on first card", () => {
-    const cards = A.getImageForms();
-    if (!cards.length) return;
+    const cards = mustFindAll(document, ".image-form-card");
     const card = cards[0];
-    const modeUpload = card.querySelector(".image-mode-upload");
-    const modePath = card.querySelector(".image-mode-path");
-    const uploadPanel = card.querySelector(".image-upload-panel");
-    const pathPanel = card.querySelector(".image-path-panel");
-    if (!modeUpload || !modePath || !uploadPanel || !pathPanel) return;
+    const modeUpload = mustQuery(card, ".image-mode-upload");
+    const modePath = mustQuery(card, ".image-mode-path");
+    const uploadPanel = mustQuery(card, ".image-upload-panel");
+    const pathPanel = mustQuery(card, ".image-path-panel");
     modeUpload.checked = true;
     modePath.checked = false;
     A.syncMode();
@@ -46,14 +44,12 @@ describe("syncMode", () => {
   });
 
   test("shows path panel when path mode is selected on first card", () => {
-    const cards = A.getImageForms();
-    if (!cards.length) return;
+    const cards = mustFindAll(document, ".image-form-card");
     const card = cards[0];
-    const modeUpload = card.querySelector(".image-mode-upload");
-    const modePath = card.querySelector(".image-mode-path");
-    const uploadPanel = card.querySelector(".image-upload-panel");
-    const pathPanel = card.querySelector(".image-path-panel");
-    if (!modeUpload || !modePath || !uploadPanel || !pathPanel) return;
+    const modeUpload = mustQuery(card, ".image-mode-upload");
+    const modePath = mustQuery(card, ".image-mode-path");
+    const uploadPanel = mustQuery(card, ".image-upload-panel");
+    const pathPanel = mustQuery(card, ".image-path-panel");
     modePath.checked = true;
     modeUpload.checked = false;
     A.syncMode();
@@ -79,8 +75,7 @@ describe("artifactBoxes", () => {
 
 describe("ensureArtifactModeControl", () => {
   test("creates a mode select for a checkbox", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     const cb = boxes[0];
     const select = A.ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
     expect(select).not.toBeNull();
@@ -89,8 +84,7 @@ describe("ensureArtifactModeControl", () => {
   });
 
   test("returns existing select on second call", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     const cb = boxes[0];
     const first = A.ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
     const second = A.ensureArtifactModeControl(cb, A.MODE_PARSE_ONLY);
@@ -106,8 +100,7 @@ describe("ensureArtifactModeControl", () => {
 
 describe("syncArtifactModeControl", () => {
   test("disables select when checkbox is unchecked", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     const cb = boxes[0];
     const select = A.ensureArtifactModeControl(cb);
     cb.checked = false;
@@ -117,8 +110,7 @@ describe("syncArtifactModeControl", () => {
   });
 
   test("enables select when checkbox is checked and not disabled", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     const cb = boxes[0];
     const select = A.ensureArtifactModeControl(cb);
     cb.checked = true;
@@ -128,8 +120,7 @@ describe("syncArtifactModeControl", () => {
   });
 
   test("disables select when checkbox is disabled", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     const cb = boxes[0];
     const select = A.ensureArtifactModeControl(cb);
     cb.checked = true;
@@ -148,8 +139,7 @@ describe("artifact selection helpers", () => {
   });
 
   test("selectedArtifactOptions returns checked, non-disabled artifacts", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     boxes[0].checked = true;
     boxes[0].disabled = false;
     const options = A.selectedArtifactOptions();
@@ -159,8 +149,7 @@ describe("artifact selection helpers", () => {
   });
 
   test("selectedArtifacts returns array of keys", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     boxes[0].checked = true;
     boxes[0].disabled = false;
     const keys = A.selectedArtifacts();
@@ -169,8 +158,7 @@ describe("artifact selection helpers", () => {
   });
 
   test("selectedAiArtifacts filters to parse_and_ai mode only", () => {
-    const boxes = A.artifactBoxes();
-    if (boxes.length < 2) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]", 2);
     // Set first checkbox to parse_and_ai, second to parse_only
     boxes[0].checked = true;
     boxes[0].disabled = false;
@@ -188,8 +176,7 @@ describe("artifact selection helpers", () => {
   });
 
   test("does not include disabled checkboxes even if checked", () => {
-    const boxes = A.artifactBoxes();
-    if (!boxes.length) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
     boxes[0].checked = true;
     boxes[0].disabled = true;
     expect(A.selectedArtifactOptions()).toEqual([]);
@@ -315,35 +302,39 @@ describe("validateAnalysisDateRange", () => {
   });
 
   test("returns error when only start date is provided", () => {
-    if (!A.el.analysisDateStart || !A.el.analysisDateEnd) return;
-    A.el.analysisDateStart.value = "2024-01-01";
-    A.el.analysisDateEnd.value = "";
+    const start = mustGet("analysis-date-start");
+    const end = mustGet("analysis-date-end");
+    start.value = "2024-01-01";
+    end.value = "";
     const result = A.validateAnalysisDateRange();
     expect(result.ok).toBe(false);
     expect(result.message).toContain("both");
   });
 
   test("returns error when only end date is provided", () => {
-    if (!A.el.analysisDateStart || !A.el.analysisDateEnd) return;
-    A.el.analysisDateStart.value = "";
-    A.el.analysisDateEnd.value = "2024-12-31";
+    const start = mustGet("analysis-date-start");
+    const end = mustGet("analysis-date-end");
+    start.value = "";
+    end.value = "2024-12-31";
     const result = A.validateAnalysisDateRange();
     expect(result.ok).toBe(false);
   });
 
   test("returns error when start is after end", () => {
-    if (!A.el.analysisDateStart || !A.el.analysisDateEnd) return;
-    A.el.analysisDateStart.value = "2024-12-31";
-    A.el.analysisDateEnd.value = "2024-01-01";
+    const start = mustGet("analysis-date-start");
+    const end = mustGet("analysis-date-end");
+    start.value = "2024-12-31";
+    end.value = "2024-01-01";
     const result = A.validateAnalysisDateRange();
     expect(result.ok).toBe(false);
     expect(result.message).toContain("earlier");
   });
 
   test("returns ok with range when both dates are valid", () => {
-    if (!A.el.analysisDateStart || !A.el.analysisDateEnd) return;
-    A.el.analysisDateStart.value = "2024-01-01";
-    A.el.analysisDateEnd.value = "2024-12-31";
+    const start = mustGet("analysis-date-start");
+    const end = mustGet("analysis-date-end");
+    start.value = "2024-01-01";
+    end.value = "2024-12-31";
     const result = A.validateAnalysisDateRange();
     expect(result.ok).toBe(true);
     expect(result.range).toEqual({ start_date: "2024-01-01", end_date: "2024-12-31" });
@@ -356,44 +347,36 @@ describe("updateParseButton", () => {
   test("disables parse button when no case exists", () => {
     A.setCaseId("");
     A.updateParseButton();
-    if (A.el.parseBtn) {
-      expect(A.el.parseBtn.disabled).toBe(true);
-    }
+    expect(mustGet("parse-selected").disabled).toBe(true);
   });
 
   test("disables parse button when no artifacts selected", () => {
     A.setCaseId("test-case");
     A.artifactBoxes().forEach((cb) => { cb.checked = false; });
     A.updateParseButton();
-    if (A.el.parseBtn) {
-      expect(A.el.parseBtn.disabled).toBe(true);
-    }
+    expect(mustGet("parse-selected").disabled).toBe(true);
   });
 
   test("enables parse button when case exists and artifact selected", () => {
     A.setCaseId("test-case");
-    const boxes = A.artifactBoxes();
-    if (!boxes.length || !A.el.parseBtn) return;
+    const boxes = mustFindAll(document, "input[type='checkbox'][data-artifact-key]");
+    const parseBtn = mustGet("parse-selected");
     boxes[0].checked = true;
     boxes[0].disabled = false;
     A.updateParseButton();
-    expect(A.el.parseBtn.disabled).toBe(false);
+    expect(parseBtn.disabled).toBe(false);
   });
 
   test("hides cancel button when parse is not running", () => {
     A.st.parse.run = false;
     A.updateParseButton();
-    if (A.el.cancelParse) {
-      expect(A.el.cancelParse.hidden).toBe(true);
-    }
+    expect(mustGet("cancel-parse").hidden).toBe(true);
   });
 
   test("shows cancel button when parse is running", () => {
     A.st.parse.run = true;
     A.updateParseButton();
-    if (A.el.cancelParse) {
-      expect(A.el.cancelParse.hidden).toBe(false);
-    }
+    expect(mustGet("cancel-parse").hidden).toBe(false);
   });
 });
 
@@ -538,10 +521,7 @@ describe("renderImageSummaries", () => {
   test("hides container for single image", () => {
     const singleImage = [{ image_id: "img1", label: "Test", metadata: {}, hashes: {} }];
     A.renderImageSummaries(singleImage);
-    const container = document.getElementById("evidence-summaries-container");
-    if (container) {
-      expect(container.hidden).toBe(true);
-    }
+    expect(mustGet("evidence-summaries-container").hidden).toBe(true);
   });
 
   test("renders summary cards for multiple images", () => {
@@ -550,15 +530,13 @@ describe("renderImageSummaries", () => {
       { image_id: "img2", label: "Image B", metadata: { hostname: "PC2" }, hashes: { sha256: "def" }, os_type: "linux" },
     ];
     A.renderImageSummaries(images);
-    const container = document.getElementById("evidence-summaries-container");
-    const list = document.getElementById("evidence-summaries-list");
-    if (container && list) {
-      expect(container.hidden).toBe(false);
-      const cards = list.querySelectorAll(".summary-card");
-      expect(cards.length).toBe(2);
-      expect(cards[0].textContent).toContain("PC1");
-      expect(cards[1].textContent).toContain("PC2");
-    }
+    const container = mustGet("evidence-summaries-container");
+    const list = mustGet("evidence-summaries-list");
+    expect(container.hidden).toBe(false);
+    const cards = mustFindAll(list, ".summary-card", 2);
+    expect(cards.length).toBe(2);
+    expect(cards[0].textContent).toContain("PC1");
+    expect(cards[1].textContent).toContain("PC2");
   });
 
   test("escapes HTML in labels and metadata", () => {
@@ -567,12 +545,10 @@ describe("renderImageSummaries", () => {
       { image_id: "img2", label: "Normal", metadata: { hostname: "PC2" }, hashes: {} },
     ];
     A.renderImageSummaries(images);
-    const list = document.getElementById("evidence-summaries-list");
-    if (list) {
-      expect(list.innerHTML).not.toContain("<script>");
-      expect(list.innerHTML).not.toContain("<b>evil");
-      expect(list.innerHTML).toContain("&lt;script&gt;");
-    }
+    const list = mustGet("evidence-summaries-list");
+    expect(list.innerHTML).not.toContain("<script>");
+    expect(list.innerHTML).not.toContain("<b>evil");
+    expect(list.innerHTML).toContain("&lt;script&gt;");
   });
 });
 
@@ -634,10 +610,7 @@ describe("buildMultiImageArtifactTabs", () => {
   test("hides tab container when single image loaded", () => {
     A.st.images = [{ image_id: "img1", label: "Image 1", available_artifacts: [] }];
     A.buildMultiImageArtifactTabs();
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    if (tabContainer) {
-      expect(tabContainer.hidden).toBe(true);
-    }
+    expect(mustGet("artifact-image-tabs").hidden).toBe(true);
   });
 
   test("shows tab container with buttons for multiple images", () => {
@@ -646,14 +619,12 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image B", available_artifacts: [{ key: "evtx", available: true }] },
     ];
     A.buildMultiImageArtifactTabs();
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    if (tabContainer) {
-      expect(tabContainer.hidden).toBe(false);
-      const buttons = tabContainer.querySelectorAll(".artifact-tab-bar button");
-      expect(buttons.length).toBe(2);
-      expect(buttons[0].textContent).toBe("Image A");
-      expect(buttons[1].textContent).toBe("Image B");
-    }
+    const tabContainer = mustGet("artifact-image-tabs");
+    expect(tabContainer.hidden).toBe(false);
+    const buttons = mustFindAll(tabContainer, ".artifact-tab-bar button", 2);
+    expect(buttons.length).toBe(2);
+    expect(buttons[0].textContent).toBe("Image A");
+    expect(buttons[1].textContent).toBe("Image B");
   });
 
   test("first tab is active by default", () => {
@@ -662,12 +633,10 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image B", available_artifacts: [] },
     ];
     A.buildMultiImageArtifactTabs();
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    if (tabContainer) {
-      const buttons = tabContainer.querySelectorAll(".artifact-tab-bar button");
-      expect(buttons[0].classList.contains("is-active")).toBe(true);
-      expect(buttons[1].classList.contains("is-active")).toBe(false);
-    }
+    const tabContainer = mustGet("artifact-image-tabs");
+    const buttons = mustFindAll(tabContainer, ".artifact-tab-bar button", 2);
+    expect(buttons[0].classList.contains("is-active")).toBe(true);
+    expect(buttons[1].classList.contains("is-active")).toBe(false);
   });
 
   test("creates panels for each image", () => {
@@ -676,13 +645,11 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image B", available_artifacts: [] },
     ];
     A.buildMultiImageArtifactTabs();
-    const panelsContainer = document.getElementById("artifact-image-panels");
-    if (panelsContainer) {
-      const panels = panelsContainer.querySelectorAll(".artifact-image-panel");
-      expect(panels.length).toBe(2);
-      expect(panels[0].dataset.imageId).toBe("img1");
-      expect(panels[1].dataset.imageId).toBe("img2");
-    }
+    const panelsContainer = mustGet("artifact-image-panels");
+    const panels = mustFindAll(panelsContainer, ".artifact-image-panel", 2);
+    expect(panels.length).toBe(2);
+    expect(panels[0].dataset.imageId).toBe("img1");
+    expect(panels[1].dataset.imageId).toBe("img2");
   });
 
   test("hides main artifact form when multi-image", () => {
@@ -691,9 +658,7 @@ describe("buildMultiImageArtifactTabs", () => {
       { image_id: "img2", label: "Image B", available_artifacts: [] },
     ];
     A.buildMultiImageArtifactTabs();
-    if (A.el.artifactsForm) {
-      expect(A.el.artifactsForm.hidden).toBe(true);
-    }
+    expect(mustGet("artifacts-form").hidden).toBe(true);
   });
 
   test("shows main artifact form when reverting to single image", () => {
@@ -705,9 +670,7 @@ describe("buildMultiImageArtifactTabs", () => {
     A.buildMultiImageArtifactTabs();
     A.st.images = [{ image_id: "img1", label: "A", available_artifacts: [] }];
     A.buildMultiImageArtifactTabs();
-    if (A.el.artifactsForm) {
-      expect(A.el.artifactsForm.hidden).toBe(false);
-    }
+    expect(mustGet("artifacts-form").hidden).toBe(false);
   });
 });
 
@@ -719,9 +682,9 @@ describe("parse button visibility in multi-image mode", () => {
   });
 
   test("parse button exists outside the artifacts form", () => {
-    const btn = A.el.parseBtn;
-    if (!btn || !A.el.artifactsForm) return;
-    expect(A.el.artifactsForm.contains(btn)).toBe(false);
+    const btn = mustGet("parse-selected");
+    const form = mustGet("artifacts-form");
+    expect(form.contains(btn)).toBe(false);
   });
 
   test("parse button is not hidden when multi-image tabs are built", () => {
@@ -730,8 +693,7 @@ describe("parse button visibility in multi-image mode", () => {
       { image_id: "img2", label: "Image B", available_artifacts: [{ key: "evtx", available: true }] },
     ];
     A.buildMultiImageArtifactTabs();
-    if (!A.el.parseBtn) return;
-    expect(A.el.parseBtn.hidden).toBe(false);
+    expect(mustGet("parse-selected").hidden).toBe(false);
   });
 
   test("parse button remains visible even though artifacts form is hidden in multi-image mode", () => {
@@ -740,18 +702,18 @@ describe("parse button visibility in multi-image mode", () => {
       { image_id: "img2", label: "B", available_artifacts: [] },
     ];
     A.buildMultiImageArtifactTabs();
-    if (!A.el.parseBtn || !A.el.artifactsForm) return;
+    const parseBtn = mustGet("parse-selected");
+    const form = mustGet("artifacts-form");
     /* The form itself is hidden for multi-image… */
-    expect(A.el.artifactsForm.hidden).toBe(true);
+    expect(form.hidden).toBe(true);
     /* …but the parse button must still be visible. */
-    expect(A.el.parseBtn.hidden).toBe(false);
+    expect(parseBtn.hidden).toBe(false);
   });
 
   test("parse button is visible for single-image mode", () => {
     A.st.images = [{ image_id: "img1", label: "A", available_artifacts: [] }];
     A.buildMultiImageArtifactTabs();
-    if (!A.el.parseBtn) return;
-    expect(A.el.parseBtn.hidden).toBe(false);
+    expect(mustGet("parse-selected").hidden).toBe(false);
   });
 
   test("parse button stays visible when switching from multi to single image", () => {
@@ -763,8 +725,7 @@ describe("parse button visibility in multi-image mode", () => {
     /* Revert to single image. */
     A.st.images = [{ image_id: "img1", label: "A", available_artifacts: [] }];
     A.buildMultiImageArtifactTabs();
-    if (!A.el.parseBtn) return;
-    expect(A.el.parseBtn.hidden).toBe(false);
+    expect(mustGet("parse-selected").hidden).toBe(false);
   });
 
   test("updateParseButton enables button in multi-image mode with selections", () => {
@@ -776,17 +737,15 @@ describe("parse button visibility in multi-image mode", () => {
     A.buildMultiImageArtifactTabs();
 
     /* Check an artifact in the first image panel. */
-    const panelsContainer = document.getElementById("artifact-image-panels");
-    if (!panelsContainer || !A.el.parseBtn) return;
-    const panel = panelsContainer.querySelector('.artifact-image-panel[data-image-id="img1"]');
-    if (!panel) return;
-    const cb = panel.querySelector("input[type='checkbox'][data-artifact-key]:not(:disabled)");
-    if (!cb) return;
+    const parseBtn = mustGet("parse-selected");
+    const panelsContainer = mustGet("artifact-image-panels");
+    const panel = mustQuery(panelsContainer, '.artifact-image-panel[data-image-id="img1"]');
+    const cb = mustQuery(panel, "input[type='checkbox'][data-artifact-key]:not(:disabled)");
     cb.checked = true;
 
     A.updateParseButton();
-    expect(A.el.parseBtn.disabled).toBe(false);
-    expect(A.el.parseBtn.hidden).toBe(false);
+    expect(parseBtn.disabled).toBe(false);
+    expect(parseBtn.hidden).toBe(false);
   });
 
   test("updateParseButton disables button in multi-image mode with no selections", () => {
@@ -798,24 +757,24 @@ describe("parse button visibility in multi-image mode", () => {
     A.buildMultiImageArtifactTabs();
 
     /* Ensure no artifacts are checked. */
-    const panelsContainer = document.getElementById("artifact-image-panels");
-    if (!panelsContainer || !A.el.parseBtn) return;
+    const panelsContainer = mustGet("artifact-image-panels");
+    const parseBtn = mustGet("parse-selected");
     panelsContainer.querySelectorAll("input[type='checkbox']").forEach((cb) => { cb.checked = false; });
 
     A.updateParseButton();
-    expect(A.el.parseBtn.disabled).toBe(true);
+    expect(parseBtn.disabled).toBe(true);
     /* Button should still be visible even when disabled. */
-    expect(A.el.parseBtn.hidden).toBe(false);
+    expect(parseBtn.hidden).toBe(false);
   });
 
   test("parse button has click listener that calls submitParse", async () => {
-    if (!A.el.parseBtn) return;
+    const parseBtn = mustGet("parse-selected");
     /* Stub submitParse to track invocation. */
     let called = false;
     const original = A.submitParse;
     A.submitParse = async () => { called = true; };
     try {
-      A.el.parseBtn.dispatchEvent(new Event("click"));
+      parseBtn.dispatchEvent(new Event("click"));
       /* Allow microtask to resolve. */
       await new Promise((r) => setTimeout(r, 0));
       expect(called).toBe(true);
@@ -840,17 +799,15 @@ describe("switchArtifactTab", () => {
     A.buildMultiImageArtifactTabs();
     A.switchArtifactTab("img2");
 
-    const tabContainer = document.getElementById("artifact-image-tabs");
-    const panelsContainer = document.getElementById("artifact-image-panels");
-    if (tabContainer && panelsContainer) {
-      const buttons = tabContainer.querySelectorAll(".artifact-tab-bar button");
-      expect(buttons[0].classList.contains("is-active")).toBe(false);
-      expect(buttons[1].classList.contains("is-active")).toBe(true);
+    const tabContainer = mustGet("artifact-image-tabs");
+    const panelsContainer = mustGet("artifact-image-panels");
+    const buttons = mustFindAll(tabContainer, ".artifact-tab-bar button", 2);
+    expect(buttons[0].classList.contains("is-active")).toBe(false);
+    expect(buttons[1].classList.contains("is-active")).toBe(true);
 
-      const panels = panelsContainer.querySelectorAll(".artifact-image-panel");
-      expect(panels[0].classList.contains("is-active")).toBe(false);
-      expect(panels[1].classList.contains("is-active")).toBe(true);
-    }
+    const panels = mustFindAll(panelsContainer, ".artifact-image-panel", 2);
+    expect(panels[0].classList.contains("is-active")).toBe(false);
+    expect(panels[1].classList.contains("is-active")).toBe(true);
   });
 });
 
@@ -908,11 +865,9 @@ describe("applyPresetMultiAware", () => {
     A.buildMultiImageArtifactTabs();
 
     /* Check some boxes in the first tab panel. */
-    const panelsContainer = document.getElementById("artifact-image-panels");
-    if (!panelsContainer) return;
-    const panel = panelsContainer.querySelector('.artifact-image-panel[data-image-id="img1"]');
-    if (!panel) return;
-    const checkboxes = panel.querySelectorAll("input[type='checkbox'][data-artifact-key]");
+    const panelsContainer = mustGet("artifact-image-panels");
+    const panel = mustQuery(panelsContainer, '.artifact-image-panel[data-image-id="img1"]');
+    const checkboxes = mustFindAll(panel, "input[type='checkbox'][data-artifact-key]");
     checkboxes.forEach((cb) => { if (!cb.disabled) cb.checked = true; });
 
     A.applyPresetMultiAware("clear");

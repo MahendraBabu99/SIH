@@ -130,6 +130,17 @@ function mustQuery(root, selector) {
   return node;
 }
 
+function mustFindAll(root, selector, minimum = 1) {
+  const scope = root || document;
+  const nodes = Array.from(scope.querySelectorAll(selector));
+  if (nodes.length < minimum) {
+    throw new Error(
+      `Required DOM selector "${selector}" matched ${nodes.length} node(s), expected at least ${minimum}`
+    );
+  }
+  return nodes;
+}
+
 function cleanupAift() {
   const A = window.AIFT;
   if (A) {
@@ -175,5 +186,6 @@ module.exports = {
   setupUtilsOnly,
   mustGet,
   mustQuery,
+  mustFindAll,
   cleanupAift,
 };
