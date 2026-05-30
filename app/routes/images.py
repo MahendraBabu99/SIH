@@ -148,7 +148,7 @@ def _purge_case_downstream_files(case_dir: Path) -> None:
 
 
 def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) -> bool:
-    """Rebuild aggregate parse fields from remaining per-image state.
+    """Refresh image-scoped parse state from remaining per-image state.
 
     Args:
         case_id: UUID of the case being rebuilt.
@@ -160,7 +160,7 @@ def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) ->
     aggregate = rebuild_case_parse_artifacts(case)
     case["analysis_results"] = {}
     case["investigation_context"] = ""
-    if not aggregate["parse_results"] and not aggregate["image_artifact_csv_paths"]:
+    if not aggregate["image_artifact_csv_paths"]:
         case["analysis_date_range"] = None
         mark_case_status(case_id, "evidence_loaded")
         return False
@@ -875,15 +875,12 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         case_progress["error"] = None
 
         mark_case_status(case_id, "running")
-        case["selected_artifacts"] = list(parse_artifacts)
-        case["analysis_artifacts"] = list(analysis_artifacts)
-        case["artifact_options"] = list(artifact_options)
         case["analysis_date_range"] = analysis_date_range
 
         # Capture previous CSV output dir before clearing so we can
         # remove stale on-disk data outside the lock.
-        image_states = case.get("image_states", {})
-        img_state_lock = image_states.get(image_id, {})
+        image_states = case.setdefault("image_states", {})
+        img_state_lock = image_states.setdefault(image_id, {})
         prev_csv_output_dir = str(img_state_lock.get("csv_output_dir", "")).strip()
 
         # Invalidate prior parse-derived outputs for this image so a
@@ -895,8 +892,8 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         img_state_lock["artifact_options"] = list(artifact_options)
         img_state_lock["csv_output_dir"] = ""
 
-        # Also invalidate case-level aggregated state from this image,
-        # then rebuild from any other images that are still parsed.
+        # Also refresh the case-level image-scoped aggregate from any
+        # other images that are still parsed.
         case["analysis_results"] = {}
         case["investigation_context"] = ""
         _rebuild_case_parse_state_from_images(case_id, case)
@@ -1140,6 +1137,7 @@ def _run_image_parse(
             img_state["artifact_csv_paths"] = csv_map
             img_state["analysis_artifacts"] = list(analysis_artifacts)
             img_state["artifact_options"] = list(artifact_options)
+            rebuild_case_parse_artifacts(case)
 
         completed = len(csv_map)
         failed = len(results) - completed
@@ -1172,33 +1170,8 @@ def _run_image_parse(
             img_state = image_states.setdefault(image_id, {})
             img_state["csv_output_dir"] = parsed_dir
 
-            # Merge artifacts across images into case-level lists for
-            # backward compatibility, rather than overwriting with only
-            # this image's selections.
-            existing_selected = set(case.get("selected_artifacts", []))
-            existing_analysis = set(case.get("analysis_artifacts", []))
-            existing_options = {
-                str(opt.get("artifact_key", "")): opt
-                for opt in case.get("artifact_options", [])
-            }
-            existing_selected.update(parse_artifacts)
-            existing_analysis.update(analysis_artifacts)
-            for opt in artifact_options:
-                opt_key = str(opt.get("artifact_key", ""))
-                if opt_key:
-                    existing_options[opt_key] = opt
-
-            case["selected_artifacts"] = sorted(existing_selected)
-            case["analysis_artifacts"] = sorted(existing_analysis)
-            case["artifact_options"] = list(existing_options.values())
-
-            # Rebuild parse aggregates from all images.  The canonical
-            # image_artifact_csv_paths map preserves same-artifact CSVs
-            # across images; artifact_csv_paths remains a legacy flat view.
+            # Refresh the image-scoped aggregate from all parsed images.
             aggregate = rebuild_case_parse_artifacts(case)
-
-            if not case.get("csv_output_dir"):
-                case["csv_output_dir"] = parsed_dir
             image_artifact_csv_paths = copy.deepcopy(
                 aggregate.get("image_artifact_csv_paths", {})
             )

@@ -29,6 +29,7 @@ from .state import (
     stream_sse,
 )
 from .artifacts import sanitize_prompt
+from .evidence import build_image_artifact_csv_paths
 from .tasks import (
     build_multi_image_analysis_payload_from_case,
     run_task_with_case_log_context,
@@ -38,6 +39,43 @@ from .tasks import (
 __all__ = ["analysis_bp"]
 
 analysis_bp = Blueprint("analysis", __name__)
+
+
+def _image_csv_map_from_case(case: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return the current image-scoped parsed CSV map for a case snapshot."""
+    image_states = case.get("image_states")
+    if not isinstance(image_states, dict):
+        image_states = {}
+    image_csv_map = case.get("image_artifact_csv_paths")
+    if not isinstance(image_csv_map, dict) or not image_csv_map:
+        image_csv_map = build_image_artifact_csv_paths(image_states)
+    if not isinstance(image_csv_map, dict):
+        return {}
+    return {
+        str(image_id): dict(csv_map)
+        for image_id, csv_map in image_csv_map.items()
+        if str(image_id).strip() and isinstance(csv_map, dict) and csv_map
+    }
+
+
+def _payload_has_parsed_artifacts(
+    images_payload: list[dict[str, Any]],
+    image_csv_map: dict[str, dict[str, Any]],
+) -> bool:
+    """Return whether a requested analysis payload targets parsed CSVs."""
+    for img in images_payload:
+        image_id = str(img.get("image_id", "")).strip()
+        csv_map = image_csv_map.get(image_id, {})
+        if not csv_map:
+            continue
+        requested = {
+            str(artifact).strip()
+            for artifact in img.get("artifacts", [])
+            if str(artifact).strip()
+        }
+        if requested & set(csv_map):
+            return True
+    return False
 
 
 @analysis_bp.post("/api/cases/<case_id>/analyze")
@@ -53,34 +91,6 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
     case = get_case(case_id)
     if case is None:
         return error_response(f"Case not found: {case_id}", 404)
-
-    # Read case state, validate, and transition to "running" in a single lock
-    # acquisition to prevent a TOCTOU window where the status could go stale
-    # between the read and the mutation.
-    with STATE_LOCK:
-        has_results = bool(
-            case.get("parse_results")
-            or case.get("artifact_csv_paths")
-            or case.get("image_artifact_csv_paths")
-        )
-        analysis_artifacts_state = case.get("analysis_artifacts")
-        case_dir = case["case_dir"]
-        analysis_date_range = case.get("analysis_date_range")
-        audit_logger = case["audit"]
-
-        if not has_results:
-            return error_response("No parsed artifacts found. Run parsing first.", 400)
-        if isinstance(analysis_artifacts_state, list):
-            configured_analysis_artifacts = [
-                artifact
-                for artifact in (str(item).strip() for item in analysis_artifacts_state)
-                if artifact
-            ]
-            if not configured_analysis_artifacts:
-                return error_response(
-                    "No artifacts are marked `Parse and use in AI`. Select at least one AI-enabled artifact and parse again.",
-                    400,
-                )
 
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -104,40 +114,58 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         if not images_payload:
             images_payload = None
 
-    if images_payload is None:
-        with STATE_LOCK:
-            images_payload = build_multi_image_analysis_payload_from_case(
-                copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
-            )
-    if not images_payload:
-        return error_response(
-            "No parsed image artifacts found. Run image parsing first.",
-            400,
-        )
-
-    prompt_path = Path(case_dir) / "prompt.txt"
-    prompt_details: dict[str, Any] = {"prompt": sanitize_prompt(prompt)}
-    if isinstance(analysis_date_range, dict):
-        start_date = str(analysis_date_range.get("start_date", "")).strip()
-        end_date = str(analysis_date_range.get("end_date", "")).strip()
-        if start_date and end_date:
-            prompt_details["analysis_date_range"] = {
-                "start_date": start_date,
-                "end_date": end_date,
-            }
-    image_count = len(images_payload)
-    display_multi_image = image_count > 1
-    prompt_details["image_scoped"] = True
-    prompt_details["multi_image"] = display_multi_image
-    prompt_details["image_count"] = image_count
-
+    # Read case state, validate, and transition to "running" in a single lock
+    # acquisition to prevent a TOCTOU window where the status could go stale
+    # between the read and the mutation.
     with STATE_LOCK:
-        analysis_state = ANALYSIS_PROGRESS.setdefault(case_id, new_progress())
-        if analysis_state.get("status") == "running":
+        analysis_state = ANALYSIS_PROGRESS.get(case_id)
+        if (analysis_state or {}).get("status") == "running":
             return error_response("Analysis is already running for this case.", 409)
         active = active_operations_for_case(case_id)
         if active:
             return error_response("Cannot start analysis while another case operation is running.", 409)
+
+        case_snapshot_for_validation = copy.deepcopy(
+            {k: v for k, v in case.items() if k != "audit"}
+        )
+        image_csv_map = _image_csv_map_from_case(case_snapshot_for_validation)
+        if not image_csv_map:
+            return error_response("No parsed artifacts found. Run parsing first.", 400)
+
+        if images_payload is None:
+            images_payload = build_multi_image_analysis_payload_from_case(
+                case_snapshot_for_validation
+            )
+        if not images_payload:
+            return error_response(
+                "No artifacts are marked `Parse and use in AI`. Select at least one AI-enabled artifact and parse again.",
+                400,
+            )
+        if not _payload_has_parsed_artifacts(images_payload, image_csv_map):
+            return error_response(
+                "No parsed image artifacts found. Run image parsing first.",
+                400,
+            )
+
+        case_dir = case["case_dir"]
+        analysis_date_range = case.get("analysis_date_range")
+        audit_logger = case["audit"]
+        image_count = len(images_payload)
+        display_multi_image = image_count > 1
+
+        prompt_details: dict[str, Any] = {"prompt": sanitize_prompt(prompt)}
+        if isinstance(analysis_date_range, dict):
+            start_date = str(analysis_date_range.get("start_date", "")).strip()
+            end_date = str(analysis_date_range.get("end_date", "")).strip()
+            if start_date and end_date:
+                prompt_details["analysis_date_range"] = {
+                    "start_date": start_date,
+                    "end_date": end_date,
+                }
+        prompt_details["image_scoped"] = True
+        prompt_details["multi_image"] = display_multi_image
+        prompt_details["image_count"] = image_count
+
         case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
         previous_progress = ANALYSIS_PROGRESS.get(case_id)
         ANALYSIS_PROGRESS[case_id] = new_progress(status="running")
@@ -146,7 +174,14 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         # Invalidate prior analysis outputs so a subsequent failure cannot
         # leave stale results accessible via chat/report/download routes.
         case["analysis_results"] = {}
-        analysis_artifacts_snapshot = list(case.get("analysis_artifacts", []))
+        analysis_artifacts_snapshot = sorted({
+            str(artifact).strip()
+            for img in images_payload
+            for artifact in img.get("artifacts", [])
+            if str(artifact).strip()
+        })
+
+    prompt_path = Path(case_dir) / "prompt.txt"
 
     # Write the prompt file outside the lock — it doesn't depend on shared
     # state and avoids blocking other threads during file I/O.

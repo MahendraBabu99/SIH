@@ -399,11 +399,9 @@ class LifecycleStateProgressTests(unittest.TestCase):
         routes_state.CASE_STATES[case_id].update(
             {
                 "status": "parsed",
-                "parse_results": list(image_state["parse_results"]),
-                "artifact_csv_paths": dict(image_state["artifact_csv_paths"]),
-                "selected_artifacts": ["runkeys"],
-                "analysis_artifacts": ["runkeys"],
-                "artifact_options": [],
+                "image_artifact_csv_paths": {
+                    image_id: dict(image_state["artifact_csv_paths"]),
+                },
             },
         )
         progress_key = f"{case_id}::{image_id}"
@@ -512,16 +510,9 @@ class LifecycleStateProgressTests(unittest.TestCase):
         routes_state.CASE_STATES[case_id].update(
             {
                 "status": "running",
-                "artifact_csv_paths": {"runkeys": str(csv_path)},
                 "image_artifact_csv_paths": {
                     image_id: {"runkeys": str(csv_path)},
                 },
-                "parse_results": [
-                    {"artifact_key": "runkeys", "success": True, "csv_path": str(csv_path)},
-                ],
-                "analysis_artifacts": ["runkeys"],
-                "selected_artifacts": ["runkeys"],
-                "artifact_options": [],
                 "image_metadata": {},
                 "os_type": "windows",
                 "analysis_results": {
@@ -538,8 +529,12 @@ class LifecycleStateProgressTests(unittest.TestCase):
         )
         routes_state.CASE_STATES[case_id]["image_states"][image_id].update(
             {
+                "parse_results": [
+                    {"artifact_key": "runkeys", "success": True, "csv_path": str(csv_path)},
+                ],
                 "artifact_csv_paths": {"runkeys": str(csv_path)},
                 "analysis_artifacts": ["runkeys"],
+                "artifact_options": [{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
                 "csv_output_dir": str(parsed_dir),
                 "image_metadata": {},
                 "os_type": "windows",

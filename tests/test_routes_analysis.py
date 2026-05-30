@@ -37,6 +37,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     FakeAnalyzer,
     FakeReportGenerator,
+    first_case_image_id,
     first_image_parse_url,
 )
 
@@ -90,7 +91,6 @@ def test_analysis_payload_from_case_returns_single_image_payload() -> None:
                 "analysis_artifacts": ["runkeys"],
             },
         },
-        "analysis_artifacts": ["prefetch"],
     })
 
     assert payload == [{"image_id": "img1", "artifacts": ["runkeys"]}]
@@ -167,8 +167,18 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.assertEqual(resp.status_code, 202)
             case = routes_state.CASE_STATES[case_id]
-            self.assertTrue(len(case.get("parse_results", [])) > 0, "First parse should produce results")
-            self.assertTrue(len(case.get("artifact_csv_paths", {})) > 0, "First parse should produce csv map")
+            image_id = first_case_image_id(case_id)
+            image_state = case["image_states"][image_id]
+            self.assertTrue(
+                len(image_state.get("parse_results", [])) > 0,
+                "First parse should produce image-scoped results",
+            )
+            self.assertTrue(
+                len(image_state.get("artifact_csv_paths", {})) > 0,
+                "First parse should produce an image-scoped CSV map",
+            )
+            self.assertNotIn("parse_results", case)
+            self.assertNotIn("artifact_csv_paths", case)
             case_dir = Path(case["case_dir"])
             (case_dir / "analysis_results.json").write_text(
                 json.dumps({
@@ -241,7 +251,6 @@ class TestRunAnalysisUnavailableProvider(unittest.TestCase):
             routes_state.CASE_STATES["bad-provider"] = {
                 "case_dir": tmp_dir,
                 "audit": audit,
-                "artifact_csv_paths": {"runkeys": str(csv_path)},
                 "image_artifact_csv_paths": {"img1": {"runkeys": str(csv_path)}},
                 "image_states": {
                     "img1": {
@@ -253,10 +262,6 @@ class TestRunAnalysisUnavailableProvider(unittest.TestCase):
                     },
                 },
                 "images": [{"image_id": "img1", "label": "Image 1"}],
-                "parse_results": [{"artifact_key": "runkeys", "success": True, "csv_path": str(csv_path)}],
-                "analysis_artifacts": ["runkeys"],
-                "selected_artifacts": ["runkeys"],
-                "artifact_options": [],
                 "image_metadata": {},
             }
 

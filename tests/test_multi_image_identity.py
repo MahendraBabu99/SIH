@@ -129,7 +129,7 @@ class AttachmentTrackingProvider(FakeProvider):
 
 
 def test_case_parse_aggregate_preserves_same_artifact_per_image(tmp_path: Path) -> None:
-    """Aggregated parse state keeps duplicate artifact CSVs per image."""
+    """Case parse aggregate keeps duplicate artifact CSVs per image."""
     img1_csv = tmp_path / "img1" / "parsed" / "runkeys.csv"
     img2_csv = tmp_path / "img2" / "parsed" / "runkeys.csv"
     _write_csv(img1_csv, "img1")
@@ -149,8 +149,10 @@ def test_case_parse_aggregate_preserves_same_artifact_per_image(tmp_path: Path) 
                 "csv_output_dir": str(img2_csv.parent),
             },
         },
-        "analysis_artifacts": ["runkeys"],
-        "artifact_options": [{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+        "analysis_artifacts": ["stale"],
+        "artifact_options": [{"artifact_key": "stale", "mode": "parse_and_ai"}],
+        "artifact_csv_paths": {"stale": "old.csv"},
+        "parse_results": [{"artifact_key": "stale", "success": True}],
     }
 
     aggregate = rebuild_case_parse_artifacts(case)
@@ -158,8 +160,13 @@ def test_case_parse_aggregate_preserves_same_artifact_per_image(tmp_path: Path) 
     nested = aggregate["image_artifact_csv_paths"]
     assert nested["img1"]["runkeys"] == str(img1_csv)
     assert nested["img2"]["runkeys"] == str(img2_csv)
-    assert {entry["image_id"] for entry in aggregate["parse_results"]} == {"img1", "img2"}
-    assert aggregate["artifact_csv_paths"]["runkeys"] == str(img2_csv)
+    assert set(case["image_artifact_csv_paths"]) == {"img1", "img2"}
+    assert "parse_results" not in aggregate
+    assert "artifact_csv_paths" not in aggregate
+    assert "parse_results" not in case
+    assert "artifact_csv_paths" not in case
+    assert "analysis_artifacts" not in case
+    assert "artifact_options" not in case
 
 
 def test_case_parse_aggregate_ignores_cancelled_image_without_csv(tmp_path: Path) -> None:
@@ -181,15 +188,16 @@ def test_case_parse_aggregate_ignores_cancelled_image_without_csv(tmp_path: Path
                 "status": "cancelled",
             },
         },
-        "analysis_artifacts": ["runkeys"],
-        "artifact_options": [],
+        "selected_artifacts": ["stale"],
+        "csv_output_dir": "stale-dir",
     }
 
     aggregate = rebuild_case_parse_artifacts(case)
 
     assert set(aggregate["image_artifact_csv_paths"]) == {"img1"}
-    assert aggregate["artifact_csv_paths"] == {"runkeys": str(img1_csv)}
-    assert aggregate["analysis_artifacts"] == ["runkeys"]
+    assert "artifact_csv_paths" not in aggregate
+    assert "selected_artifacts" not in case
+    assert "csv_output_dir" not in case
 
 
 def test_sanitized_image_id_collisions_get_hashed_artifact_outputs(tmp_path: Path) -> None:
@@ -253,8 +261,8 @@ def test_repeated_multi_image_analysis_clears_scoped_csv_lookup(tmp_path: Path) 
     assert any("later" in key for key in lookup_keys)
 
 
-def test_legacy_multi_image_payload_rebuilds_from_image_states_when_nested_map_empty(tmp_path: Path) -> None:
-    """Legacy case state with an empty nested map still analyzes per image."""
+def test_multi_image_payload_rebuilds_from_image_states_when_nested_map_empty(tmp_path: Path) -> None:
+    """Empty image CSV aggregate is rebuilt from per-image state."""
     img1_csv = tmp_path / "img1" / "parsed" / "runkeys.csv"
     img2_csv = tmp_path / "img2" / "parsed" / "runkeys.csv"
     _write_csv(img1_csv, "img1")
@@ -262,7 +270,6 @@ def test_legacy_multi_image_payload_rebuilds_from_image_states_when_nested_map_e
 
     payload = routes_tasks.build_multi_image_analysis_payload_from_case({
         "image_artifact_csv_paths": {},
-        "artifact_csv_paths": {"runkeys": str(img2_csv)},
         "image_states": {
             "img1": {
                 "artifact_csv_paths": {"runkeys": str(img1_csv)},
@@ -273,7 +280,6 @@ def test_legacy_multi_image_payload_rebuilds_from_image_states_when_nested_map_e
                 "analysis_artifacts": ["runkeys"],
             },
         },
-        "analysis_artifacts": ["runkeys"],
     })
 
     assert payload == [

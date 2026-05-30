@@ -204,16 +204,28 @@ class TestMultiImageAnalysisRoute(unittest.TestCase):
         self.routes_state.CASE_STATES.clear()
         self.routes_state.ANALYSIS_PROGRESS.clear()
         case_dir = Path(self._tmpdir.name) / "case"
-        case_dir.mkdir()
+        parsed_dir = case_dir / "images" / "img1" / "parsed"
+        parsed_dir.mkdir(parents=True)
+        csv_path = parsed_dir / "runkeys.csv"
+        csv_path.write_text("name\nvalue\n", encoding="utf-8")
         audit = MagicMock()
         self.routes_state.CASE_STATES["case-images"] = {
             "case_dir": str(case_dir),
             "audit": audit,
-            "artifact_csv_paths": {"runkeys": str(case_dir / "runkeys.csv")},
-            "parse_results": [{"artifact_key": "runkeys", "success": True}],
-            "analysis_artifacts": ["runkeys"],
-            "selected_artifacts": ["runkeys"],
-            "artifact_options": [],
+            "image_artifact_csv_paths": {
+                "img1": {"runkeys": str(csv_path)},
+            },
+            "image_states": {
+                "img1": {
+                    "artifact_csv_paths": {"runkeys": str(csv_path)},
+                    "analysis_artifacts": ["runkeys"],
+                    "artifact_options": [{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                    "csv_output_dir": str(parsed_dir),
+                    "image_metadata": {},
+                    "os_type": "windows",
+                },
+            },
+            "images": [{"image_id": "img1", "label": "Image 1"}],
             "image_metadata": {},
         }
 
@@ -231,12 +243,14 @@ class TestMultiImageAnalysisRoute(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 202)
         body = resp.get_json()
-        self.assertTrue(body["multi_image"])
+        self.assertFalse(body["multi_image"])
+        self.assertTrue(body["image_scoped"])
+        self.assertEqual(body["image_count"], 1)
         mock_task.assert_called_once()
         self.assertEqual(mock_task.call_args.args[2], [{"image_id": "img1", "artifacts": ["runkeys"]}])
 
     @patch("app.routes.analysis.threading.Thread", ImmediateThread)
-    @patch("app.routes.analysis.run_analysis")
+    @patch("app.routes.analysis.run_multi_image_analysis_task")
     def test_analysis_route_ignores_malformed_images_payload(self, mock_task: MagicMock) -> None:
         resp = self.client.post(
             "/api/cases/case-images/analyze",
@@ -245,6 +259,7 @@ class TestMultiImageAnalysisRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 202)
         body = resp.get_json()
         self.assertFalse(body["multi_image"])
+        self.assertTrue(body["image_scoped"])
         mock_task.assert_called_once()
 
 
@@ -460,6 +475,13 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
                     "label": "PC-Empty",
                     "summary": "No artifacts parsed.",
                 },
+                "img2": {
+                    "label": "PC-With-Data",
+                    "per_artifact": [
+                        {"artifact_name": "runkeys", "analysis": "Clean."},
+                    ],
+                    "summary": "No findings.",
+                },
             },
         }
         context = self.manager.build_chat_context(
@@ -478,6 +500,13 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
                     "label": "PC01",
                     "per_artifact": [
                         {"artifact_name": "runkeys", "analysis": "Clean."},
+                    ],
+                    "summary": "Nothing found.",
+                },
+                "img2": {
+                    "label": "PC02",
+                    "per_artifact": [
+                        {"artifact_name": "services", "analysis": "Clean."},
                     ],
                     "summary": "Nothing found.",
                 },

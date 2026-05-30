@@ -39,6 +39,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     FakeAnalyzer,
     FakeReportGenerator,
+    first_case_image_id,
     first_image_parse_progress_url,
     first_image_parse_url,
 )
@@ -94,6 +95,11 @@ class RoutesTests(unittest.TestCase):
     def tearDown(self) -> None:
         unregister_all_case_log_handlers()
         self.temp_dir.cleanup()
+
+    def _first_image_state(self, case_id: str) -> dict:
+        """Return the first image state for a test case."""
+        image_id = first_case_image_id(case_id)
+        return routes.CASE_STATES[case_id]["image_states"][image_id]
 
     def test_cancel_parse_marks_cancelling_and_emits_requested_event(self) -> None:
         """Parse cancellation is requested first; worker owns final status."""
@@ -219,8 +225,8 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(parse_resp.status_code, 202)
 
             # With ImmediateThread, parsing completes synchronously.
-            # Verify parse results directly rather than consuming SSE.
-            self.assertTrue(routes.CASE_STATES[case_id].get("parse_results"))
+            # Verify image-scoped parse results directly rather than consuming SSE.
+            self.assertTrue(self._first_image_state(case_id).get("parse_results"))
 
             analyze_resp = self.client.post(
                 f"/api/cases/{case_id}/analyze",
@@ -1432,8 +1438,10 @@ class RoutesTests(unittest.TestCase):
         analysis_results_path = self.cases_root / case_id / "analysis_results.json"
         self.assertTrue(analysis_results_path.exists())
         persisted_results = json.loads(analysis_results_path.read_text(encoding="utf-8"))
-        self.assertEqual(persisted_results["summary"], "final summary")
-        self.assertEqual(persisted_results["per_artifact"][0]["artifact_key"], "runkeys")
+        self.assertIn("images", persisted_results)
+        image_results = next(iter(persisted_results["images"].values()))
+        self.assertEqual(image_results["summary"], "final summary")
+        self.assertEqual(image_results["per_artifact"][0]["artifact_key"], "runkeys")
 
     def test_chat_endpoints_store_history_and_return_retrieval_details(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "chat-endpoints.E01"
@@ -1668,11 +1676,10 @@ class RoutesTests(unittest.TestCase):
             )
             self.assertEqual(parse_resp.status_code, 202)
 
-            case_state = routes.CASE_STATES[case_id]
-            # In multi-image layout, csv_output_dir is the image's parsed dir
-            csv_output = Path(case_state["csv_output_dir"])
+            image_state = self._first_image_state(case_id)
+            csv_output = Path(image_state["csv_output_dir"])
             self.assertTrue(csv_output.is_dir())
-            csv_path = Path(case_state["artifact_csv_paths"]["runkeys"])
+            csv_path = Path(image_state["artifact_csv_paths"]["runkeys"])
             self.assertTrue(csv_path.exists())
             self.assertEqual(csv_path.parent, csv_output)
 
@@ -2395,9 +2402,6 @@ class RoutesTests(unittest.TestCase):
         with patch.object(routes, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             create_resp = self.client.post("/api/cases", json={"case_name": "Analysis Array"})
             case_id = create_resp.get_json()["case_id"]
-            with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["parse_results"] = [{"success": True}]
-                routes.CASE_STATES[case_id]["analysis_artifacts"] = ["runkeys"]
             resp = self.client.post(
                 f"/api/cases/{case_id}/analyze",
                 data=json.dumps(["prompt text"]),
@@ -2410,9 +2414,6 @@ class RoutesTests(unittest.TestCase):
         with patch.object(routes, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             create_resp = self.client.post("/api/cases", json={"case_name": "Analysis Scalar"})
             case_id = create_resp.get_json()["case_id"]
-            with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["parse_results"] = [{"success": True}]
-                routes.CASE_STATES[case_id]["analysis_artifacts"] = ["runkeys"]
             resp = self.client.post(
                 f"/api/cases/{case_id}/analyze",
                 data=json.dumps(true if False else "a string"),
@@ -2509,8 +2510,11 @@ class RoutesTests(unittest.TestCase):
             # Confirm downstream state is populated before replacement.
             with routes.STATE_LOCK:
                 case = routes.CASE_STATES[case_id]
-                self.assertTrue(case.get("parse_results"), "parse_results should exist after parsing")
-                self.assertTrue(case.get("artifact_csv_paths"), "artifact_csv_paths should exist after parsing")
+                image_state = self._first_image_state(case_id)
+                self.assertTrue(image_state.get("parse_results"), "image parse_results should exist after parsing")
+                self.assertTrue(image_state.get("artifact_csv_paths"), "image artifact_csv_paths should exist after parsing")
+                self.assertNotIn("parse_results", case)
+                self.assertNotIn("artifact_csv_paths", case)
                 self.assertTrue(case.get("analysis_results"), "analysis_results should exist after analysis")
 
             # Replace evidence with B.
@@ -2520,13 +2524,14 @@ class RoutesTests(unittest.TestCase):
             # Verify all downstream state has been cleared.
             with routes.STATE_LOCK:
                 case = routes.CASE_STATES[case_id]
-                self.assertEqual(case.get("parse_results"), [])
-                self.assertEqual(case.get("artifact_csv_paths"), {})
+                image_state = self._first_image_state(case_id)
+                self.assertEqual(image_state.get("parse_results", []), [])
+                self.assertEqual(image_state.get("artifact_csv_paths", {}), {})
                 self.assertEqual(case.get("analysis_results"), {})
-                self.assertEqual(case.get("csv_output_dir"), "")
-                self.assertEqual(case.get("selected_artifacts"), [])
-                self.assertEqual(case.get("analysis_artifacts"), [])
-                self.assertEqual(case.get("artifact_options"), [])
+                self.assertNotIn("csv_output_dir", case)
+                self.assertNotIn("selected_artifacts", case)
+                self.assertNotIn("analysis_artifacts", case)
+                self.assertNotIn("artifact_options", case)
                 self.assertIsNone(case.get("analysis_date_range"))
                 self.assertEqual(case.get("investigation_context"), "")
                 self.assertEqual(case.get("status"), "evidence_loaded")
@@ -2705,9 +2710,12 @@ class RoutesTests(unittest.TestCase):
 
             # Verify parse results are populated from the new parse.
             with routes.STATE_LOCK:
+                image_state = self._first_image_state(case_id)
+                self.assertTrue(image_state.get("parse_results"))
+                self.assertTrue(image_state.get("artifact_csv_paths"))
                 case = routes.CASE_STATES[case_id]
-                self.assertTrue(case.get("parse_results"))
-                self.assertTrue(case.get("artifact_csv_paths"))
+                self.assertNotIn("parse_results", case)
+                self.assertNotIn("artifact_csv_paths", case)
 
 
     def test_replace_evidence_clears_stale_csvs_on_disk(self) -> None:
@@ -2842,8 +2850,8 @@ class RoutesTests(unittest.TestCase):
 
             # Confirm parsed dir exists with CSVs.
             with routes.STATE_LOCK:
-                case = routes.CASE_STATES[case_id]
-                parsed_dir = Path(case["csv_output_dir"])
+                image_state = self._first_image_state(case_id)
+                parsed_dir = Path(image_state["csv_output_dir"])
             self.assertTrue(parsed_dir.is_dir())
             self.assertTrue(any(parsed_dir.glob("*.csv")))
 
@@ -2855,8 +2863,9 @@ class RoutesTests(unittest.TestCase):
 
             # After evidence replacement, csv_output_dir should be cleared.
             with routes.STATE_LOCK:
-                case = routes.CASE_STATES[case_id]
-                self.assertEqual(case.get("csv_output_dir", ""), "")
+                image_state = self._first_image_state(case_id)
+                self.assertEqual(image_state.get("csv_output_dir", ""), "")
+                self.assertNotIn("csv_output_dir", routes.CASE_STATES[case_id])
 
 
 

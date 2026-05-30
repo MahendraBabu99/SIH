@@ -86,7 +86,6 @@ from .evidence import (  # noqa: F401
     SPLIT_RAW_SEGMENT_RE,
     build_csv_map,
     build_image_artifact_csv_paths,
-    build_legacy_artifact_csv_paths,
     collect_case_csv_paths,
     collect_case_image_csv_paths,
     evidence_bp,

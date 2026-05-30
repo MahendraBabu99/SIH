@@ -85,7 +85,6 @@ __all__ = [
     "collect_case_image_csv_paths",
     "build_csv_map",
     "build_image_artifact_csv_paths",
-    "build_legacy_artifact_csv_paths",
     "rebuild_case_parse_artifacts",
     "read_audit_entries",
     "generate_case_report",
@@ -147,6 +146,10 @@ def resolve_case_csv_output_dir(case: dict[str, Any], config_snapshot: dict[str,
 def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
     """Collect all parsed CSV file paths for a case.
 
+    Image-scoped state is the current source of truth.  This helper still
+    returns a flat path list for ZIP/report consumers, but the paths are
+    gathered from ``image_artifact_csv_paths`` or per-image state.
+
     Args:
         case: The in-memory case state dictionary.
 
@@ -174,7 +177,14 @@ def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
         seen.add(key)
         collected.append(path)
 
+    image_states = case.get("image_states")
+    if not isinstance(image_states, Mapping):
+        image_states = {}
+
     nested_csv_map = case.get("image_artifact_csv_paths")
+    if not isinstance(nested_csv_map, Mapping) or not nested_csv_map:
+        nested_csv_map = build_image_artifact_csv_paths(image_states)
+
     if isinstance(nested_csv_map, Mapping):
         for image_csv_map in nested_csv_map.values():
             if not isinstance(image_csv_map, Mapping):
@@ -183,22 +193,20 @@ def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
                 for csv_path in _iter_csv_path_values(csv_value):
                     _add_path(csv_path)
 
-    csv_map = case.get("artifact_csv_paths")
-    if isinstance(csv_map, Mapping):
-        for csv_path in csv_map.values():
-            for path in _iter_csv_path_values(csv_path):
-                _add_path(path)
+    if collected:
+        return sorted(collected, key=lambda path: path.name.lower())
 
-    parse_results = case.get("parse_results")
-    if isinstance(parse_results, list):
-        for result in parse_results:
-            if not isinstance(result, dict) or not result.get("success"):
-                continue
-            _add_path(result.get("csv_path"))
-            csv_paths = result.get("csv_paths")
-            if isinstance(csv_paths, list):
-                for path in csv_paths:
-                    _add_path(path)
+    for image_state in image_states.values():
+        if not isinstance(image_state, Mapping):
+            continue
+        csv_dir_text = str(image_state.get("csv_output_dir", "")).strip()
+        if not csv_dir_text:
+            continue
+        csv_dir = Path(csv_dir_text)
+        if not csv_dir.is_dir():
+            continue
+        for csv_file in sorted(csv_dir.glob("*.csv")):
+            _add_path(csv_file)
 
     if collected:
         return sorted(collected, key=lambda path: path.name.lower())
@@ -212,8 +220,8 @@ def collect_case_image_csv_paths(case: dict[str, Any]) -> list[tuple[str, str, P
 
     The canonical source is ``image_artifact_csv_paths``, which maps
     ``image_id -> artifact_key -> csv path`` and therefore preserves
-    same-artifact CSVs from multiple images.  Older cases that do not
-    have the canonical map fall back to image parsed directories.
+    same-artifact CSVs from multiple images.  When the aggregate has not
+    been refreshed yet, it is derived from ``image_states``.
 
     Args:
         case: The in-memory case state dictionary or a case snapshot.
@@ -259,6 +267,8 @@ def collect_case_image_csv_paths(case: dict[str, Any]) -> list[tuple[str, str, P
         collected.append((image_id, label, path))
 
     nested_csv_map = case.get("image_artifact_csv_paths")
+    if not isinstance(nested_csv_map, Mapping) or not nested_csv_map:
+        nested_csv_map = build_image_artifact_csv_paths(image_states)
     if isinstance(nested_csv_map, Mapping):
         for image_id_raw, image_csv_map in nested_csv_map.items():
             image_id = str(image_id_raw).strip()
@@ -411,133 +421,38 @@ def build_image_artifact_csv_paths(
     return image_artifact_csv_paths
 
 
-def build_legacy_artifact_csv_paths(
-    image_artifact_csv_paths: Mapping[str, Any],
-) -> dict[str, str | list[str]]:
-    """Build the legacy flat artifact CSV path view.
-
-    This compatibility view is keyed only by artifact key, so it cannot
-    represent two images that both parsed the same artifact.  It is kept
-    for old callers that do not understand image-scoped CSV maps.  New
-    multi-image code must use ``image_artifact_csv_paths`` instead.
-
-    Args:
-        image_artifact_csv_paths: Canonical nested image/artifact CSV map.
-
-    Returns:
-        Flat ``artifact_key -> csv path`` mapping.  When multiple images
-        share an artifact key, later image entries overwrite earlier
-        entries to preserve the historical last-writer behavior.
-    """
-    legacy: dict[str, str | list[str]] = {}
-    for image_csv_map in image_artifact_csv_paths.values():
-        if not isinstance(image_csv_map, Mapping):
-            continue
-        for artifact_key_raw, csv_value in image_csv_map.items():
-            artifact_key = str(artifact_key_raw).strip()
-            if not artifact_key:
-                continue
-            normalized_value = _coerce_csv_path_value(csv_value)
-            if normalized_value is not None:
-                legacy[artifact_key] = normalized_value
-    return legacy
-
-
 def rebuild_case_parse_artifacts(case: dict[str, Any]) -> dict[str, Any]:
-    """Rebuild aggregate parse fields from per-image state.
+    """Refresh image-scoped parse aggregates from per-image state.
 
-    The canonical aggregate is ``case["image_artifact_csv_paths"]``.
-    The flat ``case["artifact_csv_paths"]`` field is retained only as a
-    legacy compatibility view for callers that cannot address an image.
+    ``case["image_artifact_csv_paths"]`` is the only case-level parse
+    aggregate. Top-level flat parse mirrors are removed so current code
+    reads selections and parse outputs from ``case["image_states"]``.
 
     Args:
         case: Mutable in-memory case state dictionary to update.
 
     Returns:
-        A dict containing the rebuilt parse fields.
+        A dict containing the rebuilt image-scoped aggregate.
     """
     image_states = case.get("image_states")
     if not isinstance(image_states, Mapping):
         image_states = {}
 
     image_artifact_csv_paths = build_image_artifact_csv_paths(image_states)
-    legacy_artifact_csv_paths = build_legacy_artifact_csv_paths(image_artifact_csv_paths)
-
-    existing_analysis = case.get("analysis_artifacts")
-    existing_analysis_set = {
-        str(item).strip()
-        for item in existing_analysis
-        if str(item).strip()
-    } if isinstance(existing_analysis, list) else set()
-
-    existing_options = case.get("artifact_options")
-    existing_options_by_key: dict[str, dict[str, Any]] = {}
-    if isinstance(existing_options, list):
-        for option in existing_options:
-            if not isinstance(option, Mapping):
-                continue
-            option_key = str(option.get("artifact_key", "")).strip()
-            if option_key:
-                existing_options_by_key[option_key] = dict(option)
-
-    merged_results: list[dict[str, Any]] = []
-    selected_artifacts: set[str] = set()
-    analysis_artifacts: set[str] = set()
-    options_by_key: dict[str, dict[str, Any]] = {}
-    csv_output_dir = ""
-
-    for image_id, image_csv_map in image_artifact_csv_paths.items():
-        image_state = image_states.get(image_id, {})
-        if not isinstance(image_state, Mapping):
-            continue
-
-        parse_results = image_state.get("parse_results")
-        if isinstance(parse_results, list):
-            for entry in parse_results:
-                if isinstance(entry, Mapping):
-                    merged_entry = dict(entry)
-                    merged_entry.setdefault("image_id", image_id)
-                    merged_results.append(merged_entry)
-
-        image_artifact_keys = {str(key) for key in image_csv_map if str(key).strip()}
-        selected_artifacts.update(image_artifact_keys)
-
-        image_analysis = image_state.get("analysis_artifacts")
-        if isinstance(image_analysis, list):
-            analysis_artifacts.update(
-                str(item)
-                for item in image_analysis
-                if str(item).strip() in image_artifact_keys
-            )
-        else:
-            analysis_artifacts.update(existing_analysis_set & image_artifact_keys)
-
-        image_options = image_state.get("artifact_options")
-        if isinstance(image_options, list):
-            for option in image_options:
-                if not isinstance(option, Mapping):
-                    continue
-                option_key = str(option.get("artifact_key", "")).strip()
-                if option_key in image_artifact_keys:
-                    options_by_key[option_key] = dict(option)
-        for option_key, option in existing_options_by_key.items():
-            if option_key in image_artifact_keys and option_key not in options_by_key:
-                options_by_key[option_key] = dict(option)
-
-        if not csv_output_dir:
-            csv_output_dir = str(image_state.get("csv_output_dir", "")).strip()
-
     aggregate = {
-        "parse_results": merged_results,
         "image_artifact_csv_paths": image_artifact_csv_paths,
-        "artifact_csv_paths": legacy_artifact_csv_paths,
-        "selected_artifacts": sorted(selected_artifacts),
-        "analysis_artifacts": sorted(analysis_artifacts),
-        "artifact_options": list(options_by_key.values()),
-        "csv_output_dir": csv_output_dir,
     }
 
-    case.update(aggregate)
+    case["image_artifact_csv_paths"] = image_artifact_csv_paths
+    for stale_key in (
+        "parse_results",
+        "artifact_csv_paths",
+        "selected_artifacts",
+        "analysis_artifacts",
+        "artifact_options",
+        "csv_output_dir",
+    ):
+        case.pop(stale_key, None)
     return aggregate
 
 

@@ -138,15 +138,39 @@ def resolve_case_parsed_dir(case: dict[str, Any]) -> Path:
     Returns:
         Path to the parsed CSV directory.
     """
-    csv_output_dir = str(case.get("csv_output_dir", "")).strip()
-    if csv_output_dir:
-        return Path(csv_output_dir)
-
     csv_paths = collect_case_csv_paths(case)
     if csv_paths:
         return csv_paths[0].parent
 
     return Path(case["case_dir"]) / "parsed"
+
+
+def _analysis_artifacts_from_image_state(
+    image_state: dict[str, Any],
+    available_artifacts: set[str],
+) -> list[str]:
+    """Resolve AI-enabled artifact keys from current per-image state."""
+    image_analysis = image_state.get("analysis_artifacts")
+    if isinstance(image_analysis, list):
+        return [
+            str(item).strip()
+            for item in image_analysis
+            if str(item).strip() in available_artifacts
+        ]
+
+    image_options = image_state.get("artifact_options")
+    if isinstance(image_options, list):
+        artifacts: list[str] = []
+        for option in image_options:
+            if not isinstance(option, dict):
+                continue
+            artifact_key = str(option.get("artifact_key", "")).strip()
+            mode = str(option.get("mode", "")).strip()
+            if artifact_key in available_artifacts and mode == "parse_and_ai":
+                artifacts.append(artifact_key)
+        return artifacts
+
+    return []
 
 
 def build_multi_image_analysis_payload_from_case(
@@ -179,13 +203,6 @@ def build_multi_image_analysis_payload_from_case(
     if not isinstance(image_artifact_csv_paths, dict) or not image_artifact_csv_paths:
         return None
 
-    case_analysis_artifacts = case.get("analysis_artifacts")
-    case_analysis_set = {
-        str(item).strip()
-        for item in case_analysis_artifacts
-        if str(item).strip()
-    } if isinstance(case_analysis_artifacts, list) else set()
-
     payload: list[dict[str, Any]] = []
     for image_id_raw, image_csv_map in image_artifact_csv_paths.items():
         image_id = str(image_id_raw).strip()
@@ -196,17 +213,11 @@ def build_multi_image_analysis_payload_from_case(
             continue
 
         image_state = image_states.get(image_id, {})
-        image_analysis = image_state.get("analysis_artifacts") if isinstance(image_state, dict) else None
-        if isinstance(image_analysis, list):
-            artifacts = [
-                str(item)
-                for item in image_analysis
-                if str(item).strip() in available_artifacts
-            ]
-        elif case_analysis_set:
-            artifacts = sorted(case_analysis_set & available_artifacts)
-        else:
-            artifacts = sorted(available_artifacts)
+        artifacts = (
+            _analysis_artifacts_from_image_state(image_state, available_artifacts)
+            if isinstance(image_state, dict)
+            else []
+        )
 
         if artifacts:
             payload.append({"image_id": image_id, "artifacts": artifacts})

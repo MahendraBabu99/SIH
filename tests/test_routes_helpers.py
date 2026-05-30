@@ -420,7 +420,7 @@ class EvidenceHelperTests(unittest.TestCase):
         self.assertEqual(mapping["runkeys"], "/path/runkeys.csv")
 
     def test_collect_case_csv_paths_handles_list_values(self) -> None:
-        """collect_case_csv_paths should collect all paths from list-valued entries."""
+        """collect_case_csv_paths should collect list-valued image CSV entries."""
         with TemporaryDirectory() as tmpdir:
             csv1 = Path(tmpdir) / "evtx_Security.csv"
             csv2 = Path(tmpdir) / "evtx_System.csv"
@@ -428,8 +428,10 @@ class EvidenceHelperTests(unittest.TestCase):
             csv2.write_text("col\n2\n", encoding="utf-8")
             case = {
                 "case_dir": tmpdir,
-                "artifact_csv_paths": {"evtx": [str(csv1), str(csv2)]},
-                "parse_results": [],
+                "image_artifact_csv_paths": {
+                    "img1": {"evtx": [str(csv1), str(csv2)]},
+                },
+                "image_states": {},
             }
             result = routes_evidence.collect_case_csv_paths(case)
             resolved = {p.name for p in result}
@@ -488,16 +490,18 @@ class EvidenceHelperTests(unittest.TestCase):
             result = routes_evidence.resolve_case_csv_output_dir(case, config)
         self.assertEqual(result, output_root / "case1" / "parsed")
 
-    def test_collect_case_csv_paths_from_artifact_csv_paths(self) -> None:
+    def test_collect_case_csv_paths_from_image_artifact_csv_paths(self) -> None:
         with TemporaryDirectory() as tmpdir:
             case_dir = Path(tmpdir)
-            csv_path = case_dir / "parsed" / "runkeys.csv"
+            csv_path = case_dir / "images" / "img1" / "parsed" / "runkeys.csv"
             csv_path.parent.mkdir(parents=True, exist_ok=True)
             csv_path.write_text("data", encoding="utf-8")
             case = {
                 "case_dir": case_dir,
-                "artifact_csv_paths": {"runkeys": str(csv_path)},
-                "parse_results": [],
+                "image_artifact_csv_paths": {
+                    "img1": {"runkeys": str(csv_path)},
+                },
+                "image_states": {},
             }
             result = routes_evidence.collect_case_csv_paths(case)
         self.assertEqual(len(result), 1)
@@ -509,7 +513,7 @@ class EvidenceHelperTests(unittest.TestCase):
             parsed_dir = case_dir / "parsed"
             parsed_dir.mkdir()
             (parsed_dir / "test.csv").write_text("data", encoding="utf-8")
-            case = {"case_dir": case_dir, "artifact_csv_paths": {}, "parse_results": []}
+            case = {"case_dir": case_dir, "image_states": {}, "image_artifact_csv_paths": {}}
             result = routes_evidence.collect_case_csv_paths(case)
         self.assertEqual(len(result), 1)
 
@@ -788,14 +792,24 @@ class TaskHelperTests(unittest.TestCase):
             result = routes_tasks.resolve_case_investigation_context(case)
         self.assertEqual(result, "")
 
-    def test_resolve_case_parsed_dir_from_csv_output_dir(self) -> None:
-        case = {"case_dir": "/tmp/fake", "csv_output_dir": "/custom/output", "artifact_csv_paths": {}, "parse_results": []}
-        result = routes_tasks.resolve_case_parsed_dir(case)
-        self.assertEqual(result, Path("/custom/output"))
+    def test_resolve_case_parsed_dir_from_image_csv_output_dir(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            csv_dir = Path(tmpdir) / "custom" / "parsed"
+            csv_dir.mkdir(parents=True)
+            (csv_dir / "runkeys.csv").write_text("data", encoding="utf-8")
+            case = {
+                "case_dir": tmpdir,
+                "image_states": {
+                    "img1": {"csv_output_dir": str(csv_dir)},
+                },
+                "image_artifact_csv_paths": {},
+            }
+            result = routes_tasks.resolve_case_parsed_dir(case)
+        self.assertEqual(result, csv_dir)
 
     def test_resolve_case_parsed_dir_default(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            case = {"case_dir": tmpdir, "csv_output_dir": "", "artifact_csv_paths": {}, "parse_results": []}
+            case = {"case_dir": tmpdir, "image_states": {}, "image_artifact_csv_paths": {}}
             result = routes_tasks.resolve_case_parsed_dir(case)
         self.assertEqual(result, Path(tmpdir) / "parsed")
 

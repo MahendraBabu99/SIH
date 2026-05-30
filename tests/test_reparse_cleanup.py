@@ -26,6 +26,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     ImmediateThread,
     FAKE_HASHES,
+    first_case_image_id,
     first_image_parse_url,
 )
 import app.routes as routes
@@ -250,9 +251,17 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 202)
         # With ImmediateThread, parsing completes synchronously before the
-        # POST returns, so we verify parse_results directly.
-        self.assertTrue(routes.CASE_STATES[case_id].get("parse_results"),
-                        "Expected parse_results to be populated after synchronous parse")
+        # POST returns, so we verify image-scoped parse results directly.
+        image_state = self._first_image_state(case_id)
+        self.assertTrue(
+            image_state.get("parse_results"),
+            "Expected image-scoped parse_results after synchronous parse",
+        )
+
+    def _first_image_state(self, case_id: str) -> dict:
+        """Return the first image state for a test case."""
+        image_id = first_case_image_id(case_id)
+        return routes.CASE_STATES[case_id]["image_states"][image_id]
 
     def test_reparse_removes_old_csvs_from_disk(self) -> None:
         """A second parse should delete CSV files from the first parse."""
@@ -265,13 +274,13 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
             # First parse: runkeys + prefetch
             self._parse(case_id, ["runkeys", "prefetch"])
             # In multi-image layout, CSVs are under images/<id>/parsed/
-            parsed_dir = Path(routes.CASE_STATES[case_id]["csv_output_dir"])
+            parsed_dir = Path(self._first_image_state(case_id)["csv_output_dir"])
             self.assertTrue((parsed_dir / "runkeys.csv").exists())
             self.assertTrue((parsed_dir / "prefetch.csv").exists())
 
             # Second parse: only amcache
             self._parse(case_id, ["amcache"])
-            parsed_dir = Path(routes.CASE_STATES[case_id]["csv_output_dir"])
+            parsed_dir = Path(self._first_image_state(case_id)["csv_output_dir"])
             # New CSV should exist
             self.assertTrue((parsed_dir / "amcache.csv").exists())
 
@@ -286,14 +295,18 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
 
             # First parse
             self._parse(case_id, ["runkeys"])
-            self.assertTrue(len(case["parse_results"]) > 0)
-            self.assertIn("runkeys", case["artifact_csv_paths"])
+            image_state = self._first_image_state(case_id)
+            self.assertTrue(len(image_state["parse_results"]) > 0)
+            self.assertIn("runkeys", image_state["artifact_csv_paths"])
+            self.assertNotIn("parse_results", case)
+            self.assertNotIn("artifact_csv_paths", case)
 
             # Second parse with different artifact
             self._parse(case_id, ["prefetch"])
+            image_state = self._first_image_state(case_id)
             # Old artifact should not be in csv_paths
-            self.assertNotIn("runkeys", case["artifact_csv_paths"])
-            self.assertIn("prefetch", case["artifact_csv_paths"])
+            self.assertNotIn("runkeys", image_state["artifact_csv_paths"])
+            self.assertIn("prefetch", image_state["artifact_csv_paths"])
 
     def test_reparse_removes_downstream_analysis_files(self) -> None:
         """Re-parse should handle downstream files appropriately.
@@ -313,15 +326,17 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
             case = routes.CASE_STATES[case_id]
 
             # Verify parse results exist
-            self.assertTrue(case.get("parse_results"))
-            self.assertIn("runkeys", case.get("artifact_csv_paths", {}))
+            image_state = self._first_image_state(case_id)
+            self.assertTrue(image_state.get("parse_results"))
+            self.assertIn("runkeys", image_state.get("artifact_csv_paths", {}))
 
             # Second parse with different artifact
             self._parse(case_id, ["prefetch"])
+            image_state = self._first_image_state(case_id)
 
             # Parse results should be from the second parse
-            self.assertTrue(case.get("parse_results"))
-            self.assertIn("prefetch", case.get("artifact_csv_paths", {}))
+            self.assertTrue(image_state.get("parse_results"))
+            self.assertIn("prefetch", image_state.get("artifact_csv_paths", {}))
 
     def test_reparse_clears_analysis_results_in_memory(self) -> None:
         """In-memory parse state should be refreshed on re-parse.
@@ -339,14 +354,16 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
 
             # First parse
             self._parse(case_id, ["runkeys"])
-            self.assertTrue(len(case["parse_results"]) > 0)
+            image_state = self._first_image_state(case_id)
+            self.assertTrue(len(image_state["parse_results"]) > 0)
 
             # Second parse with different artifact
             self._parse(case_id, ["prefetch"])
+            image_state = self._first_image_state(case_id)
 
             # Parse results should reflect the second parse
-            self.assertTrue(len(case["parse_results"]) > 0)
-            self.assertIn("prefetch", case["artifact_csv_paths"])
+            self.assertTrue(len(image_state["parse_results"]) > 0)
+            self.assertIn("prefetch", image_state["artifact_csv_paths"])
 
     def _apply_patches(self):
         """Return a context manager that applies all patches at once."""
