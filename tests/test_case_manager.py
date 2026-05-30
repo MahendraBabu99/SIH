@@ -28,6 +28,9 @@ class TestCaseManagerCreateCase(unittest.TestCase):
             self.assertTrue(case_dir.is_dir())
             self.assertTrue((case_dir / "images").is_dir())
             self.assertTrue((case_dir / "reports").is_dir())
+            self.assertFalse((case_dir / "evidence").exists())
+            self.assertFalse((case_dir / "parsed").exists())
+            self.assertFalse((case_dir / "parsed_deduplicated").exists())
 
     def test_create_case_initialises_audit(self) -> None:
         with TemporaryDirectory(prefix="aift-cm-") as tmp:
@@ -199,107 +202,6 @@ class TestCaseManagerGetImageDir(unittest.TestCase):
             case_id = cm.create_case()
             with self.assertRaises(FileNotFoundError):
                 cm.get_image_dir(case_id, "nonexistent-image-id")
-
-
-class TestCaseManagerLegacy(unittest.TestCase):
-    """Tests for legacy case detection and migration."""
-
-    @staticmethod
-    def _create_legacy_case(base: Path, case_id: str) -> Path:
-        """Create a fake legacy case directory with flat structure."""
-        case_dir = base / case_id
-        case_dir.mkdir(parents=True)
-        (case_dir / "evidence").mkdir()
-        (case_dir / "parsed").mkdir()
-        # Note: parsed_deduplicated may or may not exist in legacy cases
-        # Write a marker file into evidence and parsed
-        (case_dir / "evidence" / "disk.E01").write_text("fake evidence")
-        (case_dir / "parsed" / "evtx.csv").write_text("ts,msg\n2025-01-01,hello")
-        return case_dir
-
-    def test_is_legacy_case_true(self) -> None:
-        with TemporaryDirectory(prefix="aift-cm-") as tmp:
-            case_id = "legacy-case-001"
-            self._create_legacy_case(Path(tmp), case_id)
-            cm = CaseManager(tmp)
-            self.assertTrue(cm.is_legacy_case(case_id))
-
-    def test_is_legacy_case_false(self) -> None:
-        with TemporaryDirectory(prefix="aift-cm-") as tmp:
-            cm = CaseManager(tmp)
-            case_id = cm.create_case()
-            self.assertFalse(cm.is_legacy_case(case_id))
-
-    def test_migrate_legacy_case(self) -> None:
-        with TemporaryDirectory(prefix="aift-cm-") as tmp:
-            case_id = "legacy-migrate-001"
-            self._create_legacy_case(Path(tmp), case_id)
-            cm = CaseManager(tmp)
-
-            image_id = cm.migrate_legacy_case(case_id)
-            case_dir = Path(tmp) / case_id
-
-            # Legacy dirs should be gone from root
-            self.assertFalse((case_dir / "evidence").is_dir())
-            self.assertFalse((case_dir / "parsed").is_dir())
-
-            # Data should be under images/<image_id>/
-            image_dir = case_dir / "images" / image_id
-            self.assertTrue((image_dir / "evidence").is_dir())
-            self.assertTrue((image_dir / "parsed").is_dir())
-            self.assertTrue((image_dir / "parsed_deduplicated").is_dir())
-
-            # Files should be preserved
-            self.assertTrue((image_dir / "evidence" / "disk.E01").is_file())
-            self.assertEqual(
-                (image_dir / "evidence" / "disk.E01").read_text(),
-                "fake evidence",
-            )
-            self.assertTrue((image_dir / "parsed" / "evtx.csv").is_file())
-
-            # Metadata should exist
-            meta = json.loads(
-                (image_dir / "metadata.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(meta["image_id"], image_id)
-            self.assertEqual(meta["label"], "migrated")
-
-            # reports/ should exist
-            self.assertTrue((case_dir / "reports").is_dir())
-
-    def test_migrate_legacy_case_logs_audit(self) -> None:
-        with TemporaryDirectory(prefix="aift-cm-") as tmp:
-            case_id = "legacy-audit-001"
-            self._create_legacy_case(Path(tmp), case_id)
-            cm = CaseManager(tmp)
-            cm.migrate_legacy_case(case_id)
-
-            audit_file = Path(tmp) / case_id / "audit.jsonl"
-            entries = [
-                json.loads(line)
-                for line in audit_file.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            migration_entries = [
-                e for e in entries if e["action"] == "legacy_case_migrated"
-            ]
-            self.assertEqual(len(migration_entries), 1)
-
-    def test_migrate_non_legacy_case_raises(self) -> None:
-        with TemporaryDirectory(prefix="aift-cm-") as tmp:
-            cm = CaseManager(tmp)
-            case_id = cm.create_case()
-            with self.assertRaises(ValueError):
-                cm.migrate_legacy_case(case_id)
-
-    def test_is_legacy_case_false_after_migration(self) -> None:
-        with TemporaryDirectory(prefix="aift-cm-") as tmp:
-            case_id = "legacy-check-002"
-            self._create_legacy_case(Path(tmp), case_id)
-            cm = CaseManager(tmp)
-            self.assertTrue(cm.is_legacy_case(case_id))
-            cm.migrate_legacy_case(case_id)
-            self.assertFalse(cm.is_legacy_case(case_id))
 
 
 class TestCaseManagerPathTraversal(unittest.TestCase):

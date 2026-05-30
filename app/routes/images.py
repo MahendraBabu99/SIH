@@ -71,8 +71,7 @@ def _get_or_create_default_image(case_id: str) -> str | None:
     """Return the first image ID for a case, creating one if none exist.
 
     If the case has no images yet, a default image is created with the
-    label ``"default"``.  If the case uses the legacy flat layout, it is
-    migrated first.
+    label ``"default"``.
 
     Args:
         case_id: UUID of the case.
@@ -85,10 +84,6 @@ def _get_or_create_default_image(case_id: str) -> str | None:
     case_dir = CASES_ROOT / case_id
     if not case_dir.is_dir():
         return None
-
-    # Migrate legacy flat layout if needed.
-    if cm.is_legacy_case(case_id):
-        return cm.migrate_legacy_case(case_id)
 
     # Check for existing images.
     try:

@@ -227,9 +227,8 @@ def image_asset(filename: str) -> Response | tuple[Response, int]:
 def create_case() -> tuple[Response, int]:
     """Create a new forensic analysis case.
 
-    Uses :class:`~app.case_manager.CaseManager` to create the multi-image
-    directory layout (``images/``, ``reports/``, ``audit.jsonl``).  For
-    backward compatibility, the response is unchanged: ``case_id`` and
+    Creates the current image-scoped directory layout (``images/``,
+    ``reports/``, ``audit.jsonl``).  The response contains ``case_id`` and
     ``case_name``.
 
     Returns:
@@ -258,11 +257,6 @@ def create_case() -> tuple[Response, int]:
     case_dir.mkdir(parents=True, exist_ok=True)
     (case_dir / "images").mkdir(exist_ok=True)
     (case_dir / "reports").mkdir(exist_ok=True)
-
-    # Keep legacy directories for backward compatibility with code that
-    # still references case_dir/evidence and case_dir/parsed directly.
-    (case_dir / "evidence").mkdir(exist_ok=True)
-    (case_dir / "parsed").mkdir(exist_ok=True)
 
     try:
         log_file_path = register_case_log_handler(case_id=case_id, case_dir=case_dir)

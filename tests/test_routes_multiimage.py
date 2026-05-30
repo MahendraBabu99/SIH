@@ -103,6 +103,9 @@ class MultiImageRoutesTests(unittest.TestCase):
             case_dir = self.cases_root / case_id
             self.assertTrue((case_dir / "images").is_dir())
             self.assertTrue((case_dir / "reports").is_dir())
+            self.assertFalse((case_dir / "evidence").exists())
+            self.assertFalse((case_dir / "parsed").exists())
+            self.assertFalse((case_dir / "parsed_deduplicated").exists())
 
     def test_add_image(self) -> None:
         """POST /api/cases/<id>/images adds an image slot."""
@@ -339,7 +342,7 @@ class MultiImageRoutesTests(unittest.TestCase):
             sse_text = sse_resp.get_data(as_text=True)
             self.assertIn("parse_completed", sse_text)
 
-    def test_backward_compat_evidence_creates_default_image(self) -> None:
+    def test_case_level_evidence_creates_default_image(self) -> None:
         """POST /api/cases/<id>/evidence auto-creates a default image."""
         evidence_path = Path(self.temp_dir.name) / "test.E01"
         evidence_path.write_bytes(b"test-evidence")
@@ -360,6 +363,35 @@ class MultiImageRoutesTests(unittest.TestCase):
             images_dir = self.cases_root / case_id / "images"
             image_dirs = [d for d in images_dir.iterdir() if d.is_dir()]
             self.assertTrue(len(image_dirs) > 0, "Expected a default image directory to be created")
+
+    def test_case_level_evidence_does_not_migrate_root_flat_directories(self) -> None:
+        """Default-image intake ignores root flat directories left on disk."""
+        evidence_path = Path(self.temp_dir.name) / "current.E01"
+        evidence_path.write_bytes(b"current-evidence")
+
+        with self._patch_context():
+            case_id = self._create_case()
+            case_dir = self.cases_root / case_id
+            (case_dir / "images").rmdir()
+            root_evidence = case_dir / "evidence"
+            root_parsed = case_dir / "parsed"
+            root_evidence.mkdir()
+            root_parsed.mkdir()
+            (root_evidence / "old-disk.E01").write_text("old evidence", encoding="utf-8")
+            (root_parsed / "old.csv").write_text("col\nold\n", encoding="utf-8")
+
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(evidence_path)},
+            )
+            self.assertEqual(resp.status_code, 200)
+
+            self.assertTrue((root_evidence / "old-disk.E01").is_file())
+            image_id = first_case_image_id(case_id)
+            image_dir = self.cases_root / case_id / "images" / image_id
+            self.assertTrue((image_dir / "evidence").is_dir())
+            self.assertFalse((image_dir / "evidence" / "old-disk.E01").exists())
+            self.assertFalse(list(image_dir.rglob("old.csv")))
 
     def test_single_image_parse_uses_default_image(self) -> None:
         """Single-image cases parse through the image-specific endpoint."""

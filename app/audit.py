@@ -90,7 +90,6 @@ ACTION_TYPES = frozenset(
         "config_changed",
         "image_added",
         "image_deleted",
-        "legacy_case_migrated",
         "automation_started",
         "automation_completed",
         "automation_failed",

@@ -17,8 +17,8 @@ Directory layout::
             metadata.json
         reports/
 
-The :class:`CaseManager` handles creation, enumeration, legacy detection,
-and migration of case directories.
+The :class:`CaseManager` handles creation and enumeration of current
+image-scoped case directories.
 
 Attributes:
     logger: Module-level logger for diagnostic messages.
@@ -327,119 +327,6 @@ class CaseManager:
                 f"Image directory not found: {image_dir}"
             )
         return image_dir
-
-    def is_legacy_case(self, case_id: str) -> bool:
-        """Check whether a case uses the old flat directory layout.
-
-        A legacy case has ``evidence/`` directly under the case
-        directory instead of under ``images/<image_id>/``.
-
-        Args:
-            case_id: UUID of the case.
-
-        Returns:
-            *True* if the case has a flat ``evidence/`` directory at
-            its root level; *False* otherwise.
-
-        Raises:
-            FileNotFoundError: If the case directory does not exist.
-        """
-        case_dir = self._require_case_dir(case_id)
-        return (case_dir / "evidence").is_dir() and not (case_dir / "images").is_dir()
-
-    # ------------------------------------------------------------------
-    # Legacy migration
-    # ------------------------------------------------------------------
-
-    def migrate_legacy_case(self, case_id: str) -> str:
-        """Migrate a flat (legacy) case to the multi-image layout.
-
-        Moves ``evidence/``, ``parsed/``, and ``parsed_deduplicated/``
-        from directly under the case directory into a new
-        ``images/<image_id>/`` subdirectory.  The ``reports/`` directory
-        is created if absent.
-
-        Args:
-            case_id: UUID of the case.
-
-        Returns:
-            The image UUID assigned to the migrated data.
-
-        Raises:
-            FileNotFoundError: If the case directory does not exist.
-            ValueError: If the case is not a legacy case.
-        """
-        case_dir = self._require_case_dir(case_id)
-
-        if not self.is_legacy_case(case_id):
-            raise ValueError(
-                f"Case {case_id} is not a legacy case (no evidence/ at root)."
-            )
-
-        image_id = str(uuid4())
-        images_dir = case_dir / "images"
-        images_dir.mkdir(exist_ok=True)
-        image_dir = images_dir / image_id
-        image_dir.mkdir(exist_ok=True)
-
-        # Move each legacy subdirectory into the image slot.
-        # Track completed moves so we can roll back on partial failure.
-        completed_moves: list[tuple[Path, Path]] = []
-        try:
-            for subdir_name in ("evidence", "parsed", "parsed_deduplicated"):
-                src = case_dir / subdir_name
-                dst = image_dir / subdir_name
-                if src.is_dir():
-                    shutil.move(str(src), str(dst))
-                    completed_moves.append((src, dst))
-                    logger.info(
-                        "Migrated %s -> %s", src, dst,
-                    )
-                else:
-                    # Ensure the target directory exists even if the source
-                    # did not.
-                    dst.mkdir(exist_ok=True)
-        except OSError as exc:
-            logger.error(
-                "Migration failed for case %s: %s. Attempting rollback of "
-                "%d completed move(s).",
-                case_id, exc, len(completed_moves),
-            )
-            for src, dst in reversed(completed_moves):
-                try:
-                    shutil.move(str(dst), str(src))
-                    logger.info("Rolled back %s -> %s", dst, src)
-                except OSError as rollback_exc:
-                    logger.error(
-                        "Failed to rollback migration move %s -> %s: %s. "
-                        "Manual recovery required.",
-                        dst, src, rollback_exc,
-                    )
-            raise
-
-        # Write image metadata.
-        metadata = {
-            "label": "migrated",
-            "image_id": image_id,
-            "created": _utc_now_iso8601(),
-        }
-        (image_dir / "metadata.json").write_text(
-            json.dumps(metadata, indent=2), encoding="utf-8",
-        )
-
-        # Ensure reports/ exists at case level.
-        (case_dir / "reports").mkdir(exist_ok=True)
-
-        # Audit the migration.
-        audit = AuditLogger(case_dir, session_id=self._session_id)
-        audit.log("legacy_case_migrated", {
-            "case_id": case_id,
-            "image_id": image_id,
-            "migrated_dirs": ["evidence", "parsed", "parsed_deduplicated"],
-        })
-
-        logger.info("Migrated legacy case %s to multi-image layout", case_id)
-        return image_id
 
     # ------------------------------------------------------------------
     # Internal helpers
