@@ -766,6 +766,52 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(rows[0]["A"], "a1")
         self.assertEqual(rows[1]["A"], "a2")
 
+    def test_evtx_rotated_parts_share_expanded_channel_headers(self) -> None:
+        """Later fields in rotated EVTX parts should be added to earlier parts."""
+
+        class EvtxTarget:
+            def evtx(self) -> list[FakeRecord]:
+                return [
+                    FakeRecord({"channel": "Security", "event_id": 4624, "message": "first"}),
+                    FakeRecord(
+                        {
+                            "channel": "Security",
+                            "event_id": 4625,
+                            "message": "second",
+                            "correlation_id": "abc-123",
+                        }
+                    ),
+                ]
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(EvtxTarget(), Path(temp_dir), audit)
+            with patch(_PATCH_EVTX_CAP, 1):
+                result = parser.parse_artifact("evtx")
+
+            first_part = Path(temp_dir) / "parsed" / "evtx_Security.csv"
+            second_part = Path(temp_dir) / "parsed" / "evtx_Security_part2.csv"
+
+            with first_part.open("r", newline="", encoding="utf-8") as fh:
+                first_reader = csv.DictReader(fh)
+                first_headers = list(first_reader.fieldnames or [])
+                first_rows = list(first_reader)
+            with second_part.open("r", newline="", encoding="utf-8") as fh:
+                second_reader = csv.DictReader(fh)
+                second_headers = list(second_reader.fieldnames or [])
+                second_rows = list(second_reader)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["record_count"], 2)
+        self.assertEqual(first_headers, second_headers)
+        self.assertIn("correlation_id", first_headers)
+        self.assertEqual(len(first_rows), 1)
+        self.assertEqual(len(second_rows), 1)
+        self.assertEqual(first_rows[0]["correlation_id"], "")
+        self.assertEqual(second_rows[0]["correlation_id"], "abc-123")
+        self.assertEqual(first_rows[0]["message"], "first")
+        self.assertEqual(second_rows[0]["message"], "second")
+
     def test_evtx_schema_expansion_across_channels(self) -> None:
         """Schema expansion works independently per channel group."""
 

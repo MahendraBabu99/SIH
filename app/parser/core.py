@@ -600,7 +600,9 @@ class ForensicParser:
 
         Records are grouped by their channel or provider name.  When a
         single group exceeds :data:`EVTX_MAX_RECORDS_PER_FILE`, a new
-        part file is created.
+        part file is created.  Rotated parts for the same group share a
+        mutable schema so fields discovered in later parts can be applied
+        to every earlier header during final rewrite.
 
         Args:
             artifact_key: Artifact key for filename construction.
@@ -614,6 +616,9 @@ class ForensicParser:
             Tuple of ``(csv_paths, total_record_count)``.
         """
         writers: dict[str, dict[str, Any]] = {}
+        # Track all rotated parts per channel so a schema expansion in any
+        # later part rewrites every earlier part with the final channel header.
+        channel_writer_states: dict[str, list[dict[str, Any]]] = {}
         all_writer_states: list[dict[str, Any]] = []
         csv_paths: list[Path] = []
         record_count = 0
@@ -642,6 +647,7 @@ class ForensicParser:
                 if writer_state is None:
                     writer_state = self._open_evtx_writer(artifact_key=artifact_key, group_name=group_name, part=1)
                     writers[group_name] = writer_state
+                    channel_writer_states.setdefault(group_name, []).append(writer_state)
                     csv_paths.append(writer_state["path"])
                     if created_csv_paths is not None:
                         created_csv_paths.append(writer_state["path"])
@@ -656,10 +662,12 @@ class ForensicParser:
                         group_name=group_name,
                         part=next_part,
                     )
-                    # Carry forward accumulated fieldnames from previous part.
+                    # Share schema containers across rotated parts.  Later
+                    # field discoveries mutate the same objects, letting every
+                    # part for the channel rewrite with identical headers.
                     if old_state["fieldnames"] is not None:
-                        writer_state["fieldnames"] = list(old_state["fieldnames"])
-                        writer_state["fieldnames_set"] = set(old_state["fieldnames_set"])
+                        writer_state["fieldnames"] = old_state["fieldnames"]
+                        writer_state["fieldnames_set"] = old_state["fieldnames_set"]
                         writer_state["writer"] = csv.DictWriter(
                             writer_state["handle"],
                             fieldnames=writer_state["fieldnames"],
@@ -667,6 +675,7 @@ class ForensicParser:
                         )
                         writer_state["writer"].writeheader()
                     writers[group_name] = writer_state
+                    channel_writer_states.setdefault(group_name, []).append(writer_state)
                     csv_paths.append(writer_state["path"])
                     if created_csv_paths is not None:
                         created_csv_paths.append(writer_state["path"])
@@ -689,7 +698,8 @@ class ForensicParser:
                     if new_keys:
                         writer_state["fieldnames"].extend(new_keys)
                         writer_state["fieldnames_set"].update(new_keys)
-                        writer_state["headers_expanded"] = True
+                        for channel_state in channel_writer_states.get(group_name, ()):
+                            channel_state["headers_expanded"] = True
                         writer_state["writer"] = csv.DictWriter(
                             writer_state["handle"],
                             fieldnames=writer_state["fieldnames"],
