@@ -33,7 +33,7 @@ from .citations import match_column_name, timestamp_found_in_csv, timestamp_look
 from .constants import (
     AI_MAX_TOKENS, AI_RETRY_ATTEMPTS, AI_RETRY_BASE_DELAY,
     ARTIFACT_DEDUPLICATION_ENABLED, CITATION_SPOT_CHECK_LIMIT,
-    DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH, DEFAULT_ARTIFACT_PROMPT_TEMPLATE,
+    CSV_DATA_SECTION_RE, DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH, DEFAULT_ARTIFACT_PROMPT_TEMPLATE,
     DEFAULT_ARTIFACT_PROMPT_TEMPLATE_SMALL_CONTEXT, DEFAULT_CHUNK_MERGE_PROMPT_TEMPLATE,
     DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS, DEFAULT_SUMMARY_PROMPT_TEMPLATE,
     DEFAULT_SYSTEM_PROMPT, MAX_MERGE_ROUNDS, PROJECT_ROOT, TOKEN_CHAR_RATIO,
@@ -59,6 +59,9 @@ from .utils import (
 )
 
 LOGGER = logging.getLogger(__name__)
+_MIN_ANALYSIS_INPUT_TOKENS = 1
+_MIN_ANALYSIS_RESPONSE_TOKENS = 1
+_PREFERRED_MIN_ANALYSIS_INPUT_TOKENS = 1024
 
 try:
     from ..parser import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
@@ -72,6 +75,177 @@ except Exception as error:
     LINUX_ARTIFACT_REGISTRY: dict[str, dict[str, str]] = {}
 
 __all__ = ["AnalysisCancelledError", "ForensicAnalyzer"]
+
+
+def _resolve_non_overlapping_analysis_token_budget(
+    analysis_config: Mapping[str, Any],
+) -> tuple[int, int, int, int]:
+    """Resolve analysis token budgets so input, output, and safety do not overlap.
+
+    Args:
+        analysis_config: The ``analysis`` configuration mapping.
+
+    Returns:
+        A tuple of ``(ai_max_tokens, ai_response_max_tokens,
+        ai_input_safety_margin_tokens, ai_input_max_tokens)``.
+
+    Raises:
+        ValueError: If the configured context window cannot reserve at least
+            one input token and one response token.
+    """
+    ai_max_tokens = read_int_setting(analysis_config, "ai_max_tokens", AI_MAX_TOKENS, minimum=1)
+    if ai_max_tokens < _MIN_ANALYSIS_INPUT_TOKENS + _MIN_ANALYSIS_RESPONSE_TOKENS:
+        raise ValueError(
+            "analysis.ai_max_tokens must be at least 2 so analysis can reserve "
+            "both input and response tokens."
+        )
+
+    input_floor = min(
+        ai_max_tokens - _MIN_ANALYSIS_RESPONSE_TOKENS,
+        max(_PREFERRED_MIN_ANALYSIS_INPUT_TOKENS, int(ai_max_tokens * 0.1)),
+    )
+    input_floor = max(_MIN_ANALYSIS_INPUT_TOKENS, input_floor)
+
+    desired_safety_tokens = read_int_setting(
+        analysis_config,
+        "ai_input_safety_margin_tokens",
+        max(128, int(ai_max_tokens * 0.05)),
+        minimum=0,
+    )
+    max_safety_tokens = max(
+        0,
+        ai_max_tokens - input_floor - _MIN_ANALYSIS_RESPONSE_TOKENS,
+    )
+    safety_tokens = min(desired_safety_tokens, max_safety_tokens)
+    if safety_tokens < desired_safety_tokens:
+        LOGGER.warning(
+            "analysis.ai_input_safety_margin_tokens=%d exceeds the non-overlapping "
+            "context budget; clamped to %d.",
+            desired_safety_tokens,
+            safety_tokens,
+        )
+
+    configured_response_tokens = read_int_setting(analysis_config, "ai_response_max_tokens", 0, minimum=0)
+    desired_response_tokens = (
+        configured_response_tokens
+        if configured_response_tokens > 0
+        else max(4096, int(ai_max_tokens * 0.2))
+    )
+    max_response_tokens = max(
+        _MIN_ANALYSIS_RESPONSE_TOKENS,
+        ai_max_tokens - safety_tokens - input_floor,
+    )
+    response_tokens = min(desired_response_tokens, max_response_tokens)
+    if response_tokens < desired_response_tokens:
+        LOGGER.warning(
+            "analysis.ai_response_max_tokens=%d exceeds the non-overlapping "
+            "context budget; clamped to %d.",
+            desired_response_tokens,
+            response_tokens,
+        )
+
+    input_tokens = ai_max_tokens - safety_tokens - response_tokens
+    if input_tokens < _MIN_ANALYSIS_INPUT_TOKENS:
+        raise ValueError(
+            "analysis.ai_max_tokens leaves no room for prompt input after "
+            "reserving response and safety tokens."
+        )
+
+    return ai_max_tokens, response_tokens, safety_tokens, input_tokens
+
+
+def _format_attachment_evidence_notice(attachments: list[Mapping[str, str]]) -> str:
+    """Build the prompt notice used when CSV evidence is delivered as a file.
+
+    Args:
+        attachments: Attachment descriptors that will be sent with the
+            provider call.
+
+    Returns:
+        A short prompt paragraph that points the model to the CSV attachment.
+    """
+    attachment_names = [
+        str(attachment.get("name", "")).strip()
+        for attachment in attachments
+        if str(attachment.get("name", "")).strip()
+    ]
+    if attachment_names:
+        joined_names = ", ".join(attachment_names)
+        return (
+            f"The full CSV evidence is provided as file attachment(s): {joined_names}. "
+            "Use the attached CSV as the authoritative row source for citations."
+        )
+    return (
+        "The full CSV evidence is provided as a file attachment. "
+        "Use the attached CSV as the authoritative row source for citations."
+    )
+
+
+def _strip_leading_csv_closing_fence(context_suffix: str) -> str:
+    """Remove a dangling Markdown fence from a CSV replacement suffix.
+
+    Args:
+        context_suffix: Text that follows the extracted CSV body.
+
+    Returns:
+        The suffix without a leading standalone closing code fence.
+    """
+    if not context_suffix:
+        return ""
+
+    stripped_suffix = context_suffix.lstrip("\r\n")
+    lines = stripped_suffix.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "```":
+        return context_suffix
+
+    remaining_suffix = "".join(lines[1:]).lstrip("\r\n").rstrip()
+    if not remaining_suffix:
+        return ""
+    return f"\n\n{remaining_suffix}"
+
+
+def _replace_inline_csv_with_attachment_reference(
+    user_prompt: str,
+    attachments: list[Mapping[str, str]],
+) -> tuple[str, bool]:
+    """Replace inline CSV evidence with a file-attachment reference.
+
+    Args:
+        user_prompt: Fully rendered artifact prompt that may contain inline
+            CSV evidence rows.
+        attachments: Attachment descriptors that will carry the CSV evidence.
+
+    Returns:
+        A tuple of ``(prompt, replaced)``. ``replaced`` is ``True`` when an
+        inline CSV section was found and removed.
+    """
+    if not attachments:
+        return user_prompt, False
+
+    notice = _format_attachment_evidence_notice(attachments)
+    marker_match = CSV_DATA_SECTION_RE.search(user_prompt)
+    if marker_match is not None:
+        prompt_prefix = user_prompt[: marker_match.end()]
+        csv_data, context_suffix = split_csv_and_suffix(user_prompt[marker_match.end():])
+        if csv_data.strip():
+            context_suffix = _strip_leading_csv_closing_fence(context_suffix)
+            return f"{prompt_prefix}{notice}{context_suffix}", True
+
+    row_ref_index = user_prompt.find("\nrow_ref,")
+    if row_ref_index >= 0:
+        csv_start = row_ref_index + 1
+    elif user_prompt.startswith("row_ref,"):
+        csv_start = 0
+    else:
+        csv_start = -1
+
+    if csv_start >= 0:
+        prompt_prefix = user_prompt[:csv_start]
+        csv_data, context_suffix = split_csv_and_suffix(user_prompt[csv_start:])
+        if csv_data.strip():
+            return f"{prompt_prefix}{notice}{context_suffix}", True
+
+    return user_prompt, False
 
 
 class AnalysisCancelledError(Exception):
@@ -187,37 +361,19 @@ class ForensicAnalyzer:
         if not isinstance(analysis_config, Mapping):
             analysis_config = {}
 
-        self.ai_max_tokens = read_int_setting(analysis_config, "ai_max_tokens", AI_MAX_TOKENS, minimum=1)
-        configured_response_tokens = read_int_setting(analysis_config, "ai_response_max_tokens", 0, minimum=0)
-        if configured_response_tokens > 0:
-            self.ai_response_max_tokens = configured_response_tokens
-        else:
-            self.ai_response_max_tokens = max(4096, int(self.ai_max_tokens * 0.2))
-        self.ai_input_safety_margin_tokens = read_int_setting(
-            analysis_config,
-            "ai_input_safety_margin_tokens",
-            max(128, int(self.ai_max_tokens * 0.05)),
-            minimum=0,
-        )
-        configured_input_budget = self.ai_max_tokens - self.ai_response_max_tokens - self.ai_input_safety_margin_tokens
-        minimum_input_budget = min(self.ai_max_tokens, max(1024, int(self.ai_max_tokens * 0.1)))
-        if configured_input_budget < minimum_input_budget:
-            self.ai_input_max_tokens = minimum_input_budget
-            self.logger.warning(
-                "analysis.ai_max_tokens leaves only %d input tokens after reserving response/safety tokens; "
-                "using conservative input budget %d.",
-                configured_input_budget,
-                self.ai_input_max_tokens,
-            )
-        else:
-            self.ai_input_max_tokens = configured_input_budget
+        (
+            self.ai_max_tokens,
+            self.ai_response_max_tokens,
+            self.ai_input_safety_margin_tokens,
+            self.ai_input_max_tokens,
+        ) = _resolve_non_overlapping_analysis_token_budget(analysis_config)
         legacy_shortened = read_int_setting(
             analysis_config, "statistics_section_cutoff_tokens", DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS, minimum=1,
         )
         self.shortened_prompt_cutoff_tokens = read_int_setting(
             analysis_config, "shortened_prompt_cutoff_tokens", legacy_shortened, minimum=1,
         )
-        self.chunk_csv_budget = int(self.ai_input_max_tokens * TOKEN_CHAR_RATIO * 0.6)
+        self.chunk_csv_budget = max(1, int(self.ai_input_max_tokens * TOKEN_CHAR_RATIO * 0.6))
         self.citation_spot_check_limit = read_int_setting(
             analysis_config, "citation_spot_check_limit", CITATION_SPOT_CHECK_LIMIT, minimum=1,
         )
@@ -887,6 +1043,7 @@ class ForensicAnalyzer:
             artifact_ai_column_projections=self.artifact_ai_column_projections,
             artifact_deduplication_enabled=self.artifact_deduplication_enabled,
             ai_max_tokens=self.ai_max_tokens,
+            ai_input_max_tokens=self.ai_input_max_tokens,
             shortened_prompt_cutoff_tokens=self.shortened_prompt_cutoff_tokens,
             case_dir=self.case_dir,
             audit_log_fn=self._audit_log,
@@ -942,19 +1099,41 @@ class ForensicAnalyzer:
                     analysis_scope_id=self._current_analysis_scope_id() or None,
                 )
             ]
+            analyze_with_progress = getattr(self.ai_provider, "analyze_with_progress", None)
+            analyze_with_attachments = getattr(self.ai_provider, "analyze_with_attachments", None)
+            progress_accepts_attachments = False
+            if callable(analyze_with_progress) and progress_callback is not None:
+                sig = inspect.signature(analyze_with_progress)
+                progress_accepts_attachments = "attachments" in sig.parameters
+
+            attachment_delivery_available = bool(attachments) and (
+                progress_accepts_attachments or callable(analyze_with_attachments)
+            )
+            provider_prompt = artifact_prompt
+            attachments_for_provider: list[Mapping[str, str]] = []
+            if attachment_delivery_available:
+                provider_prompt, replaced_inline_csv = _replace_inline_csv_with_attachment_reference(
+                    artifact_prompt,
+                    attachments,
+                )
+                if replaced_inline_csv:
+                    attachments_for_provider = attachments
+                else:
+                    provider_prompt = artifact_prompt
 
             safe_key = self._scoped_artifact_filename_stem(artifact_key)
-            self._save_case_prompt(f"artifact_{safe_key}.md", self.system_prompt, artifact_prompt)
 
-            prompt_tokens_estimate = self._estimate_tokens(artifact_prompt) + self._estimate_tokens(self.system_prompt)
-            inlined_attachment_tokens_estimate = self._estimate_inlined_attachment_prompt_tokens(
-                artifact_prompt,
-                attachments,
-            )
-            effective_prompt_tokens_estimate = max(
-                prompt_tokens_estimate,
-                inlined_attachment_tokens_estimate or 0,
-            )
+            prompt_tokens_estimate = self._estimate_tokens(provider_prompt) + self._estimate_tokens(self.system_prompt)
+            inlined_attachment_tokens_estimate = None
+            if attachments_for_provider and (
+                not bool(getattr(self.ai_provider, "attach_csv_as_file", False))
+                or getattr(self.ai_provider, "_csv_attachment_supported", None) is False
+            ):
+                inlined_attachment_tokens_estimate = self._estimate_inlined_attachment_prompt_tokens(
+                    provider_prompt,
+                    attachments_for_provider,
+                )
+            effective_prompt_tokens_estimate = max(prompt_tokens_estimate, inlined_attachment_tokens_estimate or 0)
             if effective_prompt_tokens_estimate > self.ai_input_max_tokens:
                 budget_reason = "prompt"
                 if (
@@ -967,6 +1146,7 @@ class ForensicAnalyzer:
                     budget_reason.capitalize(), artifact_key,
                     effective_prompt_tokens_estimate, self.ai_input_max_tokens,
                 )
+                self._save_case_prompt(f"artifact_{safe_key}.md", self.system_prompt, artifact_prompt)
                 if progress_callback is not None:
                     emit_analysis_progress(progress_callback, artifact_key, "started", {
                         "artifact_key": artifact_key, "artifact_name": artifact_name,
@@ -1010,7 +1190,7 @@ class ForensicAnalyzer:
                     result["citation_warnings"] = citation_warnings
                 return result
 
-            analyze_with_progress = getattr(self.ai_provider, "analyze_with_progress", None)
+            self._save_case_prompt(f"artifact_{safe_key}.md", self.system_prompt, provider_prompt)
             if callable(analyze_with_progress) and progress_callback is not None:
                 emit_analysis_progress(progress_callback, artifact_key, "started", {
                     "artifact_key": artifact_key, "artifact_name": artifact_name,
@@ -1035,32 +1215,30 @@ class ForensicAnalyzer:
                     })
 
                 # Check if analyze_with_progress accepts 'attachments' parameter
-                sig = inspect.signature(analyze_with_progress)
-                if attachments and "attachments" in sig.parameters:
+                if attachments_for_provider and progress_accepts_attachments:
                     analysis_text = self._call_ai_with_retry(lambda: analyze_with_progress(
                         system_prompt=self.system_prompt,
-                        user_prompt=artifact_prompt,
+                        user_prompt=provider_prompt,
                         progress_callback=_provider_progress,
-                        attachments=attachments,
+                        attachments=attachments_for_provider,
                         max_tokens=self.ai_response_max_tokens,
                     ))
-                elif attachments:
+                elif attachments_for_provider:
                     # Provider doesn't support attachments in progress mode, use regular analyze
-                    _attach_fn = getattr(self.ai_provider, "analyze_with_attachments", None)
-                    if callable(_attach_fn):
-                        analysis_text = self._call_ai_with_retry(lambda: _attach_fn(
-                            system_prompt=self.system_prompt, user_prompt=artifact_prompt,
-                            attachments=attachments, max_tokens=self.ai_response_max_tokens,
+                    if callable(analyze_with_attachments):
+                        analysis_text = self._call_ai_with_retry(lambda: analyze_with_attachments(
+                            system_prompt=self.system_prompt, user_prompt=provider_prompt,
+                            attachments=attachments_for_provider, max_tokens=self.ai_response_max_tokens,
                         ))
                     else:
                         analysis_text = self._call_ai_with_retry(lambda: self.ai_provider.analyze(
-                            system_prompt=self.system_prompt, user_prompt=artifact_prompt,
+                            system_prompt=self.system_prompt, user_prompt=provider_prompt,
                             max_tokens=self.ai_response_max_tokens,
                         ))
                 else:
                     analysis_text = self._call_ai_with_retry(lambda: analyze_with_progress(
                         system_prompt=self.system_prompt,
-                        user_prompt=artifact_prompt,
+                        user_prompt=provider_prompt,
                         progress_callback=_provider_progress,
                         max_tokens=self.ai_response_max_tokens,
                     ))
@@ -1070,18 +1248,17 @@ class ForensicAnalyzer:
                         "artifact_key": artifact_key, "artifact_name": artifact_name,
                         "scoped_artifact_key": safe_key, "model": model,
                     })
-                analyze_with_attachments = getattr(self.ai_provider, "analyze_with_attachments", None)
-                if callable(analyze_with_attachments):
+                if attachments_for_provider and callable(analyze_with_attachments):
                     analysis_text = self._call_ai_with_retry(
                         lambda: analyze_with_attachments(
-                            system_prompt=self.system_prompt, user_prompt=artifact_prompt,
-                            attachments=attachments, max_tokens=self.ai_response_max_tokens,
+                            system_prompt=self.system_prompt, user_prompt=provider_prompt,
+                            attachments=attachments_for_provider, max_tokens=self.ai_response_max_tokens,
                         )
                     )
                 else:
                     analysis_text = self._call_ai_with_retry(
                         lambda: self.ai_provider.analyze(
-                            system_prompt=self.system_prompt, user_prompt=artifact_prompt,
+                            system_prompt=self.system_prompt, user_prompt=provider_prompt,
                             max_tokens=self.ai_response_max_tokens,
                         )
                     )

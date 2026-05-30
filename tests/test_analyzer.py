@@ -1,4 +1,14 @@
-﻿from __future__ import annotations
+"""Tests for forensic analyzer data preparation and provider orchestration.
+
+These tests cover artifact CSV preparation, token budgeting, AI provider call
+contracts, citation handling, and multi-image analysis behavior without
+requiring real forensic evidence images.
+
+Attributes:
+    TEST_CONFIG: Minimal analyzer configuration used across tests.
+"""
+
+from __future__ import annotations
 
 import csv
 import os
@@ -15,7 +25,17 @@ from conftest import FakeAuditLogger, FakeProvider
 
 
 class FakeAttachmentProvider(FakeProvider):
+    """Provider double that records CSV attachment calls.
+
+    Attributes:
+        attachments_calls: Attachment lists received by ``analyze_with_attachments``.
+    """
     def __init__(self, responses: list[str] | None = None) -> None:
+        """Initialize the attachment-recording provider.
+
+        Args:
+            responses: Optional canned provider responses.
+        """
         super().__init__(responses=responses)
         self.attachments_calls: list[list[dict[str, str]]] = []
 
@@ -26,12 +46,29 @@ class FakeAttachmentProvider(FakeProvider):
         attachments: list[dict[str, str]] | None,
         max_tokens: int = 4096,
     ) -> str:
+        """Record attachments and delegate to the fake analyzer response.
+
+        Args:
+            system_prompt: System prompt text.
+            user_prompt: User prompt text.
+            attachments: Optional attachment descriptors.
+            max_tokens: Response-token budget.
+
+        Returns:
+            The fake provider response text.
+        """
         self.attachments_calls.append(list(attachments or []))
         return self.analyze(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=max_tokens)
 
 
 class AnalyzerTests(unittest.TestCase):
+    """End-to-end and helper tests for ``ForensicAnalyzer`` behavior."""
     def _write_prompt_template(self, prompts_dir: Path) -> None:
+        """Write compact analyzer prompt templates for tests.
+
+        Args:
+            prompts_dir: Directory that receives prompt template files.
+        """
         template = (
             "Priority={{priority_directives}}\n"
             "IOC={{ioc_targets}}\n"
@@ -72,11 +109,19 @@ class AnalyzerTests(unittest.TestCase):
         )
 
     def _write_artifact_instruction_prompt(self, prompts_dir: Path, artifact_key: str, text: str) -> None:
+        """Write an artifact-specific instruction prompt for tests.
+
+        Args:
+            prompts_dir: Root prompt directory.
+            artifact_key: Artifact key used for the filename.
+            text: Prompt content to write.
+        """
         instruction_dir = prompts_dir / "artifact_instructions"
         instruction_dir.mkdir(parents=True, exist_ok=True)
         (instruction_dir / f"{artifact_key}.md").write_text(text, encoding="utf-8")
 
     def test_load_prompt_template_reads_template(self) -> None:
+        """Verify load prompt template reads template."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             prompts_dir = Path(temp_dir) / "prompts"
             self._write_prompt_template(prompts_dir)
@@ -88,6 +133,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Data:", prompt)
 
     def test_extract_ioc_targets_from_context(self) -> None:
+        """Verify extract ioc targets from context."""
         analyzer = ForensicAnalyzer()
         context = (
             "Investigate IOC 198.51.100.25, https://evil.example/path, "
@@ -112,6 +158,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("mimikatz", iocs["SuspiciousTools"])
 
     def test_extract_ioc_targets_does_not_treat_executable_name_as_domain(self) -> None:
+        """Verify extract ioc targets does not treat executable name as domain."""
         analyzer = ForensicAnalyzer()
         context = "Look for abc.exe execution and related activity."
 
@@ -122,6 +169,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("Domains", iocs)
 
     def test_compute_statistics_reports_counts_time_range_and_top_values(self) -> None:
+        """Verify compute statistics reports counts time range and top values."""
         analyzer = ForensicAnalyzer()
         rows = [
             {"ts": "2026-01-15T01:00:00+00:00", "name": "alpha"},
@@ -141,6 +189,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIsNotNone(max_time)
 
     def test_prepare_artifact_data_builds_filled_prompt_with_all_rows(self) -> None:
+        """Verify prepare artifact data builds filled prompt with all rows."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -187,6 +236,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("{{data_csv}}", filled_prompt)
 
     def test_prepare_artifact_data_does_not_sample_large_csv(self) -> None:
+        """Verify prepare artifact data does not sample large csv."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -225,6 +275,7 @@ class AnalyzerTests(unittest.TestCase):
         )
 
     def test_prepare_artifact_data_includes_priority_directives_and_ioc_targets(self) -> None:
+        """Verify prepare artifact data includes priority directives and ioc targets."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -261,6 +312,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("- Artifact key: runkeys", filled_prompt)
 
     def test_prepare_artifact_data_omits_statistics_section_for_small_context_window(self) -> None:
+        """Verify prepare artifact data omits statistics section for small context window."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -297,6 +349,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("Rows removed as timestamp/ID-only duplicates:", filled_prompt)
 
     def test_prepare_artifact_data_uses_artifact_instruction_prompt_file(self) -> None:
+        """Verify prepare artifact data uses artifact instruction prompt file."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -333,6 +386,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Instructions=RUNKEYS-SPECIFIC-INSTRUCTIONS", filled_prompt)
 
     def test_prepare_artifact_data_uses_small_context_prompt_template(self) -> None:
+        """Verify prepare artifact data uses small context prompt template."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -378,6 +432,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("Record count:", filled_prompt)
 
     def test_prepare_artifact_data_uses_user_configured_shortened_prompt_cutoff(self) -> None:
+        """Prompt template selection uses the configured cutoff against input budget."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -400,6 +455,8 @@ class AnalyzerTests(unittest.TestCase):
                 config={
                     "analysis": {
                         "ai_max_tokens": 5000,
+                        "ai_response_max_tokens": 500,
+                        "ai_input_safety_margin_tokens": 0,
                         "shortened_prompt_cutoff_tokens": 4000,
                     }
                 },
@@ -416,6 +473,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Record count: 1", filled_prompt)
 
     def test_prepare_artifact_data_uses_normalized_artifact_instruction_prompt(self) -> None:
+        """Verify prepare artifact data uses normalized artifact instruction prompt."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -451,6 +509,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Instructions=EVTX-SPECIFIC-INSTRUCTIONS", filled_prompt)
 
     def test_prepare_artifact_data_includes_all_rows_regardless_of_timestamps(self) -> None:
+        """Verify prepare artifact data includes all rows regardless of timestamps."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -502,6 +561,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Total=3", filled_prompt)
 
     def test_run_full_analysis_does_not_infer_date_filter_from_prompt_text(self) -> None:
+        """Verify run full analysis does not infer date filter from prompt text."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -549,6 +609,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Total=2", runkeys_prompt)
 
     def test_prepare_artifact_data_includes_rows_with_aware_timestamps(self) -> None:
+        """Verify prepare artifact data includes rows with aware timestamps."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -582,6 +643,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Total=1", filled_prompt)
 
     def test_explicit_step2_date_range_filters_out_of_range_rows(self) -> None:
+        """Verify explicit step2 date range filters out of range rows."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -632,6 +694,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Total=1", mft_prompt)
 
     def test_explicit_step2_date_range_filters_non_target_artifacts_too(self) -> None:
+        """Verify explicit step2 date range filters non target artifacts too."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -685,6 +748,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("OutOfRange", runkeys_prompt)
 
     def test_explicit_analysis_date_range_filters_every_selected_artifact(self) -> None:
+        """Verify explicit analysis date range filters every selected artifact."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -746,6 +810,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("RunKeyOld", artifact_prompts["runkeys"])
 
     def test_date_filter_without_projection_writes_authoritative_attachment_csv(self) -> None:
+        """Verify date filter without projection writes authoritative attachment csv."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -787,6 +852,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertTrue(any("row 2" in warning for warning in result.get("citation_warnings", [])))
 
     def test_date_filter_runs_before_projection_that_omits_timestamp(self) -> None:
+        """Verify date filter runs before projection that omits timestamp."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -826,6 +892,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Start=2026-01-15T12:00:00", prompt)
 
     def test_init_loads_prompt_templates_and_creates_provider(self) -> None:
+        """Verify init loads prompt templates and creates provider."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             prompts_dir = Path(temp_dir) / "prompts"
             self._write_prompt_template(prompts_dir)
@@ -869,6 +936,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(analyzer.artifact_instruction_prompts["bash_history"], "BASH GUIDE")
 
     def test_analyze_artifact_calls_provider_and_logs_audit(self) -> None:
+        """Verify analyze artifact calls provider and logs audit."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1015,6 +1083,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Artifact=Bash History", filled_prompt)
 
     def test_analyze_artifact_passes_csv_attachment_when_provider_supports_it(self) -> None:
+        """Verify analyze artifact passes csv attachment when provider supports it."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1059,7 +1128,8 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(projected_header, "row_ref,ts,name,command,username")
         self.assertEqual(fake_provider.attachments_calls[0][0]["mime_type"], "text/csv")
 
-    def test_attachment_fallback_uses_chunking_contract_for_large_retained_data(self) -> None:
+    def test_attachment_delivery_uses_file_reference_when_prompt_fits(self) -> None:
+        """Attachment delivery avoids chunking when the actual sent prompt fits."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1116,14 +1186,11 @@ class AnalyzerTests(unittest.TestCase):
             ]
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(fake_provider.attachments_calls, [])
-        self.assertGreater(len(csv_prompts), 1)
-        for index in range(1, 66):
-            self.assertEqual(
-                sum(f",Entry{index}," in prompt_text for prompt_text in csv_prompts),
-                1,
-                f"Entry{index}",
-            )
+        self.assertEqual(len(fake_provider.attachments_calls), 1)
+        self.assertEqual(csv_prompts, [])
+        self.assertEqual(len(fake_provider.calls), 1)
+        self.assertIn("provided as file attachment", fake_provider.calls[0]["user_prompt"])
+        self.assertNotIn("Entry65", fake_provider.calls[0]["user_prompt"])
 
     def test_analyze_artifact_emits_started_event_for_plain_analyze_path(self) -> None:
         """Verify that the plain analyze() path (no attachments, no streaming)
@@ -1149,6 +1216,11 @@ class AnalyzerTests(unittest.TestCase):
             progress_events: list[tuple] = []
 
             def fake_progress(*args: object) -> None:
+                """Record progress callback events for assertions.
+
+                Args:
+                    *args: Progress callback arguments from the analyzer.
+                """
                 progress_events.append(args)
 
             fake_provider = FakeProvider(responses=["analysis-output"])
@@ -1199,6 +1271,11 @@ class AnalyzerTests(unittest.TestCase):
             progress_events: list[tuple] = []
 
             def fake_progress(*args: object) -> None:
+                """Record attachment-path progress events for assertions.
+
+                Args:
+                    *args: Progress callback arguments from the analyzer.
+                """
                 progress_events.append(args)
 
             fake_provider = FakeAttachmentProvider(responses=["analysis-output"])
@@ -1224,6 +1301,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(payload["artifact_name"], "Run/RunOnce Keys")
 
     def test_prepare_artifact_data_deduplicates_rows_and_writes_deduplicated_csv(self) -> None:
+        """Verify prepare artifact data deduplicates rows and writes deduplicated csv."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1286,6 +1364,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("Deduplicated 1 records", dedup_rows[0].get("_dedup_comment", ""))
 
     def test_prepare_artifact_data_deduplicates_using_selected_columns_only(self) -> None:
+        """Verify prepare artifact data deduplicates using selected columns only."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1352,6 +1431,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(len(dedup_rows), 2)
 
     def test_prepare_artifact_data_can_disable_deduplication(self) -> None:
+        """Verify prepare artifact data can disable deduplication."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1401,6 +1481,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertFalse(dedup_csv_path.exists())
 
     def test_prepare_artifact_data_uses_external_ai_column_projection_config(self) -> None:
+        """Verify prepare artifact data uses external ai column projection config."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1459,6 +1540,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(projected_header, "row_ref,ts,name")
 
     def test_load_artifact_ai_column_projection_config_logs_warning_on_yaml_error(self) -> None:
+        """Verify load artifact ai column projection config logs warning on yaml error."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             bad_projection_path = temp_path / "artifact_ai_columns.yaml"
@@ -1487,6 +1569,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn(str(bad_projection_path), emitted)
 
     def test_case_logger_writes_projection_warnings_to_case_logs_folder(self) -> None:
+        """Verify case logger writes projection warnings to case logs folder."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             case_id = "case-logging-test"
@@ -1522,6 +1605,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn(str(bad_projection_path), contents)
 
     def test_analyze_artifact_uses_configured_advanced_analysis_settings(self) -> None:
+        """Analyzer clamps advanced token settings to a non-overlapping budget."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1568,15 +1652,20 @@ class AnalyzerTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(fake_provider.calls), 1)
-        # ai_max_tokens is the context window; auto-calc uses max(4096, 20%).
-        expected_response_tokens = max(4096, int(1234 * 0.2))
-        self.assertEqual(fake_provider.calls[0]["max_tokens"], expected_response_tokens)
+        self.assertLessEqual(
+            analyzer.ai_input_max_tokens
+            + analyzer.ai_response_max_tokens
+            + analyzer.ai_input_safety_margin_tokens,
+            analyzer.ai_max_tokens,
+        )
+        self.assertEqual(fake_provider.calls[0]["max_tokens"], analyzer.ai_response_max_tokens)
         user_prompt = fake_provider.calls[0]["user_prompt"]
         # All rows must be included — no date filtering is applied.
         self.assertIn("EntryA", user_prompt)
         self.assertIn("OldEntry", user_prompt)
 
     def test_run_full_analysis_continues_after_artifact_failure(self) -> None:
+        """Verify run full analysis continues after artifact failure."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
@@ -1611,6 +1700,13 @@ class AnalyzerTests(unittest.TestCase):
             progress_events: list[tuple[str, str, dict[str, str]]] = []
 
             def progress_callback(artifact_key: str, status: str, result: dict[str, str]) -> None:
+                """Record run-full-analysis progress events.
+
+                Args:
+                    artifact_key: Artifact identifier from the analyzer.
+                    status: Progress status string.
+                    result: Progress event payload.
+                """
                 progress_events.append((artifact_key, status, result))
 
             with patch("app.analyzer.core.create_provider", return_value=fake_provider), \
@@ -1651,6 +1747,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(progress_events[3][1], "complete")
 
     def test_generate_summary_fills_template_and_calls_provider(self) -> None:
+        """Verify generate summary fills template and calls provider."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
             prompts_dir = Path(temp_dir) / "prompts"
             self._write_prompt_template(prompts_dir)
@@ -2000,6 +2097,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertIn("entry_200", result)
 
     def test_timestamp_found_in_csv_uses_preloaded_lookup_keys(self) -> None:
+        """Verify timestamp found in csv uses preloaded lookup keys."""
         analyzer = ForensicAnalyzer()
         csv_timestamp_lookup: set[str] = set()
         for value in (
@@ -2085,6 +2183,7 @@ class PathResolutionTests(unittest.TestCase):
         )
 
     def test_explicit_prompts_dir_is_respected(self) -> None:
+        """Verify explicit prompts dir is respected."""
         with TemporaryDirectory(prefix="aift-prompts-test-") as temp_dir:
             custom = Path(temp_dir) / "my_prompts"
             custom.mkdir()
@@ -2138,6 +2237,7 @@ class AppFactoryPathResolutionTests(unittest.TestCase):
     """Verify that create_app stores an absolute config path."""
 
     def test_create_app_stores_absolute_config_path(self) -> None:
+        """Verify create app stores absolute config path."""
         from app import create_app
         from app.config import PROJECT_ROOT
 
@@ -2149,6 +2249,7 @@ class AppFactoryPathResolutionTests(unittest.TestCase):
         )
 
     def test_create_app_with_explicit_path_stores_that_path(self) -> None:
+        """Verify create app with explicit path stores that path."""
         from app import create_app
 
         with TemporaryDirectory(prefix="aift-factory-test-") as temp_dir:

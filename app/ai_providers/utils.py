@@ -894,6 +894,35 @@ def _prepare_openai_attachment_upload(attachment: Mapping[str, str]) -> tuple[st
     return f"{stem}.txt", "text/plain", True
 
 
+def _normalize_inline_attachment_text(text: str) -> str:
+    """Normalize text for duplicate inline-attachment detection.
+
+    Args:
+        text: Prompt or attachment text to normalize.
+
+    Returns:
+        The text with BOM and newline differences removed for comparison.
+    """
+    return str(text or "").lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _prompt_already_contains_attachment_text(user_prompt: str, attachment_text: str) -> bool:
+    """Return whether the full attachment text is already present in a prompt.
+
+    Args:
+        user_prompt: Prompt text that may already contain CSV evidence.
+        attachment_text: Attachment file contents.
+
+    Returns:
+        ``True`` when the normalized attachment body is already inline.
+    """
+    normalized_attachment = _normalize_inline_attachment_text(attachment_text)
+    if not normalized_attachment:
+        return False
+    normalized_prompt = _normalize_inline_attachment_text(user_prompt)
+    return normalized_attachment in normalized_prompt
+
+
 def _inline_attachment_data_into_prompt(
     user_prompt: str,
     attachments: list[Mapping[str, str]] | None,
@@ -935,6 +964,12 @@ def _inline_attachment_data_into_prompt(
                 f"Could not read requested attachment '{attachment_name}' at {attachment_path}: {error}"
             ) from error
         if not attachment_text.strip():
+            continue
+        if _prompt_already_contains_attachment_text(user_prompt, attachment_text):
+            logger.info(
+                "Skipping inline fallback for attachment '%s' because the prompt already contains its contents.",
+                attachment_name,
+            )
             continue
 
         inline_sections.append(

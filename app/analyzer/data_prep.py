@@ -502,6 +502,7 @@ def prepare_artifact_data(
     ai_max_tokens: int,
     shortened_prompt_cutoff_tokens: int,
     case_dir: Path | None,
+    ai_input_max_tokens: int | None = None,
     audit_log_fn: Any = None,
     date_range: tuple[str, str] | None = None,
     host_metadata: Mapping[str, Any] | None = None,
@@ -529,6 +530,9 @@ def prepare_artifact_data(
         artifact_ai_column_projections: Column projection config.
         artifact_deduplication_enabled: Whether to deduplicate rows.
         ai_max_tokens: Configured AI context window size.
+        ai_input_max_tokens: Reserved input-token budget after response and
+            safety tokens have been subtracted. If omitted, ``ai_max_tokens``
+            is used for backward compatibility.
         shortened_prompt_cutoff_tokens: Token threshold for small template.
         case_dir: Optional case directory path.
         audit_log_fn: Optional callable ``(action, details)`` for audit.
@@ -542,7 +546,8 @@ def prepare_artifact_data(
     Returns:
         A 3-tuple of ``(prompt_text, analysis_csv_path, analysis_columns)``.
     """
-    include_statistics = ai_max_tokens >= shortened_prompt_cutoff_tokens
+    prompt_budget_tokens = ai_input_max_tokens if ai_input_max_tokens is not None else ai_max_tokens
+    include_statistics = prompt_budget_tokens >= shortened_prompt_cutoff_tokens
     template = artifact_prompt_template if include_statistics else artifact_prompt_template_small_context
 
     rows: list[dict[str, str]] = []
