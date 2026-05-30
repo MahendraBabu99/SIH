@@ -45,6 +45,11 @@ window.AIFT = (() => {
     chat: {
       run: false,
       es: null,
+      abort: null,
+      postAbort: null,
+      historyAbort: null,
+      owner: null,
+      historyOwner: null,
       retry: null,
       retryCount: 0,
       seq: -1,
@@ -148,10 +153,14 @@ window.AIFT = (() => {
    */
   function setCaseId(rawCaseId) {
     const caseId = String(rawCaseId || "").trim();
+    const changed = st.caseId !== caseId;
     st.caseId = caseId;
     if (el.wizard) {
       if (caseId) el.wizard.dataset.caseId = caseId;
       else delete el.wizard.dataset.caseId;
+    }
+    if (changed && window.AIFT && typeof window.AIFT.invalidateChatActivity === "function") {
+      window.AIFT.invalidateChatActivity();
     }
     return st.caseId;
   }

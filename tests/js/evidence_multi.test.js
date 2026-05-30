@@ -376,6 +376,85 @@ describe("submitEvidence stale operation handling", () => {
 
 // ── isMultiImage ────────────────────────────────────────────────────────────
 
+describe("case reset UI boundaries", () => {
+  test("clears unsupported evidence state and restores artifact selection", () => {
+    A.applyEvidence({
+      os_type: "windows",
+      metadata: { hostname: "UNKNOWN", os_version: "unknown" },
+      hashes: {},
+      available_artifacts: [],
+    });
+
+    const unsupported = document.getElementById("unsupported-evidence-error");
+    const artifactContent = document.getElementById("artifact-selection-content");
+    expect(unsupported.hidden).toBe(false);
+    expect(artifactContent.hidden).toBe(true);
+
+    A.resetCaseUi();
+
+    expect(unsupported.hidden).toBe(true);
+    expect(document.getElementById("unsupported-evidence-hint").hidden).toBe(true);
+    expect(artifactContent.hidden).toBe(false);
+    expect(document.getElementById("artifact-image-tabs").hidden).toBe(true);
+    expect(document.getElementById("artifact-image-panels").children).toHaveLength(0);
+    expect(A.el.chatThread.textContent).toContain("Chat history will appear here");
+  });
+
+  test("returns multi-image UI and state to a single empty image form", () => {
+    A.addImageForm();
+    const forms = A.getImageForms();
+    forms[0].querySelector(".image-label-input").value = "First";
+    forms[0].querySelector(".image-path-input").value = "E:\\evidence\\first.E01";
+    forms[1].querySelector(".image-label-input").value = "Second";
+    forms[1].querySelector(".image-path-input").value = "E:\\evidence\\second.E01";
+    forms[0].querySelector(".image-status-msg").hidden = false;
+    forms[0].querySelector(".image-status-msg").textContent = "Evidence loaded.";
+    forms[0].querySelector(".image-status-msg").dataset.status = "success";
+
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+    A.applyRecommendedToAllImages();
+    A.st.parsedSelections = {
+      caseId: "case-old",
+      runId: "parse-old",
+      mode: "multi",
+      artifactOptions: [],
+      artifacts: ["runkeys"],
+      aiArtifacts: ["runkeys"],
+      images: { "img-w1": { image_id: "img-w1", artifacts: ["runkeys"], aiArtifacts: ["runkeys"] } },
+    };
+    A.st.chat.allMessages = [{ role: "user", content: "old" }];
+    A.st.chat.historyLoadedCaseId = "case-old";
+    document.getElementById("evidence-intake-status").hidden = false;
+    document.getElementById("evidence-intake-status").textContent = "Processing image 2 of 2...";
+    A.el.evidenceProgWrap.hidden = false;
+    A.el.evidenceProg.value = 67;
+
+    A.resetCaseUi();
+
+    const remainingForms = A.getImageForms();
+    expect(remainingForms).toHaveLength(1);
+    expect(remainingForms[0].querySelector(".image-form-title").textContent).toBe("Image 1");
+    expect(remainingForms[0].querySelector(".image-label-input").value).toBe("");
+    expect(remainingForms[0].querySelector(".image-path-input").value).toBe("");
+    expect(remainingForms[0].querySelector(".image-mode-path").checked).toBe(true);
+    expect(remainingForms[0].querySelector(".image-mode-upload").checked).toBe(false);
+    expect(remainingForms[0].querySelector(".image-status-msg").hidden).toBe(true);
+    expect(remainingForms[0].querySelector(".image-status-msg").textContent).toBe("");
+    expect(document.getElementById("artifact-image-tabs").hidden).toBe(true);
+    expect(document.getElementById("artifact-image-panels").children).toHaveLength(0);
+    expect(A.el.artifactsForm.hidden).toBe(false);
+    expect(A.el.applyRecommendedAllBtn.hidden).toBe(true);
+    expect(A.el.applySelectionAllBtn.hidden).toBe(true);
+    expect(A.st.images).toEqual([]);
+    expect(A.st.parsedSelections).toMatchObject({ caseId: "", runId: "", mode: "" });
+    expect(A.st.chat.historyLoadedCaseId).toBe("");
+    expect(A.el.evidenceProgWrap.hidden).toBe(true);
+    expect(A.el.evidenceProg.value).toBe(0);
+    expect(document.getElementById("evidence-intake-status").hidden).toBe(true);
+    expect(document.getElementById("evidence-intake-status").textContent).toBe("");
+  });
+});
+
 describe("isMultiImage", () => {
   test("returns false when no images loaded", () => {
     A.st.images = [];

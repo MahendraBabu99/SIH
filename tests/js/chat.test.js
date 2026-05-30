@@ -22,6 +22,45 @@ beforeEach(() => {
   A = setupAift();
 });
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function jsonResponse(payload, status = 200) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => (String(name || "").toLowerCase() === "content-type" ? "application/json" : "") },
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+  });
+}
+
+function flushPromises() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function submitChat(message) {
+  A.el.chatInput.value = message;
+  await A._sendChatMessage();
+  await flushPromises();
+}
+
+function startChat(message) {
+  A.el.chatInput.value = message;
+  return A._sendChatMessage();
+}
+
+function emit(source, payload) {
+  source.onmessage({ data: JSON.stringify(payload) });
+}
+
 // ── resetChatState ──────────────────────────────────────────────────────────
 
 describe("resetChatState", () => {
@@ -215,5 +254,113 @@ describe("chat reasoning stream rendering", () => {
     expect(answer.textContent).not.toContain("hidden model reasoning");
     expect(panel.open).toBe(false);
     expect(reasoningText.textContent).toBe("hidden model reasoning");
+  });
+});
+
+describe("chat async ownership", () => {
+  test("ignores a chat POST response that resolves after reset", async () => {
+    A.setCaseId("case-post-reset");
+    const post = deferred();
+    global.fetch = jest.fn(() => post.promise);
+
+    const sendPromise = startChat("Will be reset");
+    expect(A.st.chat.run).toBe(true);
+
+    A.resetChatState();
+    post.resolve(await jsonResponse({ success: true }));
+    await sendPromise;
+    await flushPromises();
+
+    const chatSources = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .filter((source) => source.url.includes("/chat/stream"));
+    expect(chatSources).toHaveLength(0);
+    expect(A.el.chatThread.textContent).toContain("Chat history will appear here");
+    expect(A.st.chat.run).toBe(false);
+  });
+
+  test("does not reconnect or render stale SSE after reset", async () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-sse-reset");
+    global.fetch = jest.fn(() => jsonResponse({ success: true }));
+
+    A.el.chatInput.value = "Retry then reset";
+    await A._sendChatMessage();
+
+    const source = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((entry) => entry.url === "/api/cases/case-sse-reset/chat/stream");
+    expect(source).toBeTruthy();
+    source.onerror();
+    expect(A.st.chat.retry).not.toBeNull();
+
+    A.resetChatState();
+    jest.runOnlyPendingTimers();
+
+    emit(source, { type: "token", content: "late token", sequence: 1 });
+    const chatSources = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .filter((entry) => entry.url.includes("/chat/stream"));
+    expect(chatSources).toHaveLength(1);
+    expect(A.el.chatThread.textContent).not.toContain("late token");
+    jest.useRealTimers();
+  });
+
+  test("ignores old-case SSE events after a case switch", async () => {
+    A.setCaseId("case-before-switch");
+    global.fetch = jest.fn(() => jsonResponse({ success: true }));
+
+    await submitChat("Switch cases");
+    const source = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((entry) => entry.url === "/api/cases/case-before-switch/chat/stream");
+    expect(source).toBeTruthy();
+
+    A.setCaseId("case-after-switch");
+    emit(source, { type: "token", content: "old case text", sequence: 1 });
+    emit(source, { type: "error", message: "old case error", sequence: 2 });
+
+    expect(A.el.chatThread.textContent).toContain("Switch cases");
+    expect(A.el.chatThread.textContent).not.toContain("old case text");
+    expect(A.el.resultsMsg.textContent).not.toContain("old case error");
+  });
+
+  test("does not let stale history overwrite freshly streamed chat", async () => {
+    A.setCaseId("case-history-owner");
+    const history = deferred();
+    global.fetch = jest.fn((url) => {
+      if (String(url).endsWith("/chat/history")) return history.promise;
+      if (String(url).endsWith("/chat")) return jsonResponse({ success: true });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    const historyPromise = A.loadChatHistory();
+    await flushPromises();
+    await submitChat("Fresh question");
+    const source = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((entry) => entry.url === "/api/cases/case-history-owner/chat/stream");
+    expect(source).toBeTruthy();
+
+    emit(source, { type: "token", content: "Fresh answer", sequence: 1 });
+    emit(source, { type: "done", sequence: 2 });
+    history.resolve(await jsonResponse({
+      messages: [
+        { role: "user", content: "Old question" },
+        { role: "assistant", content: "Old answer" },
+      ],
+    }));
+    await historyPromise;
+    await flushPromises();
+
+    expect(A.el.chatThread.textContent).toContain("Fresh question");
+    expect(A.el.chatThread.textContent).toContain("Fresh answer");
+    expect(A.el.chatThread.textContent).not.toContain("Old answer");
+  });
+
+  test("ignores directly dispatched events for a non-active case", () => {
+    A.setCaseId("case-current");
+    A.resetChatState();
+
+    A._onChatEvent("case-old", { type: "token", content: "wrong case" });
+    A._onChatEvent("case-old", { type: "error", message: "wrong error" });
+
+    expect(A.el.chatThread.textContent).not.toContain("wrong case");
+    expect(A.el.resultsMsg.textContent).not.toContain("wrong error");
   });
 });

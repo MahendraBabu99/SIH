@@ -418,6 +418,24 @@
     if (el.sumIps) el.sumIps.textContent = "-";
     if (el.sumSha) el.sumSha.textContent = "-";
 
+    const unsupportedBox = q("unsupported-evidence-error");
+    if (unsupportedBox) unsupportedBox.hidden = true;
+    const unsupportedHint = q("unsupported-evidence-hint");
+    if (unsupportedHint) unsupportedHint.hidden = true;
+    const artifactContent = q("artifact-selection-content");
+    if (artifactContent) artifactContent.hidden = false;
+    const tabContainer = q("artifact-image-tabs");
+    if (tabContainer) {
+      tabContainer.hidden = true;
+      const tabBar = tabContainer.querySelector(".artifact-tab-bar");
+      if (tabBar) tabBar.innerHTML = "";
+    }
+    const panelsContainer = q("artifact-image-panels");
+    if (panelsContainer) panelsContainer.innerHTML = "";
+    if (el.artifactsForm) el.artifactsForm.hidden = false;
+    if (el.applyRecommendedAllBtn) el.applyRecommendedAllBtn.hidden = true;
+    if (el.applySelectionAllBtn) el.applySelectionAllBtn.hidden = true;
+
     /* Reset multi-image forms: remove all but the first image card. */
     const imageContainer = q("image-forms-container");
     if (imageContainer) {
@@ -432,12 +450,20 @@
         const fileInput = firstCard.querySelector(".image-file-input");
         if (fileInput) fileInput.value = "";
         A.clearDroppedFilesForCard(firstCard);
+        const dropzoneHelp = firstCard.querySelector(".image-dropzone-help");
+        if (dropzoneHelp) dropzoneHelp.textContent = A.DROP_HELP;
+        const modeUpload = firstCard.querySelector(".image-mode-upload");
+        if (modeUpload) modeUpload.checked = false;
         const modePath = firstCard.querySelector(".image-mode-path");
         if (modePath) modePath.checked = true;
         const metaCard = firstCard.querySelector(".image-metadata-card");
         if (metaCard) metaCard.hidden = true;
         const statusMsg = firstCard.querySelector(".image-status-msg");
-        if (statusMsg) { statusMsg.hidden = true; statusMsg.textContent = ""; }
+        if (statusMsg) {
+          statusMsg.hidden = true;
+          statusMsg.textContent = "";
+          delete statusMsg.dataset.status;
+        }
         const removeBtn = firstCard.querySelector(".image-remove-btn");
         if (removeBtn) removeBtn.hidden = true;
         const title = firstCard.querySelector(".image-form-title");
@@ -475,6 +501,11 @@
     if (el.submitEvidence) el.submitEvidence.disabled = false;
     if (el.evidenceProgWrap) el.evidenceProgWrap.hidden = true;
     if (el.evidenceProg) el.evidenceProg.value = 0;
+    const intakeStatus = q("evidence-intake-status");
+    if (intakeStatus) {
+      intakeStatus.hidden = true;
+      intakeStatus.textContent = "";
+    }
 
     [el.evidenceMsg, el.artifactsMsg, el.parseErr, el.analysisMsg, el.resultsMsg].forEach(A.clearMsg);
     A.renderParsePlaceholder();

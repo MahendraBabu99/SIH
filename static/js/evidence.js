@@ -216,6 +216,7 @@
 
     A.resetParseState();
     A.resetAnalysisState();
+    A.resetChatState();
     st.selected = [];
     st.selectedAi = [];
 

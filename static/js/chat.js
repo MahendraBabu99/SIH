@@ -120,6 +120,49 @@
     return !!(el.chatThread && el.chatThread.querySelector(".chat-message-row"));
   }
 
+  /** Return true when a captured chat owner still controls the active stream. */
+  function isChatOwnerCurrent(owner) {
+    return A.isRunOwnerCurrent(st.chat, owner);
+  }
+
+  /** Return true when a captured history owner still controls history rendering. */
+  function isChatHistoryOwnerCurrent(owner) {
+    if (!owner) return false;
+    const current = st.chat.historyOwner;
+    return !!(
+      current
+      && current.caseId === owner.caseId
+      && current.runId === owner.runId
+      && owner.caseId === A.activeCaseId()
+      && !st.chat.run
+    );
+  }
+
+  /** Abort an in-flight chat POST without changing the active SSE owner. */
+  function abortChatPost() {
+    if (st.chat.postAbort) {
+      st.chat.postAbort.abort();
+      st.chat.postAbort = null;
+    }
+  }
+
+  /** Abort and retire any in-flight chat history fetch. */
+  function invalidateChatHistoryFetch() {
+    if (st.chat.historyAbort) {
+      st.chat.historyAbort.abort();
+      st.chat.historyAbort = null;
+    }
+    st.chat.historyOwner = null;
+  }
+
+  /** Retire active chat network work so late callbacks cannot update the UI. */
+  function invalidateChatActivity() {
+    abortChatPost();
+    invalidateChatHistoryFetch();
+    A.closeSseChannel(st.chat);
+    st.chat.owner = null;
+  }
+
   /** Scroll the chat thread container to the bottom. */
   function scrollChatToBottom() {
     if (!el.chatThread) return;
@@ -140,12 +183,28 @@
     const caseId = A.activeCaseId();
     if (!caseId || !el.chatThread || st.chat.run) return;
     if (st.chat.historyLoadedCaseId === caseId) return;
-    const history = await A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/chat/history`, { method: "GET" });
-    // Discard stale history if the case changed or a send started while we were fetching.
-    if (caseId !== A.activeCaseId() || st.chat.run) return;
+    invalidateChatHistoryFetch();
+    const owner = A.newRunOwner(caseId, "chat-history");
+    const abortCtrl = new AbortController();
+    st.chat.historyOwner = owner;
+    st.chat.historyAbort = abortCtrl;
+    let history;
+    try {
+      history = await A.apiJson(
+        `/api/cases/${encodeURIComponent(caseId)}/chat/history`,
+        { method: "GET", signal: abortCtrl.signal },
+      );
+    } catch (e) {
+      if (e.name === "AbortError" || !isChatHistoryOwnerCurrent(owner)) return;
+      throw e;
+    } finally {
+      if (st.chat.historyOwner === owner) st.chat.historyAbort = null;
+    }
+    if (!isChatHistoryOwnerCurrent(owner)) return;
     const messages = Array.isArray(history) ? history : (Array.isArray(history?.messages) ? history.messages : []);
     renderChatHistory(messages);
     st.chat.historyLoadedCaseId = caseId;
+    if (st.chat.historyOwner === owner) st.chat.historyOwner = null;
   }
 
   /**
@@ -419,9 +478,19 @@
     const caseId = A.activeCaseId();
     if (!caseId) return A.setMsg(el.resultsMsg, "No active case for chat.", "error");
     if (st.chat.run) return A.setMsg(el.resultsMsg, "Wait for the current chat response to finish.", "error");
+    invalidateChatActivity();
+    const owner = A.newRunOwner(caseId, "chat");
+    const abortCtrl = new AbortController();
+    st.chat.owner = owner;
+    st.chat.postAbort = abortCtrl;
     st.chat.run = true;
     const message = A.val(el.chatInput);
-    if (!message) { st.chat.run = false; return; }
+    if (!message) {
+      abortChatPost();
+      st.chat.owner = null;
+      st.chat.run = false;
+      return;
+    }
 
     toggleChat(true);
     appendChatMessage("user", message);
@@ -442,34 +511,44 @@
     syncChatControls();
 
     try {
-      await A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/chat`, { method: "POST", json: { message } });
-      startChatSse(caseId);
+      await A.apiJson(
+        `/api/cases/${encodeURIComponent(caseId)}/chat`,
+        { method: "POST", json: { message }, signal: abortCtrl.signal },
+      );
+      if (st.chat.postAbort === abortCtrl) st.chat.postAbort = null;
+      if (!isChatOwnerCurrent(owner)) return;
+      startChatSse(owner);
     } catch (e) {
-      finalizeChatError(`Failed to send chat message: ${e.message}`);
+      if (st.chat.postAbort === abortCtrl) st.chat.postAbort = null;
+      if (e.name === "AbortError" || !isChatOwnerCurrent(owner)) return;
+      finalizeChatError(`Failed to send chat message: ${e.message}`, owner);
     }
   }
 
   /**
    * Open the chat response SSE stream for the given case.
    *
-   * @param {string} caseId - Active case identifier.
+   * @param {{caseId: string, runId: string}|null} owner - Active chat owner.
    */
-  function startChatSse(caseId) {
+  function startChatSse(owner = st.chat.owner) {
+    const caseId = owner ? owner.caseId : A.activeCaseId();
+    if (!caseId || !isChatOwnerCurrent(owner)) return;
     A.openSseStream(
       `/api/cases/${encodeURIComponent(caseId)}/chat/stream`,
       st.chat,
       {
-        onEvent: (payload) => onChatEvent(caseId, payload),
+        onEvent: (payload) => onChatEvent(caseId, payload, owner),
         onError: () => {
-          if (st.chat.run) retryChatSse(caseId);
+          if (isChatOwnerCurrent(owner) && st.chat.run) retryChatSse(owner);
         },
       },
     );
+    st.chat.abort = new AbortController();
   }
 
   /** Dispatch a single chat SSE event to the UI. */
-  function onChatEvent(caseId, payload) {
-    if (caseId !== A.activeCaseId()) { finalizePendingChatMessage(); finalizeChatStream(); return; }
+  function onChatEvent(caseId, payload, owner = null) {
+    if (owner ? !isChatOwnerCurrent(owner) : caseId !== A.activeCaseId()) return;
     const type = String(payload.type || "");
     if (type === "reasoning") {
       const pending = ensurePendingChatMessage();
@@ -502,7 +581,7 @@
       return;
     }
     if (type === "error") {
-      finalizeChatError(String(payload.message || "Chat stream failed."));
+      finalizeChatError(String(payload.message || "Chat stream failed."), owner);
       return;
     }
   }
@@ -539,22 +618,25 @@
   /**
    * Attempt to reconnect the chat SSE stream with exponential backoff.
    *
-   * @param {string} caseId - Active case identifier.
+   * @param {{caseId: string, runId: string}|null} owner - Active chat owner.
    */
-  function retryChatSse(caseId) {
+  function retryChatSse(owner = st.chat.owner) {
     if (!st.chat.run) return;
+    if (!isChatOwnerCurrent(owner)) return;
     A.retrySseStream(st.chat, {
       reconnect: () => {
-        if (st.chat.run) startChatSse(caseId);
+        if (isChatOwnerCurrent(owner) && st.chat.run) startChatSse(owner);
       },
       onMaxRetries: () => {
-        finalizeChatError(`Chat connection lost after ${A.SSE_MAX_RETRIES} retries.`);
+        if (!isChatOwnerCurrent(owner)) return;
+        finalizeChatError(`Chat connection lost after ${A.SSE_MAX_RETRIES} retries.`, owner);
       },
     });
   }
 
   /** Display an error in the pending chat bubble and finalise the stream. */
-  function finalizeChatError(message) {
+  function finalizeChatError(message, owner = st.chat.owner) {
+    if (!isChatOwnerCurrent(owner)) return;
     const pending = ensurePendingChatMessage();
     const current = String(pending.text || "").trim();
     const rendered = current ? `${current}\n\n${message}` : message;
@@ -566,7 +648,7 @@
 
   /** Close the chat SSE EventSource and clear pending retries. */
   function closeChatSse() {
-    A.closeSseChannel(st.chat);
+    invalidateChatActivity();
   }
 
   /** Close SSE, mark chat as idle, and refresh controls. */
@@ -580,12 +662,13 @@
 
   /** Reset all chat state, close SSE, clear UI, and restore the empty state. */
   function resetChatState() {
-    closeChatSse();
+    invalidateChatActivity();
     st.chat.run = false;
     st.chat.retryCount = 0;
     st.chat.seq = -1;
     st.chat.pending = null;
     st.chat.historyLoadedCaseId = "";
+    st.chat.historyOwner = null;
     st.chat.allMessages = [];
     st.chat.displayedCount = 0;
     if (el.chatInput) { el.chatInput.disabled = false; el.chatInput.value = ""; }
@@ -622,8 +705,10 @@
   // ── Public API ─────────────────────────────────────────────────────────────
   A.setupResults = setupResults;
   A.closeChatSse = closeChatSse;
+  A.invalidateChatActivity = invalidateChatActivity;
   A.resetChatState = resetChatState;
   A.loadChatHistory = loadChatHistory;
   A.toggleChat = toggleChat;
+  A._sendChatMessage = sendChatMessage;
   A._onChatEvent = onChatEvent;
 })();
