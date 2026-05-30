@@ -32,12 +32,15 @@ from .base import (
     _run_with_completion_token_retry,
 )
 from .utils import (
+    _LeadingReasoningStreamSplitter,
+    StreamedResponseChunk,
     _clean_streamed_answer_text,
-    _extract_openai_delta_text,
+    _extract_openai_stream_chunk_delta,
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
-    _raise_on_openai_delta_refusal,
+    _split_openai_stream_delta_text,
     _strip_leading_reasoning_blocks,
+    stream_chunk_has_text,
     upload_and_request_via_responses_api,
 )
 
@@ -147,7 +150,7 @@ class LocalProvider(AIProvider):
         user_prompt: str,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> Iterator[str]:
-        """Stream generated text chunks from the local endpoint.
+        """Stream generated chunks from the local endpoint.
 
         Falls back to non-streaming if the endpoint reports streaming
         is unsupported.
@@ -158,7 +161,8 @@ class LocalProvider(AIProvider):
             max_tokens: Maximum completion tokens.
 
         Yields:
-            Text chunk strings as they are generated.
+            String-compatible chunks containing answer text and, when
+            available, separate GUI-only reasoning text.
 
         Raises:
             AIProviderError: On empty response or API failure.
@@ -173,6 +177,16 @@ class LocalProvider(AIProvider):
         ]
 
         def _stream_factory() -> Any:
+            """Open a local streaming completion or a non-stream fallback.
+
+            Returns:
+                The provider stream iterator, or final text when streaming is
+                unsupported.
+
+            Raises:
+                BadRequestError: If the endpoint rejects the request for a
+                    reason other than unsupported streaming.
+            """
             try:
                 return self._create_chat_completion(
                     messages=messages,
@@ -190,25 +204,38 @@ class LocalProvider(AIProvider):
                 raise
 
         def _stream_text_iterator(stream: Any) -> Iterator[str]:
+            """Yield separated answer/reasoning chunks from a local stream.
+
+            Args:
+                stream: OpenAI-compatible streaming response iterator or a
+                    non-streaming fallback string.
+
+            Yields:
+                String-compatible stream chunks.
+
+            Raises:
+                AIProviderError: If the stream contains a refusal delta.
+            """
             if isinstance(stream, str):
                 if stream:
-                    yield stream
+                    yield StreamedResponseChunk(answer_text=stream)
                 return
+            content_splitter = _LeadingReasoningStreamSplitter()
             for chunk in stream:
-                choices = getattr(chunk, "choices", None)
-                if not choices:
+                delta = _extract_openai_stream_chunk_delta(chunk)
+                if delta is None:
                     continue
-                choice = choices[0]
-                delta = getattr(choice, "delta", None)
-                if delta is None and isinstance(choice, dict):
-                    delta = choice.get("delta")
-                _raise_on_openai_delta_refusal(delta)
-                # Only yield from the content field, skipping
-                # reasoning/thinking fields so streaming output matches
-                # the non-streaming path which strips leading blocks.
-                chunk_text = _extract_openai_delta_text(delta, ("content",))
-                if chunk_text:
-                    yield chunk_text
+                delta_text = _split_openai_stream_delta_text(delta)
+                answer_split = content_splitter.split(delta_text.answer_text)
+                separated_text = StreamedResponseChunk(
+                    answer_text=answer_split.answer_text,
+                    reasoning_text=delta_text.reasoning_text + answer_split.reasoning_text,
+                )
+                if stream_chunk_has_text(separated_text):
+                    yield separated_text
+            remaining_text = content_splitter.flush()
+            if stream_chunk_has_text(remaining_text):
+                yield remaining_text
 
         return _run_stream_with_rate_limit_retries(
             stream_factory=_stream_factory,
@@ -244,6 +271,11 @@ class LocalProvider(AIProvider):
             AIProviderError: On any API or network failure.
         """
         def _request() -> str:
+            """Run the non-streaming local request.
+
+            Returns:
+                The generated analysis text.
+            """
             return self._request_non_stream(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -329,6 +361,11 @@ class LocalProvider(AIProvider):
             )
 
         def _request() -> str:
+            """Run the local progress request and collect the final answer.
+
+            Returns:
+                The generated analysis text.
+            """
             result = self._build_stream_or_result(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -341,12 +378,16 @@ class LocalProvider(AIProvider):
 
             thinking_parts: list[str] = []
             answer_parts: list[str] = []
+            content_splitter = _LeadingReasoningStreamSplitter()
             last_emit_at = 0.0
             last_sent_thinking = ""
             last_sent_answer = ""
 
             for chunk in stream:
-                chunk_result = self._process_stream_chunk(chunk)
+                chunk_result = self._process_stream_chunk(
+                    chunk,
+                    content_splitter=content_splitter,
+                )
                 if chunk_result is None:
                     continue
 
@@ -372,6 +413,30 @@ class LocalProvider(AIProvider):
                         last_sent_answer=last_sent_answer,
                     )
                 )
+
+            remaining_text = content_splitter.flush()
+            if stream_chunk_has_text(remaining_text):
+                if remaining_text.reasoning_text:
+                    thinking_parts.append(remaining_text.reasoning_text)
+                if remaining_text.answer_text:
+                    answer_parts.append(remaining_text.answer_text)
+
+            final_thinking = "".join(thinking_parts).strip()
+            final_answer = _clean_streamed_answer_text(
+                answer_text="".join(answer_parts),
+                thinking_text=final_thinking,
+            )
+            if final_thinking or final_answer:
+                try:
+                    progress_callback(
+                        {
+                            "status": "thinking",
+                            "thinking_text": final_thinking,
+                            "partial_text": final_answer,
+                        }
+                    )
+                except Exception:
+                    pass
 
             return self._finalize_stream_response(thinking_parts, answer_parts)
 
@@ -438,11 +503,16 @@ class LocalProvider(AIProvider):
             raise
 
     @staticmethod
-    def _process_stream_chunk(chunk: Any) -> tuple[str, str] | None:
+    def _process_stream_chunk(
+        chunk: Any,
+        content_splitter: _LeadingReasoningStreamSplitter | None = None,
+    ) -> tuple[str, str] | None:
         """Extract thinking and answer deltas from a single stream chunk.
 
         Args:
             chunk: A streaming response chunk from the OpenAI SDK.
+            content_splitter: Optional stateful splitter that moves leading
+                local-model reasoning markup out of content deltas.
 
         Returns:
             A ``(thinking_delta, answer_delta)`` tuple, or ``None`` if the
@@ -451,19 +521,18 @@ class LocalProvider(AIProvider):
         choices = getattr(chunk, "choices", None)
         if not choices:
             return None
-        choice = choices[0]
-        delta = getattr(choice, "delta", None)
-        if delta is None and isinstance(choice, dict):
-            delta = choice.get("delta")
+        delta = _extract_openai_stream_chunk_delta(chunk)
         if delta is None:
             return None
 
-        _raise_on_openai_delta_refusal(delta)
-        answer_delta = _extract_openai_delta_text(delta, ("content",))
-        thinking_delta = _extract_openai_delta_text(
-            delta,
-            ("reasoning_content", "reasoning", "thinking"),
-        )
+        delta_text = _split_openai_stream_delta_text(delta)
+        if content_splitter is None:
+            answer_delta = delta_text.answer_text
+            thinking_delta = delta_text.reasoning_text
+        else:
+            answer_split = content_splitter.split(delta_text.answer_text)
+            answer_delta = answer_split.answer_text
+            thinking_delta = delta_text.reasoning_text + answer_split.reasoning_text
 
         if not answer_delta and not thinking_delta:
             return None
@@ -536,8 +605,7 @@ class LocalProvider(AIProvider):
             answer_parts: Collected answer-channel text fragments.
 
         Returns:
-            The cleaned final answer, or the thinking text if no answer
-            was produced.
+            The cleaned final answer.
 
         Raises:
             AIProviderError: If both channels are empty.
@@ -549,8 +617,6 @@ class LocalProvider(AIProvider):
         )
         if final_answer:
             return final_answer
-        if final_thinking:
-            return final_thinking
         raise AIProviderError(
             "Local AI provider returned an empty streamed response. "
             "Try a different local model or increase max tokens."

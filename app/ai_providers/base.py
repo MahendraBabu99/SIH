@@ -224,7 +224,11 @@ class AIProvider(ABC):
         user_prompt: str,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> Iterator[str]:
-        """Stream generated text chunks for the provided prompt.
+        """Stream generated chunks for the provided prompt.
+
+        Chunks are string-compatible and stringify to answer-channel text.
+        Providers that expose model reasoning may yield chunks carrying a
+        separate reasoning channel for GUI-only display.
 
         Args:
             system_prompt: The system-level instruction text.
@@ -232,7 +236,8 @@ class AIProvider(ABC):
             max_tokens: Maximum number of tokens the model may generate.
 
         Yields:
-            Individual text chunks (deltas) as they are generated.
+            Individual answer-channel text chunks, optionally with a separate
+            reasoning channel on providers that expose one.
 
         Raises:
             AIProviderError: If the streaming request fails or produces no output.
@@ -272,7 +277,7 @@ class AIProvider(ABC):
         Raises:
             AIProviderError: If the request fails.
         """
-        from .utils import _inline_attachment_data_into_prompt
+        from .utils import _inline_attachment_data_into_prompt, stream_chunk_answer_text
 
         effective_prompt = user_prompt
         if attachments:
@@ -283,11 +288,14 @@ class AIProvider(ABC):
             if inlined:
                 logger.info("Base provider inlined attachment data into prompt.")
 
-        return "".join(self.analyze_stream(
-            system_prompt=system_prompt,
-            user_prompt=effective_prompt,
-            max_tokens=max_tokens,
-        ))
+        return "".join(
+            stream_chunk_answer_text(chunk)
+            for chunk in self.analyze_stream(
+                system_prompt=system_prompt,
+                user_prompt=effective_prompt,
+                max_tokens=max_tokens,
+            )
+        )
 
     def _prepare_csv_attachments(
         self,
@@ -305,8 +313,12 @@ class AIProvider(ABC):
         Returns:
             A list of normalized attachment dicts, or ``None`` if attachment
             mode should be skipped.
+
+        Raises:
+            AIProviderError: If attachments were requested but any descriptor
+                is malformed or points to a missing file.
         """
-        from .utils import normalize_attachment_inputs
+        from .utils import normalize_requested_attachment_inputs
 
         if not bool(getattr(self, "attach_csv_as_file", False)):
             return None
@@ -328,7 +340,7 @@ class AIProvider(ABC):
                     setattr(self, "_csv_attachment_supported", False)
             return None
 
-        normalized_attachments = normalize_attachment_inputs(attachments)
+        normalized_attachments = normalize_requested_attachment_inputs(attachments)
         if not normalized_attachments:
             return None
         return normalized_attachments
@@ -543,38 +555,66 @@ def _reset_rate_limit_state(state: RateLimitState) -> None:
 
 def _run_stream_with_rate_limit_retries(
     stream_factory: Callable[[], Any],
-    stream_text_iterator: Callable[[Any], Iterator[str]],
+    stream_text_iterator: Callable[[Any], Iterator[Any]],
     *,
     rate_limit_error_type: type[Exception],
     provider_name: str,
     map_error: Callable[[Exception], AIProviderError],
     empty_response_message: str,
-) -> Iterator[str]:
-    """Stream text with shared provider rate-limit/backoff semantics.
+) -> Iterator[Any]:
+    """Stream chunks with shared provider rate-limit/backoff semantics.
 
     The factory and stream iteration are retried together so rate limits raised
     either while opening the stream or while consuming it update the same
-    ``RateLimitState`` used by non-streaming requests.
+    ``RateLimitState`` used by non-streaming requests. Retries are allowed
+    only before any chunk has been yielded to the caller; once answer or
+    reasoning output is visible, automatic retry is unsafe because it can
+    duplicate already-delivered text.
+
+    Args:
+        stream_factory: Callable that opens and returns the provider stream.
+        stream_text_iterator: Callable that converts a provider stream into
+            string-compatible chunks with answer and optional reasoning
+            channels.
+        rate_limit_error_type: Provider-specific exception type that signals
+            rate limiting.
+        provider_name: Human-readable provider name for logs and errors.
+        map_error: Callable that maps provider exceptions to ``AIProviderError``.
+        empty_response_message: Error message to raise when the completed
+            stream yields no answer-channel text.
+
+    Yields:
+        String-compatible chunks from the provider stream.
+
+    Raises:
+        AIProviderError: If the stream is empty, rate limits persist, a
+            rate limit occurs after partial output, or another provider error
+            is mapped by ``map_error``.
     """
+    from .utils import stream_chunk_answer_text, stream_chunk_has_text
+
     state = _get_rate_limit_state(provider_name)
     last_error: Exception | None = None
+    yielded_any_chunk = False
 
     _honor_residual_rate_limit_backoff(provider_name, state)
 
     for retry_count in range(RATE_LIMIT_MAX_RETRIES + 1):
-        emitted = False
+        emitted_answer = False
         try:
             with state.lock:
                 state.last_request_time = time.monotonic()
 
             stream = stream_factory()
-            for chunk_text in stream_text_iterator(stream):
-                if not chunk_text:
+            for chunk in stream_text_iterator(stream):
+                if not stream_chunk_has_text(chunk):
                     continue
-                emitted = True
-                yield chunk_text
+                if stream_chunk_answer_text(chunk):
+                    emitted_answer = True
+                yielded_any_chunk = True
+                yield chunk
 
-            if not emitted:
+            if not emitted_answer:
                 raise AIProviderError(empty_response_message)
 
             _reset_rate_limit_state(state)
@@ -582,6 +622,14 @@ def _run_stream_with_rate_limit_retries(
         except rate_limit_error_type as error:
             last_error = error
             retry_after = _record_rate_limit_error(state, error, retry_count)
+
+            if yielded_any_chunk:
+                detail = f" Details: {error}" if error else ""
+                raise AIProviderError(
+                    f"{provider_name} stream was rate limited after partial output; "
+                    "automatic retry was not attempted because it could duplicate content."
+                    f"{detail}"
+                ) from error
 
             if retry_count >= RATE_LIMIT_MAX_RETRIES:
                 break

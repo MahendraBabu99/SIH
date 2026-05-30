@@ -48,8 +48,11 @@ def _make_openai_response(text: str) -> SimpleNamespace:
 # ---------------------------------------------------------------------------
 
 class TestLocalProvider(unittest.TestCase):
+    """Grouped tests for TestLocalProvider behavior."""
+
     @patch("openai.OpenAI")
     def test_analyze_returns_text(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = _make_openai_response(
@@ -64,6 +67,7 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_analyze_stream_yields_text_chunks(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = [
@@ -82,6 +86,7 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_analyze_stream_empty_response_raises(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = [
@@ -95,6 +100,7 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_analyze_stream_refusal_raises(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = [
@@ -112,8 +118,11 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeBadRequestError(Exception):
+            """Grouped tests for _FakeBadRequestError behavior."""
             def __init__(self, message: str, *, param: str | None = None) -> None:
+                """Initialize the test helper."""
                 super().__init__(message)
                 self.param = param
                 self.body = {"error": {"message": message, "param": param}}
@@ -145,6 +154,7 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_get_model_info(self, _mock: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         provider = LocalProvider(
             base_url="http://localhost:11434/v1", model="llama3.1:70b"
         )
@@ -154,6 +164,7 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_default_api_key(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         provider = LocalProvider(
             base_url="http://localhost:11434/v1", model="llama3.1:70b"
         )
@@ -161,6 +172,7 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_normalizes_root_base_url_to_v1(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         LocalProvider(base_url="http://localhost:11434/", model="llama3.1:70b")
         kwargs = mock_openai_cls.call_args.kwargs
         self.assertEqual(kwargs["base_url"], "http://localhost:11434/v1")
@@ -170,6 +182,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         LocalProvider(
             base_url="http://localhost:11434/v1",
             model="llama3.1:70b",
@@ -184,13 +197,16 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
 
         class _FakeAPIConnectionError(Exception):
+            """Grouped tests for _FakeAPIConnectionError behavior."""
             pass
 
         class _FakeAPITimeoutError(_FakeAPIConnectionError):
+            """Grouped tests for _FakeAPITimeoutError behavior."""
             pass
 
         with patch("openai.APIConnectionError", _FakeAPIConnectionError), patch(
@@ -214,7 +230,9 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_connection_error_without_timeout(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeAPIConnectionError(Exception):
+            """Grouped tests for _FakeAPIConnectionError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -234,7 +252,9 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_auth_error(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeAuthError(Exception):
+            """Grouped tests for _FakeAuthError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -252,7 +272,9 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_api_error_404(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeAPIError(Exception):
+            """Grouped tests for _FakeAPIError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -271,7 +293,9 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_api_error_generic(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeAPIError(Exception):
+            """Grouped tests for _FakeAPIError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -289,7 +313,9 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_context_length_error(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeBadRequestError(Exception):
+            """Grouped tests for _FakeBadRequestError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -312,6 +338,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
 
@@ -351,6 +378,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
 
@@ -394,6 +422,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
 
@@ -421,12 +450,48 @@ class TestLocalProvider(unittest.TestCase):
         self.assertNotIn("<think>", result)
 
     @patch("openai.OpenAI")
+    def test_analyze_with_progress_separates_streamed_think_markup(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Leading streamed think blocks stay out of partial and final answers."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="<think>hidden "))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="reasoning</think>\nVisible "))]),
+            SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="answer."))]),
+        ]
+        progress_updates: list[dict[str, str]] = []
+
+        provider = LocalProvider(
+            base_url="http://localhost:11434/v1", model="test"
+        )
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=progress_updates.append,
+        )
+
+        self.assertEqual(result, "Visible answer.")
+        self.assertTrue(
+            any("hidden reasoning" in update.get("thinking_text", "") for update in progress_updates)
+        )
+        self.assertFalse(any("<think>" in update.get("partial_text", "") for update in progress_updates))
+        self.assertFalse(
+            any("hidden reasoning" in update.get("partial_text", "") for update in progress_updates)
+        )
+
+    @patch("openai.OpenAI")
     def test_analyze_with_progress_retries_with_model_token_cap_when_too_large(
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeBadRequestError(Exception):
+            """Grouped tests for _FakeBadRequestError behavior."""
             def __init__(self, message: str, *, param: str | None = None) -> None:
+                """Initialize the test helper."""
                 super().__init__(message)
                 self.param = param
                 self.body = {"error": {"message": message, "param": param}}
@@ -473,6 +538,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.files.create.return_value = SimpleNamespace(id="file-unsupported")
@@ -517,6 +583,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = _make_openai_response(
@@ -535,8 +602,11 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeBadRequestError(Exception):
+            """Grouped tests for _FakeBadRequestError behavior."""
             def __init__(self, message: str, *, param: str | None = None) -> None:
+                """Initialize the test helper."""
                 super().__init__(message)
                 self.param = param
                 self.body = {"error": {"message": message, "param": param}}
@@ -568,6 +638,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.files.create.return_value = SimpleNamespace(id="file-123")
@@ -596,6 +667,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.files.create.return_value = SimpleNamespace(id="file-unsupported")
@@ -632,7 +704,9 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeBadRequestError(Exception):
+            """Grouped tests for _FakeBadRequestError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -667,6 +741,7 @@ class TestLocalProvider(unittest.TestCase):
         self,
         mock_openai_cls: MagicMock,
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = _make_openai_response("result")
@@ -683,6 +758,7 @@ class TestLocalProvider(unittest.TestCase):
     def test_analyze_non_stream_empty_with_finish_reason(
         self, mock_openai_cls: MagicMock
     ) -> None:
+        """Verify the behavior described by this test name."""
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
         choice = SimpleNamespace(
@@ -702,7 +778,9 @@ class TestLocalProvider(unittest.TestCase):
     def test_analyze_stream_falls_back_to_non_stream_when_unsupported(
         self, mock_openai_cls: MagicMock
     ) -> None:
+        """Verify the behavior described by this test name."""
         class _FakeBadRequestError(Exception):
+            """Grouped tests for _FakeBadRequestError behavior."""
             pass
 
         mock_client = MagicMock()
@@ -726,15 +804,19 @@ class TestLocalProvider(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestLocalProviderProcessStreamChunk(unittest.TestCase):
+    """Grouped tests for TestLocalProviderProcessStreamChunk behavior."""
     def test_returns_none_for_no_choices(self) -> None:
+        """Verify the behavior described by this test name."""
         chunk = SimpleNamespace(choices=[])
         self.assertIsNone(LocalProvider._process_stream_chunk(chunk))
 
     def test_returns_none_for_none_delta(self) -> None:
+        """Verify the behavior described by this test name."""
         chunk = SimpleNamespace(choices=[SimpleNamespace(delta=None)])
         self.assertIsNone(LocalProvider._process_stream_chunk(chunk))
 
     def test_extracts_thinking_and_answer(self) -> None:
+        """Verify the behavior described by this test name."""
         chunk = SimpleNamespace(
             choices=[
                 SimpleNamespace(
@@ -752,12 +834,14 @@ class TestLocalProviderProcessStreamChunk(unittest.TestCase):
         self.assertEqual(answer, "answer")
 
     def test_returns_none_for_empty_deltas(self) -> None:
+        """Verify the behavior described by this test name."""
         chunk = SimpleNamespace(
             choices=[SimpleNamespace(delta=SimpleNamespace())]
         )
         self.assertIsNone(LocalProvider._process_stream_chunk(chunk))
 
     def test_handles_dict_choice(self) -> None:
+        """Verify the behavior described by this test name."""
         chunk = SimpleNamespace(choices=[{"delta": {"content": "from dict"}}])
         result = LocalProvider._process_stream_chunk(chunk)
         self.assertIsNotNone(result)
@@ -771,7 +855,9 @@ class TestLocalProviderProcessStreamChunk(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
+    """Grouped tests for TestLocalProviderEmitProgressIfNeeded behavior."""
     def test_no_emit_when_no_content(self) -> None:
+        """Verify the behavior described by this test name."""
         callback = MagicMock()
         result = LocalProvider._emit_progress_if_needed(
             progress_callback=callback,
@@ -785,6 +871,7 @@ class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
         self.assertEqual(result[0], 0.0)
 
     def test_no_emit_when_unchanged(self) -> None:
+        """Verify the behavior described by this test name."""
         callback = MagicMock()
         result = LocalProvider._emit_progress_if_needed(
             progress_callback=callback,
@@ -797,6 +884,7 @@ class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
         callback.assert_not_called()
 
     def test_emits_when_enough_change(self) -> None:
+        """Verify the behavior described by this test name."""
         callback = MagicMock()
         long_text = "x" * 100
         result = LocalProvider._emit_progress_if_needed(
@@ -812,6 +900,7 @@ class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
         self.assertEqual(result[1], long_text)
 
     def test_rate_limits_small_changes(self) -> None:
+        """Verify the behavior described by this test name."""
         callback = MagicMock()
         now = time.monotonic()
         result = LocalProvider._emit_progress_if_needed(
@@ -826,7 +915,9 @@ class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
         self.assertEqual(result[0], now)
 
     def test_handles_callback_exception(self) -> None:
+        """Verify the behavior described by this test name."""
         def bad_callback(payload):
+            """Support test behavior for bad_callback."""
             raise RuntimeError("callback failed")
 
         long_text = "x" * 100
@@ -846,21 +937,25 @@ class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestLocalProviderFinalizeStreamResponse(unittest.TestCase):
+    """Grouped tests for TestLocalProviderFinalizeStreamResponse behavior."""
     def test_returns_answer_when_present(self) -> None:
+        """Verify the behavior described by this test name."""
         result = LocalProvider._finalize_stream_response(
             thinking_parts=["thinking"],
             answer_parts=["answer"],
         )
         self.assertEqual(result, "answer")
 
-    def test_returns_thinking_when_no_answer(self) -> None:
-        result = LocalProvider._finalize_stream_response(
-            thinking_parts=["thinking only"],
-            answer_parts=[],
-        )
-        self.assertEqual(result, "thinking only")
+    def test_raises_when_only_thinking_is_present(self) -> None:
+        """Reasoning-only streams must not become final answer text."""
+        with self.assertRaises(AIProviderError):
+            LocalProvider._finalize_stream_response(
+                thinking_parts=["thinking only"],
+                answer_parts=[],
+            )
 
     def test_raises_when_both_empty(self) -> None:
+        """Verify the behavior described by this test name."""
         with self.assertRaises(AIProviderError):
             LocalProvider._finalize_stream_response(
                 thinking_parts=[],
@@ -868,6 +963,7 @@ class TestLocalProviderFinalizeStreamResponse(unittest.TestCase):
             )
 
     def test_strips_think_block_from_answer(self) -> None:
+        """Verify the behavior described by this test name."""
         result = LocalProvider._finalize_stream_response(
             thinking_parts=[],
             answer_parts=["<think>reasoning</think>\nFinal."],
@@ -880,8 +976,11 @@ class TestLocalProviderFinalizeStreamResponse(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestLocalProviderBuildChatCompletionPrompt(unittest.TestCase):
+    """Grouped tests for TestLocalProviderBuildChatCompletionPrompt behavior."""
+
     @patch("openai.OpenAI")
     def test_returns_user_prompt_without_attachments(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         provider = LocalProvider(
             base_url="http://localhost:11434/v1", model="test"
         )
@@ -890,6 +989,7 @@ class TestLocalProviderBuildChatCompletionPrompt(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_inlines_attachments_when_available(self, mock_openai_cls: MagicMock) -> None:
+        """Verify the behavior described by this test name."""
         with TemporaryDirectory(prefix="aift-test-") as tmp:
             path = Path(tmp) / "data.csv"
             path.write_text("a,b\n1,2\n")

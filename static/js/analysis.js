@@ -309,12 +309,14 @@
 
   /** Record a completed artifact analysis result. */
   function upsertAnalysis(r) {
-    const { key, name, model, imageId, imageLabel } = extractAnalysisIdentifiers(r);
+    const { key, name, model, current, imageId, imageLabel } = extractAnalysisIdentifiers(r);
     const rawText = String(r.analysis || r.result || r.summary || "");
     const text = A.stripLeadingReasoningBlocks(rawText) || rawText;
     st.analysis.byKey[key] = {
       key, name, text, model, imageId, imageLabel,
-      thinkingText: "", partialText: "", isThinking: false,
+      thinkingText: String(current.thinkingText || ""),
+      partialText: "",
+      isThinking: false,
     };
   }
 
@@ -325,7 +327,7 @@
       key, name, imageId, imageLabel,
       text: String(current.text || ""),
       model: model || String(current.model || ""),
-      thinkingText: String(current.thinkingText || "Model is thinking..."),
+      thinkingText: String(current.thinkingText || ""),
       partialText: String(current.partialText || ""),
       isThinking: true,
     };
@@ -349,7 +351,7 @@
     st.analysis.order.forEach((key) => {
       const current = st.analysis.byKey[key];
       if (!current || !current.isThinking) return;
-      const rawResolvedText = String(current.text || current.partialText || current.thinkingText || "");
+      const rawResolvedText = String(current.text || current.partialText || "");
       const resolvedText = A.stripLeadingReasoningBlocks(rawResolvedText) || rawResolvedText.trim();
       st.analysis.byKey[key] = { ...current, text: resolvedText, isThinking: false };
     });
@@ -376,9 +378,30 @@
   /** Return the best display text for an analysis entry (thinking placeholder or final). */
   function resolveAnalysisText(r) {
     if (r.isThinking && !String(r.text || "").trim()) {
-      return String(r.thinkingText || r.partialText || "Model is thinking...");
+      return String(r.partialText || "Model is thinking...");
     }
     return r.text;
+  }
+
+  /**
+   * Append a collapsible reasoning panel when GUI-only thinking is available.
+   *
+   * @param {HTMLElement} target - Container receiving the panel.
+   * @param {string} reasoningText - Reasoning text to display separately.
+   */
+  function appendAnalysisReasoningPanel(target, reasoningText) {
+    const value = String(reasoningText || "");
+    if (!target || !value) return;
+    const panel = document.createElement("details");
+    panel.className = "analysis-reasoning-panel";
+    const summary = document.createElement("summary");
+    summary.textContent = "Reasoning";
+    const body = document.createElement("pre");
+    body.className = "analysis-reasoning-text";
+    body.textContent = value;
+    panel.appendChild(summary);
+    panel.appendChild(body);
+    target.appendChild(panel);
   }
 
   /** Render all per-artifact analysis cards into the analysis results list. */
@@ -474,6 +497,7 @@
     a.appendChild(h);
     a.appendChild(m);
     a.appendChild(b);
+    appendAnalysisReasoningPanel(a, r.thinkingText);
     return a;
   }
 
@@ -640,6 +664,7 @@
     A.renderMarkdownInto(p, displayText, emptyLabel);
     d.appendChild(s);
     d.appendChild(p);
+    appendAnalysisReasoningPanel(d, r.thinkingText);
     return d;
   }
 

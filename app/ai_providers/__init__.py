@@ -48,10 +48,13 @@ from .kimi_provider import KimiProvider
 from .local_provider import LocalProvider
 from .openai_provider import OpenAIProvider
 from .utils import (
+    StreamedResponseChunk,
     _extract_anthropic_text,
     _extract_openai_text,
     normalize_attachment_input as _normalize_attachment_input,
     normalize_attachment_inputs as _normalize_attachment_inputs,
+    stream_chunk_answer_text,
+    stream_chunk_reasoning_text,
 )
 
 __all__ = [
@@ -61,5 +64,8 @@ __all__ = [
     "OpenAIProvider",
     "KimiProvider",
     "LocalProvider",
+    "StreamedResponseChunk",
     "create_provider",
+    "stream_chunk_answer_text",
+    "stream_chunk_reasoning_text",
 ]

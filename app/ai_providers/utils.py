@@ -3,12 +3,14 @@
 This module contains all functions for extracting text from AI provider
 responses (Anthropic and OpenAI formats), normalizing and inlining file
 attachments, stripping reasoning blocks from local model output, and
-shared Responses API file-upload logic used by OpenAI, Kimi, and Local
-providers.
+shared OpenAI-compatible stream-channel and Responses API file-upload logic
+used by OpenAI, Kimi, and Local providers.
 
 Attributes:
     _LEADING_REASONING_BLOCK_RE: Regex pattern matching leading ``<think>``,
         ``<thinking>``, ``<reasoning>`` XML blocks or fenced code blocks.
+    _OPENAI_REASONING_DELTA_FIELDS: OpenAI-compatible streaming field names
+        that contain hidden reasoning or thinking text rather than answer text.
 """
 
 from __future__ import annotations
@@ -27,6 +29,275 @@ _LEADING_REASONING_BLOCK_RE = re.compile(
     r")+",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_OPENAI_REASONING_DELTA_FIELDS = ("reasoning_content", "reasoning", "thinking")
+_STREAM_REASONING_START_RE = re.compile(
+    r"^\s*<\s*(?P<tag>think|thinking|reasoning)\b[^>]*>",
+    flags=re.IGNORECASE,
+)
+_STREAM_REASONING_TAG_PREFIXES = (
+    "<",
+    "<t",
+    "<th",
+    "<thi",
+    "<thin",
+    "<think",
+    "<thinki",
+    "<thinkin",
+    "<thinking",
+    "<r",
+    "<re",
+    "<rea",
+    "<reas",
+    "<reaso",
+    "<reason",
+    "<reasoni",
+    "<reasonin",
+    "<reasoning",
+)
+
+
+class StreamedResponseChunk(str):
+    """String-compatible provider stream chunk with separated text channels.
+
+    The string value is always the answer-channel text, so CLI/headless
+    callers that print, join, serialize, or log chunks continue to see only
+    final-answer content. GUI code may explicitly read ``reasoning_text`` to
+    display model thinking in a separate collapsible panel.
+
+    Args:
+        answer_text: User-visible answer-channel text.
+        reasoning_text: Provider reasoning or thinking text that must remain
+            separate from normal answer output.
+
+    Attributes:
+        reasoning_text: Provider reasoning or thinking text for GUI-only
+            display.
+    """
+
+    __slots__ = ("reasoning_text",)
+
+    def __new__(
+        cls,
+        answer_text: Any = "",
+        reasoning_text: Any = "",
+    ) -> "StreamedResponseChunk":
+        """Create a stream chunk whose string value is answer text.
+
+        Args:
+            answer_text: User-visible answer-channel text.
+            reasoning_text: GUI-only reasoning or thinking text.
+
+        Returns:
+            A string-compatible stream chunk.
+        """
+        instance = str.__new__(cls, str(answer_text or ""))
+        instance.reasoning_text = str(reasoning_text or "")
+        return instance
+
+    @property
+    def answer_text(self) -> str:
+        """Return answer-channel text safe for normal outputs."""
+        return str(self)
+
+    def has_answer(self) -> bool:
+        """Return whether this chunk carries answer-channel text."""
+        return bool(self.answer_text)
+
+    def has_reasoning(self) -> bool:
+        """Return whether this chunk carries reasoning-channel text."""
+        return bool(self.reasoning_text)
+
+
+class _LeadingReasoningStreamSplitter:
+    """Split leading local-model reasoning markup out of content chunks.
+
+    Some OpenAI-compatible local models stream chain-of-thought in the
+    answer ``content`` field as a leading ``<think>``, ``<thinking>``, or
+    ``<reasoning>`` block. This stateful splitter moves those leading
+    blocks into the reasoning channel while letting later answer text
+    pass through unchanged.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the parser state for a new model stream."""
+        self._buffer = ""
+        self._state = "undecided"
+        self._tag = ""
+
+    def split(self, text: Any) -> StreamedResponseChunk:
+        """Split one streamed content fragment into answer/reasoning text.
+
+        Args:
+            text: A content-channel fragment from a local model stream.
+
+        Returns:
+            A stream chunk with leading reasoning markup separated from
+            answer text.
+        """
+        fragment = str(text or "")
+        if not fragment:
+            return StreamedResponseChunk()
+
+        self._buffer += fragment
+        answer_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        while self._buffer:
+            if self._state == "answer":
+                answer_parts.append(self._buffer)
+                self._buffer = ""
+                break
+
+            if self._state == "undecided":
+                start_match = _STREAM_REASONING_START_RE.match(self._buffer)
+                if start_match:
+                    self._tag = start_match.group("tag").lower()
+                    self._buffer = self._buffer[start_match.end():]
+                    self._state = "reasoning"
+                    continue
+
+                stripped = self._buffer.lstrip()
+                if _is_possible_stream_reasoning_start(stripped):
+                    break
+
+                self._state = "answer"
+                continue
+
+            if self._state == "reasoning":
+                close_match = _find_stream_reasoning_close(self._buffer, self._tag)
+                if close_match:
+                    reasoning_parts.append(self._buffer[: close_match.start()])
+                    self._buffer = self._buffer[close_match.end():].lstrip()
+                    self._state = "undecided"
+                    self._tag = ""
+                    continue
+
+                reasoning_text, retained = _split_reasoning_buffer_for_close_prefix(
+                    self._buffer,
+                    self._tag,
+                )
+                if reasoning_text:
+                    reasoning_parts.append(reasoning_text)
+                self._buffer = retained
+                break
+
+        return StreamedResponseChunk(
+            answer_text="".join(answer_parts),
+            reasoning_text="".join(reasoning_parts),
+        )
+
+    def flush(self) -> StreamedResponseChunk:
+        """Return any buffered text when a stream ends.
+
+        Returns:
+            A final separated chunk for residual buffered text.
+        """
+        if not self._buffer:
+            return StreamedResponseChunk()
+
+        if self._state == "reasoning":
+            chunk = StreamedResponseChunk(reasoning_text=self._buffer)
+        else:
+            chunk = StreamedResponseChunk(answer_text=self._buffer)
+        self._buffer = ""
+        self._state = "answer"
+        self._tag = ""
+        return chunk
+
+
+def _is_possible_stream_reasoning_start(text: str) -> bool:
+    """Return whether text may be the prefix of a reasoning block opener.
+
+    Args:
+        text: Buffered stream text stripped of leading whitespace.
+
+    Returns:
+        ``True`` when more streamed text is needed to classify the prefix.
+    """
+    lowered = text.lower()
+    if (
+        lowered.startswith(("<think", "<thinking", "<reasoning"))
+        and ">" not in lowered
+    ):
+        return True
+    return any(prefix.startswith(lowered) for prefix in _STREAM_REASONING_TAG_PREFIXES)
+
+
+def _find_stream_reasoning_close(text: str, tag: str) -> re.Match[str] | None:
+    """Find the closing tag for a streamed reasoning block.
+
+    Args:
+        text: Buffered reasoning text.
+        tag: Opening reasoning tag name.
+
+    Returns:
+        The closing-tag regex match, or ``None`` if absent.
+    """
+    return re.search(rf"<\s*/\s*{re.escape(tag)}\s*>", text, flags=re.IGNORECASE)
+
+
+def _split_reasoning_buffer_for_close_prefix(text: str, tag: str) -> tuple[str, str]:
+    """Keep a possible split closing tag buffered for the next stream chunk.
+
+    Args:
+        text: Buffered reasoning text without a full closing tag.
+        tag: Opening reasoning tag name.
+
+    Returns:
+        A ``(reasoning_text, retained_suffix)`` tuple.
+    """
+    close_tag = f"</{tag}>"
+    last_angle = text.rfind("<")
+    if last_angle < 0:
+        return text, ""
+
+    suffix = text[last_angle:]
+    if close_tag.startswith(suffix.lower()):
+        return text[:last_angle], suffix
+    return text, ""
+
+
+def stream_chunk_answer_text(chunk: Any) -> str:
+    """Return normal answer text from a provider stream chunk.
+
+    Args:
+        chunk: A provider stream chunk. Plain strings are treated as
+            answer-channel text for backward compatibility.
+
+    Returns:
+        Answer-channel text, or an empty string when absent.
+    """
+    if chunk is None:
+        return ""
+    if isinstance(chunk, StreamedResponseChunk):
+        return chunk.answer_text
+    return str(chunk)
+
+
+def stream_chunk_reasoning_text(chunk: Any) -> str:
+    """Return GUI-only reasoning text from a provider stream chunk.
+
+    Args:
+        chunk: A provider stream chunk.
+
+    Returns:
+        Reasoning-channel text when present, otherwise an empty string.
+    """
+    if isinstance(chunk, StreamedResponseChunk):
+        return chunk.reasoning_text
+    return ""
+
+
+def stream_chunk_has_text(chunk: Any) -> bool:
+    """Return whether a stream chunk has answer or reasoning text.
+
+    Args:
+        chunk: A provider stream chunk.
+
+    Returns:
+        ``True`` when either answer-channel or reasoning-channel text exists.
+    """
+    return bool(stream_chunk_answer_text(chunk) or stream_chunk_reasoning_text(chunk))
 
 
 # ---------------------------------------------------------------------------
@@ -78,44 +349,93 @@ def _extract_anthropic_stream_text(event: Any) -> str:
     Returns:
         The text delta string, or empty string if no text content.
     """
-    if event is None:
-        return ""
+    return _split_anthropic_stream_event_text(event).answer_text
 
-    event_type = getattr(event, "type", None)
-    if event_type is None and isinstance(event, dict):
-        event_type = event.get("type")
+
+def _read_stream_field(payload: Any, field_name: str) -> Any:
+    """Read a field from an object-style or dict-style stream payload.
+
+    Args:
+        payload: Stream event, content block, or delta payload.
+        field_name: Field name to read.
+
+    Returns:
+        The field value, or ``None`` if absent.
+    """
+    value = getattr(payload, field_name, None)
+    if value is None and isinstance(payload, dict):
+        value = payload.get(field_name)
+    return value
+
+
+def _stream_text_field(payload: Any, field_names: tuple[str, ...]) -> str:
+    """Extract the first string field from a stream payload.
+
+    Args:
+        payload: Stream event, content block, or delta payload.
+        field_names: Field names to check in order.
+
+    Returns:
+        The first non-empty string value.
+    """
+    for field_name in field_names:
+        value = _read_stream_field(payload, field_name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _split_anthropic_stream_event_text(event: Any) -> StreamedResponseChunk:
+    """Split an Anthropic stream event into answer and reasoning channels.
+
+    Args:
+        event: A single streamed event from the Anthropic Messages API.
+
+    Returns:
+        A string-compatible chunk containing answer text or GUI-only
+        reasoning text.
+    """
+    if event is None:
+        return StreamedResponseChunk()
+
+    event_type = _read_stream_field(event, "type")
 
     if event_type == "content_block_delta":
-        delta = getattr(event, "delta", None)
-        if delta is None and isinstance(event, dict):
-            delta = event.get("delta")
-        text = getattr(delta, "text", None)
-        if text is None and isinstance(delta, dict):
-            text = delta.get("text")
-        if isinstance(text, str):
-            return text
+        delta = _read_stream_field(event, "delta")
+        delta_type = str(_read_stream_field(delta, "type") or "").lower()
+        if delta_type == "thinking_delta":
+            return StreamedResponseChunk(
+                reasoning_text=_stream_text_field(delta, ("thinking", "text")),
+            )
+        if delta_type == "text_delta":
+            return StreamedResponseChunk(answer_text=_stream_text_field(delta, ("text",)))
+        reasoning_text = _stream_text_field(delta, ("thinking",))
+        if reasoning_text:
+            return StreamedResponseChunk(reasoning_text=reasoning_text)
+        return StreamedResponseChunk(answer_text=_stream_text_field(delta, ("text",)))
 
     if event_type == "content_block_start":
-        content_block = getattr(event, "content_block", None)
-        if content_block is None and isinstance(event, dict):
-            content_block = event.get("content_block")
-        text = getattr(content_block, "text", None)
-        if text is None and isinstance(content_block, dict):
-            text = content_block.get("text")
-        if isinstance(text, str):
-            return text
+        content_block = _read_stream_field(event, "content_block")
+        block_type = str(_read_stream_field(content_block, "type") or "").lower()
+        if block_type == "thinking":
+            return StreamedResponseChunk(
+                reasoning_text=_stream_text_field(content_block, ("thinking", "text")),
+            )
+        if block_type == "text":
+            return StreamedResponseChunk(answer_text=_stream_text_field(content_block, ("text",)))
+        reasoning_text = _stream_text_field(content_block, ("thinking",))
+        if reasoning_text:
+            return StreamedResponseChunk(reasoning_text=reasoning_text)
+        return StreamedResponseChunk(answer_text=_stream_text_field(content_block, ("text",)))
 
-    delta = getattr(event, "delta", None)
-    if delta is None and isinstance(event, dict):
-        delta = event.get("delta")
+    delta = _read_stream_field(event, "delta")
     if delta is not None:
-        text = getattr(delta, "text", None)
-        if text is None and isinstance(delta, dict):
-            text = delta.get("text")
-        if isinstance(text, str):
-            return text
+        reasoning_text = _stream_text_field(delta, ("thinking",))
+        if reasoning_text:
+            return StreamedResponseChunk(reasoning_text=reasoning_text)
+        return StreamedResponseChunk(answer_text=_stream_text_field(delta, ("text",)))
 
-    return ""
+    return StreamedResponseChunk()
 
 
 # ---------------------------------------------------------------------------
@@ -164,10 +484,11 @@ def _coerce_openai_text(value: Any) -> str:
 def _extract_openai_text(response: Any) -> str:
     """Extract the generated text from an OpenAI Chat Completions API response.
 
-    Handles plain string content, structured content arrays, and
-    reasoning-model fallback fields (``reasoning_content``, ``reasoning``).
-    If the model refused the request (non-empty ``refusal`` field), raises
-    an ``AIProviderError`` instead of returning the refusal as valid output.
+    Handles plain string content and structured content arrays. Hidden
+    reasoning fields are deliberately ignored so chain-of-thought or
+    thinking text is never returned as user-visible provider output. If the
+    model refused the request (non-empty ``refusal`` field), raises an
+    ``AIProviderError`` instead of returning the refusal as valid output.
 
     Args:
         response: The OpenAI ``ChatCompletion`` response object.
@@ -233,15 +554,6 @@ def _extract_openai_text(response: Any) -> str:
 
         raise AIProviderError(f"AI model refused the request: {refusal_text}")
 
-    for field_name in ("reasoning_content", "reasoning"):
-        field_value = getattr(message, field_name, None)
-        if field_value is None and isinstance(message, dict):
-            field_value = message.get(field_name)
-        text = _coerce_openai_text(field_value)
-        stripped = text.strip()
-        if stripped:
-            return stripped
-
     return ""
 
 
@@ -269,7 +581,14 @@ def _extract_openai_delta_text(delta: Any, field_names: tuple[str, ...]) -> str:
 
 
 def _extract_openai_delta_refusal_text(delta: Any) -> str:
-    """Extract a model-refusal delta from an OpenAI-compatible stream chunk."""
+    """Extract a model-refusal delta from an OpenAI-compatible stream chunk.
+
+    Args:
+        delta: The streaming chunk delta object or dict.
+
+    Returns:
+        Refusal text stripped of surrounding whitespace, or an empty string.
+    """
     if delta is None:
         return ""
 
@@ -280,7 +599,14 @@ def _extract_openai_delta_refusal_text(delta: Any) -> str:
 
 
 def _raise_on_openai_delta_refusal(delta: Any) -> None:
-    """Raise the shared provider error when a streamed delta refuses."""
+    """Raise the shared provider error when a streamed delta refuses.
+
+    Args:
+        delta: The streaming chunk delta object or dict.
+
+    Raises:
+        AIProviderError: If the delta contains refusal text.
+    """
     refusal_text = _extract_openai_delta_refusal_text(delta)
     if not refusal_text:
         return
@@ -288,6 +614,49 @@ def _raise_on_openai_delta_refusal(delta: Any) -> None:
     from .base import AIProviderError
 
     raise AIProviderError(f"AI model refused the request: {refusal_text}")
+
+
+def _extract_openai_stream_chunk_delta(chunk: Any) -> Any | None:
+    """Extract the delta object from an OpenAI-compatible stream chunk.
+
+    Args:
+        chunk: A streaming chunk object or dict from Chat Completions.
+
+    Returns:
+        The first choice's delta payload, or ``None`` if the chunk has no
+        usable delta.
+    """
+    choices = getattr(chunk, "choices", None)
+    if choices is None and isinstance(chunk, dict):
+        choices = chunk.get("choices")
+    if not choices:
+        return None
+
+    choice = choices[0]
+    delta = getattr(choice, "delta", None)
+    if delta is None and isinstance(choice, dict):
+        delta = choice.get("delta")
+    return delta
+
+
+def _split_openai_stream_delta_text(delta: Any) -> StreamedResponseChunk:
+    """Split an OpenAI-compatible stream delta into output channels.
+
+    Args:
+        delta: The stream delta object or dict to inspect.
+
+    Returns:
+        A string-compatible chunk containing answer text and separate
+        reasoning text.
+
+    Raises:
+        AIProviderError: If the delta contains a model refusal.
+    """
+    _raise_on_openai_delta_refusal(delta)
+    return StreamedResponseChunk(
+        answer_text=_extract_openai_delta_text(delta, ("content",)),
+        reasoning_text=_extract_openai_delta_text(delta, _OPENAI_REASONING_DELTA_FIELDS),
+    )
 
 
 def _extract_openai_responses_text(response: Any) -> str:
@@ -436,6 +805,64 @@ def normalize_attachment_inputs(
     return normalized
 
 
+def normalize_requested_attachment_inputs(
+    attachments: list[Mapping[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Validate and normalize requested attachments without dropping failures.
+
+    Unlike ``normalize_attachment_inputs``, this helper treats every
+    caller-supplied descriptor as required evidence. Missing, malformed, or
+    non-file paths raise a provider error so analysis cannot proceed after
+    requested evidence disappeared.
+
+    Args:
+        attachments: Optional list of raw attachment descriptors.
+
+    Returns:
+        A list of normalized attachment dicts. May be empty when no
+        attachments were requested.
+
+    Raises:
+        AIProviderError: If any requested attachment is malformed or not a
+            readable file path.
+    """
+    from .base import AIProviderError
+
+    normalized: list[dict[str, str]] = []
+    for index, attachment in enumerate(attachments or [], start=1):
+        if not isinstance(attachment, Mapping):
+            raise AIProviderError(
+                f"Requested attachment #{index} is invalid; expected a mapping with a file path."
+            )
+
+        path_value = str(attachment.get("path", "")).strip()
+        attachment_name = str(attachment.get("name", "")).strip()
+        display_name = attachment_name or path_value or f"attachment #{index}"
+        if not path_value:
+            raise AIProviderError(
+                f"Requested attachment '{display_name}' is not readable: no file path was provided."
+            )
+
+        attachment_path = Path(path_value)
+        if not attachment_path.exists():
+            raise AIProviderError(
+                f"Requested attachment '{display_name}' is not readable: file does not exist at {attachment_path}."
+            )
+        if not attachment_path.is_file():
+            raise AIProviderError(
+                f"Requested attachment '{display_name}' is not readable: path is not a file at {attachment_path}."
+            )
+
+        normalized.append(
+            {
+                "path": str(attachment_path),
+                "name": attachment_name or attachment_path.name,
+                "mime_type": str(attachment.get("mime_type", "")).strip() or "text/csv",
+            }
+        )
+    return normalized
+
+
 def _prepare_openai_attachment_upload(attachment: Mapping[str, str]) -> tuple[str, str, bool]:
     """Normalize OpenAI attachment upload metadata.
 
@@ -483,8 +910,14 @@ def _inline_attachment_data_into_prompt(
 
     Returns:
         A 2-tuple of ``(modified_prompt, was_inlined)``.
+
+    Raises:
+        AIProviderError: If any requested attachment is missing or cannot be
+            read for inlining.
     """
-    normalized_attachments = normalize_attachment_inputs(attachments)
+    from .base import AIProviderError
+
+    normalized_attachments = normalize_requested_attachment_inputs(attachments)
     if not normalized_attachments:
         return user_prompt, False
 
@@ -497,8 +930,10 @@ def _inline_attachment_data_into_prompt(
                 encoding="utf-8-sig",
                 errors="replace",
             )
-        except OSError:
-            continue
+        except OSError as error:
+            raise AIProviderError(
+                f"Could not read requested attachment '{attachment_name}' at {attachment_path}: {error}"
+            ) from error
         if not attachment_text.strip():
             continue
 
@@ -561,7 +996,8 @@ def upload_and_request_via_responses_api(
         The generated text from the Responses API.
 
     Raises:
-        AIProviderError: If the response is empty or file upload fails.
+        AIProviderError: If the response is empty, an attachment cannot be
+            read, or file upload fails.
     """
     from .base import AIProviderError, _resolve_completion_token_retry_limit
 
@@ -583,11 +1019,19 @@ def upload_and_request_via_responses_api(
                 upload_name = attachment["name"]
                 upload_mime_type = attachment["mime_type"]
 
-            with attachment_path.open("rb") as handle:
-                uploaded = client.files.create(
-                    file=(upload_name, handle.read(), upload_mime_type),
-                    purpose=upload_purpose,
-                )
+            try:
+                attachment_bytes = attachment_path.read_bytes()
+            except OSError as error:
+                attachment_name = str(attachment.get("name", "")).strip() or attachment_path.name
+                raise AIProviderError(
+                    f"{provider_name} could not read requested attachment "
+                    f"'{attachment_name}' at {attachment_path}: {error}"
+                ) from error
+
+            uploaded = client.files.create(
+                file=(upload_name, attachment_bytes, upload_mime_type),
+                purpose=upload_purpose,
+            )
 
             file_id = getattr(uploaded, "id", None)
             if file_id is None and isinstance(uploaded, dict):

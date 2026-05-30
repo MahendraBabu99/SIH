@@ -139,6 +139,70 @@ describe("renderAnalysis", () => {
       expect(mono.textContent).toContain("claude-3-opus");
     }
   });
+
+  test("renders thinking text in a separate collapsible panel", () => {
+    A.st.analysis.order = ["evtx"];
+    A.st.analysis.byKey = {
+      evtx: {
+        key: "evtx",
+        name: "Event Logs",
+        text: "",
+        partialText: "Partial visible answer.",
+        thinkingText: "hidden model reasoning",
+        model: "",
+        isThinking: true,
+      },
+    };
+    A.renderAnalysis();
+
+    const card = mustQuery(A.el.analysisList, ".analysis-card");
+    const answer = mustQuery(card, ".markdown-output");
+    const panel = mustQuery(card, ".analysis-reasoning-panel");
+    const reasoning = mustQuery(panel, ".analysis-reasoning-text");
+
+    expect(answer.textContent).toContain("Partial visible answer.");
+    expect(answer.textContent).not.toContain("hidden model reasoning");
+    expect(panel.open).toBe(false);
+    expect(reasoning.textContent).toBe("hidden model reasoning");
+  });
+
+  test("preserves reasoning panel when streamed analysis completes", () => {
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", model: "m" },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_thinking",
+      result: {
+        artifact_key: "evtx",
+        artifact_name: "Event Logs",
+        thinking_text: "hidden model reasoning",
+        partial_text: "Partial visible answer.",
+      },
+      sequence: 2,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      result: {
+        artifact_key: "evtx",
+        artifact_name: "Event Logs",
+        analysis: "Final visible answer.",
+      },
+      sequence: 3,
+    });
+
+    const card = mustQuery(A.el.analysisList, ".analysis-card");
+    const answer = mustQuery(card, ".markdown-output");
+    const panel = mustQuery(card, ".analysis-reasoning-panel");
+    const reasoning = mustQuery(panel, ".analysis-reasoning-text");
+
+    expect(answer.textContent).toContain("Final visible answer.");
+    expect(answer.textContent).not.toContain("hidden model reasoning");
+    expect(panel.open).toBe(false);
+    expect(reasoning.textContent).toBe("hidden model reasoning");
+  });
 });
 
 // ── renderExecSummary ───────────────────────────────────────────────────────

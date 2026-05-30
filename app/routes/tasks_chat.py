@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ai_providers import AIProviderError, create_provider
+from ..ai_providers.utils import stream_chunk_answer_text, stream_chunk_reasoning_text
 from ..chat import ChatManager
 from .state import (
     PROJECT_ROOT,
@@ -407,11 +408,13 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
                 set_progress_status(CHAT_PROGRESS, case_id, "cancelled")
                 emit_progress(CHAT_PROGRESS, case_id, {"type": "chat_cancelled"})
                 return
-            chunk_text = str(chunk)
-            if not chunk_text:
-                continue
-            chunks.append(chunk_text)
-            emit_progress(CHAT_PROGRESS, case_id, {"type": "token", "content": chunk_text})
+            reasoning_text = stream_chunk_reasoning_text(chunk)
+            if reasoning_text:
+                emit_progress(CHAT_PROGRESS, case_id, {"type": "reasoning", "content": reasoning_text})
+            chunk_text = stream_chunk_answer_text(chunk)
+            if chunk_text:
+                chunks.append(chunk_text)
+                emit_progress(CHAT_PROGRESS, case_id, {"type": "token", "content": chunk_text})
 
         if _cancel_requested():
             set_progress_status(CHAT_PROGRESS, case_id, "cancelled")

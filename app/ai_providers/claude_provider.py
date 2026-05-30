@@ -30,9 +30,10 @@ from .base import (
     _run_stream_with_rate_limit_retries,
 )
 from .utils import (
-    _extract_anthropic_stream_text,
     _extract_anthropic_text,
     _inline_attachment_data_into_prompt,
+    _split_anthropic_stream_event_text,
+    stream_chunk_has_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ class ClaudeProvider(AIProvider):
         user_prompt: str,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> Iterator[str]:
-        """Stream generated text chunks from Claude.
+        """Stream generated chunks from Claude.
 
         Args:
             system_prompt: The system-level instruction text.
@@ -144,7 +145,7 @@ class ClaudeProvider(AIProvider):
             max_tokens: Maximum completion tokens.
 
         Yields:
-            Text chunk strings as they are generated.
+            String-compatible answer chunks as they are generated.
 
         Raises:
             AIProviderError: On empty response or API failure.
@@ -158,15 +159,28 @@ class ClaudeProvider(AIProvider):
         }
 
         def _stream_factory() -> Any:
+            """Open the Claude streaming message request.
+
+            Returns:
+                The provider stream iterator.
+            """
             return self._with_token_limit_retry(
                 lambda kw: self.client.messages.create(**kw),
                 request_kwargs,
             )
 
         def _stream_text_iterator(stream: Any) -> Iterator[str]:
+            """Yield separated answer/reasoning chunks from a Claude stream.
+
+            Args:
+                stream: Anthropic streaming response iterator.
+
+            Yields:
+                String-compatible chunks from Claude content-block deltas.
+            """
             for event in stream:
-                chunk_text = _extract_anthropic_stream_text(event)
-                if chunk_text:
+                chunk_text = _split_anthropic_stream_event_text(event)
+                if stream_chunk_has_text(chunk_text):
                     yield chunk_text
 
         return _run_stream_with_rate_limit_retries(
@@ -200,6 +214,11 @@ class ClaudeProvider(AIProvider):
             AIProviderError: On any API or network failure.
         """
         def _request() -> str:
+            """Run the Claude request with attachment fallback handling.
+
+            Returns:
+                The generated analysis text.
+            """
             attachment_response = self._request_with_csv_attachments(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -257,9 +276,16 @@ class ClaudeProvider(AIProvider):
             content_blocks: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
             for attachment in normalized_attachments:
                 attachment_path = Path(attachment["path"])
+                attachment_name = attachment.get("name", attachment_path.name)
                 mime_type = attachment["mime_type"].lower()
                 if mime_type == "application/pdf":
-                    encoded_data = base64.b64encode(attachment_path.read_bytes()).decode("ascii")
+                    try:
+                        encoded_data = base64.b64encode(attachment_path.read_bytes()).decode("ascii")
+                    except OSError as error:
+                        raise AIProviderError(
+                            f"Claude could not read requested attachment "
+                            f"'{attachment_name}' at {attachment_path}: {error}"
+                        ) from error
                     content_blocks.append(
                         {
                             "type": "document",
@@ -271,13 +297,15 @@ class ClaudeProvider(AIProvider):
                         }
                     )
                 else:
-                    attachment_name = attachment.get("name", attachment_path.name)
                     try:
                         attachment_text = attachment_path.read_text(
                             encoding="utf-8-sig", errors="replace"
                         )
-                    except OSError:
-                        continue
+                    except OSError as error:
+                        raise AIProviderError(
+                            f"Claude could not read requested attachment "
+                            f"'{attachment_name}' at {attachment_path}: {error}"
+                        ) from error
                     content_blocks.append(
                         {
                             "type": "text",

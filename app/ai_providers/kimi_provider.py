@@ -33,10 +33,11 @@ from .base import (
     _run_with_completion_token_retry,
 )
 from .utils import (
-    _extract_openai_delta_text,
+    _extract_openai_stream_chunk_delta,
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
-    _raise_on_openai_delta_refusal,
+    _split_openai_stream_delta_text,
+    stream_chunk_has_text,
     upload_and_request_via_responses_api,
 )
 
@@ -152,7 +153,7 @@ class KimiProvider(AIProvider):
         user_prompt: str,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> Iterator[str]:
-        """Stream generated text chunks from Kimi.
+        """Stream generated chunks from Kimi.
 
         Args:
             system_prompt: The system-level instruction text.
@@ -160,7 +161,8 @@ class KimiProvider(AIProvider):
             max_tokens: Maximum completion tokens.
 
         Yields:
-            Text chunk strings as they are generated.
+            String-compatible chunks containing answer text and, when
+            available, separate GUI-only reasoning text.
 
         Raises:
             AIProviderError: On empty response or API failure.
@@ -171,6 +173,11 @@ class KimiProvider(AIProvider):
         ]
 
         def _stream_factory() -> Any:
+            """Open the Kimi streaming chat completion.
+
+            Returns:
+                The provider stream iterator.
+            """
             return self._create_chat_completion(
                 messages=messages,
                 max_tokens=max_tokens,
@@ -178,21 +185,24 @@ class KimiProvider(AIProvider):
             )
 
         def _stream_text_iterator(stream: Any) -> Iterator[str]:
+            """Yield separated answer/reasoning chunks from a Kimi stream.
+
+            Args:
+                stream: OpenAI-compatible streaming response iterator.
+
+            Yields:
+                String-compatible stream chunks.
+
+            Raises:
+                AIProviderError: If the stream contains a refusal delta.
+            """
             for chunk in stream:
-                choices = getattr(chunk, "choices", None)
-                if not choices:
+                delta = _extract_openai_stream_chunk_delta(chunk)
+                if delta is None:
                     continue
-                choice = choices[0]
-                delta = getattr(choice, "delta", None)
-                if delta is None and isinstance(choice, dict):
-                    delta = choice.get("delta")
-                _raise_on_openai_delta_refusal(delta)
-                chunk_text = _extract_openai_delta_text(
-                    delta,
-                    ("content", "reasoning_content", "reasoning"),
-                )
-                if chunk_text:
-                    yield chunk_text
+                delta_text = _split_openai_stream_delta_text(delta)
+                if stream_chunk_has_text(delta_text):
+                    yield delta_text
 
         return _run_stream_with_rate_limit_retries(
             stream_factory=_stream_factory,
@@ -225,6 +235,11 @@ class KimiProvider(AIProvider):
             AIProviderError: On any API or network failure.
         """
         def _request() -> str:
+            """Run the non-streaming Kimi request.
+
+            Returns:
+                The generated analysis text.
+            """
             return self._request_non_stream(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,

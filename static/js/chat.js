@@ -300,6 +300,10 @@
     renderChatMessageText(contentNode, content);
     bubble.appendChild(contentNode);
 
+    if (opts.reasoningText) {
+      updateChatReasoningPanel(bubble, String(opts.reasoningText || ""));
+    }
+
     let typingNode = null;
     if (opts.typing) {
       bubble.classList.add("is-streaming");
@@ -360,6 +364,33 @@
   }
 
   /**
+   * Append or update the collapsible reasoning panel for a chat bubble.
+   *
+   * @param {HTMLElement} bubble - The chat bubble element.
+   * @param {string} reasoningText - GUI-only reasoning text.
+   * @returns {HTMLElement|null} The reasoning panel, or null.
+   */
+  function updateChatReasoningPanel(bubble, reasoningText) {
+    const value = String(reasoningText || "");
+    if (!bubble || !value) return null;
+    let panel = bubble.querySelector(".chat-reasoning-panel");
+    let body = panel ? panel.querySelector(".chat-reasoning-text") : null;
+    if (!panel) {
+      panel = document.createElement("details");
+      panel.className = "chat-reasoning-panel";
+      const summary = document.createElement("summary");
+      summary.textContent = "Reasoning";
+      body = document.createElement("pre");
+      body.className = "chat-reasoning-text";
+      panel.appendChild(summary);
+      panel.appendChild(body);
+      bubble.appendChild(panel);
+    }
+    if (body) body.textContent = value;
+    return panel;
+  }
+
+  /**
    * Append or update a "Referenced: ..." indicator below a chat bubble.
    *
    * @param {HTMLElement} target - The chat bubble element.
@@ -398,7 +429,13 @@
 
     const pendingMessage = appendChatMessage("assistant", "", { typing: true });
     st.chat.pending = pendingMessage
-      ? { bubble: pendingMessage.bubble, contentNode: pendingMessage.contentNode, typingNode: pendingMessage.typingNode, text: "" }
+      ? {
+        bubble: pendingMessage.bubble,
+        contentNode: pendingMessage.contentNode,
+        typingNode: pendingMessage.typingNode,
+        text: "",
+        reasoningText: "",
+      }
       : null;
     st.chat.seq = -1;
     st.chat.retryCount = 0;
@@ -430,10 +467,17 @@
     );
   }
 
-  /** Dispatch a single chat SSE event (token, done, error) to the UI. */
+  /** Dispatch a single chat SSE event to the UI. */
   function onChatEvent(caseId, payload) {
     if (caseId !== A.activeCaseId()) { finalizePendingChatMessage(); finalizeChatStream(); return; }
     const type = String(payload.type || "");
+    if (type === "reasoning") {
+      const pending = ensurePendingChatMessage();
+      pending.reasoningText = String(pending.reasoningText || "") + String(payload.content || "");
+      updateChatReasoningPanel(pending.bubble, pending.reasoningText);
+      scrollChatToBottom();
+      return;
+    }
     if (type === "token") {
       const pending = ensurePendingChatMessage();
       pending.text += String(payload.content || "");
@@ -468,8 +512,14 @@
     if (st.chat.pending && st.chat.pending.contentNode) return st.chat.pending;
     const created = appendChatMessage("assistant", "", { typing: true });
     st.chat.pending = created
-      ? { bubble: created.bubble, contentNode: created.contentNode, typingNode: created.typingNode, text: "" }
-      : { bubble: null, contentNode: null, typingNode: null, text: "" };
+      ? {
+        bubble: created.bubble,
+        contentNode: created.contentNode,
+        typingNode: created.typingNode,
+        text: "",
+        reasoningText: "",
+      }
+      : { bubble: null, contentNode: null, typingNode: null, text: "", reasoningText: "" };
     return st.chat.pending;
   }
 
@@ -575,4 +625,5 @@
   A.resetChatState = resetChatState;
   A.loadChatHistory = loadChatHistory;
   A.toggleChat = toggleChat;
+  A._onChatEvent = onChatEvent;
 })();

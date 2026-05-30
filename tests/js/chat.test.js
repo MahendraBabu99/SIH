@@ -197,3 +197,23 @@ describe("chat message state", () => {
     expect(A.st.chat.displayedCount).toBe(0);
   });
 });
+
+describe("chat reasoning stream rendering", () => {
+  test("renders reasoning in a collapsible panel outside answer text", () => {
+    A.setCaseId("case-chat-reasoning");
+    A.resetChatState();
+
+    A._onChatEvent("case-chat-reasoning", { type: "reasoning", content: "hidden model reasoning" });
+    A._onChatEvent("case-chat-reasoning", { type: "token", content: "Visible answer." });
+
+    const bubble = mustQuery(A.el.chatThread, ".chat-bubble-ai");
+    const answer = mustQuery(bubble, ".chat-message-content");
+    const panel = mustQuery(bubble, ".chat-reasoning-panel");
+    const reasoningText = mustQuery(panel, ".chat-reasoning-text");
+
+    expect(answer.textContent).toContain("Visible answer.");
+    expect(answer.textContent).not.toContain("hidden model reasoning");
+    expect(panel.open).toBe(false);
+    expect(reasoningText.textContent).toBe("hidden model reasoning");
+  });
+});
