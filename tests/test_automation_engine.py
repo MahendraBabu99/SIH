@@ -4,6 +4,9 @@ Covers AutomationRequest/AutomationResult dataclasses, and the run_automation
 function including: full pipeline success, folder processing, empty discovery,
 config/profile fallback, partial and total image failures, analysis failure,
 progress callbacks, hash skipping, date ranges, and output directory handling.
+
+Attributes:
+    No module-level constants are defined.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import app.automation.engine as engine_module
 from app.analyzer.core import ForensicAnalyzer
@@ -1059,6 +1064,7 @@ class TestRunAutomation(unittest.TestCase):
         self.assertIn("discovery", phases_seen)
         self.assertIn("reporting", phases_seen)
 
+    @pytest.mark.concurrency
     def test_cancel_during_artifact_loop_stops_long_run(self) -> None:
         """Cancellation between artifacts stops before analysis/reporting."""
         self.mocks["artifact_options_to_lists"].side_effect = (

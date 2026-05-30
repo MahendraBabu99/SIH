@@ -17,8 +17,10 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.automation.engine import AutomationResult
-from tests.conftest import ImmediateThread
+from tests.conftest import ImmediateThread, require_symlink_support
 
 
 class _RouteLevelParser:
@@ -633,41 +635,38 @@ class TestDiscoveryIntegration(unittest.TestCase):
         names = [p.name for p in result]
         self.assertIn("\u6d4b\u8bd5_evidence.e01", names)
 
+    @pytest.mark.requires_symlink
     def test_symlink_to_evidence_followed(self) -> None:
         """Symlink to an evidence file is followed."""
         from app.automation.discovery import discover_evidence
 
+        require_symlink_support(self)
         real = self._touch("real.e01")
         link = self.root / "link.e01"
-        try:
-            link.symlink_to(real)
-        except OSError:
-            self.skipTest("Symlinks not supported.")
+        link.symlink_to(real)
         result = discover_evidence(self.root)
         self.assertGreaterEqual(len(result), 1)
 
+    @pytest.mark.requires_symlink
     def test_validate_path_follows_symlink(self) -> None:
         """validate_evidence_path resolves symlinks."""
         from app.automation.discovery import validate_evidence_path
 
+        require_symlink_support(self)
         real = self._touch("real_target.e01")
         link = self.root / "sym_link.e01"
-        try:
-            link.symlink_to(real)
-        except OSError:
-            self.skipTest("Symlinks not supported.")
+        link.symlink_to(real)
         resolved = validate_evidence_path(str(link))
         self.assertEqual(resolved, real)
 
+    @pytest.mark.requires_symlink
     def test_validate_path_rejects_broken_symlink(self) -> None:
         """Broken symlink raises FileNotFoundError."""
         from app.automation.discovery import validate_evidence_path
 
+        require_symlink_support(self)
         link = self.root / "broken_link.e01"
-        try:
-            link.symlink_to(self.root / "nonexistent_target.e01")
-        except OSError:
-            self.skipTest("Symlinks not supported.")
+        link.symlink_to(self.root / "nonexistent_target.e01")
         with self.assertRaises(FileNotFoundError):
             validate_evidence_path(str(link))
 

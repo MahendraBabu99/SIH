@@ -6,11 +6,16 @@ directly or subclass them when specialised behaviour is needed.
 
 Attributes:
     FAKE_HASHES: Standard fake hash dict reusable across tests.
+    _SYMLINK_CAPABILITY_CACHE: Cached symlink probe results keyed by target
+        type.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import pytest
 
 from app.ai_providers import AIProviderError
 
@@ -25,6 +30,95 @@ FAKE_HASHES: dict[str, object] = {
     "size_bytes": 4,
 }
 """Standard fake hash result used by most test suites."""
+
+_SYMLINK_CAPABILITY_CACHE: dict[bool, bool] = {}
+"""Cached symlink support results keyed by ``target_is_directory``."""
+
+
+def _probe_symlink_support(root: Path, target_is_directory: bool = False) -> bool:
+    """Return whether the current environment can create a symlink.
+
+    Args:
+        root: Directory where temporary probe paths should be created.
+        target_is_directory: Whether to probe directory symlink creation
+            instead of regular file symlink creation.
+
+    Returns:
+        ``True`` when symlink creation succeeds and the link is visible as a
+        symlink, otherwise ``False``.
+    """
+    target = root / ("symlink-target-dir" if target_is_directory else "symlink-target-file")
+    link = root / ("symlink-link-dir" if target_is_directory else "symlink-link-file")
+    try:
+        if target_is_directory:
+            target.mkdir()
+        else:
+            target.write_bytes(b"probe")
+        link.symlink_to(target, target_is_directory=target_is_directory)
+        return link.is_symlink()
+    except (NotImplementedError, OSError):
+        return False
+
+
+def symlink_capability(target_is_directory: bool = False) -> bool:
+    """Return whether symlink tests can run in this environment.
+
+    Args:
+        target_is_directory: Whether to check directory symlink capability.
+
+    Returns:
+        ``True`` when the platform, filesystem, and current permissions allow
+        creating the requested symlink type.
+    """
+    if target_is_directory not in _SYMLINK_CAPABILITY_CACHE:
+        with TemporaryDirectory(prefix="aift-symlink-probe-") as temp_dir:
+            _SYMLINK_CAPABILITY_CACHE[target_is_directory] = _probe_symlink_support(
+                Path(temp_dir),
+                target_is_directory=target_is_directory,
+            )
+    return _SYMLINK_CAPABILITY_CACHE[target_is_directory]
+
+
+def require_symlink_support(
+    testcase: object,
+    target_is_directory: bool = False,
+) -> None:
+    """Skip a unittest-style test when symlinks are unavailable.
+
+    Args:
+        testcase: Test case instance exposing ``skipTest``.
+        target_is_directory: Whether the test needs directory symlinks.
+    """
+    if symlink_capability(target_is_directory=target_is_directory):
+        return
+    skip = getattr(testcase, "skipTest", None)
+    if callable(skip):
+        skip("Symlinks are not available in this environment.")
+        return
+    pytest.skip("Symlinks are not available in this environment.")
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    """Skip symlink-marked tests when the environment lacks symlink support.
+
+    Args:
+        config: Active pytest configuration object.
+        items: Collected pytest items to inspect and annotate.
+    """
+    del config
+    for item in items:
+        marker = item.get_closest_marker("requires_symlink")
+        if marker is None:
+            continue
+        target_is_directory = bool(marker.kwargs.get("target_is_directory", False))
+        if symlink_capability(target_is_directory=target_is_directory):
+            continue
+        item.add_marker(
+            pytest.mark.skip(reason="Symlinks are not available in this environment.")
+        )
 
 
 # ---------------------------------------------------------------------------

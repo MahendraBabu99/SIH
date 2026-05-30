@@ -141,6 +141,12 @@ function mustFindAll(root, selector, minimum = 1) {
   return nodes;
 }
 
+async function flushMicrotasks(turns = 10) {
+  for (let i = 0; i < turns; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 function cleanupAift() {
   const A = window.AIFT;
   if (A) {
@@ -187,5 +193,6 @@ module.exports = {
   mustGet,
   mustQuery,
   mustFindAll,
+  flushMicrotasks,
   cleanupAift,
 };

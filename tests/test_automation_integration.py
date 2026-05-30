@@ -18,6 +18,8 @@ from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.audit import AuditLogger as RealAuditLogger
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.automation.json_export import DISCLAIMER_TEXT
@@ -27,6 +29,7 @@ from tests.conftest import (
     FakeAuditLogger,
     FakeParser as _BaseFakeParser,
     FakeReportGenerator,
+    require_symlink_support,
 )
 
 _ENGINE = "app.automation.engine"
@@ -561,15 +564,14 @@ class TestEdgeCaseIntegration(_IntegrationTestBase):
         result = run_automation(self._make_request())
         self.assertTrue(result.success)
 
+    @pytest.mark.requires_symlink
     def test_symlink_evidence_followed(self) -> None:
         """Symlinked evidence file is followed and processed."""
+        require_symlink_support(self)
         real_file = self.root / "real_evidence.E01"
         real_file.write_bytes(b"\x00" * 512)
         link_path = self.root / "link_evidence.E01"
-        try:
-            link_path.symlink_to(real_file)
-        except OSError:
-            self.skipTest("Symlinks not supported on this filesystem.")
+        link_path.symlink_to(real_file)
         self.mocks["discover_evidence"].return_value = [link_path.resolve()]
         self.mocks["validate_evidence_path"].return_value = link_path.resolve()
         result = run_automation(self._make_request())

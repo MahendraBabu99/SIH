@@ -1,3 +1,9 @@
+"""Route-level tests for case, evidence, parsing, analysis, and report APIs.
+
+Attributes:
+    No module-level constants are defined.
+"""
+
 from __future__ import annotations
 
 import json
@@ -12,6 +18,7 @@ from unittest.mock import MagicMock, patch
 from zipfile import ZipFile
 
 import yaml
+import pytest
 
 from app import create_app
 from app.case_logging import unregister_all_case_log_handlers
@@ -284,7 +291,9 @@ class RoutesTests(unittest.TestCase):
             history_resp = self.client.get(f"/api/cases/{case_id}/chat/history")
             self.assertEqual(history_resp.status_code, 200)
 
+    @pytest.mark.concurrency
     def test_parse_progress_sse_waits_before_emitting_idle(self) -> None:
+        """Hold the initial SSE stream open long enough to receive parse events."""
         with (
             patch.object(routes, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
@@ -293,20 +302,31 @@ class RoutesTests(unittest.TestCase):
             create_resp = self.client.post("/api/cases", json={"case_name": "SSE Wait Case"})
             self.assertEqual(create_resp.status_code, 201)
             case_id = create_resp.get_json()["case_id"]
+            stream_ready = threading.Event()
+            worker_done = threading.Event()
 
             def mark_parse_running() -> None:
-                time.sleep(0.05)
+                """Emit parse lifecycle events after the SSE stream is open."""
+                self.assertTrue(stream_ready.wait(timeout=1.0))
                 routes.set_progress_status(routes.PARSE_PROGRESS, case_id, "running")
                 routes.emit_progress(routes.PARSE_PROGRESS, case_id, {"type": "parse_started"})
                 routes.set_progress_status(routes.PARSE_PROGRESS, case_id, "completed")
                 routes.emit_progress(routes.PARSE_PROGRESS, case_id, {"type": "parse_completed"})
+                worker_done.set()
 
             worker = threading.Thread(target=mark_parse_running, daemon=True)
             worker.start()
 
-            parse_sse = self.client.get(f"/api/cases/{case_id}/parse/progress")
+            parse_sse = self.client.get(
+                f"/api/cases/{case_id}/parse/progress",
+                buffered=False,
+            )
+            stream_ready.set()
             self.assertEqual(parse_sse.status_code, 200)
             payload = parse_sse.get_data(as_text=True)
+            worker.join(timeout=1.0)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(worker_done.is_set())
             self.assertIn("parse_started", payload)
             self.assertIn("parse_completed", payload)
             self.assertNotIn('"type":"idle"', payload)

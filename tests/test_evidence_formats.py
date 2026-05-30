@@ -6,6 +6,9 @@ Covers:
 - Archive extraction functions (_extract_zip, _extract_tar, _extract_7z)
 - Evidence path resolution (_resolve_uploaded_dissect_path)
 - Evidence intake for various formats via the API
+
+Attributes:
+    No module-level constants are defined.
 """
 
 from __future__ import annotations
@@ -21,9 +24,10 @@ from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 import py7zr
+import pytest
 
 from app import create_app
-from tests.conftest import FakeParser, FAKE_HASHES
+from tests.conftest import FakeParser, FAKE_HASHES, require_symlink_support
 import app.routes as routes
 import app.routes.evidence as routes_evidence
 import app.routes.evidence_archive as routes_evidence_archive
@@ -401,7 +405,10 @@ class TestExtractZip(unittest.TestCase):
             )
         self.assertFalse(dest.exists())
 
+    @pytest.mark.requires_symlink(target_is_directory=True)
     def test_zip_rejects_symlink_destination_without_deleting_target(self) -> None:
+        """Reject symlink ZIP destinations without deleting their targets."""
+        require_symlink_support(self, target_is_directory=True)
         zip_path = self.root / "evidence.zip"
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("disk.E01", b"EWF-DATA")
@@ -410,18 +417,17 @@ class TestExtractZip(unittest.TestCase):
         marker = target / "keep.txt"
         marker.write_text("keep", encoding="utf-8")
         dest = self.root / "extracted-link"
-        try:
-            dest.symlink_to(target, target_is_directory=True)
-        except (NotImplementedError, OSError):
-            self.skipTest("Symlinks are not available in this environment")
+        dest.symlink_to(target, target_is_directory=True)
 
         with self.assertRaises(ValueError):
             routes_evidence._extract_zip(zip_path, dest)
 
         self.assertTrue(marker.exists())
 
+    @pytest.mark.requires_symlink(target_is_directory=True)
     def test_archive_descriptor_symlink_destination_does_not_delete_target(self) -> None:
         """Refuse symlink extraction destinations without deleting targets."""
+        require_symlink_support(self, target_is_directory=True)
         zip_path = self.root / "evidence.zip"
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("disk.E01", b"EWF-DATA")
@@ -430,10 +436,7 @@ class TestExtractZip(unittest.TestCase):
         marker = target / "keep.txt"
         marker.write_text("keep", encoding="utf-8")
         dest = self.root / "descriptor-extracted-link"
-        try:
-            dest.symlink_to(target, target_is_directory=True)
-        except (NotImplementedError, OSError):
-            self.skipTest("Symlinks are not available in this environment")
+        dest.symlink_to(target, target_is_directory=True)
 
         with self.assertRaises(ValueError):
             extract_archive_descriptor(zip_path, dest)
@@ -1682,18 +1685,17 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
         mock_hash.assert_not_called()
         mock_hash_shared.assert_not_called()
 
+    @pytest.mark.requires_symlink
     def test_split_path_ignores_symlinked_sibling_segment(self) -> None:
         """Path-mode segment hashing must not include symlinked siblings."""
+        require_symlink_support(self)
         case_id = self._create_case()
         disk_e01 = Path(self.temp_dir.name) / "Disk.E01"
         disk_e02_real = Path(self.temp_dir.name) / "outside-real.E02"
         disk_e02_link = Path(self.temp_dir.name) / "Disk.E02"
         disk_e01.write_bytes(b"seg1")
         disk_e02_real.write_bytes(b"seg2")
-        try:
-            disk_e02_link.symlink_to(disk_e02_real)
-        except (NotImplementedError, OSError):
-            self.skipTest("Symlinks are not available in this environment")
+        disk_e02_link.symlink_to(disk_e02_real)
 
         with (
             patch.object(routes, "CASES_ROOT", self.cases_root),

@@ -776,7 +776,7 @@ describe("parse button visibility in multi-image mode", () => {
     try {
       parseBtn.dispatchEvent(new Event("click"));
       /* Allow microtask to resolve. */
-      await new Promise((r) => setTimeout(r, 0));
+      await Promise.resolve();
       expect(called).toBe(true);
     } finally {
       A.submitParse = original;

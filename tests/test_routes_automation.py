@@ -15,6 +15,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app import create_app
 from app.automation.engine import AutomationResult
 import app.routes.automation as automation_mod
@@ -69,21 +71,45 @@ def _make_failed_result(
     )
 
 
-def _wait_for_run(
-    run_id: str,
-    predicate: object,
-    timeout: float = 1.0,
-) -> dict:
-    """Wait for an automation run to satisfy a predicate with diagnostics."""
-    deadline = time.monotonic() + timeout
-    last_run: dict = {}
-    while time.monotonic() < deadline:
-        with automation_mod.RUNS_LOCK:
-            last_run = dict(automation_mod.AUTOMATION_RUNS.get(run_id, {}))
-        if callable(predicate) and predicate(last_run):
-            return last_run
-        time.sleep(0.005)
-    raise AssertionError(f"Timed out waiting for run {run_id}; last state: {last_run!r}")
+class JoinableThreadRecorder:
+    """Create real threads while recording them for deterministic joins.
+
+    Attributes:
+        real_thread_cls: Original thread class captured before patching.
+        threads: Threads created through this recorder.
+    """
+
+    def __init__(self) -> None:
+        """Initialise the recorder with the current real thread class."""
+        self.real_thread_cls = threading.Thread
+        self.threads: list[threading.Thread] = []
+
+    def __call__(self, *args: object, **kwargs: object) -> threading.Thread:
+        """Create, record, and return a real thread.
+
+        Args:
+            *args: Positional arguments forwarded to ``threading.Thread``.
+            **kwargs: Keyword arguments forwarded to ``threading.Thread``.
+
+        Returns:
+            The created thread instance.
+        """
+        thread = self.real_thread_cls(*args, **kwargs)
+        self.threads.append(thread)
+        return thread
+
+    def join_all(self, timeout: float = 1.0) -> None:
+        """Join every recorded thread.
+
+        Args:
+            timeout: Maximum seconds to wait for each thread.
+        """
+        for thread in self.threads:
+            thread.join(timeout=timeout)
+
+    def alive_threads(self) -> list[threading.Thread]:
+        """Return recorded threads that are still alive."""
+        return [thread for thread in self.threads if thread.is_alive()]
 
 
 class AutomationRoutesTestBase(unittest.TestCase):
@@ -1090,11 +1116,13 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertEqual(run["status"], "failed")
         self.assertIn("boom", run["errors"][0])
 
+    @pytest.mark.concurrency
     @patch("app.routes.automation.run_automation")
     def test_cancelled_run_not_overwritten(self, mock_run: MagicMock) -> None:
         """If user cancels before engine finishes, status stays cancelled."""
         engine_started = threading.Event()
         engine_can_finish = threading.Event()
+        recorder = JoinableThreadRecorder()
 
         def _slow_run(req, progress_callback=None, cancel_check=None):
             """Simulate a slow run that checks for cancel."""
@@ -1105,10 +1133,11 @@ class TestBackgroundThread(AutomationRoutesTestBase):
 
         mock_run.side_effect = _slow_run
 
-        resp = self._post_json(
-            "/api/automation/run",
-            {"evidence_path": "/fake/path.E01", "prompt": "test"},
-        )
+        with patch.object(automation_mod.threading, "Thread", recorder):
+            resp = self._post_json(
+                "/api/automation/run",
+                {"evidence_path": "/fake/path.E01", "prompt": "test"},
+            )
         run_id = resp.get_json()["run_id"]
 
         self.assertTrue(engine_started.wait(timeout=1.0))
@@ -1116,10 +1145,14 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertEqual(cancel_resp.status_code, 200)
 
         engine_can_finish.set()
-        run = _wait_for_run(run_id, lambda state: state.get("_finished_mono") is not None)
+        recorder.join_all(timeout=1.0)
+        self.assertEqual(recorder.alive_threads(), [])
+        with automation_mod.RUNS_LOCK:
+            run = dict(automation_mod.AUTOMATION_RUNS.get(run_id, {}))
 
         self.assertEqual(run["status"], "cancelled")
 
+    @pytest.mark.concurrency
     @patch("app.routes.automation.run_automation")
     def test_cancel_during_long_run_signals_engine(
         self,
@@ -1128,6 +1161,7 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         """Cancel endpoint signals the event passed into the engine."""
         engine_started = threading.Event()
         engine_saw_cancel = threading.Event()
+        recorder = JoinableThreadRecorder()
 
         def _long_run(req, progress_callback=None, cancel_check=None):
             """Wait until the cancel event passed by the route is set."""
@@ -1136,22 +1170,21 @@ class TestBackgroundThread(AutomationRoutesTestBase):
             if progress_callback is not None:
                 progress_callback("parsing", "Parsing evidence", 25.0)
 
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                is_set = getattr(cancel_check, "is_set", None)
-                cancelled = bool(is_set()) if callable(is_set) else False
-                if cancelled:
-                    engine_saw_cancel.set()
-                    return _make_successful_result("case-after-cancel")
-                time.sleep(0.01)
-            return _make_successful_result("case-timeout")
+            wait = getattr(cancel_check, "wait", None)
+            if callable(wait):
+                self.assertTrue(wait(timeout=1.0))
+            is_set = getattr(cancel_check, "is_set", None)
+            self.assertTrue(bool(is_set()) if callable(is_set) else False)
+            engine_saw_cancel.set()
+            return _make_successful_result("case-after-cancel")
 
         mock_run.side_effect = _long_run
 
-        resp = self._post_json(
-            "/api/automation/run",
-            {"evidence_path": "/fake/path.E01", "prompt": "test"},
-        )
+        with patch.object(automation_mod.threading, "Thread", recorder):
+            resp = self._post_json(
+                "/api/automation/run",
+                {"evidence_path": "/fake/path.E01", "prompt": "test"},
+            )
         run_id = resp.get_json()["run_id"]
 
         self.assertTrue(engine_started.wait(timeout=1.0))
@@ -1163,7 +1196,10 @@ class TestBackgroundThread(AutomationRoutesTestBase):
         self.assertEqual(cancel_resp.status_code, 200)
         self.assertTrue(engine_saw_cancel.wait(timeout=2.0))
 
-        run = _wait_for_run(run_id, lambda state: state.get("_finished_mono") is not None)
+        recorder.join_all(timeout=1.0)
+        self.assertEqual(recorder.alive_threads(), [])
+        with automation_mod.RUNS_LOCK:
+            run = dict(automation_mod.AUTOMATION_RUNS.get(run_id, {}))
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "cancelled")
         self.assertNotEqual(run.get("case_id"), "case-after-cancel")

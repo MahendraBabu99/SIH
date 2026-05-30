@@ -1099,7 +1099,7 @@ describe("profile actions with image tabs", () => {
     });
 
     A.el.profileSaveBtn.dispatchEvent(new Event("click"));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.resolve();
 
     expect(savedBody.name).toBe("active-tab");
     expect(savedBody.artifact_options).toEqual([

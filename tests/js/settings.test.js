@@ -15,7 +15,7 @@
 
 "use strict";
 
-const { setupAift, mustGet, mustQuery } = require("./harness");
+const { setupAift, mustGet, mustQuery, flushMicrotasks } = require("./harness");
 
 let A;
 
@@ -34,7 +34,7 @@ function jsonResponse(payload, status = 200) {
 }
 
 function flushPromises() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return flushMicrotasks();
 }
 
 // ── openSettings / closeSettings ────────────────────────────────────────────

@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app import create_app
 from app.audit import ACTION_TYPES
@@ -446,11 +447,13 @@ class _AutomationParser:
     Attributes:
         behaviour: Class-level parse behaviour selector.
         parse_started: Event signalled when parsing enters ``parse_artifact``.
+        release_blocked_parse: Event that lets long-running parse fakes proceed.
         saw_cancel_check: Whether a parser call received ``cancel_check``.
     """
 
     behaviour = "fail"
     parse_started = threading.Event()
+    release_blocked_parse = threading.Event()
     saw_cancel_check = False
 
     def __init__(self, **kwargs: Any) -> None:
@@ -520,12 +523,12 @@ class _AutomationParser:
         type(self).parse_started.set()
         type(self).saw_cancel_check = cancel_check is not None
         if type(self).behaviour == "block":
-            for _ in range(200):
-                if callable(progress_callback):
-                    progress_callback({"artifact_key": artifact_key, "record_count": 1})
-                if callable(cancel_check) and cancel_check():
-                    raise ParserCancelledError("Parsing cancelled by user.")
-                time.sleep(0.01)
+            if callable(progress_callback):
+                progress_callback({"artifact_key": artifact_key, "record_count": 1})
+            if not type(self).release_blocked_parse.wait(timeout=2.0):
+                raise RuntimeError("blocked parser was not released")
+            if callable(cancel_check) and cancel_check():
+                raise ParserCancelledError("Parsing cancelled by user.")
             raise RuntimeError("cancel_check was not observed")
 
         return {
@@ -590,6 +593,7 @@ class AutomationParseCancellationTests(unittest.TestCase):
         ]
         self.mocks = [patcher.start() for patcher in self.patches]
         _AutomationParser.parse_started = threading.Event()
+        _AutomationParser.release_blocked_parse = threading.Event()
         _AutomationParser.saw_cancel_check = False
         _AutomationParser.behaviour = "fail"
 
@@ -626,6 +630,7 @@ class AutomationParseCancellationTests(unittest.TestCase):
         self.mocks[12].assert_not_called()
         self.mocks[13].assert_not_called()
 
+    @pytest.mark.concurrency
     def test_automation_cancel_inside_long_parse_artifact(self) -> None:
         """Automation cancellation reaches a long-running parser call."""
         _AutomationParser.behaviour = "block"
@@ -661,6 +666,7 @@ class AutomationParseCancellationTests(unittest.TestCase):
         thread.start()
         self.assertTrue(_AutomationParser.parse_started.wait(timeout=2.0))
         cancel_event.set()
+        _AutomationParser.release_blocked_parse.set()
         thread.join(timeout=3.0)
 
         self.assertFalse(thread.is_alive())

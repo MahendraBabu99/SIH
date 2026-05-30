@@ -11,7 +11,7 @@
 
 "use strict";
 
-const { setupAift, mustQuery } = require("./harness");
+const { setupAift, mustQuery, flushMicrotasks } = require("./harness");
 
 let A;
 
@@ -53,7 +53,7 @@ function emit(source, payload) {
 }
 
 function nextTick() {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+  return flushMicrotasks();
 }
 
 function requestBody(call) {
@@ -78,7 +78,12 @@ function selectPanelArtifact(imageId, artifactKey, mode) {
 }
 
 describe("mocked final browser flow", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   test("multi-image intake, parse-only filtering, analysis, and report download", async () => {
+    jest.useFakeTimers();
     const calls = [];
     let imageIndex = 0;
     global.fetch = jest.fn((url, init = {}) => {
@@ -129,7 +134,19 @@ describe("mocked final browser flow", () => {
         return blobResponse("<html><body>AIFT report for runkeys</body></html>", "case-final_report.html");
       }
       if (url === "/api/cases/case-final/chat/history") {
-        return jsonResponse({ success: true, messages: [] });
+        if (init.method === "DELETE") {
+          return jsonResponse({ success: true });
+        }
+        return jsonResponse({
+          success: true,
+          messages: [
+            { role: "user", content: "Previous question" },
+            { role: "assistant", content: "Previous answer" },
+          ],
+        });
+      }
+      if (url === "/api/cases/case-final/chat") {
+        return jsonResponse({ success: true });
       }
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
@@ -180,6 +197,7 @@ describe("mocked final browser flow", () => {
     emit(parseSources[1], { type: "parse_started", sequence: 1 });
     emit(parseSources[1], { type: "artifact_completed", artifact_key: "runkeys", record_count: 2, sequence: 2 });
     emit(parseSources[1], { type: "parse_completed", sequence: 3 });
+    jest.runOnlyPendingTimers();
     await nextTick();
 
     expect(A.st.parse.done).toBe(true);
@@ -244,5 +262,129 @@ describe("mocked final browser flow", () => {
     );
     expect(URL.createObjectURL).toHaveBeenCalled();
     expect(document.getElementById("results-message").textContent).toContain("case-final_report.html");
+
+    await A.loadChatHistory();
+    await nextTick();
+    expect(document.getElementById("chat-thread").textContent).toContain("Previous answer");
+
+    A.el.chatInput.value = "What should I review next?";
+    await A._sendChatMessage();
+    await nextTick();
+    const chatSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((source) => source.url === "/api/cases/case-final/chat/stream");
+    expect(chatSource).toBeTruthy();
+    emit(chatSource, { type: "token", content: "Review Run keys first." });
+    emit(chatSource, { type: "done", data_retrieved: ["runkeys.csv"] });
+    expect(document.getElementById("chat-thread").textContent).toContain("Review Run keys first.");
+
+    window.confirm = jest.fn(() => true);
+    A.el.chatClear.click();
+    await nextTick();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/cases/case-final/chat/history",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(document.getElementById("chat-thread").textContent).toContain("Chat history will appear here");
+
+    A.openSettings();
+    const settingsPanel = document.getElementById("settings-panel");
+    expect(settingsPanel.hidden).toBe(false);
+    expect(settingsPanel.contains(document.activeElement)).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(settingsPanel.hidden).toBe(true);
+  });
+
+  test("parse and analysis streams reconnect and cancel from the production template", async () => {
+    jest.useFakeTimers();
+    const calls = [];
+    global.fetch = jest.fn((url, init = {}) => {
+      calls.push([url, init]);
+      if (url === "/api/cases/case-smoke/parse") {
+        return jsonResponse({ success: true });
+      }
+      if (url === "/api/cases/case-smoke/parse/cancel") {
+        return jsonResponse({ success: true, status: "cancel_requested" });
+      }
+      if (url === "/api/cases/case-smoke/analyze") {
+        return jsonResponse({ success: true });
+      }
+      if (url === "/api/cases/case-smoke/analyze/cancel") {
+        return jsonResponse({ success: true, status: "cancel_requested" });
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    A.setCaseId("case-smoke");
+    A.st.artifacts = [{ key: "runkeys", name: "Run/RunOnce Keys", available: true }];
+    A.st.selected = ["runkeys"];
+    A.st.selectedAi = ["runkeys"];
+
+    A.st.parse.run = true;
+    A.st.parse.owner = A.newRunOwner("case-smoke", "parse");
+    function startParseSmokeStream() {
+      A.openSseStream(
+        "/api/cases/case-smoke/parse/progress",
+        A.st.parse,
+        {
+          onEvent: () => {},
+          onError: () => A.retrySseStream(A.st.parse, { reconnect: startParseSmokeStream }),
+        },
+      );
+    }
+    startParseSmokeStream();
+    const firstParseSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((source) => source.url === "/api/cases/case-smoke/parse/progress");
+    expect(firstParseSource).toBeTruthy();
+    firstParseSource.onerror(new Event("error"));
+    expect(A.st.parse.retryCount).toBe(1);
+    jest.advanceTimersByTime(A.sseRetryDelayMs(1));
+    await nextTick();
+    const parseSources = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .filter((source) => source.url === "/api/cases/case-smoke/parse/progress");
+    expect(parseSources).toHaveLength(2);
+
+    A.cancelParse();
+    await nextTick();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/cases/case-smoke/parse/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(A.st.parse.run).toBe(false);
+
+    A.st.analysis.run = true;
+    A.st.analysis.owner = A.newRunOwner("case-smoke", "analysis");
+    function startAnalysisSmokeStream() {
+      A.openSseStream(
+        "/api/cases/case-smoke/analyze/progress",
+        A.st.analysis,
+        {
+          onEvent: () => {},
+          onError: () => A.retrySseStream(A.st.analysis, { reconnect: startAnalysisSmokeStream }),
+        },
+      );
+    }
+    startAnalysisSmokeStream();
+    const firstAnalysisSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((source) => source.url === "/api/cases/case-smoke/analyze/progress");
+    expect(firstAnalysisSource).toBeTruthy();
+    firstAnalysisSource.onerror(new Event("error"));
+    expect(A.st.analysis.retryCount).toBe(1);
+    jest.advanceTimersByTime(A.sseRetryDelayMs(1));
+    await nextTick();
+    const analysisSources = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .filter((source) => source.url === "/api/cases/case-smoke/analyze/progress");
+    expect(analysisSources).toHaveLength(2);
+
+    A.cancelAnalysis();
+    await nextTick();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/cases/case-smoke/analyze/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(A.st.analysis.run).toBe(false);
+    expect(calls.map(([url]) => url)).toEqual(expect.arrayContaining([
+      "/api/cases/case-smoke/parse/cancel",
+      "/api/cases/case-smoke/analyze/cancel",
+    ]));
   });
 });

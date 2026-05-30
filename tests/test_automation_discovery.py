@@ -18,7 +18,10 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 from zipfile import ZipFile
 
+import pytest
+
 from app.automation.discovery import discover_evidence, validate_evidence_path
+from tests.conftest import require_symlink_support
 
 
 class TestValidateEvidencePath(unittest.TestCase):
@@ -422,8 +425,10 @@ class TestDiscoverEvidence(unittest.TestCase):
             else []
         )
 
+    @pytest.mark.requires_symlink(target_is_directory=True)
     def test_directory_symlink_to_outside_tree_is_skipped(self) -> None:
         """Recursive discovery does not escape through a symlinked directory."""
+        require_symlink_support(self, target_is_directory=True)
         outside = self.root / "outside"
         outside.mkdir()
         outside_evidence = outside / "outside.E01"
@@ -433,26 +438,22 @@ class TestDiscoverEvidence(unittest.TestCase):
         inside_evidence = selected / "inside.E01"
         inside_evidence.write_bytes(b"inside")
         link = selected / "outside-link"
-        try:
-            link.symlink_to(outside, target_is_directory=True)
-        except (NotImplementedError, OSError):
-            self.skipTest("Symlinks are not available in this environment")
+        link.symlink_to(outside, target_is_directory=True)
 
         result = self._discover_with_dissect_fail(selected)
 
         self.assertEqual(result, [inside_evidence.resolve()])
 
+    @pytest.mark.requires_symlink(target_is_directory=True)
     def test_top_level_symlink_target_still_discovers_selected_tree(self) -> None:
         """A symlink selected as the top-level path resolves to that target."""
+        require_symlink_support(self, target_is_directory=True)
         real = self.root / "real-selected"
         real.mkdir()
         evidence = real / "disk.E01"
         evidence.write_bytes(b"image")
         link = self.root / "selected-link"
-        try:
-            link.symlink_to(real, target_is_directory=True)
-        except (NotImplementedError, OSError):
-            self.skipTest("Symlinks are not available in this environment")
+        link.symlink_to(real, target_is_directory=True)
 
         result = self._discover_with_dissect_fail(link)
 
