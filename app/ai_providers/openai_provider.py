@@ -21,26 +21,15 @@ from .base import (
     DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_OPENAI_MODEL,
-    _is_attachment_unsupported_error,
-    _is_unsupported_parameter_error,
     _normalize_api_key_value,
-    _resolve_completion_token_retry_limit,
     _resolve_timeout_seconds,
-    _run_stream_with_rate_limit_retries,
 )
-from .utils import (
-    _extract_openai_stream_chunk_delta,
-    _extract_openai_text,
-    _inline_attachment_data_into_prompt,
-    _split_openai_stream_delta_text,
-    stream_chunk_has_text,
-    upload_and_request_via_responses_api,
-)
+from .openai_compatible import OpenAICompatibleChatMixin
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAIProvider(AIProvider):
+class OpenAIProvider(OpenAICompatibleChatMixin, AIProvider):
     """OpenAI API provider implementation.
 
     Attributes:
@@ -54,6 +43,10 @@ class OpenAIProvider(AIProvider):
     """
 
     _provider_display_name: str = "OpenAI"
+    _openai_compatible_token_parameters = ("max_completion_tokens", "max_tokens")
+    _responses_provider_name = "OpenAI"
+    _responses_upload_purpose = "assistants"
+    _responses_convert_csv_to_txt = True
 
     def __init__(
         self,
@@ -144,49 +137,10 @@ class OpenAIProvider(AIProvider):
         Raises:
             AIProviderError: On empty response or API failure.
         """
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        def _stream_factory() -> Any:
-            """Open the OpenAI streaming chat completion.
-
-            Returns:
-                The provider stream iterator.
-            """
-            return self._create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                stream=True,
-            )
-
-        def _stream_text_iterator(stream: Any) -> Iterator[str]:
-            """Yield separated answer/reasoning chunks from an OpenAI stream.
-
-            Args:
-                stream: OpenAI-compatible streaming response iterator.
-
-            Yields:
-                String-compatible stream chunks.
-
-            Raises:
-                AIProviderError: If the stream contains a refusal delta.
-            """
-            for chunk in stream:
-                delta = _extract_openai_stream_chunk_delta(chunk)
-                if delta is None:
-                    continue
-                delta_text = _split_openai_stream_delta_text(delta)
-                if stream_chunk_has_text(delta_text):
-                    yield delta_text
-
-        return _run_stream_with_rate_limit_retries(
-            stream_factory=_stream_factory,
-            stream_text_iterator=_stream_text_iterator,
-            rate_limit_error_type=self._openai.RateLimitError,
-            provider_name="OpenAI",
-            map_error=self._map_api_error,
+        return self._stream_openai_compatible_chat_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
             empty_response_message="OpenAI returned an empty response.",
         )
 
@@ -250,36 +204,13 @@ class OpenAIProvider(AIProvider):
         Raises:
             AIProviderError: If the response is empty.
         """
-        attachment_response = self._request_with_csv_attachments(
+        return self._request_openai_compatible_non_stream(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=max_tokens,
             attachments=attachments,
+            empty_response_message="OpenAI returned an empty response.",
         )
-        if attachment_response:
-            return attachment_response
-
-        prompt_for_completion = user_prompt
-        if attachments:
-            prompt_for_completion, inlined_attachment_data = _inline_attachment_data_into_prompt(
-                user_prompt=user_prompt,
-                attachments=attachments,
-            )
-            if inlined_attachment_data:
-                logger.info("OpenAI attachment fallback inlined attachment data into prompt.")
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_for_completion},
-        ]
-        response = self._create_chat_completion(
-            messages=messages,
-            max_tokens=max_tokens,
-        )
-        text = _extract_openai_text(response)
-        if not text:
-            raise AIProviderError("OpenAI returned an empty response.")
-        return text
 
     def _create_chat_completion(
         self,
@@ -302,46 +233,11 @@ class OpenAIProvider(AIProvider):
         Returns:
             The OpenAI ``ChatCompletion`` response or streaming iterator.
         """
-        def _create_with_token_parameter(token_parameter: str, token_count: int) -> Any:
-            """Try creating with a specific token parameter, retrying on token limit."""
-            request_kwargs: dict[str, Any] = {
-                "model": self.model,
-                "messages": messages,
-                token_parameter: token_count,
-            }
-            if stream:
-                request_kwargs["stream"] = True
-            try:
-                return self.client.chat.completions.create(**request_kwargs)
-            except self._openai.BadRequestError as error:
-                retry_token_count = _resolve_completion_token_retry_limit(
-                    error=error,
-                    requested_tokens=token_count,
-                )
-                if retry_token_count is None:
-                    raise
-                logger.warning(
-                    "OpenAI rejected %s=%d; retrying with %s=%d.",
-                    token_parameter,
-                    token_count,
-                    token_parameter,
-                    retry_token_count,
-                )
-                request_kwargs[token_parameter] = retry_token_count
-                return self.client.chat.completions.create(**request_kwargs)
-
-        try:
-            return _create_with_token_parameter(
-                token_parameter="max_completion_tokens",
-                token_count=max_tokens,
-            )
-        except self._openai.BadRequestError as error:
-            if not _is_unsupported_parameter_error(error, "max_completion_tokens"):
-                raise
-            return _create_with_token_parameter(
-                token_parameter="max_tokens",
-                token_count=max_tokens,
-            )
+        return self._create_openai_compatible_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=stream,
+        )
 
     def _request_with_csv_attachments(
         self,
@@ -361,39 +257,12 @@ class OpenAIProvider(AIProvider):
         Returns:
             The generated text if succeeded, or ``None`` if skipped.
         """
-        normalized_attachments = self._prepare_csv_attachments(
-            attachments,
-            supports_file_attachments=hasattr(self.client, "files") and hasattr(self.client, "responses"),
+        return self._request_with_openai_compatible_csv_attachments(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            attachments=attachments,
         )
-        if not normalized_attachments:
-            return None
-
-        try:
-            text = upload_and_request_via_responses_api(
-                client=self.client,
-                openai_module=self._openai,
-                model=self.model,
-                normalized_attachments=normalized_attachments,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                provider_name="OpenAI",
-                upload_purpose="assistants",
-                convert_csv_to_txt=True,
-            )
-            with self._attachment_lock:
-                self._csv_attachment_supported = True
-            return text
-        except Exception as error:
-            if _is_attachment_unsupported_error(error):
-                with self._attachment_lock:
-                    self._csv_attachment_supported = False
-                logger.info(
-                    "OpenAI endpoint does not support CSV attachments via /files + /responses; "
-                    "falling back to chat.completions text mode."
-                )
-                return None
-            raise
 
     def get_model_info(self) -> dict[str, str]:
         """Return OpenAI provider and model metadata.

@@ -23,65 +23,7 @@
     if (!container) return null;
     imageFormCounter += 1;
     const idx = imageFormCounter;
-    const card = document.createElement("div");
-    card.className = "image-form-card";
-    card.dataset.imageIndex = String(idx);
-    card.innerHTML = `
-      <div class="image-form-header">
-        <h3 class="image-form-title">Image ${A.getImageForms().length + 1}</h3>
-        <button type="button" class="image-remove-btn" data-image-index="${idx}">Remove</button>
-      </div>
-      <div class="form-row">
-        <label>Label (optional)</label>
-        <input class="image-label-input" type="text" placeholder="e.g. Workstation-PC01" autocomplete="off" spellcheck="false">
-      </div>
-      <fieldset class="mode-toggle">
-        <legend>Evidence source</legend>
-        <label>
-          <input class="image-mode-upload" name="evidence_mode_${idx}" type="radio" value="upload">
-          Upload File
-        </label>
-        <label>
-          <input class="image-mode-path" name="evidence_mode_${idx}" type="radio" value="path" checked>
-          Local Path
-        </label>
-      </fieldset>
-      <section class="image-upload-panel" data-mode="upload" hidden>
-        <h4>Upload File</h4>
-        <label class="image-dropzone">
-          <span class="image-dropzone-help"></span>
-          <input class="image-file-input" type="file" multiple>
-        </label>
-      </section>
-      <section class="image-path-panel" data-mode="path">
-        <h4>Local Path</h4>
-        <label>Filesystem path</label>
-        <input
-          class="image-path-input"
-          type="text"
-          placeholder="C:\\Evidence\\disk-image.E01 (or .dd, .vmdk, .vhd, .qcow2, folder, ...)"
-          autocomplete="off"
-          spellcheck="false"
-        >
-        <p class="path-mode-hint">Evidence files (E01, VMDK, VHD, DD, etc.) are read in-place (read-only) &mdash; nothing is copied. Archives (ZIP, 7z, tar) are copied and extracted into the case folder first.</p>
-      </section>
-      <article class="image-metadata-card summary-card" hidden>
-        <h4>Evidence Summary</h4>
-        <dl>
-          <dt>Hostname</dt>
-          <dd class="image-sum-hostname">-</dd>
-          <dt>OS</dt>
-          <dd class="image-sum-os">-</dd>
-          <dt>Domain</dt>
-          <dd class="image-sum-domain">-</dd>
-          <dt>IPs</dt>
-          <dd class="image-sum-ips">-</dd>
-          <dt>SHA-256</dt>
-          <dd class="image-sum-sha256">-</dd>
-        </dl>
-      </article>
-      <p class="image-status-msg" role="alert" hidden></p>
-    `;
+    const card = A.createImageFormCard(idx, A.getImageForms().length + 1);
     container.appendChild(card);
     A.initImageForm(card);
     renumberImageForms();
@@ -552,21 +494,17 @@
 
     list.innerHTML = "";
     images.forEach((img) => {
-      const article = document.createElement("article");
-      article.className = "summary-card";
       const m = img.metadata || {};
       const h = img.hashes || {};
       const osVersion = A.formatOsVersion(m.os_version, img.os_type);
-      article.innerHTML = `
-        <h4>${A.escapeHtml(img.label || "Image")}</h4>
-        <dl>
-          <dt>Hostname</dt><dd>${A.escapeHtml(m.hostname || "-")}</dd>
-          <dt>OS</dt><dd>${A.escapeHtml(osVersion)}</dd>
-          <dt>Domain</dt><dd>${A.escapeHtml(m.domain || "-")}</dd>
-          <dt>IPs</dt><dd>${A.escapeHtml(m.ips || "-")}</dd>
-          <dt>SHA-256</dt><dd>${A.escapeHtml(h.sha256 || "-")}</dd>
-        </dl>
-      `;
+      const article = A.createEvidenceSummaryCard({
+        title: img.label || "Image",
+        hostname: m.hostname || "-",
+        os: osVersion,
+        domain: m.domain || "-",
+        ips: m.ips || "-",
+        sha256: h.sha256 || "-",
+      });
       list.appendChild(article);
     });
     container.hidden = false;

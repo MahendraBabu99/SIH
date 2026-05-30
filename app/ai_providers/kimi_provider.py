@@ -23,28 +23,18 @@ from .base import (
     DEFAULT_KIMI_FILE_UPLOAD_PURPOSE,
     DEFAULT_KIMI_MODEL,
     DEFAULT_MAX_TOKENS,
-    _is_attachment_unsupported_error,
     _is_kimi_model_not_available_error,
     _normalize_api_key_value,
     _normalize_kimi_model_name,
     _normalize_openai_compatible_base_url,
     _resolve_timeout_seconds,
-    _run_stream_with_rate_limit_retries,
-    _run_with_completion_token_retry,
 )
-from .utils import (
-    _extract_openai_stream_chunk_delta,
-    _extract_openai_text,
-    _inline_attachment_data_into_prompt,
-    _split_openai_stream_delta_text,
-    stream_chunk_has_text,
-    upload_and_request_via_responses_api,
-)
+from .openai_compatible import OpenAICompatibleChatMixin
 
 logger = logging.getLogger(__name__)
 
 
-class KimiProvider(AIProvider):
+class KimiProvider(OpenAICompatibleChatMixin, AIProvider):
     """Moonshot Kimi API provider implementation.
 
     Attributes:
@@ -59,6 +49,10 @@ class KimiProvider(AIProvider):
     """
 
     _provider_display_name: str = "Kimi"
+    _openai_compatible_token_parameters = ("max_tokens",)
+    _responses_provider_name = "Kimi"
+    _responses_upload_purpose = DEFAULT_KIMI_FILE_UPLOAD_PURPOSE
+    _responses_convert_csv_to_txt = False
 
     def __init__(
         self,
@@ -167,49 +161,10 @@ class KimiProvider(AIProvider):
         Raises:
             AIProviderError: On empty response or API failure.
         """
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        def _stream_factory() -> Any:
-            """Open the Kimi streaming chat completion.
-
-            Returns:
-                The provider stream iterator.
-            """
-            return self._create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                stream=True,
-            )
-
-        def _stream_text_iterator(stream: Any) -> Iterator[str]:
-            """Yield separated answer/reasoning chunks from a Kimi stream.
-
-            Args:
-                stream: OpenAI-compatible streaming response iterator.
-
-            Yields:
-                String-compatible stream chunks.
-
-            Raises:
-                AIProviderError: If the stream contains a refusal delta.
-            """
-            for chunk in stream:
-                delta = _extract_openai_stream_chunk_delta(chunk)
-                if delta is None:
-                    continue
-                delta_text = _split_openai_stream_delta_text(delta)
-                if stream_chunk_has_text(delta_text):
-                    yield delta_text
-
-        return _run_stream_with_rate_limit_retries(
-            stream_factory=_stream_factory,
-            stream_text_iterator=_stream_text_iterator,
-            rate_limit_error_type=self._openai.RateLimitError,
-            provider_name="Kimi",
-            map_error=self._map_api_error,
+        return self._stream_openai_compatible_chat_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
             empty_response_message="Kimi returned an empty response.",
         )
 
@@ -270,35 +225,13 @@ class KimiProvider(AIProvider):
         Raises:
             AIProviderError: If the response is empty.
         """
-        attachment_response = self._request_with_csv_attachments(
+        return self._request_openai_compatible_non_stream(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=max_tokens,
             attachments=attachments,
+            empty_response_message="Kimi returned an empty response.",
         )
-        if attachment_response:
-            return attachment_response
-
-        prompt_for_completion = user_prompt
-        if attachments:
-            prompt_for_completion, inlined = _inline_attachment_data_into_prompt(
-                user_prompt=user_prompt,
-                attachments=attachments,
-            )
-            if inlined:
-                logger.info("Kimi attachment fallback inlined attachment data into prompt.")
-
-        response = self._create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_for_completion},
-            ],
-            max_tokens=max_tokens,
-        )
-        text = _extract_openai_text(response)
-        if not text:
-            raise AIProviderError("Kimi returned an empty response.")
-        return text
 
     def _create_chat_completion(
         self,
@@ -307,20 +240,10 @@ class KimiProvider(AIProvider):
         stream: bool = False,
     ) -> Any:
         """Create a Kimi chat completion with token-cap retry parity."""
-        request_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }
-        if stream:
-            request_kwargs["stream"] = True
-
-        return _run_with_completion_token_retry(
-            create_fn=lambda kw: self.client.chat.completions.create(**kw),
-            request_kwargs=request_kwargs,
-            token_parameter="max_tokens",
-            bad_request_error_type=self._openai.BadRequestError,
-            provider_name="Kimi",
+        return self._create_openai_compatible_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=stream,
         )
 
     def _request_with_csv_attachments(
@@ -341,39 +264,12 @@ class KimiProvider(AIProvider):
         Returns:
             The generated text if succeeded, or ``None`` if skipped.
         """
-        normalized_attachments = self._prepare_csv_attachments(
-            attachments,
-            supports_file_attachments=hasattr(self.client, "files") and hasattr(self.client, "responses"),
+        return self._request_with_openai_compatible_csv_attachments(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            attachments=attachments,
         )
-        if not normalized_attachments:
-            return None
-
-        try:
-            text = upload_and_request_via_responses_api(
-                client=self.client,
-                openai_module=self._openai,
-                model=self.model,
-                normalized_attachments=normalized_attachments,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                provider_name="Kimi",
-                upload_purpose=DEFAULT_KIMI_FILE_UPLOAD_PURPOSE,
-                convert_csv_to_txt=False,
-            )
-            with self._attachment_lock:
-                self._csv_attachment_supported = True
-            return text
-        except Exception as error:
-            if _is_attachment_unsupported_error(error):
-                with self._attachment_lock:
-                    self._csv_attachment_supported = False
-                logger.info(
-                    "Kimi endpoint does not support CSV attachments via /files + /responses; "
-                    "falling back to chat.completions text mode."
-                )
-                return None
-            raise
 
     def get_model_info(self) -> dict[str, str]:
         """Return Kimi provider and model metadata.

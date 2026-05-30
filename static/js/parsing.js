@@ -332,17 +332,7 @@
     st.parse.status = {};
     el.parseRows.innerHTML = "";
     keys.forEach((k) => {
-      const tr = document.createElement("tr");
-      tr.dataset.artifactKey = k;
-      const tdA = document.createElement("td");
-      tdA.textContent = A.artifactName(k);
-      const tdS = document.createElement("td");
-      tdS.textContent = "waiting";
-      const tdR = document.createElement("td");
-      tdR.textContent = "0";
-      tr.appendChild(tdA);
-      tr.appendChild(tdS);
-      tr.appendChild(tdR);
+      const { tr, tdS, tdR } = A.createParseProgressRow(k, A.artifactName(k));
       el.parseRows.appendChild(tr);
       st.parse.rows[k] = { tr, tdS, tdR };
       st.parse.status[k] = "waiting";
@@ -353,8 +343,7 @@
   function renderParsePlaceholder() {
     if (!el.parseRows) return;
     el.parseRows.innerHTML = "";
-    const tr = document.createElement("tr");
-    tr.innerHTML = "<td>Awaiting selection</td><td>waiting</td><td>0</td>";
+    const { tr } = A.createParseProgressRow("", "Awaiting selection");
     el.parseRows.appendChild(tr);
     st.parse.rows = {};
     st.parse.status = {};
@@ -377,17 +366,7 @@
     if (!key) return;
     let row = st.parse.rows[key];
     if (!row && el.parseRows) {
-      const tr = document.createElement("tr");
-      tr.dataset.artifactKey = key;
-      const tdA = document.createElement("td");
-      tdA.textContent = A.artifactName(key);
-      const tdS = document.createElement("td");
-      tdS.textContent = "waiting";
-      const tdR = document.createElement("td");
-      tdR.textContent = "0";
-      tr.appendChild(tdA);
-      tr.appendChild(tdS);
-      tr.appendChild(tdR);
+      const { tr, tdS, tdR } = A.createParseProgressRow(key, A.artifactName(key));
       el.parseRows.appendChild(tr);
       row = { tr, tdS, tdR };
       st.parse.rows[key] = row;
@@ -460,9 +439,7 @@
       section.appendChild(header);
 
       const table = document.createElement("table");
-      const thead = document.createElement("thead");
-      thead.innerHTML = "<tr><th>Artifact</th><th>Status</th><th>Records</th></tr>";
-      table.appendChild(thead);
+      table.appendChild(A.createParseProgressTableHead());
       const tbody = document.createElement("tbody");
       tbody.dataset.imageId = sel.image_id;
 
@@ -474,17 +451,7 @@
 
       const arts = sel.artifact_options.map((o) => o.artifact_key);
       arts.forEach((k) => {
-        const tr = document.createElement("tr");
-        tr.dataset.artifactKey = k;
-        const tdA = document.createElement("td");
-        tdA.textContent = A.artifactName(k);
-        const tdS = document.createElement("td");
-        tdS.textContent = "waiting";
-        const tdR = document.createElement("td");
-        tdR.textContent = "0";
-        tr.appendChild(tdA);
-        tr.appendChild(tdS);
-        tr.appendChild(tdR);
+        const { tr, tdS, tdR } = A.createParseProgressRow(k, A.artifactName(k));
         tbody.appendChild(tr);
         imgState.rows[k] = { tr, tdS, tdR };
         imgState.status[k] = "waiting";

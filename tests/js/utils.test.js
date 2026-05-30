@@ -5,6 +5,7 @@
  *  - fmtBytes formatting
  *  - fmtNumber locale-independent formatting
  *  - escapeHtml XSS prevention
+ *  - createDomElement safe DOM construction
  *  - safeJson robust JSON parsing
  *  - num coercion with fallback
  *  - isObj / obj plain-object checks
@@ -118,7 +119,42 @@ describe("escapeHtml", () => {
   });
 });
 
-// ── safeJson ────────────────────────────────────────────────────────────────
+// -- createDomElement -------------------------------------------------------
+
+describe("createDomElement", () => {
+  test("uses textContent for child text", () => {
+    const node = A.createDomElement("div", {}, ["<script>alert(1)</script>"]);
+
+    expect(node.querySelector("script")).toBeNull();
+    expect(node.textContent).toBe("<script>alert(1)</script>");
+  });
+
+  test("ignores inline event attributes and script URLs", () => {
+    const node = A.createDomElement("a", {
+      attrs: {
+        href: " javascript:alert(1)",
+        onclick: "alert(2)",
+        "data-safe": "value",
+      },
+    });
+
+    expect(node.hasAttribute("href")).toBe(false);
+    expect(node.hasAttribute("onclick")).toBe(false);
+    expect(node.getAttribute("data-safe")).toBe("value");
+  });
+
+  test("ignores raw HTML properties", () => {
+    const node = A.createDomElement("div", {
+      props: { innerHTML: "<img src=x onerror=alert(1)>", hidden: true },
+    });
+
+    expect(node.querySelector("img")).toBeNull();
+    expect(node.innerHTML).toBe("");
+    expect(node.hidden).toBe(true);
+  });
+});
+
+// -- safeJson ---------------------------------------------------------------
 
 describe("safeJson", () => {
   test("parses valid JSON", () => {

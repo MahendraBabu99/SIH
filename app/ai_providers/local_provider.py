@@ -24,30 +24,24 @@ from .base import (
     DEFAULT_LOCAL_MODEL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_LOCAL_REQUEST_TIMEOUT_SECONDS,
-    _is_attachment_unsupported_error,
     _normalize_api_key_value,
     _normalize_openai_compatible_base_url,
     _resolve_timeout_seconds,
-    _run_stream_with_rate_limit_retries,
-    _run_with_completion_token_retry,
 )
+from .openai_compatible import OpenAICompatibleChatMixin
 from .utils import (
     _LeadingReasoningStreamSplitter,
-    StreamedResponseChunk,
     _clean_streamed_answer_text,
     _extract_openai_stream_chunk_delta,
-    _extract_openai_text,
-    _inline_attachment_data_into_prompt,
     _split_openai_stream_delta_text,
     _strip_leading_reasoning_blocks,
     stream_chunk_has_text,
-    upload_and_request_via_responses_api,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class LocalProvider(AIProvider):
+class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
     """OpenAI-compatible local provider implementation.
 
     Attributes:
@@ -61,6 +55,11 @@ class LocalProvider(AIProvider):
     """
 
     _provider_display_name: str = "Local/OpenAI-compatible"
+    _openai_compatible_token_parameters = ("max_tokens",)
+    _responses_provider_name = "Local provider"
+    _responses_upload_purpose = "assistants"
+    _responses_convert_csv_to_txt = False
+    _stream_splits_leading_reasoning = True
 
     def __init__(
         self,
@@ -167,14 +166,8 @@ class LocalProvider(AIProvider):
         Raises:
             AIProviderError: On empty response or API failure.
         """
-        prompt_for_completion = self._build_chat_completion_prompt(
-            user_prompt=user_prompt,
-            attachments=None,
-        )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_for_completion},
-        ]
+        prompt_for_completion = self._build_chat_completion_prompt(user_prompt, None)
+        messages = self._chat_completion_messages(system_prompt, prompt_for_completion)
 
         def _stream_factory() -> Any:
             """Open a local streaming completion or a non-stream fallback.
@@ -203,50 +196,16 @@ class LocalProvider(AIProvider):
                     )
                 raise
 
-        def _stream_text_iterator(stream: Any) -> Iterator[str]:
-            """Yield separated answer/reasoning chunks from a local stream.
-
-            Args:
-                stream: OpenAI-compatible streaming response iterator or a
-                    non-streaming fallback string.
-
-            Yields:
-                String-compatible stream chunks.
-
-            Raises:
-                AIProviderError: If the stream contains a refusal delta.
-            """
-            if isinstance(stream, str):
-                if stream:
-                    yield StreamedResponseChunk(answer_text=stream)
-                return
-            content_splitter = _LeadingReasoningStreamSplitter()
-            for chunk in stream:
-                delta = _extract_openai_stream_chunk_delta(chunk)
-                if delta is None:
-                    continue
-                delta_text = _split_openai_stream_delta_text(delta)
-                answer_split = content_splitter.split(delta_text.answer_text)
-                separated_text = StreamedResponseChunk(
-                    answer_text=answer_split.answer_text,
-                    reasoning_text=delta_text.reasoning_text + answer_split.reasoning_text,
-                )
-                if stream_chunk_has_text(separated_text):
-                    yield separated_text
-            remaining_text = content_splitter.flush()
-            if stream_chunk_has_text(remaining_text):
-                yield remaining_text
-
-        return _run_stream_with_rate_limit_retries(
+        return self._stream_openai_compatible_chat_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            prompt_for_completion=prompt_for_completion,
             stream_factory=_stream_factory,
-            stream_text_iterator=_stream_text_iterator,
-            rate_limit_error_type=self._openai.RateLimitError,
-            provider_name="Local/OpenAI-compatible",
-            map_error=self._map_api_error,
             empty_response_message=(
                 "Local AI provider returned an empty streamed response. "
                 "Try a different local model or increase max tokens."
-            )
+            ),
         )
 
     def analyze_with_attachments(
@@ -622,6 +581,25 @@ class LocalProvider(AIProvider):
             "Try a different local model or increase max tokens."
         )
 
+    def _clean_openai_compatible_response_text(self, text: str) -> str:
+        """Strip leading local-model reasoning blocks from completed text."""
+        cleaned_text = _strip_leading_reasoning_blocks(text)
+        if cleaned_text:
+            return cleaned_text
+        return str(text or "").strip()
+
+    def _raise_openai_compatible_empty_response(self, response: Any, message: str) -> None:
+        """Raise the local empty-response error with finish-reason detail."""
+        finish_reason = None
+        choices = getattr(response, "choices", None)
+        if choices:
+            first_choice = choices[0]
+            finish_reason = getattr(first_choice, "finish_reason", None)
+            if finish_reason is None and isinstance(first_choice, dict):
+                finish_reason = first_choice.get("finish_reason")
+        reason_detail = f" (finish_reason={finish_reason})" if finish_reason else ""
+        raise AIProviderError(f"{message}{reason_detail}. This can happen with reasoning-only outputs or very low token limits.")
+
     def _request_non_stream(
         self,
         system_prompt: str,
@@ -643,48 +621,12 @@ class LocalProvider(AIProvider):
         Raises:
             AIProviderError: If the response is empty.
         """
-        attachment_response = self._request_with_csv_attachments(
+        return self._request_openai_compatible_non_stream(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=max_tokens,
             attachments=attachments,
-        )
-        if attachment_response:
-            cleaned_attachment_response = _strip_leading_reasoning_blocks(attachment_response)
-            if cleaned_attachment_response:
-                return cleaned_attachment_response
-            return attachment_response.strip()
-
-        prompt_for_completion = self._build_chat_completion_prompt(
-            user_prompt=user_prompt,
-            attachments=attachments,
-        )
-
-        response = self._create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt_for_completion},
-            ],
-            max_tokens=max_tokens,
-        )
-        text = _extract_openai_text(response)
-        if text:
-            cleaned_text = _strip_leading_reasoning_blocks(text)
-            if cleaned_text:
-                return cleaned_text
-            return text.strip()
-
-        finish_reason = None
-        choices = getattr(response, "choices", None)
-        if choices:
-            first_choice = choices[0]
-            finish_reason = getattr(first_choice, "finish_reason", None)
-            if finish_reason is None and isinstance(first_choice, dict):
-                finish_reason = first_choice.get("finish_reason")
-        reason_detail = f" (finish_reason={finish_reason})" if finish_reason else ""
-        raise AIProviderError(
-            "Local AI provider returned an empty response"
-            f"{reason_detail}. This can happen with reasoning-only outputs or very low token limits."
+            empty_response_message="Local AI provider returned an empty response",
         )
 
     def _create_chat_completion(
@@ -694,20 +636,10 @@ class LocalProvider(AIProvider):
         stream: bool = False,
     ) -> Any:
         """Create a local OpenAI-compatible chat completion with token retry."""
-        request_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }
-        if stream:
-            request_kwargs["stream"] = True
-
-        return _run_with_completion_token_retry(
-            create_fn=lambda kw: self.client.chat.completions.create(**kw),
-            request_kwargs=request_kwargs,
-            token_parameter="max_tokens",
-            bad_request_error_type=self._openai.BadRequestError,
-            provider_name="Local/OpenAI-compatible",
+        return self._create_openai_compatible_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            stream=stream,
         )
 
     @staticmethod
@@ -732,15 +664,7 @@ class LocalProvider(AIProvider):
         Returns:
             The prompt string, potentially with attachment data appended.
         """
-        prompt_for_completion = user_prompt
-        if attachments:
-            prompt_for_completion, inlined_attachment_data = _inline_attachment_data_into_prompt(
-                user_prompt=user_prompt,
-                attachments=attachments,
-            )
-            if inlined_attachment_data:
-                logger.info("Local attachment fallback inlined attachment data into prompt.")
-        return prompt_for_completion
+        return self._build_openai_compatible_prompt(user_prompt, attachments)
 
     def _request_with_csv_attachments(
         self,
@@ -760,39 +684,12 @@ class LocalProvider(AIProvider):
         Returns:
             The generated text if succeeded, or ``None`` if skipped.
         """
-        normalized_attachments = self._prepare_csv_attachments(
-            attachments,
-            supports_file_attachments=hasattr(self.client, "files") and hasattr(self.client, "responses"),
+        return self._request_with_openai_compatible_csv_attachments(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            attachments=attachments,
         )
-        if not normalized_attachments:
-            return None
-
-        try:
-            text = upload_and_request_via_responses_api(
-                client=self.client,
-                openai_module=self._openai,
-                model=self.model,
-                normalized_attachments=normalized_attachments,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                max_tokens=max_tokens,
-                provider_name="Local provider",
-                upload_purpose="assistants",
-                convert_csv_to_txt=False,
-            )
-            with self._attachment_lock:
-                self._csv_attachment_supported = True
-            return text
-        except Exception as error:
-            if _is_attachment_unsupported_error(error):
-                with self._attachment_lock:
-                    self._csv_attachment_supported = False
-                logger.info(
-                    "Local endpoint does not support file attachments via /files + /responses; "
-                    "falling back to chat.completions text mode."
-                )
-                return None
-            raise
 
     def get_model_info(self) -> dict[str, str]:
         """Return local provider and model metadata.

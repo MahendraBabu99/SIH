@@ -391,22 +391,9 @@
        artifact keys exist across OS-specific fieldsets (e.g. "services"). */
     let select = li.querySelector("select.artifact-mode-select");
     if (!select) {
-      select = document.createElement("select");
-      select.className = "artifact-mode-select";
-      select.dataset.artifactKey = key;
+      select = A.createArtifactModeSelect(key, artifactModeValue(preferredMode));
       const artifactName = st.artifactNames[key] || key;
       select.setAttribute("aria-label", `Analysis mode for ${artifactName}`);
-
-      const parseAiOption = document.createElement("option");
-      parseAiOption.value = A.MODE_PARSE_AND_AI;
-      parseAiOption.textContent = "Parse and use in AI";
-      select.appendChild(parseAiOption);
-
-      const parseOnlyOption = document.createElement("option");
-      parseOnlyOption.value = A.MODE_PARSE_ONLY;
-      parseOnlyOption.textContent = "Parse only";
-      select.appendChild(parseOnlyOption);
-
       li.appendChild(select);
     }
     select.value = artifactModeValue(preferredMode);

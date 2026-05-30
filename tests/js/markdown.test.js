@@ -302,3 +302,47 @@ describe("paragraphs", () => {
     expect(paragraphs).toHaveLength(2);
   });
 });
+
+describe("escape-first rendering", () => {
+  test("does not turn malicious links into anchors", () => {
+    const c = renderMd("[open](javascript:alert(1))");
+    expect(c.querySelector("a")).toBeNull();
+    expect(c.textContent).toContain("[open](javascript:alert(1))");
+  });
+
+  test("does not turn malicious images into image elements", () => {
+    const c = renderMd("![alt](x onerror=alert(1))");
+    expect(c.querySelector("img")).toBeNull();
+    expect(c.textContent).toContain("![alt](x onerror=alert(1))");
+  });
+
+  test("escapes raw HTML elements", () => {
+    const c = renderMd("<script>alert(1)</script><b>bold</b>");
+    expect(c.querySelector("script")).toBeNull();
+    expect(c.querySelector("b")).toBeNull();
+    expect(c.textContent).toContain("<script>alert(1)</script>");
+  });
+
+  test("keeps event attributes as text, not DOM attributes", () => {
+    const c = renderMd("<img src=x onerror=alert(1)>");
+    expect(c.querySelector("img")).toBeNull();
+    expect(c.querySelector("[onerror]")).toBeNull();
+    expect(c.textContent).toContain("onerror=alert(1)");
+  });
+
+  test("escapes HTML inside table cells", () => {
+    const c = renderMd("| Name | Value |\n| --- | --- |\n| A | <svg onload=alert(1)> |");
+    expect(c.querySelector("table")).not.toBeNull();
+    expect(c.querySelector("svg")).toBeNull();
+    expect(c.querySelector("[onload]")).toBeNull();
+    expect(c.textContent).toContain("<svg onload=alert(1)>");
+  });
+
+  test("keeps code spans literal", () => {
+    const c = renderMd("Use `<img src=x onerror=alert(1)>` here.");
+    const code = c.querySelector("code");
+    expect(code).not.toBeNull();
+    expect(code.textContent).toBe("<img src=x onerror=alert(1)>");
+    expect(code.querySelector("img")).toBeNull();
+  });
+});

@@ -1,0 +1,117 @@
+"""Parity tests for OpenAI-compatible provider shared behavior."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Callable
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from app.ai_providers import (
+    AIProvider,
+    KimiProvider,
+    LocalProvider,
+    OpenAIProvider,
+    stream_chunk_answer_text,
+    stream_chunk_reasoning_text,
+)
+
+
+def _make_openai_response(text: str) -> SimpleNamespace:
+    """Build a minimal OpenAI-style chat completion response."""
+    message = SimpleNamespace(content=text)
+    choice = SimpleNamespace(message=message)
+    return SimpleNamespace(choices=[choice])
+
+
+def _provider_factories() -> list[tuple[str, Callable[[], AIProvider]]]:
+    """Return provider constructors that exercise the shared mixin."""
+    return [
+        ("OpenAI", lambda: OpenAIProvider(api_key="sk-test", model="gpt-4o")),
+        ("Kimi", lambda: KimiProvider(api_key="sk-test", model="kimi-k2-turbo-preview")),
+        (
+            "Local",
+            lambda: LocalProvider(base_url="http://localhost:11434/v1", model="test-model"),
+        ),
+    ]
+
+
+class TestOpenAICompatibleProviderParity(unittest.TestCase):
+    """Shared behavior should stay aligned across compatible providers."""
+
+    def test_streaming_splits_answer_and_reasoning_channels(self) -> None:
+        """Reasoning deltas stay separate while answer text remains string-compatible."""
+        for provider_name, provider_factory in _provider_factories():
+            with self.subTest(provider=provider_name), patch("openai.OpenAI") as mock_openai_cls:
+                mock_client = MagicMock()
+                mock_openai_cls.return_value = mock_client
+                mock_client.chat.completions.create.return_value = [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    reasoning="Reasoning detail. ",
+                                    content="Visible answer.",
+                                )
+                            )
+                        ]
+                    )
+                ]
+
+                chunks = list(provider_factory().analyze_stream("system", "user"))
+
+                self.assertEqual([stream_chunk_answer_text(chunk) for chunk in chunks], ["Visible answer."])
+                self.assertEqual([stream_chunk_reasoning_text(chunk) for chunk in chunks], ["Reasoning detail. "])
+
+    def test_attachment_unsupported_fallback_is_cached_for_text_mode(self) -> None:
+        """Unsupported file APIs fall back to inline text and skip repeat uploads."""
+        for provider_name, provider_factory in _provider_factories():
+            with self.subTest(provider=provider_name), patch("openai.OpenAI") as mock_openai_cls:
+                mock_client = MagicMock()
+                mock_openai_cls.return_value = mock_client
+                mock_client.files.create.return_value = SimpleNamespace(id="file-unsupported")
+                mock_client.responses.create.side_effect = RuntimeError(
+                    "unrecognized request url /responses"
+                )
+                mock_client.chat.completions.create.return_value = _make_openai_response(
+                    "Fallback result"
+                )
+
+                with TemporaryDirectory(prefix="aift-provider-parity-") as tmp_dir:
+                    csv_path = Path(tmp_dir) / "runkeys.csv"
+                    csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+                    attachments = [
+                        {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+                    ]
+
+                    provider = provider_factory()
+                    first_result = provider.analyze_with_attachments(
+                        "system",
+                        "user",
+                        attachments=attachments,
+                    )
+                    second_result = provider.analyze_with_attachments(
+                        "system",
+                        "user",
+                        attachments=attachments,
+                    )
+
+                self.assertEqual(first_result, "Fallback result")
+                self.assertEqual(second_result, "Fallback result")
+                self.assertEqual(mock_client.files.create.call_count, 1)
+                self.assertEqual(mock_client.responses.create.call_count, 1)
+                self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+                first_prompt = mock_client.chat.completions.create.call_args_list[0].kwargs[
+                    "messages"
+                ][1]["content"]
+                second_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
+                    "messages"
+                ][1]["content"]
+                self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", first_prompt)
+                self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", second_prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()

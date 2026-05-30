@@ -770,6 +770,288 @@ window.AIFT = (() => {
   }
 
   /**
+   * Create an element with common text, class, dataset, and attribute options.
+   *
+   * @param {string} tagName - DOM tag name to create.
+   * @param {Object} [options={}] - Element options.
+   * @param {string} [options.className] - CSS class string.
+   * @param {string} [options.text] - Text content.
+   * @param {Object} [options.attrs] - Attribute map.
+   * @param {Object} [options.dataset] - Dataset map.
+   * @param {Object} [options.props] - Property map.
+   * @param {Array<Node|string>} [children=[]] - Child nodes or text.
+   * @returns {HTMLElement} The created element.
+   */
+  function createDomElement(tagName, options = {}, children = []) {
+    const node = document.createElement(tagName);
+    if (options.className) node.className = String(options.className);
+    if (Object.prototype.hasOwnProperty.call(options, "text")) {
+      node.textContent = String(options.text == null ? "" : options.text);
+    }
+    Object.entries(obj(options.attrs)).forEach(([name, value]) => {
+      if (value == null || value === false) return;
+      if (isUnsafeDomAttribute(name, value)) return;
+      node.setAttribute(name, String(value));
+    });
+    Object.entries(obj(options.dataset)).forEach(([name, value]) => {
+      if (value == null) return;
+      node.dataset[name] = String(value);
+    });
+    Object.entries(obj(options.props)).forEach(([name, value]) => {
+      if (isUnsafeDomProperty(name)) return;
+      node[name] = value;
+    });
+    const list = Array.isArray(children) ? children : [children];
+    list.forEach((child) => {
+      if (child == null) return;
+      node.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));
+    });
+    return node;
+  }
+
+  /** Return true for attributes that would reintroduce HTML execution paths. */
+  function isUnsafeDomAttribute(name, value) {
+    const attr = String(name || "").trim().toLowerCase();
+    if (!attr) return true;
+    if (attr.startsWith("on")) return true;
+    if ((attr === "href" || attr === "src" || attr === "xlink:href") && /^\s*javascript:/i.test(String(value || ""))) {
+      return true;
+    }
+    return false;
+  }
+
+  /** Return true for properties that bypass textContent/createElement safety. */
+  function isUnsafeDomProperty(name) {
+    const prop = String(name || "").trim().toLowerCase();
+    return prop === "innerhtml" || prop === "outerhtml";
+  }
+
+  /** Build a definition list from label/value pairs. */
+  function createDefinitionList(rows) {
+    const dl = createDomElement("dl");
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const label = Array.isArray(row) ? row[0] : row.label;
+      const value = Array.isArray(row) ? row[1] : row.value;
+      const valueClass = Array.isArray(row) ? row[2] : row.className;
+      dl.appendChild(createDomElement("dt", { text: label }));
+      dl.appendChild(createDomElement("dd", { className: valueClass || "", text: value }));
+    });
+    return dl;
+  }
+
+  /** Build the reusable evidence metadata card used by image and summary views. */
+  function createEvidenceSummaryCard({
+    title = "Evidence Summary",
+    hostname = "-",
+    os = "-",
+    domain = "-",
+    ips = "-",
+    sha256 = "-",
+    className = "summary-card",
+    hidden = false,
+    valueClasses = {},
+  } = {}) {
+    const article = createDomElement("article", {
+      className,
+      props: { hidden: Boolean(hidden) },
+    });
+    article.appendChild(createDomElement("h4", { text: title }));
+    article.appendChild(createDefinitionList([
+      ["Hostname", hostname || "-", valueClasses.hostname],
+      ["OS", os || "-", valueClasses.os],
+      ["Domain", domain || "-", valueClasses.domain],
+      ["IPs", ips || "-", valueClasses.ips],
+      ["SHA-256", sha256 || "-", valueClasses.sha256],
+    ]));
+    return article;
+  }
+
+  /** Build a multi-image intake form card without template-string HTML. */
+  function createImageFormCard(index, displayNumber) {
+    const uploadRadioName = `evidence_mode_${index}`;
+    const uploadRadio = createDomElement("input", {
+      className: "image-mode-upload",
+      attrs: { name: uploadRadioName, type: "radio", value: "upload" },
+    });
+    const pathRadio = createDomElement("input", {
+      className: "image-mode-path",
+      attrs: { name: uploadRadioName, type: "radio", value: "path" },
+      props: { checked: true },
+    });
+    const fileInput = createDomElement("input", {
+      className: "image-file-input",
+      attrs: { type: "file", multiple: "" },
+    });
+    const card = createDomElement("div", {
+      className: "image-form-card",
+      dataset: { imageIndex: index },
+    });
+
+    card.appendChild(createDomElement("div", { className: "image-form-header" }, [
+      createDomElement("h3", { className: "image-form-title", text: `Image ${displayNumber}` }),
+      createDomElement("button", {
+        className: "image-remove-btn",
+        text: "Remove",
+        attrs: { type: "button" },
+        dataset: { imageIndex: index },
+      }),
+    ]));
+    card.appendChild(createDomElement("div", { className: "form-row" }, [
+      createDomElement("label", { text: "Label (optional)" }),
+      createDomElement("input", {
+        className: "image-label-input",
+        attrs: {
+          type: "text",
+          placeholder: "e.g. Workstation-PC01",
+          autocomplete: "off",
+          spellcheck: "false",
+        },
+      }),
+    ]));
+    card.appendChild(createDomElement("fieldset", { className: "mode-toggle" }, [
+      createDomElement("legend", { text: "Evidence source" }),
+      createDomElement("label", {}, [uploadRadio, " Upload File"]),
+      createDomElement("label", {}, [pathRadio, " Local Path"]),
+    ]));
+    card.appendChild(createDomElement("section", {
+      className: "image-upload-panel",
+      dataset: { mode: "upload" },
+      props: { hidden: true },
+    }, [
+      createDomElement("h4", { text: "Upload File" }),
+      createDomElement("label", { className: "image-dropzone" }, [
+        createDomElement("span", { className: "image-dropzone-help" }),
+        fileInput,
+      ]),
+    ]));
+    card.appendChild(createDomElement("section", {
+      className: "image-path-panel",
+      dataset: { mode: "path" },
+    }, [
+      createDomElement("h4", { text: "Local Path" }),
+      createDomElement("label", { text: "Filesystem path" }),
+      createDomElement("input", {
+        className: "image-path-input",
+        attrs: {
+          type: "text",
+          placeholder: "C:\\Evidence\\disk-image.E01 (or .dd, .vmdk, .vhd, .qcow2, folder, ...)",
+          autocomplete: "off",
+          spellcheck: "false",
+        },
+      }),
+      createDomElement("p", {
+        className: "path-mode-hint",
+        text: "Evidence files (E01, VMDK, VHD, DD, etc.) are read in-place (read-only) - nothing is copied. Archives (ZIP, 7z, tar) are copied and extracted into the case folder first.",
+      }),
+    ]));
+    card.appendChild(createEvidenceSummaryCard({
+      className: "image-metadata-card summary-card",
+      hidden: true,
+      valueClasses: {
+        hostname: "image-sum-hostname",
+        os: "image-sum-os",
+        domain: "image-sum-domain",
+        ips: "image-sum-ips",
+        sha256: "image-sum-sha256",
+      },
+    }));
+    card.appendChild(createDomElement("p", {
+      className: "image-status-msg",
+      attrs: { role: "alert" },
+      props: { hidden: true },
+    }));
+    return card;
+  }
+
+  /** Build an artifact mode select with the standard two mode options. */
+  function createArtifactModeSelect(artifactKey, selectedMode = MODE_PARSE_AND_AI) {
+    const select = createDomElement("select", {
+      className: "artifact-mode-select",
+      dataset: { artifactKey },
+      attrs: { "aria-label": "Artifact parse mode" },
+    });
+    select.appendChild(createDomElement("option", {
+      text: "Parse and use in AI",
+      attrs: { value: MODE_PARSE_AND_AI },
+      props: { selected: selectedMode === MODE_PARSE_AND_AI },
+    }));
+    select.appendChild(createDomElement("option", {
+      text: "Parse only",
+      attrs: { value: MODE_PARSE_ONLY },
+      props: { selected: selectedMode === MODE_PARSE_ONLY },
+    }));
+    select.value = selectedMode === MODE_PARSE_ONLY ? MODE_PARSE_ONLY : MODE_PARSE_AND_AI;
+    return select;
+  }
+
+  /** Build a parse progress row and return the row plus mutable cells. */
+  function createParseProgressRow(artifactKey, artifactLabel, status = "waiting", records = "0") {
+    const tr = createDomElement("tr", { dataset: artifactKey ? { artifactKey } : {} });
+    const tdA = createDomElement("td", { text: artifactLabel || "Awaiting selection" });
+    const tdS = createDomElement("td", { text: status || "waiting" });
+    const tdR = createDomElement("td", { text: records == null ? "0" : String(records) });
+    tr.appendChild(tdA);
+    tr.appendChild(tdS);
+    tr.appendChild(tdR);
+    return { tr, tdS, tdR };
+  }
+
+  /** Build the standard parse progress table header. */
+  function createParseProgressTableHead() {
+    const thead = createDomElement("thead");
+    const tr = createDomElement("tr");
+    ["Artifact", "Status", "Records"].forEach((label) => {
+      tr.appendChild(createDomElement("th", { text: label }));
+    });
+    thead.appendChild(tr);
+    return thead;
+  }
+
+  /** Build the GUI-only reasoning panel used by analysis and findings cards. */
+  function createReasoningPanel(reasoningText) {
+    const value = String(reasoningText || "");
+    if (!value) return null;
+    return createDomElement("details", { className: "analysis-reasoning-panel" }, [
+      createDomElement("summary", { text: "Reasoning" }),
+      createDomElement("pre", { className: "analysis-reasoning-text", text: value }),
+    ]);
+  }
+
+  /** Render Markdown through the centralized renderer when it is available. */
+  function renderMarkdownContent(container, text, emptyText) {
+    if (window.AIFT && typeof window.AIFT.renderMarkdownInto === "function") {
+      window.AIFT.renderMarkdownInto(container, text, emptyText);
+      return;
+    }
+    container.textContent = String(text || "").trim() || String(emptyText || "");
+  }
+
+  /** Build an analysis result card with Markdown content and optional reasoning. */
+  function createAnalysisResultCard({ title, metaText, text, emptyText, reasoningText } = {}) {
+    const card = createDomElement("article", { className: "analysis-card" });
+    card.appendChild(createDomElement("h4", { text: title || "Analysis" }));
+    card.appendChild(createDomElement("p", { className: "mono", text: metaText || "" }));
+    const body = createDomElement("div", { className: "markdown-output" });
+    renderMarkdownContent(body, text, emptyText);
+    card.appendChild(body);
+    const reasoningPanel = createReasoningPanel(reasoningText);
+    if (reasoningPanel) card.appendChild(reasoningPanel);
+    return card;
+  }
+
+  /** Build a collapsible findings card with centralized Markdown rendering. */
+  function createFindingsDetails({ title, text, emptyText, reasoningText, open = false } = {}) {
+    const details = createDomElement("details", { props: { open: Boolean(open) } });
+    details.appendChild(createDomElement("summary", { text: title || "Finding" }));
+    const body = createDomElement("div", { className: "markdown-output" });
+    renderMarkdownContent(body, text, emptyText);
+    details.appendChild(body);
+    const reasoningPanel = createReasoningPanel(reasoningText);
+    if (reasoningPanel) details.appendChild(reasoningPanel);
+    return details;
+  }
+
+  /**
    * Open an SSE EventSource with automatic sequence deduplication.
    *
    * Provides a standard pattern used by parse, analysis, and chat SSE
@@ -910,6 +1192,10 @@ window.AIFT = (() => {
     isObj, obj, clone,
     toBackendProvider, toUiProvider, normProvider, prettyProvider,
     stripLeadingReasoningBlocks, getFilename, boolSetting, fmtElapsed,
+    createDomElement, createDefinitionList, createEvidenceSummaryCard,
+    createImageFormCard, createArtifactModeSelect, createParseProgressRow,
+    createParseProgressTableHead, createReasoningPanel,
+    createAnalysisResultCard, createFindingsDetails,
     openSseStream, retrySseStream,
   };
 })();

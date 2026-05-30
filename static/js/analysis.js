@@ -383,27 +383,6 @@
     return r.text;
   }
 
-  /**
-   * Append a collapsible reasoning panel when GUI-only thinking is available.
-   *
-   * @param {HTMLElement} target - Container receiving the panel.
-   * @param {string} reasoningText - Reasoning text to display separately.
-   */
-  function appendAnalysisReasoningPanel(target, reasoningText) {
-    const value = String(reasoningText || "");
-    if (!target || !value) return;
-    const panel = document.createElement("details");
-    panel.className = "analysis-reasoning-panel";
-    const summary = document.createElement("summary");
-    summary.textContent = "Reasoning";
-    const body = document.createElement("pre");
-    body.className = "analysis-reasoning-text";
-    body.textContent = value;
-    panel.appendChild(summary);
-    panel.appendChild(body);
-    target.appendChild(panel);
-  }
-
   /** Render all per-artifact analysis cards into the analysis results list. */
   function renderAnalysis() {
     if (!el.analysisList) return;
@@ -479,26 +458,18 @@
    * @returns {HTMLElement} The article element.
    */
   function buildAnalysisCard(r) {
-    const a = document.createElement("article");
-    a.className = "analysis-card";
-    const h = document.createElement("h4");
-    h.textContent = r.name;
-    const m = document.createElement("p");
-    m.className = "mono";
     const metaParts = [r.key];
     if (r.model) metaParts.push("model: " + r.model);
     if (r.imageLabel) metaParts.push("image: " + r.imageLabel);
-    m.textContent = metaParts.join(" | ");
-    const b = document.createElement("div");
-    b.className = "markdown-output";
     const displayText = resolveAnalysisText(r);
     const emptyLabel = r.isThinking ? "Model is thinking..." : "(No analysis text returned.)";
-    A.renderMarkdownInto(b, displayText, emptyLabel);
-    a.appendChild(h);
-    a.appendChild(m);
-    a.appendChild(b);
-    appendAnalysisReasoningPanel(a, r.thinkingText);
-    return a;
+    return A.createAnalysisResultCard({
+      title: r.name,
+      metaText: metaParts.join(" | "),
+      text: displayText,
+      emptyText: emptyLabel,
+      reasoningText: r.thinkingText,
+    });
   }
 
   /** Render the executive summary markdown into the results page. */
@@ -653,19 +624,15 @@
    * @returns {HTMLDetailsElement}
    */
   function buildFindingsDetails(r, isOpen) {
-    const d = document.createElement("details");
-    d.open = isOpen;
-    const s = document.createElement("summary");
-    s.textContent = r.name;
-    const p = document.createElement("div");
-    p.className = "markdown-output";
     const displayText = resolveAnalysisText(r);
     const emptyLabel = r.isThinking ? "Model is thinking..." : "(No analysis text returned.)";
-    A.renderMarkdownInto(p, displayText, emptyLabel);
-    d.appendChild(s);
-    d.appendChild(p);
-    appendAnalysisReasoningPanel(d, r.thinkingText);
-    return d;
+    return A.createFindingsDetails({
+      title: r.name,
+      text: displayText,
+      emptyText: emptyLabel,
+      reasoningText: r.thinkingText,
+      open: isOpen,
+    });
   }
 
   /** Update the provider name display in the analysis step header. */
