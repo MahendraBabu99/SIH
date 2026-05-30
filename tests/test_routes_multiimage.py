@@ -1,8 +1,7 @@
-"""Tests for multi-image route endpoints.
+"""Tests for image route endpoints.
 
-Validates the new image management endpoints (add, list, image-specific
-evidence intake and parsing) as well as backward compatibility of legacy
-case-level endpoints.
+Validates image management endpoints plus single-image workflows that use
+the same image-scoped parsing API as multi-image cases.
 """
 
 from __future__ import annotations
@@ -17,7 +16,14 @@ from zipfile import ZipFile
 
 from app import create_app
 from app.case_logging import unregister_all_case_log_handlers
-from tests.conftest import FakeParser as _BaseFakeParser, ImmediateThread, FAKE_HASHES
+from tests.conftest import (
+    FakeParser as _BaseFakeParser,
+    ImmediateThread,
+    FAKE_HASHES,
+    first_case_image_id,
+    first_image_parse_progress_url,
+    first_image_parse_url,
+)
 import app.routes as routes
 import app.routes.handlers as routes_handlers
 import app.routes.evidence as routes_evidence
@@ -355,8 +361,8 @@ class MultiImageRoutesTests(unittest.TestCase):
             image_dirs = [d for d in images_dir.iterdir() if d.is_dir()]
             self.assertTrue(len(image_dirs) > 0, "Expected a default image directory to be created")
 
-    def test_backward_compat_parse_delegates(self) -> None:
-        """POST /api/cases/<id>/parse delegates to image-specific parse."""
+    def test_single_image_parse_uses_default_image(self) -> None:
+        """Single-image cases parse through the image-specific endpoint."""
         evidence_path = Path(self.temp_dir.name) / "test.E01"
         evidence_path.write_bytes(b"test-evidence")
 
@@ -370,17 +376,17 @@ class MultiImageRoutesTests(unittest.TestCase):
             )
             self.assertEqual(ev_resp.status_code, 200)
 
-            # Now the case should have image_states populated.
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
             data = parse_resp.get_json()
             self.assertTrue(data["success"])
+            self.assertEqual(data["image_id"], first_case_image_id(case_id))
 
-    def test_backward_compat_parse_progress(self) -> None:
-        """GET /api/cases/<id>/parse/progress works via backward compat."""
+    def test_single_image_parse_progress_uses_default_image(self) -> None:
+        """Single-image parse progress streams from the image-specific endpoint."""
         evidence_path = Path(self.temp_dir.name) / "test.E01"
         evidence_path.write_bytes(b"test-evidence")
 
@@ -394,12 +400,12 @@ class MultiImageRoutesTests(unittest.TestCase):
             self.assertEqual(ev_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
 
-            sse_resp = self.client.get(f"/api/cases/{case_id}/parse/progress")
+            sse_resp = self.client.get(first_image_parse_progress_url(case_id))
             self.assertEqual(sse_resp.status_code, 200)
 
     def test_multiple_images_workflow(self) -> None:

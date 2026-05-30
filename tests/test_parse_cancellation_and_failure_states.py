@@ -24,7 +24,6 @@ from app import create_app
 from app.audit import ACTION_TYPES
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.parser.core import ForensicParser, ParserCancelledError
-from app.routes import artifacts as routes_artifacts
 from app.routes import images as routes_images
 from app.routes import state as routes_state
 from app.routes import tasks as routes_tasks
@@ -214,6 +213,7 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self,
         case_id: str,
         available_artifacts: list[dict[str, Any]],
+        image_id: str | None = None,
     ) -> Path:
         """Install a minimal case in the in-memory state store.
 
@@ -226,6 +226,17 @@ class RouteParseValidationStateTests(unittest.TestCase):
         """
         case_dir = self.cases_root / case_id
         case_dir.mkdir(parents=True, exist_ok=True)
+        images: list[dict[str, str]] = []
+        image_states: dict[str, dict[str, Any]] = {}
+        if image_id is not None:
+            image_dir = case_dir / "images" / image_id
+            image_dir.mkdir(parents=True, exist_ok=True)
+            images.append({"image_id": image_id, "label": "Image 1"})
+            image_states[image_id] = {
+                "evidence_path": str(image_dir / "evidence.E01"),
+                "available_artifacts": available_artifacts,
+                "os_type": "windows",
+            }
         with routes_state.STATE_LOCK:
             routes_state.CASE_STATES[case_id] = {
                 "case_id": case_id,
@@ -234,7 +245,8 @@ class RouteParseValidationStateTests(unittest.TestCase):
                 "evidence_path": str(case_dir / "evidence.E01"),
                 "available_artifacts": available_artifacts,
                 "os_type": "windows",
-                "image_states": {},
+                "images": images,
+                "image_states": image_states,
                 "status": "evidence_loaded",
             }
             routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress()
@@ -243,18 +255,23 @@ class RouteParseValidationStateTests(unittest.TestCase):
     def test_unknown_artifact_rejected_before_worker_starts(self) -> None:
         """Unknown artifact keys fail synchronously at route level."""
         case_id = "unknown-artifact"
+        image_id = "img-001"
         self._install_case(
             case_id,
             [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
         )
 
-        with patch.object(
-            routes_artifacts.threading,
-            "Thread",
-            side_effect=AssertionError("worker should not start"),
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(
+                routes_images.threading,
+                "Thread",
+                side_effect=AssertionError("worker should not start"),
+            ),
         ):
             response = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                f"/api/cases/{case_id}/images/{image_id}/parse",
                 json={"artifacts": ["not_a_real_artifact"]},
             )
 
@@ -265,18 +282,23 @@ class RouteParseValidationStateTests(unittest.TestCase):
     def test_unknown_artifact_in_availability_payload_still_rejected(self) -> None:
         """Availability payload keys do not expand the supported registry."""
         case_id = "unknown-payload-artifact"
+        image_id = "img-001"
         self._install_case(
             case_id,
             [{"key": "not_a_real_artifact", "name": "Bogus", "available": True}],
+            image_id=image_id,
         )
 
-        with patch.object(
-            routes_artifacts.threading,
-            "Thread",
-            side_effect=AssertionError("worker should not start"),
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(
+                routes_images.threading,
+                "Thread",
+                side_effect=AssertionError("worker should not start"),
+            ),
         ):
             response = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                f"/api/cases/{case_id}/images/{image_id}/parse",
                 json={"artifacts": ["not_a_real_artifact"]},
             )
 
@@ -287,21 +309,26 @@ class RouteParseValidationStateTests(unittest.TestCase):
     def test_unsupported_artifact_rejected_before_worker_starts(self) -> None:
         """Known but unavailable AI artifact keys fail synchronously."""
         case_id = "unsupported-artifact"
+        image_id = "img-001"
         self._install_case(
             case_id,
             [
                 {"key": "runkeys", "name": "Run Keys", "available": True},
                 {"key": "tasks", "name": "Scheduled Tasks", "available": False},
             ],
+            image_id=image_id,
         )
 
-        with patch.object(
-            routes_artifacts.threading,
-            "Thread",
-            side_effect=AssertionError("worker should not start"),
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(
+                routes_images.threading,
+                "Thread",
+                side_effect=AssertionError("worker should not start"),
+            ),
         ):
             response = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                f"/api/cases/{case_id}/images/{image_id}/parse",
                 json={"artifacts": ["tasks"]},
             )
 
@@ -348,32 +375,41 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self.assertIn("Unsupported artifact", response.get_json()["error"])
 
     def test_single_image_zero_success_does_not_mark_case_parsed(self) -> None:
-        """A parse run where every artifact fails leaves the case unparsed."""
+        """A single-image parse where every artifact fails leaves the case unparsed."""
         case_id = "zero-success-single"
+        image_id = "img-001"
         case_dir = self._install_case(
             case_id,
             [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
         )
+        image_dir = case_dir / "images" / image_id
+        progress_key = f"{case_id}::{image_id}"
+        routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="running")
         routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
 
         with patch.object(routes_tasks, "ForensicParser", _FailingParser):
-            routes_tasks.run_parse(
+            routes_images._run_image_parse(
                 case_id=case_id,
+                image_id=image_id,
                 parse_artifacts=["runkeys"],
                 analysis_artifacts=["runkeys"],
                 artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
                 config_snapshot={},
+                evidence_path=str(image_dir / "evidence.E01"),
+                parsed_dir=str(image_dir / "parsed"),
             )
 
         with routes_state.STATE_LOCK:
             case = routes_state.CASE_STATES[case_id]
-            progress = routes_state.PARSE_PROGRESS[case_id]
+            image_state = case["image_states"][image_id]
+            progress = routes_state.PARSE_PROGRESS[progress_key]
         self.assertEqual(case["status"], "evidence_loaded")
-        self.assertEqual(case.get("artifact_csv_paths"), {})
-        self.assertEqual(case.get("csv_output_dir"), "")
+        self.assertEqual(image_state.get("artifact_csv_paths"), {})
+        self.assertEqual(image_state.get("csv_output_dir"), "")
         self.assertEqual(progress["status"], "failed")
         self.assertEqual(progress["events"][-1]["reason"], "zero_success")
-        self.assertFalse((case_dir / "parsed" / "runkeys.csv").exists())
+        self.assertFalse((image_dir / "parsed" / "runkeys.csv").exists())
 
     def test_image_zero_success_does_not_mark_case_parsed(self) -> None:
         """An image parse with no usable artifacts leaves the case unparsed."""
@@ -421,21 +457,24 @@ class RouteParseValidationStateTests(unittest.TestCase):
     def test_route_cancel_progress_stream_includes_cancel_events(self) -> None:
         """Route cancellation emits requested and final SSE progress events."""
         case_id = "cancel-sse"
-        self._install_case(case_id, [])
+        image_id = "img-001"
+        self._install_case(case_id, [], image_id=image_id)
+        progress_key = f"{case_id}::{image_id}"
         with routes_state.STATE_LOCK:
             routes_state.CASE_STATES[case_id]["status"] = "running"
             routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="running")
 
         cancel_response = self.client.post(f"/api/cases/{case_id}/parse/cancel")
         self.assertEqual(cancel_response.status_code, 200)
-        routes_state.set_progress_status(routes_state.PARSE_PROGRESS, case_id, "cancelled")
+        routes_state.set_progress_status(routes_state.PARSE_PROGRESS, progress_key, "cancelled")
         routes_state.emit_progress(
             routes_state.PARSE_PROGRESS,
-            case_id,
+            progress_key,
             {"type": "parse_cancelled"},
         )
 
-        stream_response = self.client.get(f"/api/cases/{case_id}/parse/progress")
+        stream_response = self.client.get(f"/api/cases/{case_id}/images/{image_id}/parse/progress")
         stream_data = stream_response.get_data(as_text=True)
         self.assertIn('"type":"parse_cancel_requested"', stream_data)
         self.assertIn('"type":"parse_cancelled"', stream_data)

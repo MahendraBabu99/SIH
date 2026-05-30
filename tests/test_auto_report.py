@@ -28,6 +28,8 @@ from tests.conftest import (
     FakeAnalyzer,
     FakeReportGenerator as _BaseFakeReportGenerator,
     ImmediateThread,
+    first_image_parse_progress_url,
+    first_image_parse_url,
 )
 import app.routes as routes
 import app.routes.artifacts as routes_artifacts
@@ -188,11 +190,11 @@ def _run_full_flow(client, evidence_path: Path) -> str:
         json={"path": str(evidence_path)},
     )
     client.post(
-        f"/api/cases/{case_id}/parse",
+        first_image_parse_url(case_id),
         json={"artifacts": ["runkeys"]},
     )
     # Drain parse SSE so the progress store is consumed.
-    client.get(f"/api/cases/{case_id}/parse/progress")
+    client.get(first_image_parse_progress_url(case_id))
 
     client.post(
         f"/api/cases/{case_id}/analyze",
@@ -255,10 +257,10 @@ class GenerateCaseReportTests(unittest.TestCase):
                 json={"path": str(evidence_path)},
             )
             self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
-            self.client.get(f"/api/cases/{case_id}/parse/progress")
+            self.client.get(first_image_parse_progress_url(case_id))
 
             with self.app.app_context():
                 result = routes_evidence.generate_case_report(case_id)

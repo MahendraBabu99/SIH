@@ -35,6 +35,40 @@ _SYMLINK_CAPABILITY_CACHE: dict[bool, bool] = {}
 """Cached symlink support results keyed by ``target_is_directory``."""
 
 
+def first_case_image_id(case_id: str) -> str:
+    """Return the first image ID for a case in the in-memory route state."""
+    from app.routes import state as routes_state
+
+    with routes_state.STATE_LOCK:
+        case = routes_state.CASE_STATES.get(case_id) or {}
+        images = case.get("images")
+        if isinstance(images, list):
+            for image in images:
+                if isinstance(image, dict):
+                    image_id = str(image.get("image_id", "")).strip()
+                    if image_id:
+                        return image_id
+        image_states = case.get("image_states")
+        if isinstance(image_states, dict):
+            for image_id in image_states:
+                image_id = str(image_id).strip()
+                if image_id:
+                    return image_id
+    raise AssertionError(f"No image found for case {case_id!r}")
+
+
+def first_image_parse_url(case_id: str) -> str:
+    """Return the image-scoped parse start URL for a single-image case."""
+    image_id = first_case_image_id(case_id)
+    return f"/api/cases/{case_id}/images/{image_id}/parse"
+
+
+def first_image_parse_progress_url(case_id: str) -> str:
+    """Return the image-scoped parse progress URL for a single-image case."""
+    image_id = first_case_image_id(case_id)
+    return f"/api/cases/{case_id}/images/{image_id}/parse/progress"
+
+
 def _probe_symlink_support(root: Path, target_is_directory: bool = False) -> bool:
     """Return whether the current environment can create a symlink.
 

@@ -808,13 +808,6 @@ class TaskHelperTests(unittest.TestCase):
         routes_tasks.run_task_with_case_log_context("fake-case", task_fn, "a", "b")
         self.assertEqual(called_args, ["a", "b"])
 
-    def test_run_parse_case_not_found(self) -> None:
-        routes_state.CASE_STATES.clear()
-        routes_state.PARSE_PROGRESS.clear()
-        routes_tasks.run_parse("missing-id", ["runkeys"], ["runkeys"], [], {})
-        self.assertEqual(routes_state.PARSE_PROGRESS["missing-id"]["status"], "failed")
-        routes_state.PARSE_PROGRESS.clear()
-
     def test_run_analysis_case_not_found(self) -> None:
         routes_state.CASE_STATES.clear()
         routes_state.ANALYSIS_PROGRESS.clear()
@@ -828,23 +821,6 @@ class TaskHelperTests(unittest.TestCase):
         routes_tasks.run_chat("missing-id", "hello", {})
         self.assertEqual(routes_state.CHAT_PROGRESS["missing-id"]["status"], "failed")
         routes_state.CHAT_PROGRESS.clear()
-
-    def test_run_parse_no_evidence(self) -> None:
-        routes_state.CASE_STATES.clear()
-        routes_state.PARSE_PROGRESS.clear()
-        audit = MagicMock()
-        routes_state.CASE_STATES["test-id"] = {
-            "case_dir": "/tmp/fake",
-            "evidence_path": "",
-            "audit": audit,
-        }
-        routes_tasks.run_parse("test-id", ["runkeys"], ["runkeys"], [], {})
-        self.assertEqual(routes_state.PARSE_PROGRESS["test-id"]["status"], "failed")
-        self.assertEqual(routes_state.CASE_STATES["test-id"]["status"], "failed")
-        routes_state.CASE_STATES.clear()
-        routes_state.PARSE_PROGRESS.clear()
-
-
 
 if __name__ == "__main__":
     unittest.main()

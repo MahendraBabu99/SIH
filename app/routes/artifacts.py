@@ -1,10 +1,9 @@
-"""Artifact profile route handlers and backward-compatible helper re-exports.
+"""Artifact profile route handlers and parse-selection helpers.
 
 This module handles:
 
-* Flask route handlers for starting/streaming parse operations and profile CRUD.
-* Backward-compatible imports for artifact/profile helpers owned by
-  :mod:`app.artifact_profiles`.
+* Flask route handlers for parse cancellation and profile CRUD.
+* Imports for artifact/profile helpers owned by :mod:`app.artifact_profiles`.
 
 Attributes:
     PROFILE_NAME_RE: Regex for validating artifact profile names.
@@ -19,9 +18,7 @@ Attributes:
 
 from __future__ import annotations
 
-import copy
 import logging
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -61,19 +58,11 @@ from ..parser.registry import (
 from .state import (
     PARSE_PROGRESS,
     STATE_LOCK,
-    active_operations_for_case,
     cancel_progress,
-    emit_progress,
     error_response,
     get_case,
-    mark_case_status,
-    new_progress,
-    stream_sse,
     success_response,
 )
-
-# NOTE: .tasks imports are deferred to avoid circular import
-# (tasks.py imports from artifacts.py). See _get_task_runners().
 
 __all__ = [
     "MODE_PARSE_AND_AI",
@@ -225,163 +214,6 @@ def _purge_stale_downstream_case_files(case_dir: Path) -> None:
             stale_path.unlink(missing_ok=True)
         except OSError:
             LOGGER.warning("Failed to remove stale case artifact: %s", stale_path, exc_info=True)
-
-
-@artifact_bp.post("/api/cases/<case_id>/parse")
-def start_parse(case_id: str) -> tuple[Response, int]:
-    """Start background parsing of selected forensic artifacts.
-
-    For backward compatibility, if multi-image state exists for this case,
-    delegates to the first image's parse endpoint.  Otherwise falls through
-    to the original case-level parsing logic.
-
-    Args:
-        case_id: UUID of the case.
-
-    Returns:
-        ``(Response, 202)`` confirming start, or error.
-    """
-    case = get_case(case_id)
-    if case is None:
-        return error_response(f"Case not found: {case_id}", 404)
-
-    # Delegate to image-specific parse if images exist.
-    from .images import start_image_parse
-    with STATE_LOCK:
-        image_ids = list(case.get("image_states", {}).keys())
-    if image_ids:
-        first_image_id = image_ids[0]
-        return start_image_parse(case_id, first_image_id)
-
-    with STATE_LOCK:
-        has_evidence = bool(str(case.get("evidence_path", "")).strip())
-    if not has_evidence:
-        return error_response("No evidence loaded for this case.", 400)
-
-    payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        return error_response("Request body must be a JSON object.", 400)
-    try:
-        artifact_options, parse_artifacts, analysis_artifacts = extract_parse_selection_payload(payload)
-    except ValueError as error:
-        return error_response(str(error), 400)
-
-    if not parse_artifacts:
-        return error_response("Provide at least one artifact key to parse.", 400)
-    with STATE_LOCK:
-        available_artifacts = copy.deepcopy(case.get("available_artifacts", []))
-        os_type = str(case.get("os_type") or "windows")
-    try:
-        validate_requested_parse_artifacts(
-            parse_artifacts,
-            available_artifacts,
-            os_type,
-            required_available_artifacts=analysis_artifacts,
-        )
-    except ValueError as error:
-        return error_response(str(error), 400)
-    try:
-        analysis_date_range = validate_analysis_date_range(payload.get("analysis_date_range"))
-    except ValueError as error:
-        return error_response(str(error), 400)
-
-    with STATE_LOCK:
-        parse_state = PARSE_PROGRESS.setdefault(case_id, new_progress())
-        if parse_state.get("status") == "running":
-            return error_response("Parsing is already running for this case.", 409)
-        active = active_operations_for_case(case_id)
-        if active:
-            return error_response("Cannot start parsing while another case operation is running.", 409)
-        case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
-        previous_progress = PARSE_PROGRESS.get(case_id)
-        case_dir = Path(case["case_dir"])
-        PARSE_PROGRESS[case_id] = new_progress(status="running")
-        mark_case_status(case_id, "running")
-        case["selected_artifacts"] = list(parse_artifacts)
-        case["analysis_artifacts"] = list(analysis_artifacts)
-        case["artifact_options"] = list(artifact_options)
-        case["analysis_date_range"] = analysis_date_range
-
-        # Capture previous CSV output dir before clearing so we can
-        # remove stale on-disk data outside the case directory.
-        prev_csv_output_dir = str(case.get("csv_output_dir", "")).strip()
-
-        # Invalidate prior parse-derived outputs so a failed rerun
-        # cannot leave stale data usable by downstream analysis.
-        case["parse_results"] = []
-        case["image_artifact_csv_paths"] = {}
-        case["artifact_csv_paths"] = {}
-        case["analysis_results"] = {}
-        case["csv_output_dir"] = ""
-        case["investigation_context"] = ""
-
-    try:
-        from .evidence_utils import cleanup_parsed_data
-
-        cleanup_parsed_data(
-            case_dir=case_dir,
-            image_states={},
-            prev_csv_output_dir=prev_csv_output_dir,
-            clean_default_parsed=True,
-        )
-        _purge_stale_downstream_case_files(case_dir)
-
-        parse_started_event: dict[str, Any] = {
-            "type": "parse_started",
-            "artifacts": parse_artifacts,
-            "analysis_artifacts": analysis_artifacts,
-            "artifact_options": artifact_options,
-            "total_artifacts": len(parse_artifacts),
-        }
-        if analysis_date_range is not None:
-            parse_started_event["analysis_date_range"] = analysis_date_range
-        emit_progress(PARSE_PROGRESS, case_id, parse_started_event)
-        config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
-        from .tasks import run_task_with_case_log_context, run_parse  # deferred to avoid circular import
-        threading.Thread(
-            target=run_task_with_case_log_context,
-            args=(case_id, run_parse, case_id, parse_artifacts, analysis_artifacts, artifact_options, config_snapshot),
-            daemon=True,
-        ).start()
-    except Exception:
-        LOGGER.exception("Failed to start parse for case %s", case_id)
-        with STATE_LOCK:
-            audit_logger = case.get("audit")
-            case.clear()
-            case.update(copy.deepcopy(case_snapshot))
-            if audit_logger is not None:
-                case["audit"] = audit_logger
-            if previous_progress is None:
-                PARSE_PROGRESS.pop(case_id, None)
-            else:
-                PARSE_PROGRESS[case_id] = previous_progress
-        return error_response("Failed to start parsing. Case state was restored.", 500)
-
-    response_payload: dict[str, Any] = {
-        "status": "started",
-        "case_id": case_id,
-        "artifacts": parse_artifacts,
-        "ai_artifacts": analysis_artifacts,
-        "artifact_options": artifact_options,
-    }
-    if analysis_date_range is not None:
-        response_payload["analysis_date_range"] = analysis_date_range
-    return success_response(response_payload, 202)
-
-
-@artifact_bp.get("/api/cases/<case_id>/parse/progress")
-def stream_parse_progress(case_id: str) -> Response | tuple[Response, int]:
-    """Stream parsing progress events via SSE.
-
-    Args:
-        case_id: UUID of the case.
-
-    Returns:
-        SSE Response, or 404 error.
-    """
-    if get_case(case_id) is None:
-        return error_response(f"Case not found: {case_id}", 404)
-    return stream_sse(PARSE_PROGRESS, case_id)
 
 
 @artifact_bp.post("/api/cases/<case_id>/parse/cancel")

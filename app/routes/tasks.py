@@ -3,8 +3,7 @@
 This module contains the long-running functions that execute on background
 ``threading.Thread`` instances:
 
-* ``run_parse_loop`` -- Shared core parse loop used by all parse runners.
-* ``run_parse`` -- Parse forensic artifacts via Dissect.
+* ``run_parse_loop`` -- Shared parser loop used by image-scoped parse tasks.
 * ``run_analysis`` -- AI-powered analysis of parsed CSV artifacts.
 * ``run_multi_image_analysis_task`` -- Multi-image forensic analysis.
 
@@ -56,14 +55,11 @@ from .evidence import (
     build_image_artifact_csv_paths,
     collect_case_csv_paths,
     generate_case_report,
-    resolve_case_csv_output_dir,
 )
-from ..chat.csv_retrieval import invalidate_header_cache
 
 __all__ = [
     "run_task_with_case_log_context",
     "run_parse_loop",
-    "run_parse",
     "resolve_artifact_csv_row_limit",
     "run_analysis",
     "run_multi_image_analysis_task",
@@ -333,8 +329,7 @@ def run_parse_loop(
     results together with a CSV path mapping.
 
     This function is the single source of truth for the inner parse logic
-    shared between :func:`run_parse` (single-image V1 workflow) and
-    :func:`_run_image_parse` in ``images.py`` (per-image workflow).
+    used by :func:`_run_image_parse` in ``images.py``.
 
     Args:
         case_id: UUID of the case (used only for log messages).
@@ -344,8 +339,8 @@ def run_parse_loop(
         parsed_dir: Directory where parsed CSV files are written.
         parse_artifacts: List of artifact keys to parse.
         progress_key: Key used in :data:`PARSE_PROGRESS` for SSE events.
-            For single-image cases this equals *case_id*; for per-image
-            parsing it is a composite key such as ``case_id::image_id``.
+            Image parsing uses a composite key such as
+            ``case_id::image_id``.
         max_records_per_artifact: Maximum records written for a single
             artifact CSV. ``0`` means unlimited.
 
@@ -451,125 +446,6 @@ def run_parse_loop(
 
         csv_map = build_csv_map(results)
         return results, csv_map
-
-
-# ---------------------------------------------------------------------------
-# Background task: parse
-# ---------------------------------------------------------------------------
-
-def run_parse(
-    case_id: str,
-    parse_artifacts: list[str],
-    analysis_artifacts: list[str],
-    artifact_options: list[dict[str, str]],
-    config_snapshot: dict[str, Any],
-) -> None:
-    """Execute background parsing of selected forensic artifacts.
-
-    Args:
-        case_id: UUID of the case.
-        parse_artifacts: Artifact keys to parse.
-        analysis_artifacts: Subset for AI analysis.
-        artifact_options: Canonical artifact option dicts.
-        config_snapshot: Deep copy of application config.
-    """
-    case = get_case(case_id)
-    if case is None:
-        set_progress_status(PARSE_PROGRESS, case_id, "failed", "Case not found.")
-        emit_progress(PARSE_PROGRESS, case_id, {"type": "parse_failed", "error": "Case not found."})
-        return
-
-    with STATE_LOCK:
-        evidence_path = str(case.get("evidence_path", "")).strip()
-        case_dir = case["case_dir"]
-        audit_logger = case["audit"]
-        case_snapshot = dict(case)
-
-    if not evidence_path:
-        mark_case_status(case_id, "failed")
-        set_progress_status(PARSE_PROGRESS, case_id, "failed", "No evidence available for parsing.")
-        emit_progress(PARSE_PROGRESS, case_id, {"type": "parse_failed", "error": "No evidence available for parsing."})
-        return
-
-    try:
-        csv_output_dir = resolve_case_csv_output_dir(
-            case_snapshot, config_snapshot=config_snapshot,
-        )
-        max_records_per_artifact = resolve_artifact_csv_row_limit(config_snapshot)
-        outcome = run_parse_loop(
-            case_id=case_id,
-            evidence_path=evidence_path,
-            case_dir=case_dir,
-            audit_logger=audit_logger,
-            parsed_dir=str(csv_output_dir),
-            parse_artifacts=parse_artifacts,
-            progress_key=case_id,
-            max_records_per_artifact=max_records_per_artifact,
-        )
-        if outcome is None:
-            # Parsing was cancelled — reset case status so the user can
-            # retry or proceed with other operations.
-            mark_case_status(case_id, "evidence_loaded")
-            set_progress_status(PARSE_PROGRESS, case_id, "cancelled")
-            emit_progress(PARSE_PROGRESS, case_id, {"type": "parse_cancelled"})
-            return
-
-        results, csv_map = outcome
-        with STATE_LOCK:
-            case["selected_artifacts"] = list(parse_artifacts)
-            case["analysis_artifacts"] = list(analysis_artifacts)
-            case["artifact_options"] = list(artifact_options)
-            case["parse_results"] = results
-            case["image_artifact_csv_paths"] = {}
-            case["artifact_csv_paths"] = csv_map
-            case["csv_output_dir"] = str(csv_output_dir)
-
-        completed = len(csv_map)
-        failed = len(results) - completed
-        if completed == 0:
-            message = "No requested artifacts produced usable parsed output."
-            with STATE_LOCK:
-                case["artifact_csv_paths"] = {}
-                case["image_artifact_csv_paths"] = {}
-                case["csv_output_dir"] = ""
-            mark_case_status(case_id, "evidence_loaded")
-            set_progress_status(PARSE_PROGRESS, case_id, "failed", message)
-            emit_progress(
-                PARSE_PROGRESS, case_id,
-                {
-                    "type": "parse_failed",
-                    "reason": "zero_success",
-                    "error": message,
-                    "total_artifacts": len(results),
-                    "successful_artifacts": 0,
-                    "failed_artifacts": failed,
-                },
-            )
-            return
-
-        outcome = "full_success" if completed == len(results) else "partial_success"
-        set_progress_status(PARSE_PROGRESS, case_id, "completed")
-        emit_progress(
-            PARSE_PROGRESS, case_id,
-            {
-                "type": "parse_completed",
-                "outcome": outcome,
-                "total_artifacts": len(results),
-                "successful_artifacts": completed,
-                "failed_artifacts": failed,
-            },
-        )
-        mark_case_status(case_id, "parsed")
-        invalidate_header_cache(str(csv_output_dir))
-    except Exception:
-        LOGGER.exception("Background parse failed for case %s", case_id)
-        user_message = (
-            "Parsing failed due to an internal error. "
-            "Check logs and retry after confirming the evidence file is readable."
-        )
-        mark_case_status(case_id, "error")
-        set_progress_status(PARSE_PROGRESS, case_id, "failed", user_message)
-        emit_progress(PARSE_PROGRESS, case_id, {"type": "parse_failed", "error": user_message})
 
 
 # ---------------------------------------------------------------------------

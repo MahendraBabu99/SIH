@@ -3,7 +3,7 @@
  *
  * Manages the parse lifecycle: submit, track progress via SSE,
  * handle retries, cancellation, and state reset.  Supports both
- * single-image (V1) and multi-image parsing.
+ * single-image and multi-image parsing.
  *
  * Depends on: AIFT (utils.js), evidence.js
  */
@@ -31,16 +31,41 @@
       .filter((option) => option.artifact_key);
   }
 
+  /** Return the loaded image entry used by the single-image UI. */
+  function singleImageEntry() {
+    const images = Array.isArray(st.images) ? st.images : [];
+    if (!images.length) return null;
+    const entry = images[0] || {};
+    const imageId = String(entry.image_id || "").trim();
+    return imageId ? entry : null;
+  }
+
   /** Build a stable parse-selection snapshot for a single-image parse. */
-  function buildSingleParseSnapshot(caseId, owner, artifactOptions, artifacts, aiArtifacts) {
+  function buildSingleParseSnapshot(caseId, owner, imageEntry, artifactOptions, artifacts, aiArtifacts) {
+    const imageId = String((imageEntry || {}).image_id || "").trim();
+    const imageLabel = String((imageEntry || {}).label || imageId || "");
+    const normalizedOptions = cloneArtifactOptions(artifactOptions);
+    const normalizedArtifacts = (Array.isArray(artifacts) ? artifacts : []).map(String).filter(Boolean);
+    const normalizedAiArtifacts = (Array.isArray(aiArtifacts) ? aiArtifacts : []).map(String).filter(Boolean);
     return {
       caseId,
       runId: owner ? owner.runId : "",
       mode: "single",
-      artifactOptions: cloneArtifactOptions(artifactOptions),
-      artifacts: (Array.isArray(artifacts) ? artifacts : []).map(String).filter(Boolean),
-      aiArtifacts: (Array.isArray(aiArtifacts) ? aiArtifacts : []).map(String).filter(Boolean),
-      images: {},
+      image_id: imageId,
+      artifactOptions: normalizedOptions,
+      artifacts: normalizedArtifacts,
+      aiArtifacts: normalizedAiArtifacts,
+      images: imageId ? {
+        [imageId]: {
+          caseId,
+          runId: owner ? owner.runId : "",
+          image_id: imageId,
+          label: imageLabel,
+          artifactOptions: normalizedOptions.slice(),
+          artifacts: normalizedArtifacts.slice(),
+          aiArtifacts: normalizedAiArtifacts.slice(),
+        },
+      } : {},
     };
   }
 
@@ -63,6 +88,7 @@
     const pending = st.parse.pendingSelectionSnapshot || buildSingleParseSnapshot(
       A.activeCaseId(),
       owner || st.parse.owner,
+      singleImageEntry(),
       [],
       st.selected,
       st.selectedAi,
@@ -73,6 +99,15 @@
       : pending.aiArtifacts;
     st.selected = artifacts;
     st.selectedAi = aiArtifacts;
+    const images = Object.assign({}, pending.images || {});
+    const pendingImageId = String(pending.image_id || "").trim();
+    if (pendingImageId && images[pendingImageId]) {
+      images[pendingImageId] = Object.assign({}, images[pendingImageId], {
+        artifacts: artifacts.slice(),
+        aiArtifacts: aiArtifacts.slice(),
+        artifactOptions: pending.artifactOptions.filter((option) => artifacts.includes(option.artifact_key)),
+      });
+    }
     st.parsedSelections = Object.assign({}, pending, {
       artifacts,
       aiArtifacts,
@@ -80,7 +115,7 @@
       caseId: pending.caseId || A.activeCaseId(),
       runId: pending.runId || (owner && owner.runId) || "",
       mode: "single",
-      images: {},
+      images,
     });
     st.parse.selectionStale = false;
   }
@@ -133,9 +168,8 @@
   /**
    * Submit selected artifacts for parsing.
    *
-   * For single-image cases, uses the legacy case-level parse endpoint.
-   * For multi-image cases, iterates each image and calls the per-image
-   * parse endpoint, connecting separate SSE streams.
+   * Single-image cases use the same image-scoped parse endpoint as
+   * multi-image cases while keeping the compact single-image progress table.
    */
   async function submitParse() {
     A.clearMsg(el.artifactsMsg);
@@ -154,7 +188,7 @@
   }
 
   /**
-   * Submit parse for a single-image case (V1 behavior).
+   * Submit parse for a single-image case.
    *
    * @param {string} caseId - Active case ID.
    */
@@ -163,6 +197,9 @@
     const arts = artifactOptions.map((option) => option.artifact_key);
     const aiArtifacts = A.selectedAiArtifacts(artifactOptions);
     if (!arts.length) return A.setMsg(el.artifactsMsg, "Select at least one artifact.", "error");
+    const imageEntry = singleImageEntry();
+    const imageId = imageEntry ? String(imageEntry.image_id || "").trim() : "";
+    if (!imageId) return A.setMsg(el.artifactsMsg, "No evidence image is available for parsing. Intake evidence first.", "error");
     const dateRangeValidation = A.validateAnalysisDateRange();
     if (!dateRangeValidation.ok) return A.setMsg(el.artifactsMsg, dateRangeValidation.message, "error");
 
@@ -175,7 +212,8 @@
     st.selected = arts;
     st.selectedAi = aiArtifacts;
     st.parse.owner = owner;
-    st.parse.pendingSelectionSnapshot = buildSingleParseSnapshot(caseId, owner, artifactOptions, arts, aiArtifacts);
+    st.parse.imageId = imageId;
+    st.parse.pendingSelectionSnapshot = buildSingleParseSnapshot(caseId, owner, imageEntry, artifactOptions, arts, aiArtifacts);
     st.parse.selectionStale = false;
     st.parse.run = true;
     const abortCtrl = new AbortController();
@@ -192,15 +230,19 @@
       const parsePayload = { artifacts: arts, ai_artifacts: aiArtifacts, artifact_options: artifactOptions };
       if (dateRangeValidation.range) parsePayload.analysis_date_range = dateRangeValidation.range;
       A.startTimer("parse");
-      await A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/parse`, { method: "POST", json: parsePayload, signal: abortCtrl.signal });
+      await A.apiJson(
+        `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/parse`,
+        { method: "POST", json: parsePayload, signal: abortCtrl.signal },
+      );
       if (!A.isRunOwnerCurrent(st.parse, owner)) return;
-      startParseSse(owner);
+      startParseSse(owner, imageId);
       A.showStep(3);
     } catch (e) {
       st.parse.abort = null;
       if (e.name === "AbortError") return;
       st.parse.run = false;
       st.parse.owner = null;
+      st.parse.imageId = "";
       st.parse.pendingSelectionSnapshot = null;
       A.stopTimer("parse");
       A.setMsg(el.artifactsMsg, `Failed to start parsing: ${e.message}`, "error");
@@ -616,19 +658,21 @@
 
   // ── Parse SSE (single-image) ──────────────────────────────────────────────
 
-  /** Open the parse-progress SSE stream for the active case. */
-  function startParseSse(owner = st.parse.owner) {
+  /** Open the image-scoped parse-progress SSE stream for the active case. */
+  function startParseSse(owner = st.parse.owner, imageId = st.parse.imageId) {
     A.clearMsg(el.parseErr);
     const caseId = owner ? owner.caseId : A.activeCaseId();
     if (!caseId) return A.setMsg(el.parseErr, "No active case for parse stream.", "error");
+    const parsedImageId = String(imageId || "").trim();
+    if (!parsedImageId) return A.setMsg(el.parseErr, "No evidence image for parse stream.", "error");
     if (!A.isRunOwnerCurrent(st.parse, owner)) return;
     A.openSseStream(
-      `/api/cases/${encodeURIComponent(caseId)}/parse/progress`,
+      `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(parsedImageId)}/parse/progress`,
       st.parse,
       {
         onEvent: (p) => onParseEvent(p, owner),
         onError: () => {
-          if (A.isRunOwnerCurrent(st.parse, owner) && !st.parse.done && !st.parse.fail && st.parse.run) retryParseSse(owner);
+          if (A.isRunOwnerCurrent(st.parse, owner) && !st.parse.done && !st.parse.fail && st.parse.run) retryParseSse(owner, parsedImageId);
         },
       },
     );
@@ -866,15 +910,17 @@
     A.closeSseChannel(imgState.sseState);
   }
 
-  // ── SSE retry / close / cancel (single-image) ────────────────────────────
+  // ── SSE retry / close / cancel (single-image table) ──────────────────────
 
   /** Attempt to reconnect the parse SSE stream with exponential backoff. */
-  function retryParseSse(owner = st.parse.owner) {
+  function retryParseSse(owner = st.parse.owner, imageId = st.parse.imageId) {
     if (st.parse.done || st.parse.fail || !st.parse.run) return;
     if (!A.isRunOwnerCurrent(st.parse, owner)) return;
+    const parsedImageId = String(imageId || "").trim();
+    if (!parsedImageId) return;
     A.retrySseStream(st.parse, {
       reconnect: () => {
-        if (A.isRunOwnerCurrent(st.parse, owner) && !st.parse.done && !st.parse.fail && st.parse.run) startParseSse(owner);
+        if (A.isRunOwnerCurrent(st.parse, owner) && !st.parse.done && !st.parse.fail && st.parse.run) startParseSse(owner, parsedImageId);
       },
       onRetryScheduled: (attempt, delaySec) => {
         A.setMsg(el.parseErr, `Parse progress connection dropped. Reconnecting (${attempt}/${A.SSE_MAX_RETRIES}) in ${delaySec}s...`, "error");
@@ -906,6 +952,7 @@
     const caseId = A.activeCaseId();
     const wasRunning = st.parse.run;
     st.parse.owner = null;
+    st.parse.imageId = "";
     st.parse.pendingSelectionSnapshot = null;
     Object.keys(st.imageParse).forEach((imageId) => {
       if (st.imageParse[imageId]) st.imageParse[imageId].owner = null;
@@ -940,6 +987,7 @@
   /** Reset all parse state, close SSE, clear UI, and cascade to analysis reset. */
   function resetParseState() {
     st.parse.owner = null;
+    st.parse.imageId = "";
     st.parse.pendingSelectionSnapshot = null;
     Object.keys(st.imageParse).forEach((imageId) => {
       if (st.imageParse[imageId]) st.imageParse[imageId].owner = null;

@@ -37,6 +37,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     FakeAnalyzer,
     FakeReportGenerator,
+    first_image_parse_url,
 )
 
 
@@ -130,7 +131,7 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
 
             # First parse succeeds.
-            resp = self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.assertEqual(resp.status_code, 202)
             case = routes_state.CASE_STATES[case_id]
             self.assertTrue(len(case.get("parse_results", [])) > 0, "First parse should produce results")
@@ -161,7 +162,7 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             patch("app.parser.ForensicParser", FailingParser),
             patch.object(routes.threading, "Thread", ImmediateThread),
         ):
-            resp = self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.assertEqual(resp.status_code, 202)
 
             # After the failed reparse, the case should be in error state.
@@ -319,7 +320,7 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
             self.assertEqual(ev_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)

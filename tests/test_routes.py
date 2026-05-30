@@ -39,6 +39,8 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     FakeAnalyzer,
     FakeReportGenerator,
+    first_image_parse_progress_url,
+    first_image_parse_url,
 )
 
 
@@ -211,7 +213,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.get_json()["metadata"]["hostname"], "demo-host")
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -262,7 +264,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -297,28 +299,35 @@ class RoutesTests(unittest.TestCase):
         with (
             patch.object(routes, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_state, "SSE_INITIAL_IDLE_GRACE_SECONDS", 0.4),
         ):
             create_resp = self.client.post("/api/cases", json={"case_name": "SSE Wait Case"})
             self.assertEqual(create_resp.status_code, 201)
             case_id = create_resp.get_json()["case_id"]
+            add_resp = self.client.post(f"/api/cases/{case_id}/images", json={"label": "Image 1"})
+            self.assertEqual(add_resp.status_code, 201)
+            image_id = add_resp.get_json()["image_id"]
+            progress_key = f"{case_id}::{image_id}"
+            with routes.STATE_LOCK:
+                routes.PARSE_PROGRESS[progress_key] = routes.new_progress()
             stream_ready = threading.Event()
             worker_done = threading.Event()
 
             def mark_parse_running() -> None:
                 """Emit parse lifecycle events after the SSE stream is open."""
                 self.assertTrue(stream_ready.wait(timeout=1.0))
-                routes.set_progress_status(routes.PARSE_PROGRESS, case_id, "running")
-                routes.emit_progress(routes.PARSE_PROGRESS, case_id, {"type": "parse_started"})
-                routes.set_progress_status(routes.PARSE_PROGRESS, case_id, "completed")
-                routes.emit_progress(routes.PARSE_PROGRESS, case_id, {"type": "parse_completed"})
+                routes.set_progress_status(routes.PARSE_PROGRESS, progress_key, "running")
+                routes.emit_progress(routes.PARSE_PROGRESS, progress_key, {"type": "parse_started"})
+                routes.set_progress_status(routes.PARSE_PROGRESS, progress_key, "completed")
+                routes.emit_progress(routes.PARSE_PROGRESS, progress_key, {"type": "parse_completed"})
                 worker_done.set()
 
             worker = threading.Thread(target=mark_parse_running, daemon=True)
             worker.start()
 
             parse_sse = self.client.get(
-                f"/api/cases/{case_id}/parse/progress",
+                first_image_parse_progress_url(case_id),
                 buffered=False,
             )
             stream_ready.set()
@@ -419,7 +428,7 @@ class RoutesTests(unittest.TestCase):
             case1_id = resp1.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case1_id}/evidence", json={"path": str(evidence_path)})
-            self.client.post(f"/api/cases/{case1_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case1_id), json={"artifacts": ["runkeys"]})
             self.client.post(f"/api/cases/{case1_id}/analyze", json={"prompt": "Investigate"})
 
             self.assertEqual(routes.CASE_STATES[case1_id]["status"], "completed")
@@ -1028,14 +1037,14 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             missing_range_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["mft"]},
             )
             self.assertEqual(missing_range_resp.status_code, 202)
             self.assertNotIn("analysis_date_range", missing_range_resp.get_json())
 
             partial_range_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={
                     "artifacts": ["evtx"],
                     "analysis_date_range": {"start_date": "2026-01-01"},
@@ -1045,13 +1054,13 @@ class RoutesTests(unittest.TestCase):
             self.assertIn("Provide both", partial_range_resp.get_json()["error"])
 
             parse_only_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifact_options": [{"artifact_key": "mft", "mode": "parse_only"}]},
             )
             self.assertEqual(parse_only_resp.status_code, 202)
 
             runkeys_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(runkeys_resp.status_code, 202)
@@ -1119,7 +1128,7 @@ class RoutesTests(unittest.TestCase):
 
             requested_range = {"start_date": "2026-01-01", "end_date": "2026-01-31"}
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["mft"], "analysis_date_range": requested_range},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -1193,7 +1202,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={
                     "artifact_options": [
                         {"artifact_key": "runkeys", "mode": "parse_and_ai"},
@@ -1267,7 +1276,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -1341,7 +1350,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifact_options": [{"artifact_key": "runkeys", "mode": "parse_only"}]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -1409,7 +1418,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -1516,7 +1525,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -1654,7 +1663,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -1940,7 +1949,7 @@ class RoutesTests(unittest.TestCase):
 
     def test_parse_nonexistent_case(self) -> None:
         resp = self.client.post(
-            "/api/cases/nonexistent-id/parse",
+            "/api/cases/nonexistent-id/images/missing-image/parse",
             json={"artifacts": ["runkeys"]},
         )
         self.assertEqual(resp.status_code, 404)
@@ -1949,8 +1958,10 @@ class RoutesTests(unittest.TestCase):
         with patch.object(routes, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             create_resp = self.client.post("/api/cases", json={"case_name": "No Evidence Parse"})
             case_id = create_resp.get_json()["case_id"]
+            add_resp = self.client.post(f"/api/cases/{case_id}/images", json={"label": "Image 1"})
+            self.assertEqual(add_resp.status_code, 201)
             resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(resp.status_code, 400)
@@ -1982,7 +1993,7 @@ class RoutesTests(unittest.TestCase):
             create_resp = self.client.post("/api/cases", json={"case_name": "Empty Artifacts"})
             case_id = create_resp.get_json()["case_id"]
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
-            resp = self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": []})
+            resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": []})
             self.assertEqual(resp.status_code, 400)
             self.assertIn("at least one artifact", resp.get_json()["error"])
 
@@ -2013,20 +2024,20 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
             with routes.STATE_LOCK:
-                # Set progress for both case-level and image-level keys
+                # Set progress for both aggregate cancel state and image key.
                 routes.PARSE_PROGRESS[case_id] = routes.new_progress(status="running")
                 image_states = routes.CASE_STATES[case_id].get("image_states", {})
                 for img_id in image_states:
                     routes.PARSE_PROGRESS[f"{case_id}::{img_id}"] = routes.new_progress(status="running")
             resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(resp.status_code, 409)
             self.assertIn("already running", resp.get_json()["error"])
 
     def test_parse_progress_nonexistent_case(self) -> None:
-        resp = self.client.get("/api/cases/nonexistent-id/parse/progress")
+        resp = self.client.get("/api/cases/nonexistent-id/images/missing-image/parse/progress")
         self.assertEqual(resp.status_code, 404)
 
     def test_analyze_nonexistent_case(self) -> None:
@@ -2168,7 +2179,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(evidence_resp.status_code, 200)
 
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
@@ -2342,10 +2353,17 @@ class RoutesTests(unittest.TestCase):
         with patch.object(routes, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             create_resp = self.client.post("/api/cases", json={"case_name": "Parse Array"})
             case_id = create_resp.get_json()["case_id"]
+            add_resp = self.client.post(f"/api/cases/{case_id}/images", json={"label": "Image 1"})
+            self.assertEqual(add_resp.status_code, 201)
+            image_id = add_resp.get_json()["image_id"]
             with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["evidence_path"] = "/fake/evidence.E01"
+                routes.CASE_STATES[case_id]["image_states"][image_id] = {
+                    "evidence_path": "/fake/evidence.E01",
+                    "available_artifacts": [{"key": "runkeys", "available": True}],
+                    "os_type": "windows",
+                }
             resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 data=json.dumps(["runkeys"]),
                 content_type="application/json",
             )
@@ -2356,10 +2374,17 @@ class RoutesTests(unittest.TestCase):
         with patch.object(routes, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             create_resp = self.client.post("/api/cases", json={"case_name": "Parse Scalar"})
             case_id = create_resp.get_json()["case_id"]
+            add_resp = self.client.post(f"/api/cases/{case_id}/images", json={"label": "Image 1"})
+            self.assertEqual(add_resp.status_code, 201)
+            image_id = add_resp.get_json()["image_id"]
             with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["evidence_path"] = "/fake/evidence.E01"
+                routes.CASE_STATES[case_id]["image_states"][image_id] = {
+                    "evidence_path": "/fake/evidence.E01",
+                    "available_artifacts": [{"key": "runkeys", "available": True}],
+                    "os_type": "windows",
+                }
             resp = self.client.post(
-                f"/api/cases/{case_id}/parse",
+                first_image_parse_url(case_id),
                 data=json.dumps(42),
                 content_type="application/json",
             )
@@ -2478,7 +2503,7 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "Investigate"})
 
             # Confirm downstream state is populated before replacement.
@@ -2557,7 +2582,7 @@ class RoutesTests(unittest.TestCase):
 
             # Load A, parse, analyze.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "Check"})
 
             # Replace evidence with B.
@@ -2612,7 +2637,7 @@ class RoutesTests(unittest.TestCase):
 
             # Load A, parse, analyze.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "Investigate"})
 
             # Replace evidence with B.
@@ -2667,14 +2692,14 @@ class RoutesTests(unittest.TestCase):
 
             # Load A and parse.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
 
             # Replace evidence with B.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_b)})
 
             # Fresh parse on new evidence should succeed.
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]},
+                first_image_parse_url(case_id), json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -2727,7 +2752,7 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
 
             # CSVs should be available after parsing evidence A.
             csv_resp = self.client.get(f"/api/cases/{case_id}/csvs")
@@ -2753,7 +2778,7 @@ class RoutesTests(unittest.TestCase):
 
             # Reparse evidence B.
             parse_resp = self.client.post(
-                f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]},
+                first_image_parse_url(case_id), json={"artifacts": ["runkeys"]},
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -2813,7 +2838,7 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(f"/api/cases/{case_id}/parse", json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
 
             # Confirm parsed dir exists with CSVs.
             with routes.STATE_LOCK:

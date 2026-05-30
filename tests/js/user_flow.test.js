@@ -299,9 +299,6 @@ describe("mocked final browser flow", () => {
     const calls = [];
     global.fetch = jest.fn((url, init = {}) => {
       calls.push([url, init]);
-      if (url === "/api/cases/case-smoke/parse") {
-        return jsonResponse({ success: true });
-      }
       if (url === "/api/cases/case-smoke/parse/cancel") {
         return jsonResponse({ success: true, status: "cancel_requested" });
       }
@@ -320,10 +317,11 @@ describe("mocked final browser flow", () => {
     A.st.selectedAi = ["runkeys"];
 
     A.st.parse.run = true;
+    A.st.parse.imageId = "img-smoke";
     A.st.parse.owner = A.newRunOwner("case-smoke", "parse");
     function startParseSmokeStream() {
       A.openSseStream(
-        "/api/cases/case-smoke/parse/progress",
+        "/api/cases/case-smoke/images/img-smoke/parse/progress",
         A.st.parse,
         {
           onEvent: () => {},
@@ -333,14 +331,14 @@ describe("mocked final browser flow", () => {
     }
     startParseSmokeStream();
     const firstParseSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
-      .find((source) => source.url === "/api/cases/case-smoke/parse/progress");
+      .find((source) => source.url === "/api/cases/case-smoke/images/img-smoke/parse/progress");
     expect(firstParseSource).toBeTruthy();
     firstParseSource.onerror(new Event("error"));
     expect(A.st.parse.retryCount).toBe(1);
     jest.advanceTimersByTime(A.sseRetryDelayMs(1));
     await nextTick();
     const parseSources = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
-      .filter((source) => source.url === "/api/cases/case-smoke/parse/progress");
+      .filter((source) => source.url === "/api/cases/case-smoke/images/img-smoke/parse/progress");
     expect(parseSources).toHaveLength(2);
 
     A.cancelParse();

@@ -33,7 +33,6 @@ from .evidence_utils import (
 
 from .state import (
     ANALYSIS_PROGRESS,
-    ACTIVE_PROGRESS_STATUSES,
     CASES_ROOT,
     CHAT_PROGRESS,
     PARSE_PROGRESS,
@@ -989,20 +988,7 @@ def stream_image_parse_progress(case_id: str, image_id: str) -> Response | tuple
     if get_case(case_id) is None:
         return error_response(f"Case not found: {case_id}", 404)
 
-    progress_key = _progress_key(case_id, image_id)
-    # Fall back only while the aggregate case-level parse is actively
-    # running.  After image progress is cleaned up, keep the composite key
-    # so stream_sse can emit a reconnect-safe completion frame.
-    with STATE_LOCK:
-        case_progress = PARSE_PROGRESS.get(case_id)
-        case_progress_status = str((case_progress or {}).get("status", "")).strip().lower()
-        if (
-            progress_key not in PARSE_PROGRESS
-            and case_progress_status in ACTIVE_PROGRESS_STATUSES
-        ):
-            progress_key = case_id
-
-    return stream_sse(PARSE_PROGRESS, progress_key)
+    return stream_sse(PARSE_PROGRESS, _progress_key(case_id, image_id))
 
 
 # ---------------------------------------------------------------------------

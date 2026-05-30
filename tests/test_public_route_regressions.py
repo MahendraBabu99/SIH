@@ -18,6 +18,8 @@ from zipfile import ZipFile
 
 from app import create_app
 from app.audit import AuditLogger
+import app.routes.handlers as routes_handlers
+import app.routes.images as routes_images
 import app.routes.state as routes_state
 
 
@@ -39,6 +41,13 @@ class RouteRegressionTestBase(unittest.TestCase):
         self.app.testing = True
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.app.config["CSRF_TOKEN"]
+        self.cases_root = self.root / "cases"
+        self._old_state_cases_root = routes_state.CASES_ROOT
+        self._old_handlers_cases_root = routes_handlers.CASES_ROOT
+        self._old_images_cases_root = routes_images.CASES_ROOT
+        routes_state.CASES_ROOT = self.cases_root
+        routes_handlers.CASES_ROOT = self.cases_root
+        routes_images.CASES_ROOT = self.cases_root
         routes_state.CASE_STATES.clear()
         routes_state.PARSE_PROGRESS.clear()
         routes_state.ANALYSIS_PROGRESS.clear()
@@ -50,6 +59,9 @@ class RouteRegressionTestBase(unittest.TestCase):
         routes_state.PARSE_PROGRESS.clear()
         routes_state.ANALYSIS_PROGRESS.clear()
         routes_state.CHAT_PROGRESS.clear()
+        routes_state.CASES_ROOT = self._old_state_cases_root
+        routes_handlers.CASES_ROOT = self._old_handlers_cases_root
+        routes_images.CASES_ROOT = self._old_images_cases_root
         self.temp_dir.cleanup()
 
     def create_case_state(self, case_id: str = "case-regression") -> Path:
@@ -61,7 +73,7 @@ class RouteRegressionTestBase(unittest.TestCase):
         Returns:
             Path to the case directory.
         """
-        case_dir = self.root / "cases" / case_id
+        case_dir = self.cases_root / case_id
         case_dir.mkdir(parents=True)
         (case_dir / "reports").mkdir()
         (case_dir / "images").mkdir()
@@ -73,6 +85,40 @@ class RouteRegressionTestBase(unittest.TestCase):
             "status": "created",
         }
         return case_dir
+
+    def add_image_state(
+        self,
+        case_id: str = "case-regression",
+        image_id: str = "img-regression",
+        *,
+        available_artifacts: list[dict[str, object]] | None = None,
+        os_type: str = "windows",
+    ) -> str:
+        """Add one current-layout image slot to a test case.
+
+        Args:
+            case_id: Case identifier to update.
+            image_id: Image identifier to create.
+            available_artifacts: Available parser artifact descriptors.
+            os_type: Image operating system type.
+
+        Returns:
+            The image identifier.
+        """
+        case = routes_state.CASE_STATES[case_id]
+        case_dir = Path(case["case_dir"])
+        image_dir = case_dir / "images" / image_id
+        (image_dir / "evidence").mkdir(parents=True)
+        (image_dir / "parsed").mkdir()
+        case["images"] = [{"image_id": image_id, "label": "Regression Image"}]
+        case["image_states"] = {
+            image_id: {
+                "evidence_path": str(self.root / "evidence.E01"),
+                "available_artifacts": available_artifacts or [],
+                "os_type": os_type,
+            }
+        }
+        return image_id
 
 
 class EvidenceAndArtifactRouteTests(RouteRegressionTestBase):
@@ -100,38 +146,40 @@ class EvidenceAndArtifactRouteTests(RouteRegressionTestBase):
     def test_parse_rejects_unknown_artifact_before_starting_worker(self) -> None:
         """Parse route rejects unknown artifact keys before mutating progress."""
         self.create_case_state()
-        routes_state.CASE_STATES["case-regression"].update({
-            "evidence_path": str(self.root / "evidence.E01"),
-            "available_artifacts": [{"key": "runkeys", "available": True}],
-            "os_type": "windows",
-        })
+        image_id = self.add_image_state(
+            available_artifacts=[{"key": "runkeys", "available": True}],
+        )
 
         response = self.client.post(
-            "/api/cases/case-regression/parse",
-            json={"artifacts": ["not_a_real_artifact"]},
+            f"/api/cases/case-regression/images/{image_id}/parse",
+            json={
+                "artifact_options": [
+                    {"artifact_key": "not_a_real_artifact", "mode": "parse_and_ai"},
+                ],
+            },
         )
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Unknown artifact", response.get_json()["error"])
         self.assertNotEqual(
-            routes_state.PARSE_PROGRESS.get("case-regression", {}).get("status"),
+            routes_state.PARSE_PROGRESS.get(
+                f"case-regression::{image_id}", {}
+            ).get("status"),
             "running",
         )
 
     def test_parse_rejects_unavailable_ai_artifact(self) -> None:
         """Parse route rejects AI-selected artifacts absent from evidence."""
         self.create_case_state()
-        routes_state.CASE_STATES["case-regression"].update({
-            "evidence_path": str(self.root / "evidence.E01"),
-            "available_artifacts": [
+        image_id = self.add_image_state(
+            available_artifacts=[
                 {"key": "runkeys", "available": True},
                 {"key": "evtx", "available": False},
             ],
-            "os_type": "windows",
-        })
+        )
 
         response = self.client.post(
-            "/api/cases/case-regression/parse",
+            f"/api/cases/case-regression/images/{image_id}/parse",
             json={
                 "artifact_options": [
                     {"artifact_key": "runkeys", "mode": "parse_only"},

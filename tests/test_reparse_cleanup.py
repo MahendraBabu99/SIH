@@ -26,6 +26,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     ImmediateThread,
     FAKE_HASHES,
+    first_image_parse_url,
 )
 import app.routes as routes
 import app.routes.artifacts as routes_artifacts
@@ -244,13 +245,12 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
     def _parse(self, case_id: str, artifacts: list[str]) -> None:
         """Start a parse (ImmediateThread runs it synchronously)."""
         resp = self.client.post(
-            f"/api/cases/{case_id}/parse",
+            first_image_parse_url(case_id),
             json={"artifacts": artifacts},
         )
         self.assertEqual(resp.status_code, 202)
         # With ImmediateThread, parsing completes synchronously before the
-        # POST returns. The case-level SSE may not reflect completion in
-        # multi-image layout, so we verify parse_results directly instead.
+        # POST returns, so we verify parse_results directly.
         self.assertTrue(routes.CASE_STATES[case_id].get("parse_results"),
                         "Expected parse_results to be populated after synchronous parse")
 
