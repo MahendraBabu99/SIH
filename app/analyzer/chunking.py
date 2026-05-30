@@ -12,11 +12,13 @@ Attributes:
 from __future__ import annotations
 
 import csv
+import inspect
 import io
 import logging
 import re
 from typing import Any
 
+from .cancellation import raise_if_cancelled
 from .constants import CSV_DATA_SECTION_RE, CSV_TRAILING_FENCE_RE, TOKEN_CHAR_RATIO
 from .utils import sanitize_filename, emit_analysis_progress
 
@@ -52,7 +54,16 @@ def _estimate_prompt_tokens(
     user_prompt: str,
     estimate_tokens_fn: Any | None,
 ) -> int:
-    """Estimate tokens for a provider request."""
+    """Estimate tokens for a provider request.
+
+    Args:
+        system_prompt: System prompt text sent with the provider call.
+        user_prompt: User prompt text sent with the provider call.
+        estimate_tokens_fn: Optional analyzer token estimator.
+
+    Returns:
+        Estimated input token count for the combined prompts.
+    """
     text = f"{system_prompt}\n{user_prompt}"
     if callable(estimate_tokens_fn):
         return int(estimate_tokens_fn(text))
@@ -67,7 +78,18 @@ def _ensure_prompt_fits_budget(
     estimate_tokens_fn: Any | None,
     label: str,
 ) -> None:
-    """Raise a controlled error if a provider prompt exceeds input budget."""
+    """Raise a controlled error if a provider prompt exceeds input budget.
+
+    Args:
+        system_prompt: System prompt text sent with the provider call.
+        user_prompt: User prompt text sent with the provider call.
+        input_token_budget: Reserved input token budget, or ``None`` to skip.
+        estimate_tokens_fn: Optional analyzer token estimator.
+        label: Human-readable prompt label for error messages.
+
+    Raises:
+        ValueError: If the prompt exceeds ``input_token_budget``.
+    """
     if input_token_budget is None or input_token_budget <= 0:
         return
     token_estimate = _estimate_prompt_tokens(system_prompt, user_prompt, estimate_tokens_fn)
@@ -78,28 +100,97 @@ def _ensure_prompt_fits_budget(
         )
 
 
+def _call_with_retry(
+    call_ai_with_retry_fn: Any,
+    provider_call: Any,
+    cancel_check: Any | None,
+) -> str:
+    """Invoke the retry wrapper while preserving cancellation support.
+
+    Args:
+        call_ai_with_retry_fn: Retry wrapper supplied by the analyzer.
+        provider_call: Zero-argument callable that invokes the provider.
+        cancel_check: Optional cancellation probe.
+
+    Returns:
+        The provider response text.
+
+    Raises:
+        AnalysisCancelledError: If cancellation has been requested.
+    """
+    raise_if_cancelled(cancel_check)
+    try:
+        signature = inspect.signature(call_ai_with_retry_fn)
+    except (TypeError, ValueError):
+        signature = None
+    accepts_cancel_check = False
+    if signature is not None:
+        accepts_cancel_check = "cancel_check" in signature.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+    if accepts_cancel_check:
+        return call_ai_with_retry_fn(provider_call, cancel_check=cancel_check)
+    return call_ai_with_retry_fn(provider_call)
+
+
 def _suffix_start(text: str) -> int:
-    """Return the first supported post-CSV suffix position, or ``-1``."""
+    """Return the first supported post-CSV suffix position, or ``-1``.
+
+    Args:
+        text: Prompt text following the CSV data heading.
+
+    Returns:
+        Character index of the suffix start, or ``-1`` when absent.
+    """
     return _find_suffix_start_outside_csv(text)
 
 
 def _opening_fence_match(text: str) -> re.Match[str] | None:
-    """Return the opening Markdown fence that precedes CSV rows, if present."""
+    """Return the opening Markdown fence that precedes CSV rows.
+
+    Args:
+        text: Prompt text to scan.
+
+    Returns:
+        The opening fence regex match, or ``None`` when absent.
+    """
     return re.search(r"(?:^|\n)```\s*\n", text)
 
 
 def _closing_fence_match(text: str) -> re.Match[str] | None:
-    """Return the closing Markdown fence after CSV rows, if present."""
+    """Return the closing Markdown fence after CSV rows.
+
+    Args:
+        text: Prompt text to scan.
+
+    Returns:
+        The closing fence regex match, or ``None`` when absent.
+    """
     return re.search(r"\n```\s*(?:\n|$)", text)
 
 
 def _line_is_fence(line: str) -> bool:
-    """Return whether *line* is a standalone Markdown code fence."""
+    """Return whether a line is a standalone Markdown code fence.
+
+    Args:
+        line: Physical line from a prompt.
+
+    Returns:
+        ``True`` when the stripped line is a Markdown fence.
+    """
     return line.strip() == "```"
 
 
 def _line_is_suffix_heading(line: str) -> bool:
-    """Return whether *line* starts a supported post-CSV suffix section."""
+    """Return whether a line starts a supported post-CSV suffix section.
+
+    Args:
+        line: Physical line from a prompt.
+
+    Returns:
+        ``True`` when the line starts a final context or rule section.
+    """
     stripped = line.strip()
     context_reminder = re.match(
         r"^##\s+Final\s+Context\s+Reminder\b",
@@ -115,7 +206,15 @@ def _line_is_suffix_heading(line: str) -> bool:
 
 
 def _csv_quote_state_after_line(line: str, in_quotes: bool) -> bool:
-    """Update CSV quote state after scanning one physical line."""
+    """Update CSV quote state after scanning one physical line.
+
+    Args:
+        line: CSV line to scan.
+        in_quotes: Whether scanning starts inside a quoted CSV field.
+
+    Returns:
+        ``True`` when scanning ends inside a quoted CSV field.
+    """
     index = 0
     while index < len(line):
         if line[index] != '"':
@@ -130,7 +229,14 @@ def _csv_quote_state_after_line(line: str, in_quotes: bool) -> bool:
 
 
 def _find_closing_fence_outside_csv(text: str) -> int:
-    """Return the closing fence position when it is outside quoted CSV cells."""
+    """Return the closing fence position outside quoted CSV cells.
+
+    Args:
+        text: Prompt text following an opening Markdown fence.
+
+    Returns:
+        Character index of the closing fence, or ``-1`` when absent.
+    """
     in_quotes = False
     position = 0
     for line in text.splitlines(keepends=True):
@@ -142,7 +248,14 @@ def _find_closing_fence_outside_csv(text: str) -> int:
 
 
 def _find_suffix_start_outside_csv(text: str) -> int:
-    """Return the suffix heading position when it is outside quoted CSV cells."""
+    """Return the suffix heading position outside quoted CSV cells.
+
+    Args:
+        text: Prompt text containing CSV rows and optional trailing sections.
+
+    Returns:
+        Character index of the first suffix heading, or ``-1`` when absent.
+    """
     in_quotes = False
     position = 0
     for line in text.splitlines(keepends=True):
@@ -154,7 +267,14 @@ def _find_suffix_start_outside_csv(text: str) -> int:
 
 
 def _csv_preamble(raw_csv_tail: str) -> str:
-    """Return explanatory text and opening fence between the heading and CSV."""
+    """Return explanatory text and opening fence before CSV rows.
+
+    Args:
+        raw_csv_tail: Prompt text following the CSV data heading.
+
+    Returns:
+        Text between the heading and the actual CSV rows.
+    """
     fence_match = _opening_fence_match(raw_csv_tail)
     if fence_match:
         return raw_csv_tail[: fence_match.end()]
@@ -288,6 +408,7 @@ def analyze_artifact_chunked(
     save_case_prompt_fn: Any = None,
     prompt_filename_stem: str | None = None,
     progress_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> str:
     """Analyze an artifact in multiple chunks when data exceeds context budget.
 
@@ -316,10 +437,15 @@ def analyze_artifact_chunked(
         prompt_filename_stem: Optional collision-safe filename stem for
             saved chunk and merge prompts.
         progress_callback: Optional callback for streaming progress.
+        cancel_check: Optional callable or event-like cancellation probe.
 
     Returns:
         The merged analysis text from all chunks.
+
+    Raises:
+        AnalysisCancelledError: If cancellation has been requested.
     """
+    raise_if_cancelled(cancel_check)
     marker_match = CSV_DATA_SECTION_RE.search(artifact_prompt)
     if marker_match is None:
         _ensure_prompt_fits_budget(
@@ -329,12 +455,14 @@ def analyze_artifact_chunked(
             estimate_tokens_fn=estimate_tokens_fn,
             label=f"Prompt for {artifact_key}",
         )
-        return call_ai_with_retry_fn(
+        return _call_with_retry(
+            call_ai_with_retry_fn,
             lambda: ai_provider.analyze(
                 system_prompt=system_prompt,
                 user_prompt=artifact_prompt,
                 max_tokens=ai_response_max_tokens,
-            )
+            ),
+            cancel_check,
         )
 
     instructions_portion = artifact_prompt[: marker_match.end()]
@@ -368,12 +496,14 @@ def analyze_artifact_chunked(
             estimate_tokens_fn=estimate_tokens_fn,
             label=f"Prompt for {artifact_key}",
         )
-        return call_ai_with_retry_fn(
+        return _call_with_retry(
+            call_ai_with_retry_fn,
             lambda: ai_provider.analyze(
                 system_prompt=system_prompt,
                 user_prompt=single_prompt,
                 max_tokens=ai_response_max_tokens,
-            )
+            ),
+            cancel_check,
         )
 
     LOGGER.info(
@@ -392,6 +522,7 @@ def analyze_artifact_chunked(
 
     chunk_findings: list[str] = []
     for chunk_index, chunk_csv in enumerate(chunks, start=1):
+        raise_if_cancelled(cancel_check)
         chunk_prompt = f"{instructions_portion}{chunk_csv}{context_suffix}"
         chunk_label = f"chunk {chunk_index}/{total_chunks}"
 
@@ -406,6 +537,7 @@ def analyze_artifact_chunked(
                     "model": model,
                 },
             )
+            raise_if_cancelled(cancel_check)
 
         safe_key = prompt_filename_stem or sanitize_filename(artifact_key)
         if save_case_prompt_fn is not None:
@@ -423,15 +555,19 @@ def analyze_artifact_chunked(
             estimate_tokens_fn=estimate_tokens_fn,
             label=f"Chunk {chunk_index} for {artifact_key}",
         )
-        chunk_text = call_ai_with_retry_fn(
+        chunk_text = _call_with_retry(
+            call_ai_with_retry_fn,
             lambda prompt=chunk_prompt: ai_provider.analyze(
                 system_prompt=system_prompt,
                 user_prompt=prompt,
                 max_tokens=ai_response_max_tokens,
-            )
+            ),
+            cancel_check,
         )
         chunk_findings.append(f"### Chunk {chunk_index} of {total_chunks}\n{chunk_text}")
+        raise_if_cancelled(cancel_check)
 
+    raise_if_cancelled(cancel_check)
     merged_text = _hierarchical_merge_findings(
         chunk_findings=chunk_findings,
         artifact_key=artifact_key,
@@ -450,6 +586,7 @@ def analyze_artifact_chunked(
         save_case_prompt_fn=save_case_prompt_fn,
         prompt_filename_stem=prompt_filename_stem,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
     LOGGER.info(
         "Chunked analysis for %s complete: %d chunks merged.",
@@ -514,6 +651,7 @@ def _hierarchical_merge_findings(
     save_case_prompt_fn: Any = None,
     prompt_filename_stem: str | None = None,
     progress_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> str:
     """Merge chunk findings hierarchically until one result remains.
 
@@ -532,10 +670,15 @@ def _hierarchical_merge_findings(
         ai_provider: The AI provider instance.
         save_case_prompt_fn: Optional callable for saving prompts.
         progress_callback: Optional callback for streaming progress.
+        cancel_check: Optional callable or event-like cancellation probe.
 
     Returns:
         A single merged analysis text.
+
+    Raises:
+        AnalysisCancelledError: If cancellation has been requested.
     """
+    raise_if_cancelled(cancel_check)
     overhead = len(chunk_merge_prompt_template) + len(system_prompt) + 500
     findings_budget = chunk_csv_budget - overhead
     if findings_budget <= 0:
@@ -547,6 +690,7 @@ def _hierarchical_merge_findings(
     merge_round = 0
 
     while len(current_findings) > 1:
+        raise_if_cancelled(cancel_check)
         merge_round += 1
 
         if merge_round > max_merge_rounds:
@@ -569,6 +713,7 @@ def _hierarchical_merge_findings(
                         "model": model,
                     },
                 )
+                raise_if_cancelled(cancel_check)
             total_chars = sum(len(f) for f in current_findings)
             if total_chars > findings_budget:
                 per_finding_budget = max(200, findings_budget // len(current_findings))
@@ -604,12 +749,14 @@ def _hierarchical_merge_findings(
                 estimate_tokens_fn=estimate_tokens_fn,
                 label=f"Merge fallback for {artifact_key}",
             )
-            return call_ai_with_retry_fn(
+            return _call_with_retry(
+                call_ai_with_retry_fn,
                 lambda prompt=merge_prompt: ai_provider.analyze(
                     system_prompt=system_prompt,
                     user_prompt=prompt,
                     max_tokens=ai_response_max_tokens,
-                )
+                ),
+                cancel_check,
             )
 
         batches: list[list[str]] = []
@@ -657,9 +804,11 @@ def _hierarchical_merge_findings(
                     "model": model,
                 },
             )
+            raise_if_cancelled(cancel_check)
 
         next_findings: list[str] = []
         for batch_index, batch in enumerate(batches, start=1):
+            raise_if_cancelled(cancel_check)
             batch_text = "\n\n".join(batch)
             merge_prompt = _build_merge_prompt(
                 findings_text=batch_text,
@@ -685,14 +834,17 @@ def _hierarchical_merge_findings(
                 estimate_tokens_fn=estimate_tokens_fn,
                 label=f"Merge batch {batch_index} for {artifact_key}",
             )
-            merged = call_ai_with_retry_fn(
+            merged = _call_with_retry(
+                call_ai_with_retry_fn,
                 lambda prompt=merge_prompt: ai_provider.analyze(
                     system_prompt=system_prompt,
                     user_prompt=prompt,
                     max_tokens=ai_response_max_tokens,
-                )
+                ),
+                cancel_check,
             )
             next_findings.append(f"### Merged batch {batch_index}\n{merged}")
+            raise_if_cancelled(cancel_check)
 
         current_findings = next_findings
 

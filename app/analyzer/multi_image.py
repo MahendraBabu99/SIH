@@ -28,11 +28,13 @@ Attributes:
 from __future__ import annotations
 
 import logging
+import inspect
 import threading
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
 
+from .cancellation import raise_if_cancelled
 from .prompts import load_prompt_template
 from .utils import (
     build_scoped_artifact_stem,
@@ -171,6 +173,49 @@ def _image_os_type(
     return metadata_os or default
 
 
+def _call_accepts_keyword(callable_obj: Any, keyword: str) -> bool:
+    """Return whether a callable accepts a specific keyword argument.
+
+    Args:
+        callable_obj: Callable to inspect.
+        keyword: Keyword argument name to check.
+
+    Returns:
+        ``True`` when the callable accepts the keyword directly or via
+        ``**kwargs``.  Returns ``False`` when inspection is unavailable.
+    """
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+    return keyword in signature.parameters
+
+
+def _call_with_optional_cancel(
+    callable_obj: Any,
+    *args: Any,
+    cancel_check: Callable[[], bool] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Call an analyzer hook with ``cancel_check`` when supported.
+
+    Args:
+        callable_obj: Analyzer method or compatible test double hook.
+        *args: Positional arguments forwarded to the callable.
+        cancel_check: Optional cancellation probe.
+        **kwargs: Keyword arguments forwarded to the callable.
+
+    Returns:
+        The callable's return value.
+    """
+    if cancel_check is not None and _call_accepts_keyword(callable_obj, "cancel_check"):
+        kwargs["cancel_check"] = cancel_check
+    return callable_obj(*args, **kwargs)
+
+
 def _build_per_image_summaries_text(
     image_summaries: dict[str, dict[str, Any]],
 ) -> str:
@@ -202,6 +247,8 @@ def build_cross_image_prompt(
     investigation_context: str,
     images: list[dict[str, Any]],
     image_summaries: dict[str, dict[str, Any]],
+    *,
+    per_image_summaries_override: str | None = None,
 ) -> str:
     """Build the cross-image correlation prompt from a template.
 
@@ -214,12 +261,19 @@ def build_cross_image_prompt(
         images: List of image descriptor dicts for metadata table.
         image_summaries: Mapping of image IDs to result dicts with
             ``label`` and ``summary`` keys.
+        per_image_summaries_override: Optional preformatted per-image
+            summaries text to place into the prompt instead of rendering
+            ``image_summaries`` directly.
 
     Returns:
         The fully rendered cross-image prompt string.
     """
     metadata_table = _build_image_metadata_table(images)
-    summaries_text = _build_per_image_summaries_text(image_summaries)
+    summaries_text = (
+        str(per_image_summaries_override)
+        if per_image_summaries_override is not None
+        else _build_per_image_summaries_text(image_summaries)
+    )
 
     prompt = template
     replacements = {
@@ -393,8 +447,7 @@ def run_multi_image_analysis(
                 artifact_keys = image.get("artifact_keys", [])
                 parsed_dir = image.get("parsed_dir", "")
 
-                if cancel_check is not None and cancel_check():
-                    raise AnalysisCancelledError("Analysis cancelled by user.")
+                raise_if_cancelled(cancel_check)
 
                 # Update the analyzer's os_type and host metadata for
                 # the current image so that OS-specific analysis logic
@@ -439,13 +492,14 @@ def run_multi_image_analysis(
 
                 per_artifact_results: list[dict[str, Any]] = []
                 for artifact_key in artifact_keys:
-                    if cancel_check is not None and cancel_check():
-                        raise AnalysisCancelledError("Analysis cancelled by user.")
+                    raise_if_cancelled(cancel_check)
 
-                    result = analyzer.analyze_artifact(
+                    result = _call_with_optional_cancel(
+                        analyzer.analyze_artifact,
                         artifact_key=str(artifact_key),
                         investigation_context=image_context,
                         progress_callback=image_cb,
+                        cancel_check=cancel_check,
                     )
                     per_artifact_results.append(result)
 
@@ -462,6 +516,7 @@ def run_multi_image_analysis(
                                 or build_scoped_artifact_stem(analysis_scope_id, str(artifact_key)),
                             },
                         )
+                        raise_if_cancelled(cancel_check)
 
                 image_results[image_id] = {
                     "label": label,
@@ -488,8 +543,7 @@ def run_multi_image_analysis(
     # Phase 2: Per-image summary
     # ------------------------------------------------------------------
     for image_id, img_data in image_results.items():
-        if cancel_check is not None and cancel_check():
-            raise AnalysisCancelledError("Analysis cancelled by user.")
+        raise_if_cancelled(cancel_check)
 
         metadata = img_data.get("metadata") or {}
         per_artifact = img_data["per_artifact"]
@@ -510,11 +564,14 @@ def run_multi_image_analysis(
                      "image_id": image_id, "image_label": label,
                      "status": "Generating per-image summary"},
                 )
+                raise_if_cancelled(cancel_check)
 
-            summary = analyzer.generate_summary(
+            summary = _call_with_optional_cancel(
+                analyzer.generate_summary,
                 per_artifact_results=per_artifact,
                 investigation_context=f"System: {label}\n\n{investigation_context}",
                 metadata=metadata,
+                cancel_check=cancel_check,
             )
             img_data["summary"] = summary
         finally:
@@ -535,6 +592,7 @@ def run_multi_image_analysis(
                  "image_id": image_id, "image_label": label,
                  "summary": summary},
             )
+            raise_if_cancelled(cancel_check)
 
     # ------------------------------------------------------------------
     # Phase 3: Cross-image correlation (only if > 1 image)
@@ -542,8 +600,7 @@ def run_multi_image_analysis(
     cross_image_summary: str | None = None
 
     if len(images) > 1:
-        if cancel_check is not None and cancel_check():
-            raise AnalysisCancelledError("Analysis cancelled by user.")
+        raise_if_cancelled(cancel_check)
 
         cross_image_summary = _run_cross_image_correlation(
             analyzer=analyzer,
@@ -657,14 +714,17 @@ def _run_cross_image_correlation(
         image_results: Mapping of image IDs to their analysis results.
         investigation_context: The user's investigation context.
         progress_callback: Optional progress callback.
+        cancel_check: Optional callable or event-like cancellation probe.
 
     Returns:
         The AI-generated cross-image correlation summary text.
+
+    Raises:
+        AnalysisCancelledError: If cancellation has been requested.
     """
     from .core import AnalysisCancelledError
 
-    if cancel_check is not None and cancel_check():
-        raise AnalysisCancelledError("Analysis cancelled by user.")
+    raise_if_cancelled(cancel_check)
 
     cross_image_prompt_template = load_prompt_template(
         analyzer.prompts_dir,
@@ -680,12 +740,24 @@ def _run_cross_image_correlation(
             "summary": data["summary"],
         }
 
-    cross_prompt = build_cross_image_prompt(
+    per_image_summaries_text = _build_per_image_summaries_text(image_summaries)
+    build_prompt_fn = lambda summaries_text: build_cross_image_prompt(
         template=cross_image_prompt_template,
         investigation_context=investigation_context,
         images=images,
         image_summaries=image_summaries,
+        per_image_summaries_override=summaries_text,
     )
+    build_budgeted_prompt = getattr(analyzer, "_build_prompt_within_input_budget", None)
+    if callable(build_budgeted_prompt):
+        cross_prompt = build_budgeted_prompt(
+            source_text=per_image_summaries_text,
+            build_prompt_fn=build_prompt_fn,
+            context_label="cross-image correlation",
+            cancel_check=cancel_check,
+        )
+    else:
+        cross_prompt = build_prompt_fn(per_image_summaries_text)
 
     artifact_key = "cross_image_correlation"
     artifact_name = "Cross-Image Correlation"
@@ -698,6 +770,7 @@ def _run_cross_image_correlation(
             {"artifact_key": artifact_key, "artifact_name": artifact_name,
              "status": "Generating cross-image correlation analysis"},
         )
+        raise_if_cancelled(cancel_check)
 
     model = analyzer.model_info.get("model", "unknown")
     provider = analyzer.model_info.get("provider", "unknown")
@@ -719,14 +792,15 @@ def _run_cross_image_correlation(
 
     start_time = perf_counter()
     try:
-        if cancel_check is not None and cancel_check():
-            raise AnalysisCancelledError("Analysis cancelled by user.")
-        summary = analyzer._call_ai_with_retry(
+        raise_if_cancelled(cancel_check)
+        summary = _call_with_optional_cancel(
+            analyzer._call_ai_with_retry,
             lambda: analyzer.ai_provider.analyze(
                 system_prompt=analyzer.system_prompt,
                 user_prompt=cross_prompt,
                 max_tokens=analyzer.ai_response_max_tokens,
-            )
+            ),
+            cancel_check=cancel_check,
         )
         duration_seconds = perf_counter() - start_time
         analyzer._audit_log("analysis_completed", {
@@ -760,5 +834,6 @@ def _run_cross_image_correlation(
             {"artifact_key": artifact_key, "artifact_name": artifact_name,
              "cross_image_summary": summary},
         )
+        raise_if_cancelled(cancel_check)
 
     return summary

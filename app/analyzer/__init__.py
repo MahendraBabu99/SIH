@@ -19,11 +19,12 @@ Sub-modules:
 from __future__ import annotations
 
 from .constants import PROJECT_ROOT
-from .core import ForensicAnalyzer
+from .core import AnalysisCancelledError, ForensicAnalyzer
 from .multi_image import build_cross_image_prompt, run_multi_image_analysis
 
 __all__ = [
     "ForensicAnalyzer",
+    "AnalysisCancelledError",
     "PROJECT_ROOT",
     "build_cross_image_prompt",
     "run_multi_image_analysis",

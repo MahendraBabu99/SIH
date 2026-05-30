@@ -198,29 +198,18 @@ def load_artifact_ai_column_projections(
     return projections
 
 
-def build_summary_prompt(
-    summary_prompt_template: str,
-    investigation_context: str,
+def _format_per_artifact_findings(
     per_artifact_results: list[Mapping[str, Any]],
-    metadata_map: Mapping[str, Any],
 ) -> str:
-    """Build the cross-artifact summary prompt from a template.
-
-    Assembles per-artifact findings into a single prompt using the
-    summary template, filling in investigation context, IOC targets,
-    priority directives, and host metadata placeholders.
+    """Format artifact analyses for cross-artifact correlation prompts.
 
     Args:
-        summary_prompt_template: The summary template string with
-            ``{{placeholder}}`` markers.
-        investigation_context: The user's investigation context text.
         per_artifact_results: List of per-artifact result dicts, each
             with ``artifact_key``, ``artifact_name``, and ``analysis``.
-        metadata_map: Host metadata mapping with optional ``hostname``,
-            ``os_version``, ``os_type``, and ``domain`` keys.
 
     Returns:
-        The fully rendered summary prompt string.
+        Markdown text that preserves successful artifact findings and
+        records failed analyses as data gaps.
     """
     findings_blocks: list[str] = []
     failure_blocks: list[str] = []
@@ -257,6 +246,43 @@ def build_summary_prompt(
             "## Analysis Failures / Data Gaps\n"
             + "\n".join(failure_blocks)
         )
+    return findings_text
+
+
+def build_summary_prompt(
+    summary_prompt_template: str,
+    investigation_context: str,
+    per_artifact_results: list[Mapping[str, Any]],
+    metadata_map: Mapping[str, Any],
+    *,
+    per_artifact_findings_override: str | None = None,
+) -> str:
+    """Build the cross-artifact summary prompt from a template.
+
+    Assembles per-artifact findings into a single prompt using the
+    summary template, filling in investigation context, IOC targets,
+    priority directives, and host metadata placeholders.
+
+    Args:
+        summary_prompt_template: The summary template string with
+            ``{{placeholder}}`` markers.
+        investigation_context: The user's investigation context text.
+        per_artifact_results: List of per-artifact result dicts, each
+            with ``artifact_key``, ``artifact_name``, and ``analysis``.
+        metadata_map: Host metadata mapping with optional ``hostname``,
+            ``os_version``, ``os_type``, and ``domain`` keys.
+        per_artifact_findings_override: Optional preformatted findings
+            text to place into the prompt instead of rendering
+            ``per_artifact_results`` directly.
+
+    Returns:
+        The fully rendered summary prompt string.
+    """
+    findings_text = (
+        str(per_artifact_findings_override)
+        if per_artifact_findings_override is not None
+        else _format_per_artifact_findings(per_artifact_results)
+    )
 
     extracted_iocs = extract_ioc_targets(investigation_context)
     priority_directives = build_priority_directives(investigation_context, ioc_targets=extracted_iocs)

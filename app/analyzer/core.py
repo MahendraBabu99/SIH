@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Callable, Iterable, Mapping
 
 from ..ai_providers import AIProviderError, create_provider
 from ..ai_providers.utils import _inline_attachment_data_into_prompt
+from .cancellation import AnalysisCancelledError, raise_if_cancelled
 from .chunking import analyze_artifact_chunked, split_csv_and_suffix, split_csv_into_chunks
 from .citations import match_column_name, timestamp_found_in_csv, timestamp_lookup_keys, validate_citations
 from .constants import (
@@ -46,7 +48,7 @@ from .data_prep import (
 from .multi_image import run_multi_image_analysis
 from .ioc import build_priority_directives, extract_ioc_targets, format_ioc_targets
 from .prompts import (
-    build_summary_prompt, load_artifact_ai_column_projections,
+    _format_per_artifact_findings, build_summary_prompt, load_artifact_ai_column_projections,
     load_artifact_instruction_prompts, load_prompt_template,
     resolve_artifact_ai_columns_config_path,
 )
@@ -62,6 +64,12 @@ LOGGER = logging.getLogger(__name__)
 _MIN_ANALYSIS_INPUT_TOKENS = 1
 _MIN_ANALYSIS_RESPONSE_TOKENS = 1
 _PREFERRED_MIN_ANALYSIS_INPUT_TOKENS = 1024
+_COMPRESSION_RETRY_SLEEP_SLICE_SECONDS = 0.1
+_COMPRESS_FINDINGS_FALLBACK_PROMPT = (
+    "Compress forensic findings for downstream correlation. Preserve every "
+    "suspicious finding, IOC status, citation, artifact name, image label, "
+    "and data gap. Return concise Markdown only."
+)
 
 try:
     from ..parser import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
@@ -248,10 +256,6 @@ def _replace_inline_csv_with_attachment_reference(
     return user_prompt, False
 
 
-class AnalysisCancelledError(Exception):
-    """Raised when analysis is cancelled by the user."""
-
-
 class ForensicAnalyzer:
     """Orchestrates AI-powered forensic analysis of parsed artifact CSV data.
 
@@ -344,6 +348,9 @@ class ForensicAnalyzer:
         self.artifact_instruction_prompts = self._load_artifact_instruction_prompts()
         self.summary_prompt_template = self._load_prompt_template(
             "summary_prompt.md", default=DEFAULT_SUMMARY_PROMPT_TEMPLATE,
+        )
+        self.compress_findings_prompt_template = self._load_prompt_template(
+            "compress_findings.md", default=_COMPRESS_FINDINGS_FALLBACK_PROMPT,
         )
         self.chunk_merge_prompt_template = self._load_prompt_template(
             "chunk_merge.md", default=DEFAULT_CHUNK_MERGE_PROMPT_TEMPLATE,
@@ -504,23 +511,59 @@ class ForensicAnalyzer:
 
         return {str(key): str(value) for key, value in model_info.items()}
 
-    def _call_ai_with_retry(self, call: Callable[[], str]) -> str:
+    def _sleep_with_cancel(self, delay_seconds: float, cancel_check: Any | None) -> None:
+        """Sleep for a retry delay while polling for cancellation.
+
+        Args:
+            delay_seconds: Total requested backoff duration.
+            cancel_check: Optional callable or event-like cancellation probe.
+
+        Raises:
+            AnalysisCancelledError: If cancellation is requested during
+                the backoff interval.
+        """
+        if delay_seconds <= 0:
+            raise_if_cancelled(cancel_check)
+            return
+        if cancel_check is None:
+            sleep(delay_seconds)
+            return
+
+        remaining = delay_seconds
+        while remaining > 0:
+            raise_if_cancelled(cancel_check)
+            step = min(_COMPRESSION_RETRY_SLEEP_SLICE_SECONDS, remaining)
+            sleep(step)
+            remaining -= step
+        raise_if_cancelled(cancel_check)
+
+    def _call_ai_with_retry(
+        self,
+        call: Callable[[], str],
+        cancel_check: Any | None = None,
+    ) -> str:
         """Call the AI provider with retry on transient failures.
 
         Args:
             call: A zero-argument callable that invokes the AI provider.
+            cancel_check: Optional callable or event-like cancellation probe.
 
         Returns:
             The AI provider's response string.
 
         Raises:
+            AnalysisCancelledError: If cancellation is requested before a
+                provider call or during retry backoff.
             Exception: The last transient error (including AIProviderError)
                 after all retries are exhausted.
         """
         last_error: Exception | None = None
         for attempt in range(AI_RETRY_ATTEMPTS):
+            raise_if_cancelled(cancel_check)
             try:
                 return call()
+            except AnalysisCancelledError:
+                raise
             except Exception as error:
                 last_error = error
                 if attempt < AI_RETRY_ATTEMPTS - 1:
@@ -529,7 +572,8 @@ class ForensicAnalyzer:
                         "AI provider call failed (attempt %d/%d), retrying in %.1fs: %s",
                         attempt + 1, AI_RETRY_ATTEMPTS, delay, error,
                     )
-                    sleep(delay)
+                    raise_if_cancelled(cancel_check)
+                    self._sleep_with_cancel(delay, cancel_check)
         raise last_error  # type: ignore[misc]
 
     # ------------------------------------------------------------------
@@ -613,6 +657,360 @@ class ForensicAnalyzer:
             Approximate token count for the analyzer's current model.
         """
         return estimate_tokens(text, model_info=self.model_info)
+
+    def _input_prompt_token_count(self, user_prompt: str) -> int:
+        """Estimate total input tokens for a provider request.
+
+        Args:
+            user_prompt: User prompt text that will be sent to the provider.
+
+        Returns:
+            Estimated tokens for the system and user prompts combined.
+        """
+        return self._estimate_tokens(self.system_prompt) + self._estimate_tokens(user_prompt)
+
+    def _prompt_fits_input_budget(self, user_prompt: str) -> bool:
+        """Return whether a user prompt fits the reserved input budget.
+
+        Args:
+            user_prompt: User prompt text to check.
+
+        Returns:
+            ``True`` when the estimated input tokens are within
+            ``self.ai_input_max_tokens``.
+        """
+        return self._input_prompt_token_count(user_prompt) <= self.ai_input_max_tokens
+
+    def _ensure_prompt_within_input_budget(self, user_prompt: str, label: str) -> None:
+        """Raise a controlled error when a prompt exceeds input budget.
+
+        Args:
+            user_prompt: User prompt text to check.
+            label: Human-readable label for error messages.
+
+        Raises:
+            ValueError: If the prompt exceeds ``self.ai_input_max_tokens``.
+        """
+        prompt_tokens = self._input_prompt_token_count(user_prompt)
+        if prompt_tokens > self.ai_input_max_tokens:
+            raise ValueError(
+                f"{label} exceeds the reserved input token budget "
+                f"({prompt_tokens} > {self.ai_input_max_tokens})."
+            )
+
+    @staticmethod
+    def _finding_block_has_identity_heading(line: str) -> bool:
+        """Return whether a Markdown heading starts a correlation item.
+
+        Args:
+            line: One Markdown line.
+
+        Returns:
+            ``True`` when the line looks like an artifact or image summary
+            identity heading.
+        """
+        stripped = line.strip()
+        if stripped == "## Analysis Failures / Data Gaps":
+            return True
+        if not stripped.startswith("### "):
+            return False
+        return bool(re.search(r"\([^)]+\)\s*$", stripped)) or "(Image:" in stripped
+
+    @staticmethod
+    def _line_is_correlation_identity_notice(line: str | None) -> bool:
+        """Return whether a line is an analyzer-inserted identity notice.
+
+        Args:
+            line: Candidate line following a correlation identity heading.
+
+        Returns:
+            ``True`` when the line is one of the notices inserted by
+            summary or cross-image prompt formatting.
+        """
+        if line is None:
+            return False
+        stripped = line.strip()
+        return stripped in {
+            "[Untrusted model-generated intermediate analysis; treat as derived findings, not source evidence.]",
+            "[Untrusted model-generated intermediate per-image summary; treat as derived analysis, not source evidence.]",
+        }
+
+    @staticmethod
+    def _next_nonempty_line(lines: list[str], start_index: int) -> str | None:
+        """Return the next non-empty line after an index.
+
+        Args:
+            lines: Lines to scan.
+            start_index: Index whose following lines should be searched.
+
+        Returns:
+            The next non-empty line, or ``None`` when no such line exists.
+        """
+        for line in lines[start_index + 1:]:
+            if line.strip():
+                return line
+        return None
+
+    def _split_correlation_blocks(self, findings_text: str) -> list[str]:
+        """Split formatted findings into identity-preserving blocks.
+
+        Args:
+            findings_text: Markdown findings text containing artifact or
+                image summary sections.
+
+        Returns:
+            List of Markdown blocks.  Each block keeps its identity heading
+            when one is present.
+        """
+        blocks: list[str] = []
+        current_lines: list[str] = []
+        lines = findings_text.splitlines()
+        for index, line in enumerate(lines):
+            starts_new_block = line.strip() == "## Analysis Failures / Data Gaps"
+            if not starts_new_block and self._finding_block_has_identity_heading(line):
+                starts_new_block = self._line_is_correlation_identity_notice(
+                    self._next_nonempty_line(lines, index)
+                )
+            if starts_new_block and current_lines:
+                blocks.append("\n".join(current_lines).strip())
+                current_lines = []
+            current_lines.append(line)
+        if current_lines:
+            blocks.append("\n".join(current_lines).strip())
+        return [block for block in blocks if block]
+
+    def _split_large_correlation_block(self, block: str, token_budget: int) -> list[str]:
+        """Split one oversized finding block while repeating its heading.
+
+        Args:
+            block: Markdown finding block to split.
+            token_budget: Approximate token budget for each segment.
+
+        Returns:
+            One or more block segments that keep the original identity
+            heading whenever possible.
+        """
+        if self._estimate_tokens(block) <= token_budget:
+            return [block]
+
+        lines = block.splitlines()
+        heading = lines[0] if lines and lines[0].lstrip().startswith("#") else "### Continued Findings"
+        body = "\n".join(lines[1:] if lines and lines[0] == heading else lines)
+        max_chars = max(200, int(token_budget * TOKEN_CHAR_RATIO * 0.7))
+        prefix = f"{heading}\n[Continued source segment for compression; preserve this identity.]\n"
+        body_budget = max(50, max_chars - len(prefix))
+        segments: list[str] = []
+        for start in range(0, len(body), body_budget):
+            segment_body = body[start:start + body_budget]
+            segments.append(f"{prefix}{segment_body}".strip())
+        return segments or [heading]
+
+    def _split_text_for_compression(self, findings_text: str, token_budget: int) -> list[str]:
+        """Split findings into batches that fit a compression prompt.
+
+        Args:
+            findings_text: Markdown findings text to compress.
+            token_budget: Approximate token budget available for source
+                findings inside each compression request.
+
+        Returns:
+            List of source text batches.
+        """
+        blocks: list[str] = []
+        for block in self._split_correlation_blocks(findings_text):
+            blocks.extend(self._split_large_correlation_block(block, token_budget))
+
+        batches: list[str] = []
+        current: list[str] = []
+        current_tokens = 0
+        for block in blocks:
+            block_tokens = self._estimate_tokens(block)
+            if current and current_tokens + block_tokens > token_budget:
+                batches.append("\n\n".join(current))
+                current = []
+                current_tokens = 0
+            current.append(block)
+            current_tokens += block_tokens
+        if current:
+            batches.append("\n\n".join(current))
+        return batches or [findings_text]
+
+    def _build_findings_compression_prompt(
+        self,
+        findings_text: str,
+        *,
+        context_label: str,
+        target_tokens: int,
+        round_index: int,
+        batch_index: int,
+        batch_count: int,
+    ) -> str:
+        """Build a prompt for compressing correlation findings.
+
+        Args:
+            findings_text: Source findings to compress.
+            context_label: Human-readable target correlation context.
+            target_tokens: Desired maximum response size.
+            round_index: Hierarchical compression round number.
+            batch_index: One-based batch number for this round.
+            batch_count: Total batches in this round.
+
+        Returns:
+            The rendered compression prompt.
+        """
+        template = self.compress_findings_prompt_template.strip() or _COMPRESS_FINDINGS_FALLBACK_PROMPT
+        if "{{per_artifact_findings}}" in template:
+            rendered_template = template.replace("{{per_artifact_findings}}", findings_text)
+        else:
+            rendered_template = f"{template}\n\n## Findings to Compress\n{findings_text}"
+
+        return (
+            f"Compress findings for {context_label}. This is compression round "
+            f"{round_index}, batch {batch_index} of {batch_count}.\n\n"
+            "Preserve every suspicious finding, anomaly, IOC value and status "
+            "(Observed, Not Observed, or Not Assessable), citation, timestamp, "
+            "path, account, artifact name/key, image label/ID, confidence, "
+            "and data gap. Keep identity headings or bullet labels intact. "
+            "Do not invent evidence or drop data-gap notices.\n\n"
+            f"Target response length: no more than {target_tokens} tokens.\n\n"
+            f"{rendered_template}"
+        )
+
+    def _compress_findings_once(
+        self,
+        findings_text: str,
+        *,
+        context_label: str,
+        round_index: int,
+        cancel_check: Any | None,
+    ) -> str:
+        """Compress one round of findings, splitting into batches as needed.
+
+        Args:
+            findings_text: Markdown findings text to compress.
+            context_label: Human-readable target correlation context.
+            round_index: Hierarchical compression round number.
+            cancel_check: Optional callable or event-like cancellation probe.
+
+        Returns:
+            Compressed Markdown findings text.
+
+        Raises:
+            AnalysisCancelledError: If cancellation has been requested.
+            ValueError: If the compression prompt overhead cannot fit.
+        """
+        raise_if_cancelled(cancel_check)
+        response_tokens = max(1, min(self.ai_response_max_tokens, max(200, self.ai_input_max_tokens // 4)))
+        empty_prompt = self._build_findings_compression_prompt(
+            "",
+            context_label=context_label,
+            target_tokens=response_tokens,
+            round_index=round_index,
+            batch_index=1,
+            batch_count=1,
+        )
+        source_token_budget = (
+            self.ai_input_max_tokens
+            - self._input_prompt_token_count(empty_prompt)
+            - max(16, int(self.ai_input_max_tokens * 0.03))
+        )
+        if source_token_budget <= 0:
+            raise ValueError(
+                f"Compression prompt overhead for {context_label} leaves no room for findings."
+            )
+
+        batches = self._split_text_for_compression(findings_text, source_token_budget)
+        compressed_parts: list[str] = []
+        for batch_index, batch_text in enumerate(batches, start=1):
+            raise_if_cancelled(cancel_check)
+            compression_prompt = self._build_findings_compression_prompt(
+                batch_text,
+                context_label=context_label,
+                target_tokens=response_tokens,
+                round_index=round_index,
+                batch_index=batch_index,
+                batch_count=len(batches),
+            )
+            self._ensure_prompt_within_input_budget(
+                compression_prompt,
+                f"Compression batch {batch_index} for {context_label}",
+            )
+            compressed = self._call_ai_with_retry(
+                lambda prompt=compression_prompt: self.ai_provider.analyze(
+                    system_prompt=self.system_prompt,
+                    user_prompt=prompt,
+                    max_tokens=response_tokens,
+                ),
+                cancel_check=cancel_check,
+            )
+            compressed_text = str(compressed).strip()
+            if not compressed_text:
+                raise ValueError(
+                    f"Compression batch {batch_index} for {context_label} returned no text."
+                )
+            compressed_parts.append(compressed_text)
+            raise_if_cancelled(cancel_check)
+
+        return "\n\n".join(compressed_parts).strip()
+
+    def _build_prompt_within_input_budget(
+        self,
+        *,
+        source_text: str,
+        build_prompt_fn: Callable[[str], str],
+        context_label: str,
+        cancel_check: Any | None = None,
+    ) -> str:
+        """Build a prompt, compressing source findings until it fits.
+
+        Args:
+            source_text: Correlation source text that may need compression.
+            build_prompt_fn: Callable that builds the final user prompt from
+                a source text string.
+            context_label: Human-readable prompt label for logs/errors.
+            cancel_check: Optional callable or event-like cancellation probe.
+
+        Returns:
+            A final prompt whose estimated input tokens fit the reserved
+            provider input budget.
+
+        Raises:
+            AnalysisCancelledError: If cancellation has been requested.
+            ValueError: If hierarchical compression cannot fit the prompt.
+        """
+        raise_if_cancelled(cancel_check)
+        prompt = build_prompt_fn(source_text)
+        if self._prompt_fits_input_budget(prompt):
+            return prompt
+
+        original_tokens = self._input_prompt_token_count(prompt)
+        self.logger.info(
+            "%s prompt (~%d input tokens) exceeds reserved input budget (%d); compressing findings.",
+            context_label.capitalize(),
+            original_tokens,
+            self.ai_input_max_tokens,
+        )
+        current_text = source_text
+        for round_index in range(1, self.max_merge_rounds + 1):
+            current_text = self._compress_findings_once(
+                current_text,
+                context_label=context_label,
+                round_index=round_index,
+                cancel_check=cancel_check,
+            )
+            prompt = build_prompt_fn(current_text)
+            if self._prompt_fits_input_budget(prompt):
+                self.logger.info(
+                    "%s prompt compressed from ~%d to ~%d input tokens.",
+                    context_label.capitalize(),
+                    original_tokens,
+                    self._input_prompt_token_count(prompt),
+                )
+                return prompt
+            raise_if_cancelled(cancel_check)
+
+        self._ensure_prompt_within_input_budget(prompt, context_label.capitalize())
+        return prompt
 
     # These are also exposed as staticmethods on the class (see above)
     # but tests may call them on instances, so they work either way.
@@ -1059,6 +1457,7 @@ class ForensicAnalyzer:
         artifact_key: str,
         investigation_context: str,
         progress_callback: Any | None = None,
+        cancel_check: Any | None = None,
     ) -> dict[str, Any]:
         """Analyze a single artifact's CSV data and return AI findings.
 
@@ -1066,10 +1465,14 @@ class ForensicAnalyzer:
             artifact_key: Unique identifier for the artifact.
             investigation_context: Free-text investigation context.
             progress_callback: Optional callable for streaming progress.
+            cancel_check: Optional callable or event-like cancellation probe.
 
         Returns:
             A dict with ``artifact_key``, ``artifact_name``, ``analysis``,
             ``model``, and optionally ``citation_warnings``.
+
+        Raises:
+            AnalysisCancelledError: If cancellation has been requested.
         """
         artifact_metadata = self._resolve_artifact_metadata(artifact_key)
         artifact_name = artifact_metadata.get("name", artifact_key)
@@ -1083,6 +1486,7 @@ class ForensicAnalyzer:
 
         start_time = perf_counter()
         try:
+            raise_if_cancelled(cancel_check)
             all_csv_paths = self._resolve_all_artifact_csv_paths(artifact_key)
             if len(all_csv_paths) > 1:
                 csv_path = self._combine_csv_files(artifact_key, all_csv_paths)
@@ -1152,6 +1556,7 @@ class ForensicAnalyzer:
                         "artifact_key": artifact_key, "artifact_name": artifact_name,
                         "scoped_artifact_key": safe_key, "model": model,
                     })
+                    raise_if_cancelled(cancel_check)
                 analysis_text = analyze_artifact_chunked(
                     artifact_prompt=artifact_prompt,
                     artifact_key=artifact_key,
@@ -1171,6 +1576,7 @@ class ForensicAnalyzer:
                     save_case_prompt_fn=self._save_case_prompt,
                     prompt_filename_stem=safe_key,
                     progress_callback=progress_callback,
+                    cancel_check=cancel_check,
                 )
                 duration_seconds = perf_counter() - start_time
                 self._audit_log("analysis_completed", {
@@ -1196,6 +1602,7 @@ class ForensicAnalyzer:
                     "artifact_key": artifact_key, "artifact_name": artifact_name,
                     "scoped_artifact_key": safe_key, "model": model,
                 })
+                raise_if_cancelled(cancel_check)
 
                 def _provider_progress(payload: Mapping[str, Any]) -> None:
                     """Forward provider progress to the frontend.
@@ -1213,6 +1620,7 @@ class ForensicAnalyzer:
                         "partial_text": str(payload.get("partial_text", "")),
                         "model": model,
                     })
+                    raise_if_cancelled(cancel_check)
 
                 # Check if analyze_with_progress accepts 'attachments' parameter
                 if attachments_for_provider and progress_accepts_attachments:
@@ -1222,45 +1630,48 @@ class ForensicAnalyzer:
                         progress_callback=_provider_progress,
                         attachments=attachments_for_provider,
                         max_tokens=self.ai_response_max_tokens,
-                    ))
+                    ), cancel_check=cancel_check)
                 elif attachments_for_provider:
                     # Provider doesn't support attachments in progress mode, use regular analyze
                     if callable(analyze_with_attachments):
                         analysis_text = self._call_ai_with_retry(lambda: analyze_with_attachments(
                             system_prompt=self.system_prompt, user_prompt=provider_prompt,
                             attachments=attachments_for_provider, max_tokens=self.ai_response_max_tokens,
-                        ))
+                        ), cancel_check=cancel_check)
                     else:
                         analysis_text = self._call_ai_with_retry(lambda: self.ai_provider.analyze(
                             system_prompt=self.system_prompt, user_prompt=provider_prompt,
                             max_tokens=self.ai_response_max_tokens,
-                        ))
+                        ), cancel_check=cancel_check)
                 else:
                     analysis_text = self._call_ai_with_retry(lambda: analyze_with_progress(
                         system_prompt=self.system_prompt,
                         user_prompt=provider_prompt,
                         progress_callback=_provider_progress,
                         max_tokens=self.ai_response_max_tokens,
-                    ))
+                    ), cancel_check=cancel_check)
             else:
                 if progress_callback is not None:
                     emit_analysis_progress(progress_callback, artifact_key, "started", {
                         "artifact_key": artifact_key, "artifact_name": artifact_name,
                         "scoped_artifact_key": safe_key, "model": model,
                     })
+                    raise_if_cancelled(cancel_check)
                 if attachments_for_provider and callable(analyze_with_attachments):
                     analysis_text = self._call_ai_with_retry(
                         lambda: analyze_with_attachments(
                             system_prompt=self.system_prompt, user_prompt=provider_prompt,
                             attachments=attachments_for_provider, max_tokens=self.ai_response_max_tokens,
-                        )
+                        ),
+                        cancel_check=cancel_check,
                     )
                 else:
                     analysis_text = self._call_ai_with_retry(
                         lambda: self.ai_provider.analyze(
                             system_prompt=self.system_prompt, user_prompt=provider_prompt,
                             max_tokens=self.ai_response_max_tokens,
-                        )
+                        ),
+                        cancel_check=cancel_check,
                     )
             duration_seconds = perf_counter() - start_time
             self._audit_log("analysis_completed", {
@@ -1308,6 +1719,7 @@ class ForensicAnalyzer:
         per_artifact_results: list[Mapping[str, Any]],
         investigation_context: str,
         metadata: Mapping[str, Any] | None,
+        cancel_check: Any | None = None,
     ) -> str:
         """Generate a cross-artifact summary by correlating findings.
 
@@ -1315,18 +1727,15 @@ class ForensicAnalyzer:
             per_artifact_results: List of per-artifact result dicts.
             investigation_context: The user's investigation context.
             metadata: Optional host metadata mapping.
+            cancel_check: Optional callable or event-like cancellation probe.
 
         Returns:
             The AI-generated summary text, or an error message.
+
+        Raises:
+            AnalysisCancelledError: If cancellation has been requested.
         """
         metadata_map = metadata if isinstance(metadata, Mapping) else {}
-        summary_prompt = build_summary_prompt(
-            summary_prompt_template=self.summary_prompt_template,
-            investigation_context=investigation_context,
-            per_artifact_results=per_artifact_results,
-            metadata_map=metadata_map,
-        )
-
         model = self.model_info.get("model", "unknown")
         provider = self.model_info.get("provider", "unknown")
         summary_artifact_key = "cross_artifact_summary"
@@ -1337,15 +1746,32 @@ class ForensicAnalyzer:
             "artifact_key": summary_artifact_key, "artifact_name": summary_artifact_name,
             "provider": provider, "model": model,
         })
-        self._save_case_prompt(summary_prompt_filename, self.system_prompt, summary_prompt)
 
         start_time = perf_counter()
         try:
+            raise_if_cancelled(cancel_check)
+            per_artifact_findings = _format_per_artifact_findings(per_artifact_results)
+            summary_prompt = self._build_prompt_within_input_budget(
+                source_text=per_artifact_findings,
+                build_prompt_fn=lambda findings_text: build_summary_prompt(
+                    summary_prompt_template=self.summary_prompt_template,
+                    investigation_context=investigation_context,
+                    per_artifact_results=per_artifact_results,
+                    metadata_map=metadata_map,
+                    per_artifact_findings_override=findings_text,
+                ),
+                context_label="cross-artifact summary",
+                cancel_check=cancel_check,
+            )
+            raise_if_cancelled(cancel_check)
+            self._save_case_prompt(summary_prompt_filename, self.system_prompt, summary_prompt)
+            raise_if_cancelled(cancel_check)
             summary = self._call_ai_with_retry(
                 lambda: self.ai_provider.analyze(
                     system_prompt=self.system_prompt, user_prompt=summary_prompt,
                     max_tokens=self.ai_response_max_tokens,
-                )
+                ),
+                cancel_check=cancel_check,
             )
             duration_seconds = perf_counter() - start_time
             self._audit_log("analysis_completed", {
@@ -1398,25 +1824,24 @@ class ForensicAnalyzer:
         self._host_metadata: Mapping[str, Any] | None = metadata
         per_artifact_results: list[dict[str, Any]] = []
         for artifact_key in artifact_keys:
-            if cancel_check is not None and cancel_check():
-                raise AnalysisCancelledError("Analysis cancelled by user.")
+            raise_if_cancelled(cancel_check)
             result = self.analyze_artifact(
                 artifact_key=str(artifact_key),
                 investigation_context=investigation_context,
                 progress_callback=progress_callback,
+                cancel_check=cancel_check,
             )
             per_artifact_results.append(result)
             if progress_callback is not None:
                 emit_analysis_progress(progress_callback, str(artifact_key), "complete", result)
-            if cancel_check is not None and cancel_check():
-                raise AnalysisCancelledError("Analysis cancelled by user.")
+            raise_if_cancelled(cancel_check)
 
-        if cancel_check is not None and cancel_check():
-            raise AnalysisCancelledError("Analysis cancelled by user.")
+        raise_if_cancelled(cancel_check)
         summary = self.generate_summary(
             per_artifact_results=per_artifact_results,
             investigation_context=investigation_context,
             metadata=metadata,
+            cancel_check=cancel_check,
         )
         return {
             "per_artifact": per_artifact_results,
