@@ -63,6 +63,39 @@ class FakeParser(_BaseFakeParser):
         ]
 
 
+def _has_image_scoped_findings(results: object) -> bool:
+    """Return whether canonical analysis results contain any findings."""
+    if not isinstance(results, dict):
+        return False
+    images = results.get("images")
+    if not isinstance(images, dict):
+        return False
+    for image_data in images.values():
+        if isinstance(image_data, dict) and image_data.get("per_artifact"):
+            return True
+    return False
+
+
+def test_analysis_payload_from_case_returns_single_image_payload() -> None:
+    """A current one-image parse state still uses image-scoped analysis input."""
+    payload = routes_tasks.build_multi_image_analysis_payload_from_case({
+        "image_artifact_csv_paths": {
+            "img1": {
+                "runkeys": "cases/case/images/img1/parsed/runkeys.csv",
+                "prefetch": "cases/case/images/img1/parsed/prefetch.csv",
+            },
+        },
+        "image_states": {
+            "img1": {
+                "analysis_artifacts": ["runkeys"],
+            },
+        },
+        "analysis_artifacts": ["prefetch"],
+    })
+
+    assert payload == [{"image_id": "img1", "artifacts": ["runkeys"]}]
+
+
 class TestParseRerunClearsStaleState(unittest.TestCase):
     """Regression: a failed reparse must not leave old parse outputs usable."""
 
@@ -138,7 +171,16 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             self.assertTrue(len(case.get("artifact_csv_paths", {})) > 0, "First parse should produce csv map")
             case_dir = Path(case["case_dir"])
             (case_dir / "analysis_results.json").write_text(
-                json.dumps({"summary": "stale", "per_artifact": []}),
+                json.dumps({
+                    "images": {
+                        "img1": {
+                            "label": "Image 1",
+                            "summary": "stale",
+                            "per_artifact": [],
+                        },
+                    },
+                    "cross_image_summary": None,
+                }),
                 encoding="utf-8",
             )
             (case_dir / "prompt.txt").write_text("stale prompt", encoding="utf-8")
@@ -200,6 +242,17 @@ class TestRunAnalysisUnavailableProvider(unittest.TestCase):
                 "case_dir": tmp_dir,
                 "audit": audit,
                 "artifact_csv_paths": {"runkeys": str(csv_path)},
+                "image_artifact_csv_paths": {"img1": {"runkeys": str(csv_path)}},
+                "image_states": {
+                    "img1": {
+                        "artifact_csv_paths": {"runkeys": str(csv_path)},
+                        "analysis_artifacts": ["runkeys"],
+                        "csv_output_dir": str(csv_path.parent),
+                        "image_metadata": {},
+                        "os_type": "windows",
+                    },
+                },
+                "images": [{"image_id": "img1", "label": "Image 1"}],
                 "parse_results": [{"artifact_key": "runkeys", "success": True, "csv_path": str(csv_path)}],
                 "analysis_artifacts": ["runkeys"],
                 "selected_artifacts": ["runkeys"],
@@ -226,8 +279,7 @@ class TestRunAnalysisUnavailableProvider(unittest.TestCase):
 
             # No misleading analysis_results stored
             self.assertFalse(
-                isinstance(case.get("analysis_results"), dict)
-                and case["analysis_results"].get("per_artifact"),
+                _has_image_scoped_findings(case.get("analysis_results")),
                 "Stale analysis_results should not be stored",
             )
 
@@ -269,21 +321,21 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
         class FailOnSecondAnalyzer(FakeAnalyzer):
             """Succeeds on first call, raises on second."""
 
-            def run_full_analysis(
+            def run_multi_image_analysis(
                 self,
-                artifact_keys: list[str],
+                images: list[dict[str, object]],
                 investigation_context: str,
-                metadata: dict[str, object] | None,
                 progress_callback: object | None = None,
                 cancel_check: object | None = None,
+                analysis_date_range: tuple[str, str] | None = None,
             ) -> dict[str, object]:
                 nonlocal call_count
                 call_count += 1
                 if call_count >= 2:
                     raise RuntimeError("Simulated provider failure")
-                return super().run_full_analysis(
-                    artifact_keys, investigation_context, metadata,
-                    progress_callback, cancel_check,
+                return super().run_multi_image_analysis(
+                    images, investigation_context, progress_callback,
+                    cancel_check, analysis_date_range,
                 )
 
         hash_rv = {"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4}
@@ -335,12 +387,15 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
             # Verify results exist after successful analysis.
             case = routes_state.CASE_STATES[case_id]
             self.assertTrue(
-                isinstance(case.get("analysis_results"), dict)
-                and case["analysis_results"].get("per_artifact"),
+                _has_image_scoped_findings(case.get("analysis_results")),
                 "First analysis should produce results",
             )
             results_path = self.cases_root / case_id / "analysis_results.json"
             self.assertTrue(results_path.exists(), "Results file should exist after first run")
+            persisted = json.loads(results_path.read_text(encoding="utf-8"))
+            self.assertIn("images", persisted)
+            self.assertNotIn("per_artifact", persisted)
+            self.assertIsNone(persisted.get("cross_image_summary"))
 
             # --- Second analysis: fails ---
             resp2 = self.client.post(
@@ -352,7 +407,7 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
             # In-memory results must be empty.
             in_memory = case.get("analysis_results")
             self.assertFalse(
-                isinstance(in_memory, dict) and in_memory.get("per_artifact"),
+                _has_image_scoped_findings(in_memory),
                 "Stale in-memory analysis_results must be cleared after failed rerun",
             )
 

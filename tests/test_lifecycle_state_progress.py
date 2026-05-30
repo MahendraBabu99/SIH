@@ -495,16 +495,27 @@ class LifecycleStateProgressTests(unittest.TestCase):
     def test_analysis_failure_publishes_progress_when_stale_file_cannot_delete(self) -> None:
         """Analysis failure still emits terminal progress when stale cleanup fails."""
         case_id = "analysis-cleanup-failure"
-        case_dir = self._install_case(case_id)
-        parsed_dir = case_dir / "parsed"
+        image_id = "img-001"
+        case_dir = self._install_case(case_id, image_id)
+        parsed_dir = case_dir / "images" / image_id / "parsed"
         csv_path = parsed_dir / "runkeys.csv"
         csv_path.write_text("name\nvalue\n", encoding="utf-8")
         stale_results = case_dir / "analysis_results.json"
-        stale_results.write_text('{"summary":"stale"}\n', encoding="utf-8")
+        stale_results.write_text(
+            (
+                '{"images":{"img-001":{"label":"Image","summary":"stale",'
+                '"per_artifact":[{"artifact":"runkeys"}]}},'
+                '"cross_image_summary":null}\n'
+            ),
+            encoding="utf-8",
+        )
         routes_state.CASE_STATES[case_id].update(
             {
                 "status": "running",
                 "artifact_csv_paths": {"runkeys": str(csv_path)},
+                "image_artifact_csv_paths": {
+                    image_id: {"runkeys": str(csv_path)},
+                },
                 "parse_results": [
                     {"artifact_key": "runkeys", "success": True, "csv_path": str(csv_path)},
                 ],
@@ -513,7 +524,25 @@ class LifecycleStateProgressTests(unittest.TestCase):
                 "artifact_options": [],
                 "image_metadata": {},
                 "os_type": "windows",
-                "analysis_results": {"summary": "stale", "per_artifact": [{"artifact": "runkeys"}]},
+                "analysis_results": {
+                    "images": {
+                        image_id: {
+                            "label": "Image",
+                            "summary": "stale",
+                            "per_artifact": [{"artifact": "runkeys"}],
+                        },
+                    },
+                    "cross_image_summary": None,
+                },
+            },
+        )
+        routes_state.CASE_STATES[case_id]["image_states"][image_id].update(
+            {
+                "artifact_csv_paths": {"runkeys": str(csv_path)},
+                "analysis_artifacts": ["runkeys"],
+                "csv_output_dir": str(parsed_dir),
+                "image_metadata": {},
+                "os_type": "windows",
             },
         )
         routes_state.ANALYSIS_PROGRESS[case_id] = routes_state.new_progress(status="running")
@@ -529,7 +558,7 @@ class LifecycleStateProgressTests(unittest.TestCase):
                 """
                 del kwargs
 
-            def run_full_analysis(self, **kwargs: Any) -> dict[str, Any]:
+            def run_multi_image_analysis(self, **kwargs: Any) -> dict[str, Any]:
                 """Raise an analysis failure.
 
                 Args:

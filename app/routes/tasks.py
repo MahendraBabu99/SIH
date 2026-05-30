@@ -152,21 +152,20 @@ def resolve_case_parsed_dir(case: dict[str, Any]) -> Path:
 def build_multi_image_analysis_payload_from_case(
     case: dict[str, Any],
 ) -> list[dict[str, Any]] | None:
-    """Build a multi-image analysis payload from parsed case state.
+    """Build an image-scoped analysis payload from parsed case state.
 
-    This supports legacy callers that POST to the case-level analyze
-    route without an explicit ``images`` payload.  When multiple parsed
-    images exist, the returned payload preserves each image's artifact
-    selection instead of falling back to the lossy flat
-    ``artifact_csv_paths`` view.
+    This supports callers that POST to the case-level analyze route
+    without an explicit ``images`` payload.  Single-image cases are
+    represented as a one-item image payload when current image-scoped
+    parsed state exists.
 
     Args:
         case: In-memory case state dictionary or a case snapshot.
 
     Returns:
         A list of ``{"image_id": str, "artifacts": list[str]}``
-        dictionaries when multiple parsed images are available, or
-        ``None`` when the case can safely use the single-image path.
+        dictionaries when image-scoped parsed output is available, or
+        ``None`` when no image-scoped parsed output can be found.
     """
     image_artifact_csv_paths = case.get("image_artifact_csv_paths")
     image_states = case.get("image_states")
@@ -177,7 +176,7 @@ def build_multi_image_analysis_payload_from_case(
         or (not image_artifact_csv_paths and image_states)
     ):
         image_artifact_csv_paths = build_image_artifact_csv_paths(image_states)
-    if not isinstance(image_artifact_csv_paths, dict) or len(image_artifact_csv_paths) <= 1:
+    if not isinstance(image_artifact_csv_paths, dict) or not image_artifact_csv_paths:
         return None
 
     case_analysis_artifacts = case.get("analysis_artifacts")
@@ -485,7 +484,12 @@ def _purge_stale_analysis(case: dict[str, Any], case_dir: str) -> None:
         LOGGER.warning("Failed to remove stale generated reports from disk.", exc_info=True)
 
 
-def _make_analysis_progress_callback(case_id: str) -> Callable[..., None]:
+def _make_analysis_progress_callback(
+    case_id: str,
+    *,
+    include_image_context: bool = True,
+    emit_summary_events: bool = True,
+) -> Callable[..., None]:
     """Create a progress callback that emits SSE events for analysis.
 
     The returned callback handles three calling conventions:
@@ -497,6 +501,10 @@ def _make_analysis_progress_callback(case_id: str) -> Callable[..., None]:
 
     Args:
         case_id: UUID of the case whose SSE stream should receive events.
+        include_image_context: Whether artifact progress payloads should
+            expose image identifiers to the frontend.
+        emit_summary_events: Whether per-image summary progress events
+            should be forwarded as artifact-style SSE events.
 
     Returns:
         A callable suitable for passing as ``progress_callback`` to the
@@ -529,6 +537,12 @@ def _make_analysis_progress_callback(case_id: str) -> Callable[..., None]:
                 result = dict(result_payload)
         else:
             return
+
+        if not emit_summary_events and artifact_key.startswith("summary_"):
+            return
+        if not include_image_context:
+            result.pop("image_id", None)
+            result.pop("image_label", None)
 
         if status == "started":
             emit_progress(ANALYSIS_PROGRESS, case_id, {
@@ -583,12 +597,15 @@ def _auto_generate_report(case_id: str) -> None:
 def run_analysis(case_id: str, prompt: str, config_snapshot: dict[str, Any]) -> None:
     """Execute background AI-powered forensic analysis.
 
+    Current parsed workflows are image-scoped, so this entrypoint
+    delegates to :func:`run_multi_image_analysis_task` when image-scoped
+    parsed state exists.
+
     Args:
         case_id: UUID of the case.
         prompt: Investigation context / user prompt.
         config_snapshot: Deep copy of application config.
     """
-    cancel_event = get_cancel_event(ANALYSIS_PROGRESS, case_id)
     case = get_case(case_id)
     if case is None:
         set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", "Case not found.")
@@ -596,24 +613,9 @@ def run_analysis(case_id: str, prompt: str, config_snapshot: dict[str, Any]) -> 
         return
 
     with STATE_LOCK:
-        csv_map = dict(case.get("artifact_csv_paths", {}))
-        image_artifact_csv_paths_snapshot = copy.deepcopy(case.get("image_artifact_csv_paths", {}))
-        image_states_snapshot = copy.deepcopy(case.get("image_states", {}))
-        parse_results_snapshot = list(case.get("parse_results", []))
-        analysis_artifacts_state = case.get("analysis_artifacts")
-        selected_artifacts_snapshot = list(case.get("selected_artifacts", []))
-        case_dir = case["case_dir"]
-        audit_logger = case["audit"]
-        image_metadata_snapshot = dict(case.get("image_metadata", {}))
-        os_type_snapshot = str(case.get("os_type") or "unknown")
-        artifact_options_snapshot = list(case.get("artifact_options", []))
-        analysis_date_range = case.get("analysis_date_range")
+        case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
 
-    multi_image_payload = build_multi_image_analysis_payload_from_case({
-        "image_artifact_csv_paths": image_artifact_csv_paths_snapshot,
-        "image_states": image_states_snapshot,
-        "analysis_artifacts": analysis_artifacts_state,
-    })
+    multi_image_payload = build_multi_image_analysis_payload_from_case(case_snapshot)
     if multi_image_payload:
         run_multi_image_analysis_task(
             case_id=case_id,
@@ -623,94 +625,10 @@ def run_analysis(case_id: str, prompt: str, config_snapshot: dict[str, Any]) -> 
         )
         return
 
-    if not csv_map:
-        csv_map = build_csv_map(parse_results_snapshot)
-    if isinstance(analysis_artifacts_state, list):
-        artifacts = [str(item) for item in analysis_artifacts_state if str(item) in csv_map]
-    else:
-        artifacts = [item for item in selected_artifacts_snapshot if item in csv_map]
-    if not artifacts and not isinstance(analysis_artifacts_state, list):
-        artifacts = sorted(csv_map.keys())
-    if not artifacts:
-        message = (
-            "No parsed CSV artifacts are marked `Parse and use in AI`."
-            if isinstance(analysis_artifacts_state, list)
-            else "No parsed CSV artifacts available."
-        )
-        mark_case_status(case_id, "failed")
-        set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", message)
-        emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_failed", "error": message})
-        return
-
-    try:
-        analyzer = ForensicAnalyzer(
-            case_dir=case_dir,
-            config=config_snapshot,
-            audit_logger=audit_logger,
-            artifact_csv_paths=csv_map,
-            os_type=os_type_snapshot,
-        )
-        metadata = dict(image_metadata_snapshot)
-        metadata["os_type"] = os_type_snapshot
-        metadata["artifact_csv_paths"] = csv_map
-        metadata["parse_results"] = parse_results_snapshot
-        metadata["analysis_artifacts"] = list(artifacts)
-        metadata["artifact_options"] = artifact_options_snapshot
-        if isinstance(analysis_date_range, dict):
-            metadata["analysis_date_range"] = {
-                "start_date": str(analysis_date_range.get("start_date", "")).strip(),
-                "end_date": str(analysis_date_range.get("end_date", "")).strip(),
-            }
-
-        _analysis_progress = _make_analysis_progress_callback(case_id)
-
-        output = analyzer.run_full_analysis(
-            artifact_keys=artifacts,
-            investigation_context=prompt,
-            metadata=metadata,
-            progress_callback=_analysis_progress,
-            cancel_check=(lambda: cancel_event.is_set()) if cancel_event is not None else None,
-        )
-        analysis_results_path = Path(case_dir) / "analysis_results.json"
-        with analysis_results_path.open("w", encoding="utf-8") as analysis_results_file:
-            json.dump(output, analysis_results_file, indent=2, ensure_ascii=True)
-            analysis_results_file.write("\n")
-        with STATE_LOCK:
-            case["investigation_context"] = prompt
-            case["analysis_results"] = output
-
-        emit_progress(ANALYSIS_PROGRESS, case_id, {
-            "type": "analysis_summary",
-            "summary": str(output.get("summary", "")),
-            "model_info": output.get("model_info", {}),
-        })
-        set_progress_status(ANALYSIS_PROGRESS, case_id, "completed")
-        emit_progress(ANALYSIS_PROGRESS, case_id, {
-            "type": "analysis_completed",
-            "artifact_count": len(output.get("per_artifact", [])),
-            "per_artifact": list(output.get("per_artifact", [])),
-        })
-        mark_case_status(case_id, "completed")
-
-        # Auto-generate the HTML report so it's ready for download.
-        _auto_generate_report(case_id)
-    except AnalysisCancelledError:
-        LOGGER.info("Analysis cancelled for case %s", case_id)
-        # Reset case status back to "parsed" so the user can retry
-        # analysis without being stuck in "running" state.
-        mark_case_status(case_id, "parsed")
-        set_progress_status(ANALYSIS_PROGRESS, case_id, "cancelled")
-        emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_cancelled"})
-    except Exception:
-        LOGGER.exception("Background analysis failed for case %s", case_id)
-        _purge_stale_analysis(case, case_dir)
-        user_message = (
-            "Analysis failed due to an internal error. "
-            "Verify provider settings and retry."
-        )
-        mark_case_status(case_id, "error")
-        set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", user_message)
-        emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_failed", "error": user_message})
+    message = "No image-scoped parsed CSV artifacts available."
+    mark_case_status(case_id, "failed")
+    set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", message)
+    emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_failed", "error": message})
 
 
 # ---------------------------------------------------------------------------
@@ -842,8 +760,12 @@ def run_multi_image_analysis_task(
             "artifact_csv_paths": image_csv_map,
         })
 
+    display_multi_image = len(images) > 1 or len(images_payload) > 1
     if not images:
-        message = "No valid images with artifacts for multi-image analysis."
+        if display_multi_image:
+            message = "No valid images with artifacts for multi-image analysis."
+        else:
+            message = "No valid image with artifacts for analysis."
         mark_case_status(case_id, "failed")
         set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", message)
         emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_failed", "error": message})
@@ -857,10 +779,14 @@ def run_multi_image_analysis_task(
             os_type=str(images[0].get("metadata", {}).get("os_type", "unknown")),
         )
 
-        _analysis_progress = _make_analysis_progress_callback(case_id)
+        _analysis_progress = _make_analysis_progress_callback(
+            case_id,
+            include_image_context=display_multi_image,
+            emit_summary_events=display_multi_image,
+        )
 
         # Normalize analysis_date_range to (start, end) tuple or None,
-        # matching the format used by the single-image path.
+        # matching the analyzer's per-image data-prep convention.
         date_range_tuple: tuple[str, str] | None = None
         if isinstance(analysis_date_range, dict):
             dr_start = str(analysis_date_range.get("start_date", "")).strip()
@@ -893,15 +819,19 @@ def run_multi_image_analysis_task(
         cross_summary = str(output.get("cross_image_summary", "") or "")
         images_output = output.get("images", {})
 
-        # Build a flat per_artifact list for backward-compatible SSE events.
+        # Build a flat per_artifact list for the current frontend.  For
+        # true multi-image display we enrich rows with image labels so
+        # duplicate artifact names do not collide; for one-image display
+        # the SSE shape remains visually identical to the existing UI.
         flat_per_artifact: list[dict[str, Any]] = []
         for img_id, img_data in images_output.items():
             if isinstance(img_data, dict):
                 for pa in img_data.get("per_artifact", []):
                     if isinstance(pa, dict):
                         enriched = dict(pa)
-                        enriched["image_id"] = img_id
-                        enriched["image_label"] = str(img_data.get("label", img_id))
+                        if display_multi_image:
+                            enriched["image_id"] = img_id
+                            enriched["image_label"] = str(img_data.get("label", img_id))
                         flat_per_artifact.append(enriched)
 
         # For the summary event: if cross-image summary exists, combine it
@@ -918,7 +848,8 @@ def run_multi_image_analysis_task(
             "type": "analysis_summary",
             "summary": combined_summary,
             "model_info": output.get("model_info", {}),
-            "multi_image": True,
+            "multi_image": display_multi_image,
+            "image_scoped": True,
             "images": {
                 img_id: {
                     "label": str(img_data.get("label", img_id)),
@@ -935,7 +866,8 @@ def run_multi_image_analysis_task(
             "type": "analysis_completed",
             "artifact_count": len(flat_per_artifact),
             "per_artifact": flat_per_artifact,
-            "multi_image": True,
+            "multi_image": display_multi_image,
+            "image_scoped": True,
             "images": {
                 img_id: {
                     "label": str(img_data.get("label", img_id)),
@@ -960,11 +892,17 @@ def run_multi_image_analysis_task(
         set_progress_status(ANALYSIS_PROGRESS, case_id, "cancelled")
         emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_cancelled"})
     except Exception:
-        LOGGER.exception("Background multi-image analysis failed for case %s", case_id)
+        log_label = "multi-image analysis" if display_multi_image else "analysis"
+        LOGGER.exception("Background %s failed for case %s", log_label, case_id)
         _purge_stale_analysis(case, case_dir)
         user_message = (
             "Multi-image analysis failed due to an internal error. "
             "Verify provider settings and retry."
+            if display_multi_image
+            else (
+                "Analysis failed due to an internal error. "
+                "Verify provider settings and retry."
+            )
         )
         mark_case_status(case_id, "error")
         set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", user_message)

@@ -82,6 +82,16 @@ class _EngineTestAnalyzer(FakeAnalyzer):
             Multi-image analysis result dict.
         """
         _EngineTestAnalyzer.last_multi_date_range = analysis_date_range
+        if len(images) == 1:
+            metadata = dict(images[0].get("metadata", {}))
+            if analysis_date_range is not None:
+                metadata["analysis_date_range"] = {
+                    "start_date": analysis_date_range[0],
+                    "end_date": analysis_date_range[1],
+                }
+            _EngineTestAnalyzer.last_full_metadata = metadata
+        else:
+            _EngineTestAnalyzer.last_full_metadata = None
         del investigation_context, progress_callback, cancel_check
         image_results: dict[str, dict[str, object]] = {}
         for desc in images:
@@ -101,7 +111,9 @@ class _EngineTestAnalyzer(FakeAnalyzer):
             }
         return {
             "images": image_results,
-            "cross_image_summary": "cross-image summary",
+            "cross_image_summary": (
+                "cross-image summary" if len(image_results) > 1 else None
+            ),
             "model_info": {"provider": "fake", "model": "fake-model"},
         }
 
@@ -488,6 +500,11 @@ class TestRunAutomation(unittest.TestCase):
         expected_path = self.cases_dir / "case-001" / "analysis_results.json"
         self.assertEqual(result.analysis_results_path, expected_path)
         self.assertTrue(expected_path.is_file())
+        analysis_results = json.loads(expected_path.read_text(encoding="utf-8"))
+        self.assertIn("images", analysis_results)
+        self.assertIsInstance(analysis_results["images"], dict)
+        self.assertEqual(len(analysis_results["images"]), 1)
+        self.assertNotIn("per_artifact", analysis_results)
 
     def test_report_generation_failure_keeps_analysis_results_path(self) -> None:
         """Report errors fail the run but keep the persisted analysis path."""
@@ -628,13 +645,13 @@ class TestRunAutomation(unittest.TestCase):
 
         def _deleting_analyzer(**kwargs: Any) -> _EngineTestAnalyzer:
             analyzer = _EngineTestAnalyzer(**kwargs)
-            original_run = analyzer.run_full_analysis
+            original_run = analyzer.run_multi_image_analysis
 
             def _run_and_delete(*args: Any, **run_kwargs: Any) -> dict[str, object]:
                 evidence_file.unlink()
                 return original_run(*args, **run_kwargs)
 
-            analyzer.run_full_analysis = _run_and_delete  # type: ignore[method-assign]
+            analyzer.run_multi_image_analysis = _run_and_delete  # type: ignore[method-assign]
             return analyzer
 
         self.mocks["ForensicAnalyzer"].side_effect = _deleting_analyzer
@@ -1025,16 +1042,16 @@ class TestRunAutomation(unittest.TestCase):
     def test_analysis_failure_returns_failure(self) -> None:
         """AI analysis exception results in failure."""
         def _fail_analyzer(**kwargs: Any) -> _EngineTestAnalyzer:
-            """Return an analyzer whose run_full_analysis raises.
+            """Return an analyzer whose run_multi_image_analysis raises.
 
             Args:
                 **kwargs: Constructor arguments.
 
             Returns:
-                Analyzer with overridden run_full_analysis.
+                Analyzer with overridden run_multi_image_analysis.
             """
             a = _EngineTestAnalyzer(**kwargs)
-            a.run_full_analysis = MagicMock(
+            a.run_multi_image_analysis = MagicMock(
                 side_effect=RuntimeError("AI provider error"),
             )
             return a
@@ -1152,21 +1169,21 @@ class TestRunAutomation(unittest.TestCase):
 
             seen_cancel_check: Any | None = None
 
-            def run_full_analysis(
+            def run_multi_image_analysis(
                 self,
-                artifact_keys: list[str],
+                images: list[dict[str, Any]],
                 investigation_context: str,
-                metadata: dict[str, object] | None,
                 progress_callback: object | None = None,
                 cancel_check: object | None = None,
+                analysis_date_range: tuple[str, str] | None = None,
             ) -> dict[str, object]:
                 type(self).seen_cancel_check = cancel_check
-                return super().run_full_analysis(
-                    artifact_keys=artifact_keys,
+                return super().run_multi_image_analysis(
+                    images=images,
                     investigation_context=investigation_context,
-                    metadata=metadata,
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
+                    analysis_date_range=analysis_date_range,
                 )
 
         self.mocks["ForensicAnalyzer"].side_effect = (

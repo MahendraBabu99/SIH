@@ -262,17 +262,14 @@ class ChatManager:
         single multi-section text string suitable for injection into an
         AI system prompt.
 
-        For multi-image results (containing an ``"images"`` dict), each
-        image's per-artifact findings are grouped under an
-        ``=== Image: <label> ===`` header with its summary, followed by
-        a ``=== Cross-Image Correlation ===`` section when a cross-image
-        summary is present.  Single-image (V1) results are handled with
-        the original flat layout.
+        For canonical image-scoped results, a one-image result keeps the
+        original single-system context layout, while multiple images are
+        grouped under ``=== Image: <label> ===`` sections followed by a
+        ``=== Cross-Image Correlation ===`` section when present.
 
         Args:
-            analysis_results: The full analysis results mapping.  May
-                contain V1 keys (``summary``, ``per_artifact``) or
-                multi-image keys (``images``, ``cross_image_summary``).
+            analysis_results: The full canonical analysis results mapping
+                with an ``images`` key.
             investigation_context: Free-text investigation context
                 provided by the analyst.
             metadata: Evidence metadata mapping (hostname, os_version,
@@ -630,10 +627,13 @@ class ChatManager:
         Extracts metadata fields, formats the standard sections, and
         appends the caller-provided findings section.
 
-        For **multi-image** results (presence of an ``images`` dict):
+        For canonical image-scoped results:
 
+        * A single image without cross-image correlation uses the same
+          single-system layout as the existing user workflow.
         * Each image is delineated with an ``=== Image: <label> ===``
-          header followed by its per-artifact findings and summary.
+          header followed by its per-artifact findings and summary when
+          multiple images are present.
         * A ``=== Cross-Image Correlation ===`` section is appended when
           a ``cross_image_summary`` is present.
 
@@ -641,9 +641,6 @@ class ChatManager:
         compression), the caller-supplied *findings_section* is used
         verbatim for **both** single-image and multi-image cases,
         bypassing the per-image findings rebuild.
-
-        For **single-image** (V1) results the original flat layout is
-        used: system metadata, executive summary, and findings.
 
         Args:
             analysis_results: The full analysis results mapping.
@@ -678,9 +675,44 @@ class ChatManager:
             f"Investigation Context:\n{context_text}",
         ]
 
-        # Multi-image: include per-image system info and summaries.
         images_data = analysis.get("images")
         if isinstance(images_data, Mapping) and images_data:
+            cross_summary = _stringify(analysis.get("cross_image_summary"))
+            if len(images_data) == 1 and not cross_summary:
+                image_id, img_data = next(iter(images_data.items()))
+                img_map = img_data if isinstance(img_data, Mapping) else {}
+                img_metadata = img_map.get("metadata")
+                if not isinstance(img_metadata, Mapping):
+                    img_metadata = {}
+                single_hostname = _stringify(
+                    img_metadata.get("hostname") or metadata_map.get("hostname"),
+                    default="Unknown",
+                )
+                single_os = _stringify(
+                    img_metadata.get("os_version")
+                    or img_metadata.get("os")
+                    or metadata_map.get("os_version")
+                    or metadata_map.get("os"),
+                    default="Unknown",
+                )
+                single_domain = _stringify(
+                    img_metadata.get("domain") or metadata_map.get("domain"),
+                    default="Unknown",
+                )
+                single_summary = _stringify(
+                    img_map.get("summary"),
+                    default="No executive summary available.",
+                )
+                sections.append(
+                    "System Under Analysis:\n"
+                    f"- Hostname: {single_hostname}\n"
+                    f"- OS: {single_os}\n"
+                    f"- Domain: {single_domain}"
+                )
+                sections.append(f"Executive Summary:\n{single_summary}")
+                sections.append(findings_section)
+                return "\n\n".join(sections)
+
             system_lines: list[str] = []
             for image_id, img_data in images_data.items():
                 if not isinstance(img_data, Mapping):
@@ -728,7 +760,6 @@ class ChatManager:
                     )
 
             # Cross-image summary.
-            cross_summary = _stringify(analysis.get("cross_image_summary"))
             if cross_summary:
                 sections.append(
                     f"=== Cross-Image Correlation ===\n{cross_summary}"
@@ -747,9 +778,8 @@ class ChatManager:
             )
             sections.append(f"Executive Summary:\n{summary}")
 
-        # For single-image cases, append the caller-provided findings
-        # section.  Multi-image cases handle findings above -- either
-        # via the use_provided_findings path or by rebuilding inline.
+        # For non-image-scoped or empty analysis data, append the
+        # caller-provided findings section.
         is_multi_image = isinstance(images_data, Mapping) and bool(images_data)
         if not is_multi_image:
             sections.append(findings_section)
@@ -760,10 +790,9 @@ class ChatManager:
 
         Handles multiple input shapes:
 
-        * **Multi-image** (``images`` dict): groups findings by image
-          label, prefixing each artifact with its image.
-        * **Single-image** (``per_artifact`` list or dict): flat list of
-          ``- artifact_name: analysis_text`` lines.
+        * **Canonical image-scoped** (``images`` dict): a single image is
+          formatted as a flat list; multiple images are grouped by label.
+        * **Empty/incomplete data**: returns a placeholder.
 
         Args:
             analysis_results: The full analysis results mapping.
@@ -775,6 +804,17 @@ class ChatManager:
         # Multi-image: check for ``images`` dict first.
         images_data = analysis_results.get("images")
         if isinstance(images_data, Mapping) and images_data:
+            if len(images_data) == 1:
+                _image_id, img_data = next(iter(images_data.items()))
+                if isinstance(img_data, Mapping):
+                    items = self._normalize_findings_items(img_data.get("per_artifact"))
+                    findings = self._extract_findings_tuples(items)
+                    if findings:
+                        return "\n".join(
+                            f"- {artifact_name}: {analysis_text}"
+                            for artifact_name, analysis_text in findings
+                        )
+                return "- No per-artifact findings available."
             return self._format_multi_image_findings(images_data)
 
         raw_findings = analysis_results.get("per_artifact")

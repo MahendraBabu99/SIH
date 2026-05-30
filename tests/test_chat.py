@@ -33,17 +33,23 @@ class ChatManagerTests(unittest.TestCase):
             manager = ChatManager(temp_dir)
             context = manager.build_chat_context(
                 analysis_results={
-                    "summary": "Execution artifacts indicate suspicious lateral movement.",
-                    "per_artifact": [
-                        {
-                            "artifact_name": "Shimcache",
-                            "analysis": "Cmd.exe spawned from an unusual temp path.",
+                    "images": {
+                        "img1": {
+                            "label": "WIN-IR-01",
+                            "summary": "Execution artifacts indicate suspicious lateral movement.",
+                            "per_artifact": [
+                                {
+                                    "artifact_name": "Shimcache",
+                                    "analysis": "Cmd.exe spawned from an unusual temp path.",
+                                },
+                                {
+                                    "artifact_name": "Prefetch",
+                                    "analysis": "PSExec executed multiple times in close succession.",
+                                },
+                            ],
                         },
-                        {
-                            "artifact_name": "Prefetch",
-                            "analysis": "PSExec executed multiple times in close succession.",
-                        },
-                    ],
+                    },
+                    "cross_image_summary": None,
                 },
                 investigation_context="Investigate unauthorized admin activity on host WIN-IR-01.",
                 metadata={"hostname": "WIN-IR-01", "os_version": "Windows 11", "domain": "CORP"},
@@ -186,11 +192,17 @@ class ChatManagerTests(unittest.TestCase):
 
     def _make_analysis_results(self, finding_text: str = "Short.") -> dict:
         return {
-            "summary": "Executive summary.",
-            "per_artifact": [
-                {"artifact_name": "shimcache", "analysis": finding_text},
-                {"artifact_name": "prefetch", "analysis": finding_text},
-            ],
+            "images": {
+                "img1": {
+                    "label": "Image 1",
+                    "summary": "Executive summary.",
+                    "per_artifact": [
+                        {"artifact_name": "shimcache", "analysis": finding_text},
+                        {"artifact_name": "prefetch", "analysis": finding_text},
+                    ],
+                },
+            },
+            "cross_image_summary": None,
         }
 
     def test_context_needs_compression_returns_false_when_within_budget(self) -> None:

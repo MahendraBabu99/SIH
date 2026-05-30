@@ -32,7 +32,6 @@ from .artifacts import sanitize_prompt
 from .tasks import (
     build_multi_image_analysis_payload_from_case,
     run_task_with_case_log_context,
-    run_analysis,
     run_multi_image_analysis_task,
 )
 
@@ -88,9 +87,9 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         return error_response("Request body must be a JSON object.", 400)
     prompt = str(payload.get("prompt", "")).strip()
 
-    # Multi-image: payload may contain an ``images`` list with per-image
-    # artifact selections.  When present, the multi-image analysis flow
-    # is used instead of the legacy single-image path.
+    # The canonical analysis input is image-scoped.  The request may
+    # provide an explicit ``images`` list, otherwise it is rebuilt from
+    # current image-scoped parse state.
     images_payload: list[dict[str, Any]] | None = None
     raw_images = payload.get("images")
     if isinstance(raw_images, list) and raw_images:
@@ -110,6 +109,11 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
             images_payload = build_multi_image_analysis_payload_from_case(
                 copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
             )
+    if not images_payload:
+        return error_response(
+            "No parsed image artifacts found. Run image parsing first.",
+            400,
+        )
 
     prompt_path = Path(case_dir) / "prompt.txt"
     prompt_details: dict[str, Any] = {"prompt": sanitize_prompt(prompt)}
@@ -121,9 +125,11 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
                 "start_date": start_date,
                 "end_date": end_date,
             }
-    if images_payload:
-        prompt_details["multi_image"] = True
-        prompt_details["image_count"] = len(images_payload)
+    image_count = len(images_payload)
+    display_multi_image = image_count > 1
+    prompt_details["image_scoped"] = True
+    prompt_details["multi_image"] = display_multi_image
+    prompt_details["image_count"] = image_count
 
     with STATE_LOCK:
         analysis_state = ANALYSIS_PROGRESS.setdefault(case_id, new_progress())
@@ -156,10 +162,7 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         audit_logger.log("prompt_submitted", prompt_details)
 
         # Determine total artifact count for the SSE started event.
-        if images_payload:
-            total_artifact_count = sum(len(img.get("artifacts", [])) for img in images_payload)
-        else:
-            total_artifact_count = len(analysis_artifacts_snapshot)
+        total_artifact_count = sum(len(img.get("artifacts", [])) for img in images_payload)
 
         emit_progress(
             ANALYSIS_PROGRESS, case_id,
@@ -167,24 +170,19 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
                 "type": "analysis_started",
                 "prompt_provided": bool(prompt),
                 "analysis_artifact_count": total_artifact_count,
-                "multi_image": images_payload is not None,
+                "multi_image": display_multi_image,
+                "image_scoped": True,
+                "image_count": image_count,
             },
         )
         config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
 
-        if images_payload:
-            threading.Thread(
-                target=run_task_with_case_log_context,
-                args=(case_id, run_multi_image_analysis_task, case_id, prompt,
-                      images_payload, config_snapshot),
-                daemon=True,
-            ).start()
-        else:
-            threading.Thread(
-                target=run_task_with_case_log_context,
-                args=(case_id, run_analysis, case_id, prompt, config_snapshot),
-                daemon=True,
-            ).start()
+        threading.Thread(
+            target=run_task_with_case_log_context,
+            args=(case_id, run_multi_image_analysis_task, case_id, prompt,
+                  images_payload, config_snapshot),
+            daemon=True,
+        ).start()
     except Exception:
         with STATE_LOCK:
             audit = case.get("audit")
@@ -203,7 +201,9 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
             "status": "started",
             "case_id": case_id,
             "analysis_artifacts": analysis_artifacts_snapshot,
-            "multi_image": images_payload is not None,
+            "multi_image": display_multi_image,
+            "image_scoped": True,
+            "image_count": image_count,
         },
         202,
     )

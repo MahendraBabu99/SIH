@@ -157,6 +157,53 @@ class _RouteLevelAnalyzer:
             "model_info": {"provider": "fake", "model": "route-model"},
         }
 
+    def run_multi_image_analysis(
+        self,
+        images: list[dict[str, object]],
+        investigation_context: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        """Return deterministic canonical analysis output.
+
+        Args:
+            images: Image descriptors selected for analysis.
+            investigation_context: Analyst prompt.
+            **_kwargs: Ignored analyzer keyword arguments.
+
+        Returns:
+            Canonical image-scoped analysis result dictionary.
+        """
+        del investigation_context
+        image_results: dict[str, dict[str, object]] = {}
+        for image in images:
+            image_id = str(image.get("image_id", "image"))
+            artifact_keys = [str(key) for key in image.get("artifact_keys", [])]
+            image_results[image_id] = {
+                "label": str(image.get("label", image_id)),
+                "per_artifact": [
+                    {
+                        "artifact_key": key,
+                        "artifact_name": "Run/RunOnce Keys",
+                        "analysis": (
+                            "Persistence entry references suspicious.exe. "
+                            "Confidence: HIGH"
+                        ),
+                        "key_data_points": ["HKCU\\Software\\Run"],
+                    }
+                    for key in artifact_keys
+                ],
+                "summary": "Suspicious Run key persistence was identified.",
+            }
+        return {
+            "images": image_results,
+            "cross_image_summary": (
+                "Cross-image persistence correlation was identified."
+                if len(image_results) > 1
+                else None
+            ),
+            "model_info": {"provider": "fake", "model": "route-model"},
+        }
+
 
 # ---------------------------------------------------------------------------
 # API integration tests

@@ -118,6 +118,16 @@ class _IntegrationAnalyzer(FakeAnalyzer):
             Multi-image analysis result dict with images and cross-summary.
         """
         _IntegrationAnalyzer.last_multi_date_range = analysis_date_range
+        if len(images) == 1:
+            metadata = dict(images[0].get("metadata", {}))
+            if analysis_date_range is not None:
+                metadata["analysis_date_range"] = {
+                    "start_date": analysis_date_range[0],
+                    "end_date": analysis_date_range[1],
+                }
+            _IntegrationAnalyzer.last_full_metadata = metadata
+        else:
+            _IntegrationAnalyzer.last_full_metadata = None
         del investigation_context, progress_callback, cancel_check
         image_results: dict[str, dict[str, object]] = {}
         for desc in images:
@@ -137,7 +147,9 @@ class _IntegrationAnalyzer(FakeAnalyzer):
             }
         return {
             "images": image_results,
-            "cross_image_summary": "cross-image correlation found",
+            "cross_image_summary": (
+                "cross-image correlation found" if len(image_results) > 1 else None
+            ),
             "model_info": {"provider": "fake", "model": "fake-model"},
         }
 

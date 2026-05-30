@@ -1196,6 +1196,7 @@ def run_automation(
                     "parsed_dir": str(parsed_dir),
                     "os_type": os_type,
                     "csv_paths": csv_paths,
+                    "artifact_csv_paths": csv_paths,
                     "evidence_descriptor": {
                         "dissect_path": str(descriptor.dissect_path),
                         "source_path": str(descriptor.source_path),
@@ -1270,44 +1271,20 @@ def run_automation(
     analysis_results: dict[str, Any] = {}
 
     try:
-        if len(image_descriptors) == 1:
-            desc = image_descriptors[0]
-            analyzer = ForensicAnalyzer(
-                case_dir=case_dir,
-                config=config,
-                audit_logger=audit_logger,
-                artifact_csv_paths=desc["csv_paths"],
-                os_type=desc["os_type"],
-            )
-            metadata = dict(desc["metadata"])
-            if request.date_range is not None:
-                metadata["analysis_date_range"] = {
-                    "start_date": request.date_range[0],
-                    "end_date": request.date_range[1],
-                }
-            analysis_results = analyzer.run_full_analysis(
-                artifact_keys=desc["artifact_keys"],
-                investigation_context=prompt,
-                metadata=metadata,
-                cancel_check=safe_cancel_check,
-            )
-        else:
-            # Multi-image: use first image's csv_paths for constructor,
-            # then call run_multi_image_analysis.
-            first = image_descriptors[0]
-            analyzer = ForensicAnalyzer(
-                case_dir=case_dir,
-                config=config,
-                audit_logger=audit_logger,
-                artifact_csv_paths=first["csv_paths"],
-                os_type=first["os_type"],
-            )
-            analysis_results = analyzer.run_multi_image_analysis(
-                images=image_descriptors,
-                investigation_context=prompt,
-                cancel_check=safe_cancel_check,
-                analysis_date_range=request.date_range,
-            )
+        first = image_descriptors[0]
+        analyzer = ForensicAnalyzer(
+            case_dir=case_dir,
+            config=config,
+            audit_logger=audit_logger,
+            artifact_csv_paths=first["csv_paths"],
+            os_type=first["os_type"],
+        )
+        analysis_results = analyzer.run_multi_image_analysis(
+            images=image_descriptors,
+            investigation_context=prompt,
+            cancel_check=safe_cancel_check,
+            analysis_date_range=request.date_range,
+        )
 
         cancelled = _stop_if_cancelled()
         if cancelled is not None:

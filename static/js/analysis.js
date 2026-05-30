@@ -3,7 +3,7 @@
  *
  * Manages the analysis lifecycle: submit, track via SSE, render
  * per-artifact results, executive summary, and collapsible findings.
- * Supports both single-image (V1) and multi-image analysis flows.
+ * Supports both single-image and multi-image analysis flows.
  *
  * Depends on: AIFT (utils.js, markdown.js)
  */

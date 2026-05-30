@@ -477,6 +477,67 @@ class FakeAnalyzer:
             "model_info": {"provider": "fake", "model": "fake-model"},
         }
 
+    def run_multi_image_analysis(
+        self,
+        images: list[dict[str, object]],
+        investigation_context: str,
+        progress_callback: object | None = None,
+        cancel_check: object | None = None,
+        analysis_date_range: tuple[str, str] | None = None,
+    ) -> dict[str, object]:
+        """Return fake image-scoped findings for route-level tests.
+
+        Args:
+            images: Image descriptors with ``image_id``, ``label`` and
+                ``artifact_keys`` values.
+            investigation_context: Ignored.
+            progress_callback: Optional callable invoked per artifact.
+            cancel_check: Ignored.
+            analysis_date_range: Ignored.
+
+        Returns:
+            Canonical image-scoped analysis output.
+        """
+        del investigation_context, cancel_check, analysis_date_range
+        FakeAnalyzer.last_artifact_keys = [
+            str(artifact)
+            for image in images
+            for artifact in image.get("artifact_keys", [])
+        ]
+        image_results: dict[str, dict[str, object]] = {}
+        for image in images:
+            image_id = str(image.get("image_id", "image"))
+            label = str(image.get("label", image_id))
+            artifact_keys = [str(item) for item in image.get("artifact_keys", [])]
+            per_artifact: list[dict[str, str]] = []
+            for artifact in artifact_keys:
+                result = {
+                    "artifact_key": artifact,
+                    "artifact_name": artifact,
+                    "analysis": f"analysis for {artifact}",
+                    "model": "fake-model",
+                }
+                per_artifact.append(result)
+                if callable(progress_callback):
+                    progress_callback(artifact, "complete", {
+                        **result,
+                        "image_id": image_id,
+                        "image_label": label,
+                    })
+            image_results[image_id] = {
+                "label": label,
+                "per_artifact": per_artifact,
+                "summary": "final summary",
+                "metadata": dict(image.get("metadata", {})),
+            }
+        return {
+            "images": image_results,
+            "cross_image_summary": (
+                "cross-image summary" if len(image_results) > 1 else None
+            ),
+            "model_info": {"provider": "fake", "model": "fake-model"},
+        }
+
 
 # ---------------------------------------------------------------------------
 # FakeReportGenerator
