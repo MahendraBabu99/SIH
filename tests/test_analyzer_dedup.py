@@ -767,6 +767,7 @@ class TestGenerateSummaryFailure(unittest.TestCase):
     """Tests for ForensicAnalyzer.generate_summary error handling."""
 
     def test_returns_failure_message_on_error(self) -> None:
+        """Summary failures return a data-gap note and structured state."""
         fake_provider = FakeProvider(fail_calls={0, 1, 2})
         with patch("app.analyzer.core.create_provider", return_value=fake_provider), \
              patch("app.analyzer.core.sleep"):
@@ -781,7 +782,9 @@ class TestGenerateSummaryFailure(unittest.TestCase):
                     prompts_dir=prompts_dir,
                 )
                 result = analyzer.generate_summary([], "ctx", {})
-        self.assertTrue(result.startswith("Analysis failed:"))
+        self.assertEqual(result, "Summary unavailable; recorded as a data gap.")
+        self.assertEqual(analyzer._last_summary_state["status"], "failed")
+        self.assertIn("provider-failure-", analyzer._last_summary_state["error"])
 
 
 class TestCreateAiProvider(unittest.TestCase):

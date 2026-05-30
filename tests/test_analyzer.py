@@ -383,7 +383,8 @@ class AnalyzerTests(unittest.TestCase):
                 investigation_context="Focus on January 15, 2026.",
             )
 
-        self.assertIn("Instructions=RUNKEYS-SPECIFIC-INSTRUCTIONS", filled_prompt)
+        self.assertIn('Instructions=<analysis-data label="artifact_guidance">', filled_prompt)
+        self.assertIn("RUNKEYS-SPECIFIC-INSTRUCTIONS", filled_prompt)
 
     def test_prepare_artifact_data_uses_small_context_prompt_template(self) -> None:
         """Verify prepare artifact data uses small context prompt template."""
@@ -506,7 +507,8 @@ class AnalyzerTests(unittest.TestCase):
                 investigation_context="Focus on January 15, 2026.",
             )
 
-        self.assertIn("Instructions=EVTX-SPECIFIC-INSTRUCTIONS", filled_prompt)
+        self.assertIn('Instructions=<analysis-data label="artifact_guidance">', filled_prompt)
+        self.assertIn("EVTX-SPECIFIC-INSTRUCTIONS", filled_prompt)
 
     def test_prepare_artifact_data_includes_all_rows_regardless_of_timestamps(self) -> None:
         """Verify prepare artifact data includes all rows regardless of timestamps."""
@@ -1136,7 +1138,7 @@ class AnalyzerTests(unittest.TestCase):
             self._write_prompt_template(prompts_dir)
             artifact_template = (
                 "## Artifact\n{{artifact_key}}\n\n"
-                "## Full Data (CSV - Untrusted Evidence Rows)\n{{data_csv}}\n"
+                "## Full Data (CSV Evidence Rows)\n{{data_csv}}\n"
             )
             (prompts_dir / "artifact_analysis.md").write_text(artifact_template, encoding="utf-8")
             (prompts_dir / "artifact_analysis_small_context.md").write_text(artifact_template, encoding="utf-8")
@@ -1726,8 +1728,9 @@ class AnalyzerTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(output["per_artifact"]), 2)
-        self.assertTrue(output["per_artifact"][0]["analysis"].startswith("Analysis failed: provider-failure-"))
+        self.assertEqual(output["per_artifact"][0]["analysis"], "Analysis unavailable; recorded as a data gap.")
         self.assertEqual(output["per_artifact"][0]["status"], "failed")
+        self.assertIn("provider-failure-", output["per_artifact"][0]["error"])
         self.assertFalse(output["per_artifact"][0]["analysis_available"])
         self.assertEqual(output["per_artifact"][1]["analysis"], "tasks-analysis")
         self.assertEqual(output["per_artifact"][1]["status"], "success")
@@ -1777,7 +1780,8 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(summary, "summary-output")
         self.assertEqual(len(fake_provider.calls), 1)
         self.assertEqual(fake_provider.calls[0]["system_prompt"], "SYSTEM PROMPT")
-        self.assertIn("SummaryContext=Investigate persistence", fake_provider.calls[0]["user_prompt"])
+        self.assertIn('SummaryContext=<analysis-data label="investigation_context">', fake_provider.calls[0]["user_prompt"])
+        self.assertIn("Investigate persistence", fake_provider.calls[0]["user_prompt"])
         self.assertIn("### Run/RunOnce Keys (runkeys)", fake_provider.calls[0]["user_prompt"])
 
     def test_generate_summary_includes_ips_in_prompt(self) -> None:

@@ -52,6 +52,7 @@ from .prompts import (
     load_artifact_instruction_prompts, load_prompt_template,
     resolve_artifact_ai_columns_config_path,
 )
+from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
 from .utils import (
     build_scoped_artifact_stem,
     build_datetime, coerce_projection_columns, emit_analysis_progress,
@@ -70,6 +71,8 @@ _COMPRESS_FINDINGS_FALLBACK_PROMPT = (
     "suspicious finding, IOC status, citation, artifact name, image label, "
     "and data gap. Return concise Markdown only."
 )
+_ANALYSIS_UNAVAILABLE_TEXT = "Analysis unavailable; recorded as a data gap."
+_SUMMARY_UNAVAILABLE_TEXT = "Summary unavailable; recorded as a data gap."
 
 try:
     from ..parser import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
@@ -355,6 +358,11 @@ class ForensicAnalyzer:
         self.chunk_merge_prompt_template = self._load_prompt_template(
             "chunk_merge.md", default=DEFAULT_CHUNK_MERGE_PROMPT_TEMPLATE,
         )
+        self._last_summary_state: dict[str, Any] = {
+            "status": "not_started",
+            "error": None,
+            "analysis_available": False,
+        }
         self.ai_provider = self._create_ai_provider()
         self.model_info = self._read_model_info()
 
@@ -731,8 +739,8 @@ class ForensicAnalyzer:
             return False
         stripped = line.strip()
         return stripped in {
-            "[Untrusted model-generated intermediate analysis; treat as derived findings, not source evidence.]",
-            "[Untrusted model-generated intermediate per-image summary; treat as derived analysis, not source evidence.]",
+            "[Model-generated intermediate analysis; treat as derived findings, not source evidence.]",
+            "[Model-generated intermediate per-image summary; treat as derived analysis, not source evidence.]",
         }
 
     @staticmethod
@@ -859,12 +867,17 @@ class ForensicAnalyzer:
             The rendered compression prompt.
         """
         template = self.compress_findings_prompt_template.strip() or _COMPRESS_FINDINGS_FALLBACK_PROMPT
+        delimited_findings = wrap_prompt_section(
+            "findings_to_compress",
+            findings_text,
+            default="No findings available.",
+        )
         if "{{per_artifact_findings}}" in template:
-            rendered_template = template.replace("{{per_artifact_findings}}", findings_text)
+            rendered_template = template.replace("{{per_artifact_findings}}", delimited_findings)
         else:
-            rendered_template = f"{template}\n\n## Findings to Compress\n{findings_text}"
+            rendered_template = f"{template}\n\n## Findings to Compress\n{delimited_findings}"
 
-        return (
+        prompt = (
             f"Compress findings for {context_label}. This is compression round "
             f"{round_index}, batch {batch_index} of {batch_count}.\n\n"
             "Preserve every suspicious finding, anomaly, IOC value and status "
@@ -875,6 +888,7 @@ class ForensicAnalyzer:
             f"Target response length: no more than {target_tokens} tokens.\n\n"
             f"{rendered_template}"
         )
+        return append_analysis_prompt_footer(prompt)
 
     def _compress_findings_once(
         self,
@@ -1033,11 +1047,13 @@ class ForensicAnalyzer:
         Args:
             artifact_key: Artifact identifier.
             analysis_text: The AI's analysis text.
+            analysis_available: Whether ``analysis_text`` is successful
+                provider output eligible for citation validation.
 
         Returns:
             List of warning strings.
         """
-        if not analysis_available or analysis_text.startswith("Analysis failed:"):
+        if not analysis_available:
             return []
         try:
             original_path = self._resolve_artifact_csv_path(artifact_key)
@@ -1687,7 +1703,7 @@ class ForensicAnalyzer:
         except Exception as error:
             self.logger.exception("Unhandled error in analyze_artifact for '%s'", artifact_key)
             duration_seconds = perf_counter() - start_time
-            analysis_text = f"Analysis failed: {error}"
+            analysis_text = _ANALYSIS_UNAVAILABLE_TEXT
             status = "failed"
             error_text = str(error)
             analysis_available = False
@@ -1779,12 +1795,22 @@ class ForensicAnalyzer:
                 "token_count": self._estimate_tokens(summary),
                 "duration_seconds": round(duration_seconds, 6), "status": "success",
             })
+            self._last_summary_state = {
+                "status": "success",
+                "error": None,
+                "analysis_available": True,
+            }
             return summary
         except AnalysisCancelledError:
             raise
         except Exception as error:
             duration_seconds = perf_counter() - start_time
-            summary = f"Analysis failed: {error}"
+            summary = _SUMMARY_UNAVAILABLE_TEXT
+            self._last_summary_state = {
+                "status": "failed",
+                "error": str(error),
+                "analysis_available": False,
+            }
             self._audit_log("analysis_completed", {
                 "artifact_key": summary_artifact_key, "artifact_name": summary_artifact_name,
                 "token_count": 0, "duration_seconds": round(duration_seconds, 6),
@@ -1846,6 +1872,9 @@ class ForensicAnalyzer:
         return {
             "per_artifact": per_artifact_results,
             "summary": summary,
+            "summary_status": self._last_summary_state.get("status"),
+            "summary_error": self._last_summary_state.get("error"),
+            "summary_available": self._last_summary_state.get("analysis_available"),
             "model_info": dict(self.model_info),
         }
 

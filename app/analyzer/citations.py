@@ -5,6 +5,8 @@ against source CSV data to detect potential hallucinations.
 
 Attributes:
     LOGGER: Module-level logger instance.
+    _CITATION_VALIDATION_HIGH_CAP: Minimum per-category citation
+        validation cap used to avoid missing middle citations.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from .constants import CITED_ISO_TIMESTAMP_RE, CITED_ROW_REF_RE, CITED_COLUMN_RE
 from .utils import looks_like_timestamp_column, stringify_value
 
 LOGGER = logging.getLogger(__name__)
+_CITATION_VALIDATION_HIGH_CAP = 500
 
 __all__ = [
     "validate_citations",
@@ -30,7 +33,14 @@ __all__ = [
 
 
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
-    """Deduplicate citation strings while preserving first occurrence."""
+    """Deduplicate citation strings while preserving first occurrence.
+
+    Args:
+        values: Citation strings in occurrence order.
+
+    Returns:
+        Unique non-empty citation strings in first-seen order.
+    """
     selected: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -45,22 +55,60 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
     return selected
 
 
-def _select_spot_checks(values: list[str], limit: int) -> list[str]:
-    """Select deterministic citation checks across the full citation list."""
-    if limit <= 0:
+def _select_citation_checks(values: list[str], limit: int) -> list[str]:
+    """Select citations for validation with broad deterministic coverage.
+
+    Args:
+        values: Deduplicated citation strings in occurrence order.
+        limit: Maximum number of citations to return.
+
+    Returns:
+        Citation strings selected for validation.  All citations are
+        returned when they fit within ``limit``; otherwise first, last,
+        uncommon normalized keys, and evenly spaced entries are retained.
+    """
+    if limit <= 0 or not values:
         return []
     if len(values) <= limit:
         return list(values)
     if limit == 1:
         return [values[0]]
 
-    indices: list[int] = []
+    def _normalized(value: str) -> str:
+        """Normalize a citation string for frequency-based coverage.
+
+        Args:
+            value: Citation string.
+
+        Returns:
+            Lowercased alphanumeric citation key.
+        """
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
+
     last_index = len(values) - 1
+    selected_indices: set[int] = {0, last_index}
+
+    key_counts: dict[str, int] = {}
+    for value in values:
+        key = _normalized(value)
+        key_counts[key] = key_counts.get(key, 0) + 1
+
     for slot in range(limit):
+        if len(selected_indices) >= limit:
+            break
         index = round(slot * last_index / (limit - 1))
-        if index not in indices:
-            indices.append(index)
-    return [values[index] for index in indices]
+        selected_indices.add(index)
+
+    uncommon_indices = sorted(
+        range(len(values)),
+        key=lambda index: (key_counts.get(_normalized(values[index]), 0), index),
+    )
+    for index in uncommon_indices:
+        if len(selected_indices) >= limit:
+            break
+        selected_indices.add(index)
+
+    return [values[index] for index in sorted(selected_indices)]
 
 
 def timestamp_lookup_keys(value: str) -> set[str]:
@@ -204,8 +252,9 @@ def validate_citations(
         artifact_key: Artifact identifier used for logging.
         analysis_text: The AI's analysis text to scan for citations.
         csv_path: Path to the source CSV file.
-        citation_spot_check_limit: Maximum citations to validate per
-            category.
+        citation_spot_check_limit: Configured citation validation limit.
+            The validator checks all citations up to a high internal cap
+            and uses deterministic coverage when there are more.
         audit_log_fn: Optional callable ``(action, details)`` for audit
             logging.
 
@@ -213,9 +262,6 @@ def validate_citations(
         A list of human-readable warning strings for values that could
         not be verified.
     """
-    if analysis_text.startswith("Analysis failed:"):
-        return []
-
     cited_timestamps = _dedupe_preserve_order(CITED_ISO_TIMESTAMP_RE.findall(analysis_text))
     cited_row_refs = _dedupe_preserve_order(CITED_ROW_REF_RE.findall(analysis_text))
 
@@ -261,6 +307,27 @@ def validate_citations(
 
     warnings: list[str] = []
     column_match_results: list[dict[str, str]] = []
+    effective_limit = max(citation_spot_check_limit, _CITATION_VALIDATION_HIGH_CAP)
+    timestamp_checks = _select_citation_checks(cited_timestamps, effective_limit)
+    row_ref_checks = _select_citation_checks(cited_row_refs, effective_limit)
+    column_checks = _select_citation_checks(cited_columns, effective_limit)
+    citation_counts: dict[str, dict[str, int]] = {
+        "timestamps": {
+            "total": len(cited_timestamps),
+            "checked": len(timestamp_checks),
+            "skipped": max(0, len(cited_timestamps) - len(timestamp_checks)),
+        },
+        "row_refs": {
+            "total": len(cited_row_refs),
+            "checked": len(row_ref_checks),
+            "skipped": max(0, len(cited_row_refs) - len(row_ref_checks)),
+        },
+        "columns": {
+            "total": len(cited_columns),
+            "checked": len(column_checks),
+            "skipped": max(0, len(cited_columns) - len(column_checks)),
+        },
+    }
 
     if row_ref_header_count > 1:
         warnings.append(
@@ -275,19 +342,19 @@ def validate_citations(
             f"Note: analysis-input CSV has {duplicate_row_ref_count} duplicate row_ref values."
         )
 
-    for ts in _select_spot_checks(cited_timestamps, citation_spot_check_limit):
+    for ts in timestamp_checks:
         if not timestamp_found_in_csv(ts, csv_timestamp_lookup):
             warnings.append(
                 f"Note: AI cited timestamp {ts} which could not be verified in the source data."
             )
 
-    for ref in _select_spot_checks(cited_row_refs, citation_spot_check_limit):
+    for ref in row_ref_checks:
         if ref not in csv_row_refs:
             warnings.append(
                 f"Note: AI cited row {ref} which could not be verified in the source data."
             )
 
-    for cited_col in _select_spot_checks(cited_columns, citation_spot_check_limit):
+    for cited_col in column_checks:
         match_status, matched_header = match_column_name(cited_col, csv_columns)
         column_match_results.append({
             "cited": cited_col,
@@ -309,14 +376,15 @@ def validate_citations(
         elif match_status == "unverifiable":
             warnings.append(
                 f"Note: AI cited column '{cited_col}' which does not match any column "
-                f"in the source data — citation is unverifiable."
+                f"in the source data; citation is unverifiable."
             )
 
-    if warnings and audit_log_fn is not None:
+    if (warnings or any(counts["total"] for counts in citation_counts.values())) and audit_log_fn is not None:
         audit_details: dict[str, object] = {
             "artifact_key": artifact_key,
-            "citation_validation": "warnings_found",
+            "citation_validation": "warnings_found" if warnings else "checked",
             "warning_count": len(warnings),
+            "citation_counts": citation_counts,
             "warnings": warnings[:10],
         }
         if column_match_results:

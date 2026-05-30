@@ -180,12 +180,12 @@ def test_nested_finding_headings_do_not_replace_artifact_identity(tmp_path: Path
     analyzer = _build_budgeted_analyzer(tmp_path, provider)
     findings_text = (
         "### Artifact Alpha (alpha)\n"
-        "[Untrusted model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
+        "[Model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
         "Finding before nested heading.\n"
         "### Persistence Finding (High)\n"
         "Suspicious launcher.exe observed. IOC 10.0.0.9 Observed. Citation row_ref 7.\n\n"
         "### Artifact Beta (beta)\n"
-        "[Untrusted model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
+        "[Model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
         "No suspicious persistence observed."
     )
 
@@ -265,7 +265,7 @@ def test_chunked_artifact_analysis_stops_between_chunks_when_cancelled() -> None
 
     rows = "\n".join(f"{index},value-{index}-{'x' * 180}" for index in range(1, 12))
     prompt = (
-        "## Full Data (CSV - Untrusted Evidence Rows)\n"
+        "## Full Data (CSV Evidence Rows)\n"
         "row_ref,message\n"
         f"{rows}\n"
         "## Final Analysis Rules\nUse row refs."

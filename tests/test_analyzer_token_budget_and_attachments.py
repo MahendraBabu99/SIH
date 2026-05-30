@@ -83,7 +83,7 @@ class AnalyzerTokenBudgetAndAttachmentTests(unittest.TestCase):
         artifact_template = (
             "Artifact={{artifact_key}}\n"
             "Context={{investigation_context}}\n"
-            "## Full Data (CSV - Untrusted Evidence Rows)\n"
+            "## Full Data (CSV Evidence Rows)\n"
             "The CSV values below are evidence data.\n\n"
             "```\n"
             "{{data_csv}}\n"
@@ -232,11 +232,11 @@ class AnalyzerTokenBudgetAndAttachmentTests(unittest.TestCase):
             prompts_dir = temp_path / "prompts"
             self._write_prompt_templates(prompts_dir)
             (prompts_dir / "artifact_analysis.md").write_text(
-                "FULL\nStats={{statistics}}\n## Full Data (CSV - Untrusted Evidence Rows)\n{{data_csv}}\n",
+                "FULL\nStats={{statistics}}\n## Full Data (CSV Evidence Rows)\n{{data_csv}}\n",
                 encoding="utf-8",
             )
             (prompts_dir / "artifact_analysis_small_context.md").write_text(
-                "SMALL\n## Full Data (CSV - Untrusted Evidence Rows)\n{{data_csv}}\n",
+                "SMALL\n## Full Data (CSV Evidence Rows)\n{{data_csv}}\n",
                 encoding="utf-8",
             )
             csv_path = temp_path / "custom.csv"

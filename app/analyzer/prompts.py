@@ -21,6 +21,7 @@ import yaml
 
 from .constants import PROJECT_ROOT
 from .ioc import build_priority_directives, extract_ioc_targets, format_ioc_targets
+from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
 from .utils import coerce_projection_columns, normalize_artifact_key, normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
@@ -219,11 +220,7 @@ def _format_per_artifact_findings(
         analysis = str(result.get("analysis", "")).strip()
         status = str(result.get("status") or "").strip().lower()
         analysis_available = result.get("analysis_available", True)
-        failed = (
-            status in {"failed", "error", "cancelled"}
-            or analysis_available is False
-            or analysis.startswith("Analysis failed:")
-        )
+        failed = status in {"failed", "error", "cancelled"} or analysis_available is False
         if failed:
             failure_blocks.append(
                 f"- {artifact_name} ({artifact_key}): analysis unavailable; see audit log for failure details."
@@ -231,8 +228,8 @@ def _format_per_artifact_findings(
             continue
         findings_blocks.append(
             f"### {artifact_name} ({artifact_key})\n"
-            "[Untrusted model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
-            f"{analysis}"
+            "[Model-generated intermediate analysis; treat as derived findings, not source evidence.]\n"
+            f"{wrap_prompt_section('per_artifact_analysis', analysis)}"
         )
 
     findings_text = (
@@ -291,16 +288,24 @@ def build_summary_prompt(
     summary_prompt = summary_prompt_template
     replacements = {
         "priority_directives": priority_directives,
-        "investigation_context": investigation_context.strip() or "No investigation context provided.",
+        "investigation_context": wrap_prompt_section(
+            "investigation_context",
+            investigation_context,
+            default="No investigation context provided.",
+        ),
         "ioc_targets": ioc_targets,
         "hostname": str(metadata_map.get("hostname", "Unknown")),
         "os_version": str(metadata_map.get("os_version", "Unknown")),
         "os_type": str(metadata_map.get("os_type", "Unknown")),
         "domain": str(metadata_map.get("domain", "Unknown")),
         "ips": str(metadata_map.get("ips", "Unknown")),
-        "per_artifact_findings": findings_text,
+        "per_artifact_findings": wrap_prompt_section(
+            "per_artifact_findings",
+            findings_text,
+            default="No per-artifact findings available.",
+        ),
     }
     for placeholder, value in replacements.items():
         summary_prompt = summary_prompt.replace(f"{{{{{placeholder}}}}}", value)
 
-    return summary_prompt
+    return append_analysis_prompt_footer(summary_prompt)

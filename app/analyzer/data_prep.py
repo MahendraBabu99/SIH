@@ -30,6 +30,7 @@ from .ioc import (
     extract_ioc_targets,
     format_ioc_targets,
 )
+from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
 from .utils import (
     extract_row_datetime,
     format_datetime,
@@ -686,7 +687,11 @@ def prepare_artifact_data(
     meta = host_metadata if isinstance(host_metadata, Mapping) else {}
     replacements = {
         "priority_directives": priority_directives,
-        "investigation_context": investigation_context.strip() or "No investigation context provided.",
+        "investigation_context": wrap_prompt_section(
+            "investigation_context",
+            investigation_context,
+            default="No investigation context provided.",
+        ),
         "ioc_targets": ioc_targets,
         "hostname": str(meta.get("hostname", "Unknown")),
         "domain": str(meta.get("domain", "Unknown")),
@@ -698,8 +703,16 @@ def prepare_artifact_data(
         "time_range_start": format_datetime(min_time),
         "time_range_end": format_datetime(max_time),
         "statistics": statistics,
-        "analysis_instructions": artifact_guidance,
-        "artifact_guidance": artifact_guidance,
+        "analysis_instructions": wrap_prompt_section(
+            "artifact_guidance",
+            artifact_guidance,
+            default="No artifact-specific guidance provided.",
+        ),
+        "artifact_guidance": wrap_prompt_section(
+            "artifact_guidance",
+            artifact_guidance,
+            default="No artifact-specific guidance provided.",
+        ),
         "data_csv": full_data_csv,
     }
 
@@ -716,7 +729,7 @@ def prepare_artifact_data(
     if final_context_reminder:
         filled = f"{filled.rstrip()}\n\n{final_context_reminder}\n"
 
-    return filled, analysis_csv_path, analysis_columns
+    return append_analysis_prompt_footer(filled), analysis_csv_path, analysis_columns
 
 
 def _resolve_analysis_instructions(

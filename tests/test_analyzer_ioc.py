@@ -207,6 +207,7 @@ class TestBuildArtifactFinalContextReminder(unittest.TestCase):
     """Tests for ioc.build_artifact_final_context_reminder."""
 
     def test_basic_structure(self) -> None:
+        """Final reminders preserve analyst instructions without raw context."""
         from app.analyzer.ioc import build_artifact_final_context_reminder
         result = build_artifact_final_context_reminder(
             artifact_key="runkeys",
@@ -216,14 +217,16 @@ class TestBuildArtifactFinalContextReminder(unittest.TestCase):
         self.assertIn("## Final Context Reminder", result)
         self.assertIn("runkeys", result)
         self.assertIn("Run/RunOnce Keys", result)
-        self.assertIn("Check for persistence", result)
+        self.assertIn("investigation context above", result)
+        self.assertNotIn("Check for persistence", result)
 
     def test_empty_context(self) -> None:
+        """Empty context reminders still point to analyst context."""
         from app.analyzer.ioc import build_artifact_final_context_reminder
         result = build_artifact_final_context_reminder(
             artifact_key="k", artifact_name="n", investigation_context="",
         )
-        self.assertIn("No investigation context provided", result)
+        self.assertIn("investigation context above", result)
 
 
 ###############################################################################
@@ -425,6 +428,7 @@ class TestBuildSummaryPrompt(unittest.TestCase):
     """Tests for prompts.build_summary_prompt."""
 
     def test_fills_template(self) -> None:
+        """Summary prompts delimit context and findings as analysis sections."""
         from app.analyzer.prompts import build_summary_prompt
         template = (
             "Context: {{investigation_context}}\n"
@@ -441,9 +445,12 @@ class TestBuildSummaryPrompt(unittest.TestCase):
             ],
             metadata_map={"hostname": "host1", "os_version": "Win10", "domain": "corp"},
         )
-        self.assertIn("Context: Test context", result)
+        self.assertIn('Context: <analysis-data label="investigation_context">', result)
+        self.assertIn("Test context", result)
         self.assertIn("Host: host1", result)
+        self.assertIn('<analysis-data label="per_artifact_findings">', result)
         self.assertIn("### RunKeys (runkeys)", result)
+        self.assertTrue(result.rstrip().endswith("mark unsupported claims as data gaps."))
 
     def test_empty_results(self) -> None:
         from app.analyzer.prompts import build_summary_prompt
@@ -454,6 +461,26 @@ class TestBuildSummaryPrompt(unittest.TestCase):
             metadata_map={},
         )
         self.assertIn("No per-artifact findings available", result)
+
+    def test_prefixed_successful_analysis_is_summarized_as_findings(self) -> None:
+        """Summary prompts keep successful output that resembles a failure."""
+        from app.analyzer.prompts import build_summary_prompt
+        result = build_summary_prompt(
+            summary_prompt_template="{{per_artifact_findings}}",
+            investigation_context="ctx",
+            per_artifact_results=[
+                {
+                    "artifact_key": "custom",
+                    "artifact_name": "Custom",
+                    "analysis": "Analysis failed: row 1 is suspicious.",
+                    "status": "success",
+                    "analysis_available": True,
+                }
+            ],
+            metadata_map={},
+        )
+        self.assertIn("Analysis failed: row 1 is suspicious.", result)
+        self.assertNotIn("Analysis Failures / Data Gaps", result)
 
     def test_missing_metadata_uses_unknown(self) -> None:
         from app.analyzer.prompts import build_summary_prompt

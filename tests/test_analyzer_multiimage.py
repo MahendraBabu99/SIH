@@ -605,10 +605,10 @@ class TestCrossImageCorrelationFailure:
             investigation_context="Test",
         )
 
-        # Phase 3 failed, so the error message should appear in cross_image_summary
+        # Phase 3 failed, so a data-gap summary should appear without leaking provider details.
         assert result["cross_image_summary"] is not None
-        assert "Cross-image correlation failed" in result["cross_image_summary"]
-        assert "AI service unavailable" in result["cross_image_summary"]
+        assert result["cross_image_summary"] == "Cross-image correlation unavailable; recorded as a data gap."
+        assert "AI service unavailable" not in result["cross_image_summary"]
 
 
 class TestPerImageSummaryProgressPayload:
@@ -750,6 +750,7 @@ class TestBuildCrossImagePromptEdgeCases:
         assert "No investigation context provided" in result
 
     def test_metadata_table_escapes_pipes_and_newlines(self) -> None:
+        """Metadata table escaping is preserved inside analysis sections."""
         result = build_cross_image_prompt(
             template="{{image_metadata_table}}",
             investigation_context="ctx",
@@ -768,10 +769,13 @@ class TestBuildCrossImagePromptEdgeCases:
             image_summaries={},
         )
         rows = result.splitlines()
-        assert len(rows) == 3
-        assert r"img\|1" in rows[2]
-        assert "Workstation One" in rows[2]
-        assert r"host\|name" in rows[2]
+        table_rows = [row for row in rows if row.startswith("|")]
+        assert len(table_rows) == 3
+        assert '<analysis-data label="image_metadata">' in result
+        assert r"img\|1" in table_rows[2]
+        assert "Workstation One" in table_rows[2]
+        assert r"host\|name" in table_rows[2]
+        assert result.rstrip().endswith("mark unsupported claims as data gaps.")
 
 
 class TestArtifactCsvPathsClearedBetweenImages:
