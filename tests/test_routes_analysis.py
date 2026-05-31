@@ -21,7 +21,6 @@ import yaml
 
 from app import create_app
 from app.case_logging import unregister_all_case_log_handlers
-import app.routes as routes
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat
@@ -108,10 +107,10 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -131,21 +130,21 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
                 raise RuntimeError("Simulated parse failure")
 
         with (
-            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
-            patch.object(routes, "ForensicParser", FakeParser),
-            patch.object(routes_handlers, "ForensicParser", FakeParser),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(
-                routes, "compute_hashes",
+                routes_evidence, "compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch.object(
-                routes_handlers, "compute_hashes",
+                routes_evidence, "compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch.object(
@@ -156,7 +155,7 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
                 "app.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
-            patch.object(routes.threading, "Thread", ImmediateThread),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
         ):
             # Create case and load evidence.
             create_resp = self.client.post("/api/cases", json={"case_name": "Stale"})
@@ -203,16 +202,16 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
 
         # Now reparse with a failing parser.
         with (
-            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
-            patch.object(routes, "ForensicParser", FailingParser),
-            patch.object(routes_handlers, "ForensicParser", FailingParser),
+            patch.object(routes_tasks, "ForensicParser", FailingParser),
+            patch.object(routes_tasks, "ForensicParser", FailingParser),
             patch.object(routes_tasks, "ForensicParser", FailingParser),
             patch.object(routes_evidence, "ForensicParser", FailingParser),
             patch("app.parser.ForensicParser", FailingParser),
-            patch.object(routes.threading, "Thread", ImmediateThread),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
         ):
             resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
             self.assertEqual(resp.status_code, 202)
@@ -301,10 +300,10 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
         FakeAnalyzer.last_artifact_keys = []
 
@@ -316,7 +315,7 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
         """Run analysis successfully, then force failure on rerun.
 
         After the failed rerun, prior findings must not be available
-        via chat or report/download routes.
+        via chat or report/download routes_state.
         """
         evidence_path = Path(self.temp_dir.name) / "stale.E01"
         evidence_path.write_bytes(b"demo")
@@ -346,20 +345,20 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
         hash_rv = {"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4}
 
         with (
-            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
-            patch.object(routes, "ForensicParser", FakeParser),
-            patch.object(routes_handlers, "ForensicParser", FakeParser),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
-            patch.object(routes, "ForensicAnalyzer", FailOnSecondAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FailOnSecondAnalyzer),
-            patch.object(routes.threading, "Thread", ImmediateThread),
-            patch.object(routes, "compute_hashes", return_value=hash_rv),
-            patch.object(routes_handlers, "compute_hashes", return_value=hash_rv),
+            patch.object(routes_tasks, "ForensicAnalyzer", FailOnSecondAnalyzer),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
+            patch.object(routes_evidence, "compute_hashes", return_value=hash_rv),
+            patch.object(routes_evidence, "compute_hashes", return_value=hash_rv),
             patch.object(routes_evidence, "compute_hashes", return_value=hash_rv),
             patch("app.hasher.compute_hashes", return_value=hash_rv),
         ):

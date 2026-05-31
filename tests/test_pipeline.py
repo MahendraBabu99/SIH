@@ -6,11 +6,11 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 from app.audit import AuditLogger
 from app.hasher import compute_hashes, verify_hash
 from app.parser import ForensicParser
-from app.reporter import ReportGenerator
+from app.reporter.generator import ReportGenerator
 
 
 class FakeTarget:
@@ -106,7 +106,7 @@ class PipelineTests(unittest.TestCase):
                     case_dir=case_dir,
                     audit_logger=audit_logger,
                 )
-                analysis_results = analyzer.run_full_analysis(
+                flat_analysis_results = analyzer.run_full_analysis(
                     artifact_keys=["runkeys", "tasks"],
                     investigation_context="Investigate persistence around 2026-01-15.",
                     metadata=image_metadata,
@@ -114,8 +114,20 @@ class PipelineTests(unittest.TestCase):
 
             self.assertEqual(len(provider.calls), 3)
 
-            analysis_results["case_id"] = case_id
-            analysis_results["case_name"] = "Pipeline Integration Case"
+            image_id = "img-001"
+            analysis_results = {
+                "case_id": case_id,
+                "case_name": "Pipeline Integration Case",
+                "images": {
+                    image_id: {
+                        "label": "Evidence Image",
+                        "summary": flat_analysis_results.get("summary", ""),
+                        "per_artifact": flat_analysis_results.get("per_artifact", []),
+                    }
+                },
+                "cross_image_summary": flat_analysis_results.get("summary", ""),
+                "model_info": flat_analysis_results.get("model_info", {}),
+            }
 
             intake_hashes = compute_hashes(evidence_path)
             hash_ok, computed_sha256 = verify_hash(
@@ -134,6 +146,7 @@ class PipelineTests(unittest.TestCase):
             )
 
             evidence_hashes = {
+                "image_id": image_id,
                 "filename": evidence_path.name,
                 "sha256": intake_hashes["sha256"],
                 "md5": intake_hashes["md5"],
@@ -150,8 +163,8 @@ class PipelineTests(unittest.TestCase):
             reporter = ReportGenerator(cases_root=root / "cases")
             report_path = reporter.generate(
                 analysis_results=analysis_results,
-                image_metadata=image_metadata,
-                evidence_hashes=evidence_hashes,
+                image_metadata={image_id: {"image_id": image_id, **image_metadata}},
+                evidence_hashes={image_id: evidence_hashes},
                 investigation_context="Investigate persistence and scheduled task abuse.",
                 audit_log_entries=audit_entries_for_report,
             )

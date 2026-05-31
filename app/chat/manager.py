@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..audit import _utc_now_iso8601_ms
-from ._utils import stringify_chat_value as _stringify
+from ..utils import stringify as _stringify
 from .csv_retrieval import (
     contains_heuristic_term as _contains_heuristic_term,
     retrieve_csv_data as _retrieve_csv_data,

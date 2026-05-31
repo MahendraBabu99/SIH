@@ -25,9 +25,8 @@ from unittest.mock import patch
 
 from app import create_app
 from app.case_logging import unregister_all_case_log_handlers
-from app.reporter import ReportGenerator
+from app.reporter.generator import ReportGenerator
 from tests.conftest import FakeParser, FakeReportGenerator, FAKE_HASHES
-import app.routes as routes
 import app.routes.evidence as routes_evidence
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
@@ -55,26 +54,23 @@ def _standard_patches(cases_root: Path):
     from contextlib import ExitStack
 
     stack = ExitStack()
-    for mod in (routes, routes_handlers, routes_images, routes_state):
+    for mod in (routes_handlers, routes_images, routes_state):
         stack.enter_context(patch.object(mod, "CASES_ROOT", cases_root))
-    for mod in (routes, routes_handlers, routes_tasks, routes_evidence):
+    for mod in (routes_tasks, routes_evidence):
         stack.enter_context(patch.object(mod, "ForensicParser", FakeParser))
     stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
-    for mod in (routes, routes_handlers, routes_evidence):
-        stack.enter_context(patch.object(mod, "ReportGenerator", FakeReportGenerator))
-    for mod in (routes, routes_handlers, routes_evidence):
-        stack.enter_context(patch.object(
-            mod, "compute_hashes",
-            return_value={"sha256": FAKE_SHA256, "md5": FAKE_MD5, "size_bytes": 4},
-        ))
+    stack.enter_context(patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator))
+    stack.enter_context(patch.object(
+        routes_evidence, "compute_hashes",
+        return_value={"sha256": FAKE_SHA256, "md5": FAKE_MD5, "size_bytes": 4},
+    ))
     stack.enter_context(patch(
         "app.hasher.compute_hashes",
         return_value={"sha256": FAKE_SHA256, "md5": FAKE_MD5, "size_bytes": 4},
     ))
-    for mod in (routes, routes_handlers, routes_evidence):
-        stack.enter_context(patch.object(
-            mod, "verify_hash", return_value=(True, FAKE_SHA256),
-        ))
+    stack.enter_context(patch.object(
+        routes_evidence, "verify_hash", return_value=(True, FAKE_SHA256),
+    ))
     return stack
 
 
@@ -108,10 +104,10 @@ class TestSkipHashingIntake(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -281,9 +277,9 @@ class TestSkipHashingIntake(unittest.TestCase):
                 f"/api/cases/{case_id}/evidence",
                 json={"path": str(evidence_path), "skip_hashing": True},
             )
-            with routes.STATE_LOCK:
-                file_hashes = routes.CASE_STATES[case_id].get("evidence_file_hashes", [])
-                ev_hashes = routes.CASE_STATES[case_id].get("evidence_hashes", {})
+            with routes_state.STATE_LOCK:
+                file_hashes = routes_state.CASE_STATES[case_id].get("evidence_file_hashes", [])
+                ev_hashes = routes_state.CASE_STATES[case_id].get("evidence_hashes", {})
 
         self.assertEqual(file_hashes, [])
         self.assertEqual(ev_hashes["sha256"], "N/A (skipped)")
@@ -329,10 +325,10 @@ class TestSkipHashingReport(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -352,8 +348,8 @@ class TestSkipHashingReport(unittest.TestCase):
 
     def _set_canonical_analysis(self, case_id: str) -> None:
         """Populate image-scoped analysis results for report tests."""
-        with routes.STATE_LOCK:
-            case = routes.CASE_STATES[case_id]
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
             image_id = case["images"][0]["image_id"]
             case["analysis_results"] = {
                 "images": {

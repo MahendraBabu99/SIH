@@ -11,14 +11,13 @@ from typing import Any
 from unittest.mock import patch
 
 from app import create_app
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.utils import build_scoped_artifact_stem
 from app.chat.manager import ChatManager
 from app.routes.evidence import rebuild_case_parse_artifacts
 from app.case_logging import unregister_all_case_log_handlers
 from tests.conftest import FakeParser, FakeProvider, ImmediateThread, FAKE_HASHES
 
-import app.routes as routes
 import app.routes.evidence as routes_evidence
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
@@ -313,7 +312,7 @@ def test_grouped_chat_csv_retrieval_respects_image_alias(tmp_path: Path) -> None
 
 
 class RecordingMultiImageAnalyzer:
-    """Analyzer fake that records multi-image descriptors from routes.
+    """Analyzer fake that records multi-image descriptors from routes_state.
 
     Attributes:
         last_images: Image descriptors from the most recent run.
@@ -383,15 +382,14 @@ def _patch_route_context(cases_root: Path, report_path: Path) -> ExitStack:
         An ``ExitStack`` with all patches applied.
     """
     stack = ExitStack()
-    for module in (routes, routes_handlers, routes_images, routes_state):
+    for module in (routes_handlers, routes_images, routes_state):
         stack.enter_context(patch.object(module, "CASES_ROOT", cases_root))
-    for module in (routes, routes_handlers, routes_tasks, routes_evidence):
+    for module in (routes_tasks, routes_evidence):
         stack.enter_context(patch.object(module, "ForensicParser", FakeParser))
-    for module in (routes, routes_handlers, routes_evidence):
-        stack.enter_context(patch.object(module, "compute_hashes", return_value=dict(FAKE_HASHES)))
+    stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)))
     stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
     stack.enter_context(patch("app.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
-    stack.enter_context(patch.object(routes.threading, "Thread", ImmediateThread))
+    stack.enter_context(patch.object(routes_images.threading, "Thread", ImmediateThread))
     stack.enter_context(patch.object(routes_tasks, "ForensicAnalyzer", RecordingMultiImageAnalyzer))
     stack.enter_context(
         patch.object(
@@ -411,10 +409,10 @@ def test_legacy_case_level_analyze_uses_each_image_csv_for_duplicate_artifacts(t
         app.testing = True
         client = app.test_client()
         client.environ_base["HTTP_X_CSRF_TOKEN"] = app.config["CSRF_TOKEN"]
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
         evidence_one = Path(temp_dir) / "pc01.E01"
         evidence_two = Path(temp_dir) / "pc02.E01"
@@ -457,10 +455,10 @@ def test_legacy_case_level_analyze_uses_each_image_csv_for_duplicate_artifacts(t
                 }
                 assert set(csv_maps) == {img1, img2}
                 assert csv_maps[img1] != csv_maps[img2]
-                assert routes.CASE_STATES[case_id]["analysis_results"]["images"]
+                assert routes_state.CASE_STATES[case_id]["analysis_results"]["images"]
         finally:
             unregister_all_case_log_handlers()
-            routes.CASE_STATES.clear()
-            routes.PARSE_PROGRESS.clear()
-            routes.ANALYSIS_PROGRESS.clear()
-            routes.CHAT_PROGRESS.clear()
+            routes_state.CASE_STATES.clear()
+            routes_state.PARSE_PROGRESS.clear()
+            routes_state.ANALYSIS_PROGRESS.clear()
+            routes_state.CHAT_PROGRESS.clear()

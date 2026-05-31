@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 
 ###############################################################################
 # ioc.py — standalone function tests

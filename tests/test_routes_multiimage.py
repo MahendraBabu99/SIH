@@ -24,7 +24,6 @@ from tests.conftest import (
     first_image_parse_progress_url,
     first_image_parse_url,
 )
-import app.routes as routes
 import app.routes.handlers as routes_handlers
 import app.routes.evidence as routes_evidence
 import app.routes.images as routes_images
@@ -60,10 +59,10 @@ class MultiImageRoutesTests(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -76,18 +75,17 @@ class MultiImageRoutesTests(unittest.TestCase):
         from contextlib import ExitStack
         stack = ExitStack()
         # Patch CASES_ROOT everywhere.
-        for mod in (routes, routes_handlers, routes_state, routes_images):
+        for mod in (routes_handlers, routes_state, routes_images):
             stack.enter_context(patch.object(mod, "CASES_ROOT", self.cases_root))
         # Patch ForensicParser (images.py uses deferred import from evidence).
-        for mod in (routes, routes_handlers, routes_tasks, routes_evidence):
+        for mod in (routes_tasks, routes_evidence):
             stack.enter_context(patch.object(mod, "ForensicParser", FakeParser))
         stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
         # Patch compute_hashes (images.py uses deferred import from evidence).
-        for mod in (routes, routes_handlers, routes_evidence):
-            stack.enter_context(patch.object(mod, "compute_hashes", return_value=dict(FAKE_HASHES)))
+        stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)))
         stack.enter_context(patch("app.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
         # Patch threading.
-        stack.enter_context(patch.object(routes.threading, "Thread", ImmediateThread))
+        stack.enter_context(patch.object(routes_images.threading, "Thread", ImmediateThread))
         return stack
 
     def _create_case(self, name: str = "Test Case") -> str:

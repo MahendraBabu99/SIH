@@ -180,9 +180,10 @@ class TestMultiImageAnalyzeEndpoint(unittest.TestCase):
 
     def test_analyze_endpoint_accepts_images_format(self) -> None:
         """The analysis route module should import the multi-image task function."""
-        from app.routes.analysis import analysis_bp  # noqa: F401
-        from app.routes.tasks import run_multi_image_analysis_task  # noqa: F401
+        from app.routes.analysis import analysis_bp
+        from app.routes.tasks import run_multi_image_analysis_task
         # If the import succeeds, the function exists and is importable.
+        self.assertIsNotNone(analysis_bp)
         self.assertTrue(callable(run_multi_image_analysis_task))
 
 

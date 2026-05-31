@@ -10,9 +10,9 @@ from unittest.mock import patch
 import pytest
 
 from app.ai_providers import AIProviderError
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.chunking import analyze_artifact_chunked
-from app.analyzer.core import AnalysisCancelledError
+from app.analyzer.cancellation import AnalysisCancelledError
 from app.analyzer.multi_image import _run_cross_image_correlation
 
 

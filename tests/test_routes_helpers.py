@@ -21,7 +21,6 @@ import yaml
 from app import create_app
 import app.artifact_profiles as artifact_profiles
 from app.case_logging import unregister_all_case_log_handlers
-import app.routes as routes
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat
@@ -702,10 +701,10 @@ class ArtifactHelperTests(unittest.TestCase):
             self.assertEqual(path, profiles_root / "my_profile_1.json")
 
 
-class ArtifactRouteExportCompatibilityTests(unittest.TestCase):
-    """Route exports should be aliases over app.artifact_profiles."""
+class ArtifactRouteProfileFacadeTests(unittest.TestCase):
+    """Route profile helpers should stay aligned with app.artifact_profiles."""
 
-    def test_routes_artifacts_reexports_canonical_helpers(self) -> None:
+    def test_routes_artifacts_uses_canonical_profile_helpers(self) -> None:
         helper_names = [
             "normalize_artifact_mode",
             "normalize_artifact_options",
@@ -832,7 +831,7 @@ class TaskHelperTests(unittest.TestCase):
     def test_run_chat_case_not_found(self) -> None:
         routes_state.CASE_STATES.clear()
         routes_state.CHAT_PROGRESS.clear()
-        routes_tasks.run_chat("missing-id", "hello", {})
+        routes_tasks_chat.run_chat("missing-id", "hello", {})
         self.assertEqual(routes_state.CHAT_PROGRESS["missing-id"]["status"], "failed")
         routes_state.CHAT_PROGRESS.clear()
 

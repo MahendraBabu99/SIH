@@ -25,6 +25,7 @@ from flask import Blueprint, Response, current_app, request
 
 from ..case_manager import CaseManager
 from ..evidence_descriptor import descriptor_to_payload
+from .evidence_upload import resolve_evidence_payload
 from .evidence_utils import (
     compute_evidence_hashes as _compute_evidence_hashes,
     open_dissect_target as _open_dissect_target,
@@ -1004,7 +1005,7 @@ def _discovery_label_for_path(path: Path) -> str:
 def _resolve_evidence_for_image(image_dir: Path) -> dict[str, Any]:
     """Resolve evidence payload using the image directory for storage.
 
-    Delegates to :func:`~app.routes.evidence.resolve_evidence_payload` with
+    Delegates to :func:`~app.routes.evidence_upload.resolve_evidence_payload` with
     the image directory as the case_dir, so files land in
     ``images/<image_id>/evidence/``.
 
@@ -1014,7 +1015,6 @@ def _resolve_evidence_for_image(image_dir: Path) -> dict[str, Any]:
     Returns:
         Evidence payload dict.
     """
-    from .evidence import resolve_evidence_payload
     return resolve_evidence_payload(image_dir)
 
 

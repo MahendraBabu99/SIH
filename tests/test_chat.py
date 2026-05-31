@@ -6,8 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 import unittest
 
-from app.chat import ChatManager
-from app.chat.manager import _stringify as manager_stringify, VALID_ROLES
+from app.chat.manager import ChatManager, _stringify as manager_stringify, VALID_ROLES
 from app.chat.csv_retrieval import (
     _stringify as csv_stringify,
     build_csv_aliases,

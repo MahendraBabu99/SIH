@@ -6,16 +6,16 @@ chunked analysis, citation validation, IOC extraction, and audit logging.
 
 Sub-module organisation:
 
-- ``analyzer_constants``: Compile-time constants, regex, prompt templates.
-- ``analyzer_utils``: Pure utility functions (string, datetime, CSV).
-- ``analyzer_ioc``: IOC extraction and prompt-building helpers.
-- ``analyzer_citations``: Citation validation against source CSV.
-- ``analyzer_data_prep``: Dedup, statistics, prompt assembly.
-- ``analyzer_chunking``: Chunked analysis and hierarchical merge.
-- ``analyzer_prompts``: Prompt template loading and construction.
+- ``constants``: Compile-time constants, regex, prompt templates.
+- ``utils``: Pure utility functions (string, datetime, CSV).
+- ``ioc``: IOC extraction and prompt-building helpers.
+- ``citations``: Citation validation against source CSV.
+- ``data_prep``: Dedup, statistics, prompt assembly.
+- ``chunking``: Chunked analysis and hierarchical merge.
+- ``prompts``: Prompt template loading and construction.
 
 Attributes:
-    PROJECT_ROOT (Path): Re-exported from ``analyzer_constants``.
+    PROJECT_ROOT (Path): Project root imported from ``app.analyzer.constants``.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from ..ai_providers import AIProviderError, create_provider
 from ..ai_providers.utils import _inline_attachment_data_into_prompt
-from .cancellation import AnalysisCancelledError, raise_if_cancelled
+from .cancellation import AnalysisCancelledError as _AnalysisCancelledError, raise_if_cancelled
 from .chunking import analyze_artifact_chunked, split_csv_and_suffix, split_csv_into_chunks
 from .citations import match_column_name, timestamp_found_in_csv, timestamp_lookup_keys, validate_citations
 from .constants import (
@@ -57,9 +57,10 @@ from .utils import (
     build_scoped_artifact_stem,
     build_datetime, coerce_projection_columns, emit_analysis_progress,
     estimate_tokens, is_dedup_safe_identifier_column, normalize_artifact_key,
-    normalize_os_type, read_bool_setting, read_int_setting, read_path_setting,
+    read_bool_setting, read_int_setting, read_path_setting,
     sanitize_filename, stringify_value,
 )
+from ..os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
 _MIN_ANALYSIS_INPUT_TOKENS = 1
@@ -85,7 +86,7 @@ except Exception as error:
     WINDOWS_ARTIFACT_REGISTRY: dict[str, dict[str, str]] = {}
     LINUX_ARTIFACT_REGISTRY: dict[str, dict[str, str]] = {}
 
-__all__ = ["AnalysisCancelledError", "ForensicAnalyzer"]
+__all__ = ["ForensicAnalyzer"]
 
 
 def _resolve_non_overlapping_analysis_token_budget(
@@ -273,21 +274,6 @@ class ForensicAnalyzer:
         model_info: Dict with ``provider`` and ``model`` keys.
     """
 
-    # Expose extracted functions as static methods for backward compatibility
-    # with tests and callers that use ForensicAnalyzer._method_name().
-    _stringify_value = staticmethod(stringify_value)
-    _build_datetime = staticmethod(build_datetime)
-    _normalize_artifact_key = staticmethod(normalize_artifact_key)
-    _sanitize_filename = staticmethod(sanitize_filename)
-    _split_csv_into_chunks = staticmethod(split_csv_into_chunks)
-    _split_csv_and_suffix = staticmethod(split_csv_and_suffix)
-    _coerce_projection_columns = staticmethod(coerce_projection_columns)
-    _is_dedup_safe_identifier_column = staticmethod(is_dedup_safe_identifier_column)
-    _timestamp_lookup_keys = staticmethod(timestamp_lookup_keys)
-    _timestamp_found_in_csv = staticmethod(timestamp_found_in_csv)
-    _match_column_name = staticmethod(match_column_name)
-    _emit_analysis_progress = staticmethod(emit_analysis_progress)
-
     def __init__(
         self,
         case_dir: str | Path | Mapping[str, str | Path] | None = None,
@@ -399,11 +385,6 @@ class ForensicAnalyzer:
         self.artifact_ai_columns_config_path = read_path_setting(
             analysis_config, "artifact_ai_columns_config_path", str(DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH),
         )
-
-    # Backward-compatible aliases for the extracted config readers.
-    _read_int_setting = staticmethod(read_int_setting)
-    _read_bool_setting = staticmethod(read_bool_setting)
-    _read_path_setting = staticmethod(read_path_setting)
 
     def _estimate_inlined_attachment_prompt_tokens(
         self,
@@ -570,7 +551,7 @@ class ForensicAnalyzer:
             raise_if_cancelled(cancel_check)
             try:
                 return call()
-            except AnalysisCancelledError:
+            except _AnalysisCancelledError:
                 raise
             except Exception as error:
                 last_error = error
@@ -650,9 +631,7 @@ class ForensicAnalyzer:
         )
 
     # ------------------------------------------------------------------
-    # Delegation methods — thin wrappers for backward compatibility.
-    # Methods that don't use self are exposed as staticmethod assignments
-    # at the class level (see above).  The methods below need self.
+    # Internal helper methods that rely on analyzer instance state.
     # ------------------------------------------------------------------
 
     def _estimate_tokens(self, text: str) -> int:
@@ -1698,7 +1677,7 @@ class ForensicAnalyzer:
             status = "success"
             error_text: str | None = None
             analysis_available = True
-        except AnalysisCancelledError:
+        except _AnalysisCancelledError:
             raise
         except Exception as error:
             self.logger.exception("Unhandled error in analyze_artifact for '%s'", artifact_key)
@@ -1801,7 +1780,7 @@ class ForensicAnalyzer:
                 "analysis_available": True,
             }
             return summary
-        except AnalysisCancelledError:
+        except _AnalysisCancelledError:
             raise
         except Exception as error:
             duration_seconds = perf_counter() - start_time

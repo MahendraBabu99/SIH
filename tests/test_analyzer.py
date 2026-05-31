@@ -19,7 +19,9 @@ import unittest
 from unittest.mock import patch
 
 from app.ai_providers import AIProviderError
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.citations import timestamp_found_in_csv, timestamp_lookup_keys
+from app.analyzer.core import ForensicAnalyzer
+from app.analyzer.utils import is_dedup_safe_identifier_column
 from app.case_logging import case_log_context, register_case_log_handler, unregister_case_log_handler
 from conftest import FakeAuditLogger, FakeProvider
 
@@ -2068,22 +2070,20 @@ class AnalyzerTests(unittest.TestCase):
 
     def test_dedup_safe_identifier_classification(self) -> None:
         """Only auto-incremented record IDs are dedup-safe, not semantic IDs."""
-        analyzer = ForensicAnalyzer()
-
         # These should be dedup-safe (auto-incremented record identifiers)
-        self.assertTrue(analyzer._is_dedup_safe_identifier_column("record_id"))
-        self.assertTrue(analyzer._is_dedup_safe_identifier_column("RecordID"))
-        self.assertTrue(analyzer._is_dedup_safe_identifier_column("entry_id"))
-        self.assertTrue(analyzer._is_dedup_safe_identifier_column("index"))
+        self.assertTrue(is_dedup_safe_identifier_column("record_id"))
+        self.assertTrue(is_dedup_safe_identifier_column("RecordID"))
+        self.assertTrue(is_dedup_safe_identifier_column("entry_id"))
+        self.assertTrue(is_dedup_safe_identifier_column("index"))
 
         # These should NOT be dedup-safe (carry forensic meaning)
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("EventID"))
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("event_id"))
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("ProcessID"))
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("process_id"))
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("SessionID"))
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("LogonID"))
-        self.assertFalse(analyzer._is_dedup_safe_identifier_column("id"))
+        self.assertFalse(is_dedup_safe_identifier_column("EventID"))
+        self.assertFalse(is_dedup_safe_identifier_column("event_id"))
+        self.assertFalse(is_dedup_safe_identifier_column("ProcessID"))
+        self.assertFalse(is_dedup_safe_identifier_column("process_id"))
+        self.assertFalse(is_dedup_safe_identifier_column("SessionID"))
+        self.assertFalse(is_dedup_safe_identifier_column("LogonID"))
+        self.assertFalse(is_dedup_safe_identifier_column("id"))
 
     def test_build_full_data_csv_never_truncates(self) -> None:
         """Full CSV is always produced without truncation (DFIR requires all rows)."""
@@ -2102,35 +2102,34 @@ class AnalyzerTests(unittest.TestCase):
 
     def test_timestamp_found_in_csv_uses_preloaded_lookup_keys(self) -> None:
         """Verify timestamp found in csv uses preloaded lookup keys."""
-        analyzer = ForensicAnalyzer()
         csv_timestamp_lookup: set[str] = set()
         for value in (
             "2026-01-15T12:00:00+00:00",
             "2026-01-15T13:00:00.123456Z",
             "2026-01-15T14:00:00+02:00",
         ):
-            csv_timestamp_lookup.update(analyzer._timestamp_lookup_keys(value))
+            csv_timestamp_lookup.update(timestamp_lookup_keys(value))
 
         self.assertTrue(
-            analyzer._timestamp_found_in_csv(
+            timestamp_found_in_csv(
                 "2026-01-15T12:00:00Z",
                 csv_timestamp_lookup,
             )
         )
         self.assertTrue(
-            analyzer._timestamp_found_in_csv(
+            timestamp_found_in_csv(
                 "2026-01-15 13:00:00",
                 csv_timestamp_lookup,
             )
         )
         self.assertTrue(
-            analyzer._timestamp_found_in_csv(
+            timestamp_found_in_csv(
                 "2026-01-15T14:00:00",
                 csv_timestamp_lookup,
             )
         )
         self.assertFalse(
-            analyzer._timestamp_found_in_csv(
+            timestamp_found_in_csv(
                 "2026-01-15T20:00:00Z",
                 csv_timestamp_lookup,
             )
@@ -2162,7 +2161,7 @@ class PathResolutionTests(unittest.TestCase):
     def test_default_prompts_dir_is_project_root_based(self) -> None:
         """When no prompts_dir is given, it should point to PROJECT_ROOT/prompts
         regardless of the CWD."""
-        from app.analyzer import PROJECT_ROOT
+        from app.analyzer.constants import PROJECT_ROOT
 
         with TemporaryDirectory(prefix="aift-cwd-test-") as fake_cwd:
             with patch("os.getcwd", return_value=fake_cwd):
@@ -2174,7 +2173,7 @@ class PathResolutionTests(unittest.TestCase):
     def test_default_prompts_dir_loads_real_prompt_files(self) -> None:
         """The default prompts_dir should contain the actual prompt templates
         shipped with the project."""
-        from app.analyzer import PROJECT_ROOT
+        from app.analyzer.constants import PROJECT_ROOT
 
         analyzer = ForensicAnalyzer()
         self.assertTrue(
@@ -2197,7 +2196,7 @@ class PathResolutionTests(unittest.TestCase):
     def test_artifact_ai_columns_config_resolves_to_project_root(self) -> None:
         """The relative artifact_ai_columns_config_path should resolve against
         PROJECT_ROOT, not CWD, when the file only exists in the project tree."""
-        from app.analyzer import PROJECT_ROOT
+        from app.analyzer.constants import PROJECT_ROOT
 
         with TemporaryDirectory(prefix="aift-cwd-test-") as fake_cwd:
             with patch("os.getcwd", return_value=fake_cwd):
@@ -2217,7 +2216,7 @@ class PathResolutionTests(unittest.TestCase):
     def test_artifact_ai_columns_config_does_not_use_cwd(self) -> None:
         """Even if a matching file exists in CWD, it should NOT be preferred
         over the PROJECT_ROOT copy."""
-        from app.analyzer import PROJECT_ROOT
+        from app.analyzer.constants import PROJECT_ROOT
 
         with TemporaryDirectory(prefix="aift-cwd-test-") as fake_cwd:
             # Create a decoy file in the fake CWD.

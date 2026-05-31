@@ -10,7 +10,7 @@ import unittest
 
 from markupsafe import Markup
 
-from app.reporter import ReportGenerator
+from app.reporter.generator import ReportGenerator
 from app.reporter.markdown import (
     CONFIDENCE_CLASS_MAP,
     CONFIDENCE_PATTERN,
@@ -67,20 +67,6 @@ def _single_image_analysis(
 def _image_record(**fields: object) -> dict[str, dict[str, object]]:
     """Build a canonical one-image metadata/hash mapping."""
     return {SINGLE_IMAGE_ID: dict(fields)}
-
-
-# ===================================================================
-# Tests for app.reporter.__init__ re-export
-# ===================================================================
-
-
-class TestReporterInit(unittest.TestCase):
-    """Verify the __init__.py re-export works."""
-
-    def test_report_generator_importable_from_package(self) -> None:
-        from app.reporter import ReportGenerator as RG
-
-        self.assertIs(RG, ReportGenerator)
 
 
 # ===================================================================

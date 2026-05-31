@@ -42,10 +42,10 @@ from .utils import (
     emit_analysis_progress,
     estimate_tokens,
     normalize_table_cell,
-    normalize_os_type,
     sanitize_filename,
     stable_identity_hash,
 )
+from ..os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
 
@@ -432,7 +432,7 @@ def run_multi_image_analysis(
     Raises:
         AnalysisCancelledError: If *cancel_check* returns ``True``.
     """
-    from .core import AnalysisCancelledError
+    from .cancellation import AnalysisCancelledError
 
     images = _normalize_image_descriptors(images)
     image_results: dict[str, dict[str, Any]] = {}
@@ -744,7 +744,7 @@ def _run_cross_image_correlation(
     Raises:
         AnalysisCancelledError: If cancellation has been requested.
     """
-    from .core import AnalysisCancelledError
+    from .cancellation import AnalysisCancelledError
 
     raise_if_cancelled(cancel_check)
 

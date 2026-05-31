@@ -25,7 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.analyzer.core import AnalysisCancelledError, ForensicAnalyzer
+from app.analyzer.cancellation import AnalysisCancelledError
+from app.analyzer.core import ForensicAnalyzer
 from app.audit import AuditLogger
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report

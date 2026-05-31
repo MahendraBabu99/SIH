@@ -14,7 +14,7 @@ import threading
 
 from flask import Blueprint, Response, current_app, request
 
-from ..chat import ChatManager
+from ..chat.manager import ChatManager
 
 from .state import (
     STATE_LOCK,
@@ -29,9 +29,9 @@ from .state import (
 )
 from .tasks import (
     run_task_with_case_log_context,
-    run_chat,
     load_case_analysis_results,
 )
+from .tasks_chat import run_chat
 
 __all__ = ["chat_bp"]
 

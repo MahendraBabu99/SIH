@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.ai_providers import AIProviderError
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 from app.case_logging import case_log_context, register_case_log_handler, unregister_case_log_handler
 from conftest import FakeAuditLogger, FakeProvider
 

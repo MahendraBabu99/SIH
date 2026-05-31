@@ -10,7 +10,7 @@ from typing import Any, Mapping
 from unittest.mock import patch
 
 from app.ai_providers.utils import _inline_attachment_data_into_prompt
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 
 
 class AttachmentCapableProvider:

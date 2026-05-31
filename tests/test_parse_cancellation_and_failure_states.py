@@ -24,9 +24,9 @@ from app import create_app
 from app.audit import ACTION_TYPES
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.parser.core import ForensicParser, ParserCancelledError
-from app.routes import images as routes_images
-from app.routes import state as routes_state
-from app.routes import tasks as routes_tasks
+import app.routes.images as routes_images
+import app.routes.state as routes_state
+import app.routes.tasks as routes_tasks
 from tests.conftest import FAKE_HASHES, FakeAnalyzer, FakeAuditLogger
 
 _ENGINE = "app.automation.engine"

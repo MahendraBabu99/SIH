@@ -52,7 +52,6 @@ __all__ = [
     "emit_analysis_progress",
     "estimate_tokens",
     "is_dedup_safe_identifier_column",
-    "normalize_os_type",
     "read_int_setting",
     "read_bool_setting",
     "read_path_setting",
@@ -433,14 +432,6 @@ def time_range_for_rows(rows: Iterable[dict[str, str]]) -> tuple[datetime | None
         if max_time is None or parsed > max_time:
             max_time = parsed
     return min_time, max_time
-
-
-# ---------------------------------------------------------------------------
-# Artifact key normalisation
-# ---------------------------------------------------------------------------
-
-# Re-export from the shared module so existing callers are not broken.
-from ..os_utils import normalize_os_type as normalize_os_type  # noqa: F401, PLC0414
 
 
 def normalize_artifact_key(artifact_key: str) -> str:

@@ -20,7 +20,7 @@ from typing import Any
 
 from ..ai_providers import AIProviderError, create_provider
 from ..ai_providers.utils import stream_chunk_answer_text, stream_chunk_reasoning_text
-from ..chat import ChatManager
+from ..chat.manager import ChatManager
 from .state import (
     PROJECT_ROOT,
     CHAT_HISTORY_MAX_PAIRS,

@@ -2,8 +2,8 @@
 
 The analyzer pipeline spans core orchestration, chunking, retry, and
 multi-image correlation.  Keeping the cancellation exception and probe
-handling here avoids circular imports while preserving the public
-``AnalysisCancelledError`` name re-exported by ``core``.
+handling here avoids circular imports and gives callers one canonical
+module for cancellation handling.
 """
 
 from __future__ import annotations

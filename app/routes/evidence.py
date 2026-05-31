@@ -1,14 +1,8 @@
-"""Evidence CSV/hash helpers, route handlers, and backward-compatible re-exports.
+"""Evidence CSV/hash helpers and route handlers.
 
 This module contains hash verification, CSV path collection, audit log
 reading, parsed-output cleanup, and the Flask route handlers for evidence
 intake, report generation, and CSV bundle downloads.
-
-Archive extraction functions live in :mod:`evidence_archive` and upload /
-path resolution functions live in :mod:`evidence_upload`.  The original
-public names (``EWF_SEGMENT_RE``, ``SPLIT_RAW_SEGMENT_RE``,
-``resolve_evidence_payload``, and the private ``_extract_*`` / ``_collect_*``
-helpers) are re-exported here for backward compatibility.
 
 Attributes:
     LOGGER: Module-level logger for evidence and CSV route diagnostics.
@@ -36,7 +30,7 @@ from ..hasher import (
     verify_hashes_for_report,
 )
 from ..parser import ForensicParser
-from ..reporter import ReportGenerator
+from ..reporter.generator import ReportGenerator
 
 from .state import (
     ANALYSIS_PROGRESS,
@@ -52,33 +46,8 @@ from .state import (
     success_response,
 )
 
-# Backward-compatible re-exports from the split-out modules.
-from .evidence_archive import (  # noqa: F401
-    EVIDENCE_FILE_EXTENSIONS as _EVIDENCE_FILE_EXTENSIONS,
-    extract_zip as _extract_zip,
-    extract_tar as _extract_tar,
-    extract_7z as _extract_7z,
-)
-from .evidence_upload import (  # noqa: F401
-    EWF_SEGMENT_RE,
-    SPLIT_RAW_SEGMENT_RE,
-    SAVE_CHUNK_SIZE as _SAVE_CHUNK_SIZE,
-    collect_uploaded_files as _collect_uploaded_files,
-    save_with_limit as _save_with_limit,
-    unique_destination as _unique_destination,
-    segment_identity as _segment_identity,
-    collect_segment_group_paths as _collect_segment_group_paths,
-    resolve_uploaded_dissect_path as _resolve_uploaded_dissect_path,
-    normalize_user_path as _normalize_user_path,
-    make_extract_dir as _make_extract_dir,
-    resolve_evidence_payload,
-)
-
 __all__ = [
-    "EWF_SEGMENT_RE",
-    "SPLIT_RAW_SEGMENT_RE",
     "evidence_bp",
-    "resolve_evidence_payload",
     "resolve_hash_verification_path",
     "resolve_case_csv_output_dir",
     "collect_case_csv_paths",
@@ -522,9 +491,9 @@ evidence_bp = Blueprint("evidence", __name__)
 def intake_evidence(case_id: str) -> Response | tuple[Response, int]:
     """Ingest evidence for an existing case.
 
-    For backward compatibility, this endpoint auto-creates a default image
-    if the case has none, then delegates to the image-specific evidence
-    intake logic.  The response format is unchanged.
+    This single-image intake endpoint auto-creates a default image if the
+    case has none, then delegates to the image-specific evidence intake
+    logic. The response format matches image intake responses.
 
     Args:
         case_id: UUID of the case.
@@ -536,7 +505,7 @@ def intake_evidence(case_id: str) -> Response | tuple[Response, int]:
     if case is None:
         return error_response(f"Case not found: {case_id}", 404)
 
-    # Auto-create a default image for backward compatibility.
+    # Auto-create a default image for single-image workflows.
     from .images import _get_or_create_default_image, intake_image_evidence
     image_id = _get_or_create_default_image(case_id)
     if image_id:

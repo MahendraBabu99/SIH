@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.multi_image import (
     _build_image_metadata_table,
     _build_per_image_summaries_text,
@@ -289,7 +289,7 @@ class TestCancelCheck:
 
     def test_cancel_stops_analysis(self, tmp_path: Path) -> None:
         """Analysis raises AnalysisCancelledError when cancel_check returns True."""
-        from app.analyzer.core import AnalysisCancelledError
+        from app.analyzer.cancellation import AnalysisCancelledError
 
         provider = FakeProvider(responses=["resp"] * 10)
         analyzer = _build_analyzer(tmp_path)

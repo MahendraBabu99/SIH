@@ -11,57 +11,58 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.citations import match_column_name
+from app.analyzer.core import ForensicAnalyzer
 from conftest import FakeProvider
 
 
 class TestMatchColumnName(unittest.TestCase):
-    """Tests for ForensicAnalyzer._match_column_name static method."""
+    """Tests for citation column-name matching."""
 
     def test_exact_match(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name(
+        status, header = match_column_name(
             "SourceFilename", ["ts", "SourceFilename", "Path"]
         )
         self.assertEqual(status, "exact")
         self.assertEqual(header, "SourceFilename")
 
     def test_exact_match_with_whitespace(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name(
+        status, header = match_column_name(
             "  SourceFilename  ", ["SourceFilename", "Path"]
         )
         self.assertEqual(status, "exact")
         self.assertEqual(header, "SourceFilename")
 
     def test_fuzzy_match_case_difference(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name(
+        status, header = match_column_name(
             "sourcefilename", ["SourceFilename", "Path"]
         )
         self.assertEqual(status, "fuzzy")
         self.assertEqual(header, "SourceFilename")
 
     def test_fuzzy_match_underscore_vs_no_separator(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name(
+        status, header = match_column_name(
             "Source_Filename", ["SourceFilename", "Path"]
         )
         self.assertEqual(status, "fuzzy")
         self.assertEqual(header, "SourceFilename")
 
     def test_fuzzy_match_space_vs_underscore(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name(
+        status, header = match_column_name(
             "Source Filename", ["Source_Filename", "Path"]
         )
         self.assertEqual(status, "fuzzy")
         self.assertEqual(header, "Source_Filename")
 
     def test_unverifiable_no_match(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name(
+        status, header = match_column_name(
             "NonExistentColumn", ["SourceFilename", "Path"]
         )
         self.assertEqual(status, "unverifiable")
         self.assertIsNone(header)
 
     def test_unverifiable_empty_columns(self) -> None:
-        status, header = ForensicAnalyzer._match_column_name("Anything", [])
+        status, header = match_column_name("Anything", [])
         self.assertEqual(status, "unverifiable")
         self.assertIsNone(header)
 

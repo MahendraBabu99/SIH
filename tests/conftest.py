@@ -37,7 +37,7 @@ _SYMLINK_CAPABILITY_CACHE: dict[bool, bool] = {}
 
 def first_case_image_id(case_id: str) -> str:
     """Return the first image ID for a case in the in-memory route state."""
-    from app.routes import state as routes_state
+    import app.routes.state as routes_state
 
     with routes_state.STATE_LOCK:
         case = routes_state.CASE_STATES.get(case_id) or {}

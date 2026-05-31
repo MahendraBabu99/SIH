@@ -29,7 +29,6 @@ from tests.conftest import (
     first_case_image_id,
     first_image_parse_url,
 )
-import app.routes as routes
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat
@@ -198,10 +197,10 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -211,23 +210,23 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
     def _patches(self) -> list:
         """Return common patches for routes tests."""
         return [
-            patch.object(routes, "CASES_ROOT", self.cases_root),
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
-            patch.object(routes, "ForensicParser", FakeParser),
-            patch.object(routes_handlers, "ForensicParser", FakeParser),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
-            patch.object(routes, "compute_hashes", return_value=HASH_RETURN),
-            patch.object(routes_handlers, "compute_hashes", return_value=HASH_RETURN),
+            patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
+            patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
             patch("app.hasher.compute_hashes", return_value=HASH_RETURN),
-            patch.object(routes, "verify_hash", return_value=(True, "a" * 64)),
-            patch.object(routes_handlers, "verify_hash", return_value=(True, "a" * 64)),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
-            patch.object(routes.threading, "Thread", ImmediateThread),
+            patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
+            patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
         ]
 
     def _create_case_and_intake(self, evidence_path: Path) -> str:
@@ -261,7 +260,7 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
     def _first_image_state(self, case_id: str) -> dict:
         """Return the first image state for a test case."""
         image_id = first_case_image_id(case_id)
-        return routes.CASE_STATES[case_id]["image_states"][image_id]
+        return routes_state.CASE_STATES[case_id]["image_states"][image_id]
 
     def test_reparse_removes_old_csvs_from_disk(self) -> None:
         """A second parse should delete CSV files from the first parse."""
@@ -291,7 +290,7 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
 
         with self._apply_patches():
             case_id = self._create_case_and_intake(evidence_path)
-            case = routes.CASE_STATES[case_id]
+            case = routes_state.CASE_STATES[case_id]
 
             # First parse
             self._parse(case_id, ["runkeys"])
@@ -323,7 +322,7 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
 
             # First parse
             self._parse(case_id, ["runkeys"])
-            case = routes.CASE_STATES[case_id]
+            case = routes_state.CASE_STATES[case_id]
 
             # Verify parse results exist
             image_state = self._first_image_state(case_id)
@@ -350,7 +349,7 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
 
         with self._apply_patches():
             case_id = self._create_case_and_intake(evidence_path)
-            case = routes.CASE_STATES[case_id]
+            case = routes_state.CASE_STATES[case_id]
 
             # First parse
             self._parse(case_id, ["runkeys"])

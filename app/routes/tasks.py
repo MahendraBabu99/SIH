@@ -7,8 +7,7 @@ This module contains the long-running functions that execute on background
 * ``run_analysis`` -- AI-powered analysis of parsed CSV artifacts.
 * ``run_multi_image_analysis_task`` -- Multi-image forensic analysis.
 
-The chat runner (``run_chat``) lives in :mod:`tasks_chat` and is
-re-exported here for backward compatibility.
+The chat runner (``run_chat``) lives in :mod:`tasks_chat`.
 
 Each runner emits SSE progress events through the shared progress stores
 defined in :mod:`routes_state` and uses a case-log-context wrapper to
@@ -28,8 +27,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..analyzer import ForensicAnalyzer
-from ..analyzer.core import AnalysisCancelledError
+from ..analyzer.cancellation import AnalysisCancelledError
+from ..analyzer.core import ForensicAnalyzer
 from ..case_logging import case_log_context
 from ..parser import ForensicParser
 from ..parser.core import ParserCancelledError
@@ -48,8 +47,6 @@ from .artifacts import (
     extract_parse_progress,
 )
 
-# Backward-compatible re-export: run_chat now lives in tasks_chat.
-from .tasks_chat import run_chat  # noqa: F401
 from .evidence import (
     build_csv_map,
     build_image_artifact_csv_paths,
@@ -63,7 +60,6 @@ __all__ = [
     "resolve_artifact_csv_row_limit",
     "run_analysis",
     "run_multi_image_analysis_task",
-    "run_chat",
     "load_case_analysis_results",
     "resolve_case_investigation_context",
     "resolve_case_parsed_dir",

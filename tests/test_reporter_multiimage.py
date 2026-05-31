@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from app.reporter import ReportGenerator
+from app.reporter.generator import ReportGenerator
 
 
 def _create_report_generator(cases_root: Path) -> ReportGenerator:

@@ -31,7 +31,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ._utils import stringify_chat_value as _stringify
+from ..utils import stringify as _stringify
 
 __all__ = [
     "retrieve_csv_data",

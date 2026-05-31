@@ -31,7 +31,6 @@ from tests.conftest import (
     first_image_parse_progress_url,
     first_image_parse_url,
 )
-import app.routes as routes
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.evidence as routes_evidence
@@ -120,27 +119,27 @@ def _common_patches(cases_root: Path):
     """
     hash_value = {"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4}
     return [
-        patch.object(routes, "CASES_ROOT", cases_root),
+        patch.object(routes_state, "CASES_ROOT", cases_root),
         patch.object(routes_handlers, "CASES_ROOT", cases_root),
         patch.object(routes_evidence, "CASES_ROOT", cases_root),
         patch.object(routes_images, "CASES_ROOT", cases_root),
-        patch.object(routes, "ForensicParser", FakeParser),
-        patch.object(routes_handlers, "ForensicParser", FakeParser),
+        patch.object(routes_tasks, "ForensicParser", FakeParser),
+        patch.object(routes_tasks, "ForensicParser", FakeParser),
         patch.object(routes_tasks, "ForensicParser", FakeParser),
         patch.object(routes_evidence, "ForensicParser", FakeParser),
         patch("app.parser.ForensicParser", FakeParser),
-        patch.object(routes, "ForensicAnalyzer", FakeAnalyzer),
         patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
-        patch.object(routes, "ReportGenerator", FakeReportGenerator),
-        patch.object(routes_handlers, "ReportGenerator", FakeReportGenerator),
+        patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
         patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
-        patch.object(routes, "compute_hashes", return_value=hash_value),
-        patch.object(routes_handlers, "compute_hashes", return_value=hash_value),
+        patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
+        patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
         patch.object(routes_evidence, "compute_hashes", return_value=hash_value),
-        patch.object(routes, "verify_hash", return_value=(True, "a" * 64)),
-        patch.object(routes_handlers, "verify_hash", return_value=(True, "a" * 64)),
+        patch.object(routes_evidence, "compute_hashes", return_value=hash_value),
+        patch.object(routes_evidence, "compute_hashes", return_value=hash_value),
         patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
-        patch.object(routes.threading, "Thread", ImmediateThread),
+        patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
+        patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
+        patch.object(routes_images.threading, "Thread", ImmediateThread),
     ]
 
 
@@ -223,10 +222,10 @@ class GenerateCaseReportTests(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -385,10 +384,10 @@ class AutoReportAfterAnalysisTests(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:
@@ -462,7 +461,7 @@ class AutoReportAfterAnalysisTests(unittest.TestCase):
                 case_id = _run_full_flow(self.client, evidence_path)
 
             # Analysis must still be marked completed.
-            self.assertEqual(routes.CASE_STATES[case_id]["status"], "completed")
+            self.assertEqual(routes_state.CASE_STATES[case_id]["status"], "completed")
 
             # Analysis results must exist on disk.
             results_path = self.cases_root / case_id / "analysis_results.json"
@@ -483,7 +482,7 @@ class AutoReportAfterAnalysisTests(unittest.TestCase):
                 evidence_path.write_bytes(b"demo")
                 case_id = _run_full_flow(self.client, evidence_path)
 
-            self.assertEqual(routes.CASE_STATES[case_id]["status"], "completed")
+            self.assertEqual(routes_state.CASE_STATES[case_id]["status"], "completed")
         finally:
             _exit_patches(patches)
 
@@ -501,10 +500,10 @@ class DownloadReportServesExistingTests(unittest.TestCase):
         self.csrf_token = self.app.config["CSRF_TOKEN"]
         self.client = self.app.test_client()
         self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
-        routes.CASE_STATES.clear()
-        routes.PARSE_PROGRESS.clear()
-        routes.ANALYSIS_PROGRESS.clear()
-        routes.CHAT_PROGRESS.clear()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
         unregister_all_case_log_handlers()
 
     def tearDown(self) -> None:

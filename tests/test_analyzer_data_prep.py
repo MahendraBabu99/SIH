@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from app.analyzer import ForensicAnalyzer
+from app.analyzer.core import ForensicAnalyzer
 
 
 
@@ -444,31 +444,31 @@ class TestNormalizeArtifactKey(unittest.TestCase):
 
 
 class TestNormalizeOsType(unittest.TestCase):
-    """Tests for utils.normalize_os_type."""
+    """Tests for os_utils.normalize_os_type."""
 
     def test_linux(self) -> None:
-        from app.analyzer.utils import normalize_os_type
+        from app.os_utils import normalize_os_type
         self.assertEqual(normalize_os_type("linux"), "linux")
 
     def test_windows(self) -> None:
-        from app.analyzer.utils import normalize_os_type
+        from app.os_utils import normalize_os_type
         self.assertEqual(normalize_os_type("windows"), "windows")
 
     def test_none_defaults_to_windows(self) -> None:
-        from app.analyzer.utils import normalize_os_type
+        from app.os_utils import normalize_os_type
         self.assertEqual(normalize_os_type(None), "windows")
 
     def test_empty_defaults_to_windows(self) -> None:
-        from app.analyzer.utils import normalize_os_type
+        from app.os_utils import normalize_os_type
         self.assertEqual(normalize_os_type(""), "windows")
 
     def test_strips_and_lowercases(self) -> None:
-        from app.analyzer.utils import normalize_os_type
+        from app.os_utils import normalize_os_type
         self.assertEqual(normalize_os_type("  Linux  "), "linux")
         self.assertEqual(normalize_os_type("WINDOWS"), "windows")
 
     def test_unknown_os_passthrough(self) -> None:
-        from app.analyzer.utils import normalize_os_type
+        from app.os_utils import normalize_os_type
         self.assertEqual(normalize_os_type("esxi"), "esxi")
 
 
