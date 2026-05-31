@@ -361,6 +361,93 @@ describe("parse SSE ownership and retry state", () => {
     expect(A.st.step).not.toBe(4);
   });
 
+  test("idle does not complete an active single-image parse", () => {
+    A.setCaseId("case-idle");
+    const owner = A.newRunOwner("case-idle", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.selectedAi = ["evtx"];
+
+    A._onParseEvent({ type: "idle", sequence: 1 }, owner);
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parse.fail).toBe(true);
+    expect(A.st.step).not.toBe(4);
+    expect(A.st.parsedSelections.caseId).toBe("");
+  });
+
+  test("synthetic complete does not complete an active single-image parse", () => {
+    A.setCaseId("case-complete");
+    const owner = A.newRunOwner("case-complete", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.selectedAi = ["evtx"];
+
+    A._onParseEvent({ type: "complete", sequence: 1 }, owner);
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parse.fail).toBe(true);
+    expect(A.st.step).not.toBe(4);
+    expect(A.st.parsedSelections.caseId).toBe("");
+  });
+
+  test("multi-image completion debounce cannot finish after cancellation", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-cancel-debounce");
+    const owner = A.newRunOwner("case-cancel-debounce", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.selectedAi = ["evtx", "mft"];
+    A.st.imageParse = {
+      img1: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: { image_id: "img1", artifacts: ["evtx"], aiArtifacts: ["evtx"], artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }] },
+      },
+      img2: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: { image_id: "img2", artifacts: ["mft"], aiArtifacts: ["mft"], artifactOptions: [{ artifact_key: "mft", mode: A.MODE_PARSE_AND_AI }] },
+      },
+    };
+
+    A._onImageParseEvent("img1", { type: "parse_completed", sequence: 1 }, owner);
+    A._onImageParseEvent("img2", { type: "parse_completed", sequence: 1 }, owner);
+    A.cancelParse();
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.step).not.toBe(4);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    jest.useRealTimers();
+  });
+
+  test("stale multi-image debounce cannot mutate a new case", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-old-debounce");
+    const owner = A.newRunOwner("case-old-debounce", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    installImageParseState(A, owner);
+
+    A._onImageParseEvent("img1", { type: "parse_completed", sequence: 1 }, owner);
+    A.setCaseId("case-new-debounce");
+    A.resetParseState();
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    jest.useRealTimers();
+  });
+
   test("multi-image completion snapshots only successful parsed images", () => {
     jest.useFakeTimers();
     A.setCaseId("case-snapshot");
@@ -407,6 +494,123 @@ describe("parse SSE ownership and retry state", () => {
     expect(A.st.parse.done).toBe(true);
     expect(A.st.selectedAi).toEqual(["evtx"]);
     expect(Object.keys(A.st.parsedSelections.images)).toEqual(["img1"]);
+  });
+
+  test("multi-image cancelled terminal event blocks partial success unlock", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-cancelled-image");
+    const owner = A.newRunOwner("case-cancelled-image", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.imageParse = {
+      img1: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: {
+          image_id: "img1",
+          label: "Image 1",
+          artifacts: ["evtx"],
+          aiArtifacts: ["evtx"],
+          artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+      img2: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: {
+          image_id: "img2",
+          label: "Image 2",
+          artifacts: ["mft"],
+          aiArtifacts: ["mft"],
+          artifactOptions: [{ artifact_key: "mft", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+    };
+
+    A._onImageParseEvent("img1", { type: "parse_completed", sequence: 1 }, owner);
+    A._onImageParseEvent("img2", { type: "parse_cancelled", sequence: 1 }, owner);
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.step).not.toBe(4);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    expect(A.el.parseErr.textContent).toContain("cancelled");
+    jest.useRealTimers();
+  });
+
+  test("multi-image control terminal event blocks partial success unlock", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-control-image");
+    const owner = A.newRunOwner("case-control-image", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.imageParse = {
+      img1: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: {
+          image_id: "img1",
+          label: "Image 1",
+          artifacts: ["evtx"],
+          aiArtifacts: ["evtx"],
+          artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+      img2: {
+        run: true,
+        done: false,
+        fail: false,
+        owner,
+        rows: {},
+        status: {},
+        snapshot: {
+          image_id: "img2",
+          label: "Image 2",
+          artifacts: ["mft"],
+          aiArtifacts: ["mft"],
+          artifactOptions: [{ artifact_key: "mft", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+    };
+
+    A._onImageParseEvent("img1", { type: "parse_completed", sequence: 1 }, owner);
+    A._onImageParseEvent("img2", { type: "complete", sequence: 1 }, owner);
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parse.fail).toBe(true);
+    expect(A.st.step).not.toBe(4);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    expect(A.el.parseErr.textContent).toContain("before all images completed");
+    jest.useRealTimers();
+  });
+
+  test("idle marks an image parse failed instead of successful", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-image-idle");
+    const owner = A.newRunOwner("case-image-idle", "parse");
+    installImageParseState(A, owner);
+
+    A._onImageParseEvent("img1", { type: "idle", sequence: 1 }, owner);
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.imageParse.img1.done).toBe(false);
+    expect(A.st.imageParse.img1.fail).toBe(true);
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    jest.useRealTimers();
   });
 });
 

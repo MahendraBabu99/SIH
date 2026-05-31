@@ -121,8 +121,9 @@
       startAnalysisSse(owner);
       A.showStep(4);
     } catch (e) {
-      st.analysis.abort = null;
       if (e.name === "AbortError") return;
+      if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
+      st.analysis.abort = null;
       st.analysis.run = false;
       st.analysis.owner = null;
       A.stopTimer("analysis");
@@ -260,26 +261,41 @@
       A.updateNav();
       return;
     }
-    if (t === "complete" || t === "idle") {
-      // Synthetic events from the backend indicating the operation already
-      // finished (reconnect after completion) or timed out idle.  Finalize
-      // the UI so it does not stay stuck on "in progress".
-      if (!st.analysis.done && !st.analysis.fail) {
-        st.analysis.run = false;
-        st.analysis.done = true;
-        st.analysis.fail = false;
-        A.stopTimer("analysis");
-      }
+    if (t === "analysis_cancelled" || t === "cancelled") {
+      st.analysis.run = false;
+      st.analysis.done = false;
+      st.analysis.fail = false;
+      A.stopTimer("analysis");
       closeAnalysisSse();
       setAnalysisStatus(null);
       if (el.runBtn) el.runBtn.disabled = false;
       if (el.cancelAnalysis) el.cancelAnalysis.hidden = true;
-      A.clearMsg(el.analysisMsg);
+      A.setMsg(el.analysisMsg, "Analysis cancelled.", "info");
+      A.updateNav();
+      return;
+    }
+    if (t === "complete" || t === "idle") {
+      closeAnalysisSse();
+      setAnalysisStatus(null);
+      if (el.runBtn) el.runBtn.disabled = false;
+      if (el.cancelAnalysis) el.cancelAnalysis.hidden = true;
+      if (st.analysis.done || st.analysis.fail || !st.analysis.run) {
+        A.updateNav();
+        return;
+      }
+      st.analysis.run = false;
+      st.analysis.done = false;
+      st.analysis.fail = true;
+      A.stopTimer("analysis");
+      const message = t === "idle"
+        ? "No active analysis progress stream. Run analysis again."
+        : "Analysis progress ended before a completion event. Run analysis again.";
+      A.setMsg(el.analysisMsg, message, "error");
       A.updateNav();
       renderAnalysis();
       renderExecSummary();
       renderFindings();
-      return A.showStep(5);
+      return;
     }
     if (t === "error") A.setMsg(el.analysisMsg, String(p.message || "Analysis stream error."), "error");
   }
@@ -712,9 +728,12 @@
     A.setMsg(el.analysisMsg, "Analysis cancelled.", "info");
     A.updateNav();
     if (caseId) {
-      st.analysis.cancelPending = A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/analyze/cancel`, { method: "POST" })
-        .catch(() => {})
-        .finally(() => { st.analysis.cancelPending = null; });
+      const cancelPromise = A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/analyze/cancel`, { method: "POST" })
+        .catch(() => {});
+      st.analysis.cancelPending = cancelPromise;
+      cancelPromise.finally(() => {
+        if (st.analysis.cancelPending === cancelPromise) st.analysis.cancelPending = null;
+      });
     }
   }
 

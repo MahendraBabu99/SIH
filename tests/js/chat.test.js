@@ -341,6 +341,54 @@ describe("chat async ownership", () => {
     expect(A.el.chatThread.textContent).not.toContain("Old answer");
   });
 
+  test("does not let stale clear-history response overwrite a new case", async () => {
+    A.setCaseId("case-clear-old");
+    A.el.chatThread.innerHTML = '<div class="chat-message-row"><div>Old message</div></div>';
+    A.el.chatClear.disabled = false;
+    window.confirm = jest.fn(() => true);
+    const clearRequest = deferred();
+    global.fetch = jest.fn(() => clearRequest.promise);
+
+    A.el.chatClear.click();
+    await flushPromises();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/cases/case-clear-old/chat/history",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+
+    A.setCaseId("case-clear-new");
+    A.el.chatThread.innerHTML = '<div class="chat-message-row"><div>New case message</div></div>';
+    expect(A.el.chatThread.textContent).toContain("New case message");
+    expect(A.activeCaseId()).toBe("case-clear-new");
+    expect(A.st.chat.clearOwner).toBeNull();
+    clearRequest.resolve(await jsonResponse({ success: true }));
+    await flushPromises();
+
+    expect(A.st.chat.historyLoadedCaseId).not.toBe("case-clear-old");
+  });
+
+  test("chat_cancelled closes without retrying", async () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-chat-cancelled");
+    global.fetch = jest.fn(() => jsonResponse({ success: true }));
+
+    await submitChat("Cancel stream");
+    const source = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((entry) => entry.url === "/api/cases/case-chat-cancelled/chat/stream");
+    expect(source).toBeTruthy();
+
+    emit(source, { type: "chat_cancelled", sequence: 1 });
+    source.onerror();
+    jest.runOnlyPendingTimers();
+
+    const chatSources = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .filter((entry) => entry.url.includes("/chat/stream"));
+    expect(A.st.chat.run).toBe(false);
+    expect(A.st.chat.retry).toBeNull();
+    expect(chatSources).toHaveLength(1);
+    jest.useRealTimers();
+  });
+
   test("ignores directly dispatched events for a non-active case", () => {
     A.setCaseId("case-current");
     A.resetChatState();

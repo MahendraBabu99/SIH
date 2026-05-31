@@ -138,6 +138,19 @@
     );
   }
 
+  /** Return true when a captured clear-history owner still controls clearing. */
+  function isChatClearOwnerCurrent(owner) {
+    if (!owner) return false;
+    const current = st.chat.clearOwner;
+    return !!(
+      current
+      && current.caseId === owner.caseId
+      && current.runId === owner.runId
+      && owner.caseId === A.activeCaseId()
+      && !st.chat.run
+    );
+  }
+
   /** Abort an in-flight chat POST without changing the active SSE owner. */
   function abortChatPost() {
     if (st.chat.postAbort) {
@@ -155,10 +168,21 @@
     st.chat.historyOwner = null;
   }
 
+  /** Abort and retire any in-flight chat clear-history request. */
+  function invalidateChatClear() {
+    st.chat.activityEpoch = (Number(st.chat.activityEpoch) || 0) + 1;
+    if (st.chat.clearAbort) {
+      st.chat.clearAbort.abort();
+      st.chat.clearAbort = null;
+    }
+    st.chat.clearOwner = null;
+  }
+
   /** Retire active chat network work so late callbacks cannot update the UI. */
   function invalidateChatActivity() {
     abortChatPost();
     invalidateChatHistoryFetch();
+    invalidateChatClear();
     A.closeSseChannel(st.chat);
     st.chat.owner = null;
   }
@@ -580,6 +604,10 @@
       st.chat.historyLoadedCaseId = A.activeCaseId();
       return;
     }
+    if (type === "chat_cancelled" || type === "cancelled") {
+      finalizeChatCancelled(owner);
+      return;
+    }
     if (type === "error") {
       finalizeChatError(String(payload.message || "Chat stream failed."), owner);
       return;
@@ -646,6 +674,19 @@
     A.setMsg(el.resultsMsg, message, "error");
   }
 
+  /** Finalise a cancelled chat stream without retrying. */
+  function finalizeChatCancelled(owner = st.chat.owner) {
+    if (!isChatOwnerCurrent(owner)) return;
+    const pending = st.chat.pending;
+    if (pending && pending.contentNode) {
+      const current = String(pending.text || "").trim();
+      if (!current) renderChatMessageText(pending.contentNode, "Chat response cancelled.");
+    }
+    finalizePendingChatMessage();
+    finalizeChatStream();
+    A.setMsg(el.resultsMsg, "Chat response cancelled.", "info");
+  }
+
   /** Close the chat SSE EventSource and clear pending retries. */
   function closeChatSse() {
     invalidateChatActivity();
@@ -668,7 +709,9 @@
     st.chat.seq = -1;
     st.chat.pending = null;
     st.chat.historyLoadedCaseId = "";
+    st.chat.activityEpoch = (Number(st.chat.activityEpoch) || 0) + 1;
     st.chat.historyOwner = null;
+    st.chat.clearOwner = null;
     st.chat.allMessages = [];
     st.chat.displayedCount = 0;
     if (el.chatInput) { el.chatInput.disabled = false; el.chatInput.value = ""; }
@@ -691,14 +734,35 @@
     const confirmed = window.confirm("Clear chat history for this case?");
     if (!confirmed) return;
     A.clearMsg(el.resultsMsg);
+    invalidateChatClear();
+    const clearEpoch = st.chat.activityEpoch;
+    const owner = A.newRunOwner(caseId, "chat-clear");
+    const abortCtrl = new AbortController();
+    st.chat.clearOwner = owner;
+    st.chat.clearAbort = abortCtrl;
     try {
-      await A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/chat/history`, { method: "DELETE" });
+      await A.apiJson(
+        `/api/cases/${encodeURIComponent(caseId)}/chat/history`,
+        { method: "DELETE", signal: abortCtrl.signal },
+      );
+      if (
+        abortCtrl.signal.aborted
+        || st.chat.activityEpoch !== clearEpoch
+        || st.chat.clearOwner !== owner
+        || A.activeCaseId() !== caseId
+      ) return;
       renderChatEmptyState();
       st.chat.historyLoadedCaseId = caseId;
       A.setMsg(el.resultsMsg, "Chat history cleared.", "success");
       syncChatControls();
     } catch (e) {
+      if (e.name === "AbortError" || !isChatClearOwnerCurrent(owner)) return;
       A.setMsg(el.resultsMsg, `Failed to clear chat history: ${e.message}`, "error");
+    } finally {
+      if (st.chat.clearOwner === owner) {
+        st.chat.clearAbort = null;
+        st.chat.clearOwner = null;
+      }
     }
   }
 

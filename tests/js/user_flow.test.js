@@ -381,4 +381,60 @@ describe("mocked final browser flow", () => {
       "/api/cases/case-smoke/analyze/cancel",
     ]));
   });
+
+  test("SSE control events do not unlock parse or analysis workflow steps", async () => {
+    jest.useFakeTimers();
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/cases/case-control/analyze") return jsonResponse({ success: true });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    A.setCaseId("case-control");
+    const parseOwner = A.newRunOwner("case-control", "parse");
+    A.st.parse.owner = parseOwner;
+    A.st.parse.run = true;
+    A.st.selectedAi = ["evtx"];
+    A.st.imageParse = {
+      img1: {
+        run: true,
+        done: false,
+        fail: false,
+        owner: parseOwner,
+        rows: {},
+        status: {},
+        sseState: { es: null, retry: null, retryCount: 0, seq: -1 },
+        snapshot: {
+          image_id: "img1",
+          label: "Image 1",
+          artifacts: ["evtx"],
+          aiArtifacts: ["evtx"],
+          artifactOptions: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }],
+        },
+      },
+    };
+
+    A._startImageParseSse("case-control", "img1", parseOwner);
+    const parseSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((source) => source.url === "/api/cases/case-control/images/img1/parse/progress");
+    expect(parseSource).toBeTruthy();
+    emit(parseSource, { type: "idle", sequence: 1 });
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.step).not.toBe(4);
+
+    A.st.parse.done = true;
+    A.st.parse.fail = false;
+    A.st.selectedAi = ["evtx"];
+    A.el.prompt.value = "Investigate.";
+    await A.submitAnalysis();
+    const analysisSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
+      .find((source) => source.url === "/api/cases/case-control/analyze/progress");
+    expect(analysisSource).toBeTruthy();
+    emit(analysisSource, { type: "complete", sequence: 1 });
+
+    expect(A.st.analysis.done).toBe(false);
+    expect(A.st.analysis.fail).toBe(true);
+    expect(A.st.step).not.toBe(5);
+  });
 });

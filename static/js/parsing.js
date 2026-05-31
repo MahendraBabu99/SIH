@@ -122,7 +122,7 @@
 
   /** Commit successful multi-image parse snapshots and exclude failed images. */
   function commitMultiParsedSelections(owner) {
-    if (owner && !A.isRunOwnerCurrent(st.parse, owner)) return;
+    if (!owner || !A.isRunOwnerCurrent(st.parse, owner)) return false;
     const images = {};
     const allArtifacts = new Set();
     const allAiArtifacts = new Set();
@@ -139,8 +139,8 @@
     st.selected = Array.from(allArtifacts);
     st.selectedAi = Array.from(allAiArtifacts);
     st.parsedSelections = {
-      caseId: A.activeCaseId(),
-      runId: owner ? owner.runId : (st.parse.owner && st.parse.owner.runId) || "",
+      caseId: owner.caseId,
+      runId: owner.runId,
       mode: "multi",
       artifactOptions: [],
       artifacts: st.selected.slice(),
@@ -148,11 +148,12 @@
       images,
     };
     st.parse.selectionStale = false;
+    return true;
   }
 
   /** Return true when a captured per-image parse owner is still current. */
   function isImageParseOwnerCurrent(imageId, owner) {
-    if (!owner) return true;
+    if (!owner) return false;
     const imgState = st.imageParse[imageId];
     return !!(
       imgState
@@ -238,8 +239,9 @@
       startParseSse(owner, imageId);
       A.showStep(3);
     } catch (e) {
-      st.parse.abort = null;
       if (e.name === "AbortError") return;
+      if (!A.isRunOwnerCurrent(st.parse, owner)) return;
+      st.parse.abort = null;
       st.parse.run = false;
       st.parse.owner = null;
       st.parse.imageId = "";
@@ -304,7 +306,7 @@
     await Promise.allSettled(promises);
 
     /* Check if all failed immediately. */
-    checkMultiImageCompletion();
+    checkMultiImageCompletion(owner);
   }
 
   /**
@@ -327,6 +329,9 @@
     imgState.run = true;
     imgState.done = false;
     imgState.fail = false;
+    imgState.cancelled = false;
+    imgState.controlEnded = false;
+    imgState.transportFailed = false;
     imgState.owner = owner;
     imgState.sseState = sseState;
     imgState.arts = arts;
@@ -353,7 +358,7 @@
       setImageParseSectionStatus(imageId, "failed");
       setImageParseSectionError(imageId, `Failed to start: ${e.message}`);
       A.setMsg(el.parseErr, `Parse failed for ${sel.label}: ${e.message}`, "error");
-      checkMultiImageCompletion();
+      checkMultiImageCompletion(owner);
     }
   }
 
@@ -585,6 +590,14 @@
    */
   let _multiImageCompleteTimer = null;
 
+  /** Clear any pending debounced multi-image completion check. */
+  function clearMultiImageCompletionTimer() {
+    if (_multiImageCompleteTimer != null) {
+      clearTimeout(_multiImageCompleteTimer);
+      _multiImageCompleteTimer = null;
+    }
+  }
+
   /**
    * Schedule a debounced check for multi-image parse completion.
    *
@@ -592,11 +605,13 @@
    * This wrapper coalesces those calls so the actual finalization logic
    * runs only once on the next event-loop tick via setTimeout(…, 0).
    */
-  function checkMultiImageCompletion() {
-    if (_multiImageCompleteTimer != null) clearTimeout(_multiImageCompleteTimer);
+  function checkMultiImageCompletion(owner = st.parse.owner) {
+    if (!owner || !A.isRunOwnerCurrent(st.parse, owner)) return;
+    clearMultiImageCompletionTimer();
     _multiImageCompleteTimer = setTimeout(() => {
       _multiImageCompleteTimer = null;
-      checkMultiImageCompletionImpl();
+      if (!A.isRunOwnerCurrent(st.parse, owner)) return;
+      checkMultiImageCompletionImpl(owner);
     }, 0);
   }
 
@@ -607,11 +622,12 @@
    * Guarded: if the parse is already finalized (done or fail while not
    * running), this is a no-op so concurrent/duplicate calls are harmless.
    */
-  function checkMultiImageCompletionImpl() {
+  function checkMultiImageCompletionImpl(owner = st.parse.owner) {
+    if (!owner || !A.isRunOwnerCurrent(st.parse, owner)) return;
     /* Guard: already finalized — nothing to do. */
     if (!st.parse.run && (st.parse.done || st.parse.fail)) return;
 
-    const imageIds = Object.keys(st.imageParse);
+    const imageIds = Object.keys(st.imageParse).filter((id) => isImageParseOwnerCurrent(id, owner));
     if (!imageIds.length) return;
 
     const allDone = imageIds.every((id) => {
@@ -620,9 +636,41 @@
     });
     if (!allDone) return;
 
+    const allCancelled = imageIds.every((id) => st.imageParse[id].cancelled);
+    const anyCancelled = imageIds.some((id) => st.imageParse[id].cancelled);
+    const anyControlEnded = imageIds.some((id) => st.imageParse[id].controlEnded || st.imageParse[id].transportFailed);
     const allFailed = imageIds.every((id) => st.imageParse[id].fail);
 
     updateMultiImageParseProgress();
+
+    if (allCancelled) {
+      st.parse.run = false;
+      st.parse.done = false;
+      st.parse.fail = false;
+      st.parse.selectionStale = false;
+      A.clearParsedSelections();
+      A.stopTimer("parse");
+      A.setMsg(el.parseErr, "Parsing cancelled.", "info");
+      A.updateParseButton();
+      A.updateNav();
+      return;
+    }
+
+    if (anyCancelled || anyControlEnded) {
+      st.parse.run = false;
+      st.parse.done = false;
+      st.parse.fail = !anyCancelled;
+      st.parse.selectionStale = false;
+      A.clearParsedSelections();
+      A.stopTimer("parse");
+      const message = anyCancelled
+        ? "Parsing cancelled before all images completed."
+        : "Parse progress ended before all images completed. Start parsing again.";
+      A.setMsg(el.parseErr, message, anyCancelled ? "info" : "error");
+      A.updateParseButton();
+      A.updateNav();
+      return;
+    }
 
     if (allFailed) {
       st.parse.run = false;
@@ -638,7 +686,7 @@
     }
 
     /* At least one image succeeded. */
-    commitMultiParsedSelections(st.parse.owner);
+    if (!commitMultiParsedSelections(owner)) return;
     st.parse.run = false;
     st.parse.done = true;
     st.parse.fail = false;
@@ -728,24 +776,39 @@
       A.updateNav();
       return A.showStep(3);
     }
-    if (t === "complete" || t === "idle") {
-      // Synthetic events from the backend indicating the operation already
-      // finished (reconnect after completion) or timed out idle.  Finalize
-      // the UI so it does not stay stuck on "in progress".
-      if (!st.parse.done && !st.parse.fail) {
-        commitSingleParsedSelection(owner, p);
-        st.parse.run = false;
-        st.parse.done = true;
-        st.parse.fail = false;
-        updateParseProgress(true);
-        A.stopTimer("parse");
-      }
+    if (t === "parse_cancelled" || t === "cancelled") {
+      st.parse.run = false;
+      st.parse.done = false;
+      st.parse.fail = false;
+      st.parse.selectionStale = false;
+      A.clearParsedSelections();
+      A.stopTimer("parse");
       closeParseSse();
-      A.clearMsg(el.parseErr);
+      A.setMsg(el.parseErr, "Parsing cancelled.", "info");
       A.updateParseButton();
       A.updateNav();
-      if (st.selectedAi.length > 0) return A.showStep(4);
       return;
+    }
+    if (t === "complete" || t === "idle") {
+      closeParseSse();
+      if (st.parse.done || st.parse.fail || !st.parse.run) {
+        A.updateParseButton();
+        A.updateNav();
+        return;
+      }
+      st.parse.run = false;
+      st.parse.done = false;
+      st.parse.fail = true;
+      st.parse.selectionStale = false;
+      A.clearParsedSelections();
+      A.stopTimer("parse");
+      const message = t === "idle"
+        ? "No active parse progress stream. Start parsing again."
+        : "Parse progress ended before a completion event. Start parsing again.";
+      A.setMsg(el.parseErr, message, "error");
+      A.updateParseButton();
+      A.updateNav();
+      return A.showStep(3);
     }
     if (t === "error") A.setMsg(el.parseErr, String(p.message || "Parse stream error."), "error");
   }
@@ -825,33 +888,58 @@
       imgState.run = false;
       imgState.done = true;
       imgState.fail = false;
+      imgState.cancelled = false;
+      imgState.controlEnded = false;
+      imgState.transportFailed = false;
       imgState.parsedSnapshot = imgState.snapshot || null;
       setImageParseSectionStatus(imageId, "completed");
       closeImageParseSse(imageId);
-      checkMultiImageCompletion();
+      checkMultiImageCompletion(owner);
       return;
     }
     if (t === "parse_failed") {
       imgState.run = false;
       imgState.done = false;
       imgState.fail = true;
+      imgState.cancelled = false;
+      imgState.controlEnded = false;
+      imgState.transportFailed = false;
       setImageParseSectionStatus(imageId, "failed");
       setImageParseSectionError(imageId, String(p.error || "Parsing failed."));
       closeImageParseSse(imageId);
-      checkMultiImageCompletion();
+      checkMultiImageCompletion(owner);
+      return;
+    }
+    if (t === "parse_cancelled" || t === "cancelled") {
+      imgState.run = false;
+      imgState.done = false;
+      imgState.fail = true;
+      imgState.cancelled = true;
+      imgState.controlEnded = false;
+      imgState.transportFailed = false;
+      setImageParseSectionStatus(imageId, "cancelled");
+      setImageParseSectionError(imageId, "Parsing cancelled.");
+      closeImageParseSse(imageId);
+      checkMultiImageCompletion(owner);
       return;
     }
     if (t === "complete" || t === "idle") {
-      // Synthetic events: operation already finished or timed out idle.
-      if (!imgState.done && !imgState.fail) {
-        imgState.run = false;
-        imgState.done = true;
-        imgState.fail = false;
-        imgState.parsedSnapshot = imgState.snapshot || null;
-        setImageParseSectionStatus(imageId, "completed");
-      }
       closeImageParseSse(imageId);
-      checkMultiImageCompletion();
+      if (imgState.done || imgState.fail || !imgState.run) {
+        checkMultiImageCompletion(owner);
+        return;
+      }
+      imgState.run = false;
+      imgState.done = false;
+      imgState.fail = true;
+      imgState.cancelled = false;
+      imgState.controlEnded = true;
+      const message = t === "idle"
+        ? "No active parse progress stream."
+        : "Parse progress ended before completion.";
+      setImageParseSectionStatus(imageId, "failed");
+      setImageParseSectionError(imageId, message);
+      checkMultiImageCompletion(owner);
       return;
     }
     if (t === "error") {
@@ -887,10 +975,11 @@
         if (!isImageParseOwnerCurrent(imageId, runOwner)) return;
         imgState.run = false;
         imgState.fail = true;
+        imgState.transportFailed = true;
         closeImageParseSse(imageId);
         setImageParseSectionStatus(imageId, "failed");
         setImageParseSectionError(imageId, `Connection lost after ${A.SSE_MAX_RETRIES} retries.`);
-        checkMultiImageCompletion();
+        checkMultiImageCompletion(runOwner);
       },
     });
   }
@@ -947,11 +1036,22 @@
   function cancelParse() {
     const caseId = A.activeCaseId();
     const wasRunning = st.parse.run;
+    clearMultiImageCompletionTimer();
     st.parse.owner = null;
     st.parse.imageId = "";
     st.parse.pendingSelectionSnapshot = null;
     Object.keys(st.imageParse).forEach((imageId) => {
-      if (st.imageParse[imageId]) st.imageParse[imageId].owner = null;
+      if (st.imageParse[imageId]) {
+        st.imageParse[imageId].owner = null;
+        st.imageParse[imageId].run = false;
+        st.imageParse[imageId].done = false;
+        st.imageParse[imageId].fail = true;
+        st.imageParse[imageId].cancelled = true;
+        st.imageParse[imageId].controlEnded = false;
+        st.imageParse[imageId].transportFailed = false;
+        st.imageParse[imageId].snapshot = null;
+        setImageParseSectionStatus(imageId, "cancelled");
+      }
     });
     if (st.parse.abort) {
       st.parse.abort.abort();
@@ -969,19 +1069,24 @@
     st.parse.done = false;
     st.parse.fail = false;
     st.parse.selectionStale = false;
+    A.clearParsedSelections();
     A.stopTimer("parse");
     A.setMsg(el.parseErr, "Parsing cancelled.", "info");
     A.updateParseButton();
     A.updateNav();
     if (caseId) {
-      st.parse.cancelPending = A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/parse/cancel`, { method: "POST" })
-        .catch(() => {})
-        .finally(() => { st.parse.cancelPending = null; });
+      const cancelPromise = A.apiJson(`/api/cases/${encodeURIComponent(caseId)}/parse/cancel`, { method: "POST" })
+        .catch(() => {});
+      st.parse.cancelPending = cancelPromise;
+      cancelPromise.finally(() => {
+        if (st.parse.cancelPending === cancelPromise) st.parse.cancelPending = null;
+      });
     }
   }
 
   /** Reset all parse state, close SSE, clear UI, and cascade to analysis reset. */
   function resetParseState() {
+    clearMultiImageCompletionTimer();
     st.parse.owner = null;
     st.parse.imageId = "";
     st.parse.pendingSelectionSnapshot = null;

@@ -734,6 +734,48 @@ describe("analysis ownership and parsed-selection snapshots", () => {
     expect(A.el.analysisList.textContent).not.toContain("stale result");
   });
 
+  test("idle does not complete an active analysis", () => {
+    A.setCaseId("case-analysis-idle");
+    const owner = A.newRunOwner("case-analysis-idle", "analysis");
+    A.st.analysis.owner = owner;
+    A.st.analysis.run = true;
+
+    A._onAnalysisEvent({ type: "idle", sequence: 1 }, owner);
+
+    expect(A.st.analysis.done).toBe(false);
+    expect(A.st.analysis.fail).toBe(true);
+    expect(A.st.step).not.toBe(5);
+    expect(A.el.analysisMsg.textContent).toContain("No active analysis progress stream");
+  });
+
+  test("synthetic complete does not complete an active analysis", () => {
+    A.setCaseId("case-analysis-complete");
+    const owner = A.newRunOwner("case-analysis-complete", "analysis");
+    A.st.analysis.owner = owner;
+    A.st.analysis.run = true;
+
+    A._onAnalysisEvent({ type: "complete", sequence: 1 }, owner);
+
+    expect(A.st.analysis.done).toBe(false);
+    expect(A.st.analysis.fail).toBe(true);
+    expect(A.st.step).not.toBe(5);
+    expect(A.el.analysisMsg.textContent).toContain("before a completion event");
+  });
+
+  test("analysis_cancelled closes without marking analysis complete", () => {
+    A.setCaseId("case-analysis-cancelled");
+    const owner = A.newRunOwner("case-analysis-cancelled", "analysis");
+    A.st.analysis.owner = owner;
+    A.st.analysis.run = true;
+
+    A._onAnalysisEvent({ type: "analysis_cancelled", sequence: 1 }, owner);
+
+    expect(A.st.analysis.run).toBe(false);
+    expect(A.st.analysis.done).toBe(false);
+    expect(A.st.analysis.fail).toBe(false);
+    expect(A.el.analysisMsg.textContent).toContain("cancelled");
+  });
+
   test("multi-image analysis payload uses parsed snapshot, not live tab state", async () => {
     A.setCaseId("case-analysis");
     A.st.parse.done = true;
