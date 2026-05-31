@@ -397,7 +397,12 @@ describe("analysis status banner", () => {
     A._onAnalysisEvent({
       type: "analysis_completed",
       artifact_count: 1,
-      per_artifact: [{ artifact_key: "evtx", analysis: "result" }],
+      images: {
+        img1: {
+          label: "Image 1",
+          per_artifact: [{ artifact_key: "evtx", analysis: "result" }],
+        },
+      },
       sequence: 2,
     });
     expect(A.el.analysisStatusBanner.hidden).toBe(true);

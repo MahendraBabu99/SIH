@@ -1250,6 +1250,14 @@ def normalize_per_artifact_findings(
             "metadata": dict(metadata),
             "hash_status": hash_status,
         }
+        citation_warnings = finding.get("citation_warnings")
+        if isinstance(citation_warnings, Sequence) and not isinstance(
+            citation_warnings,
+            (str, bytes, bytearray),
+        ):
+            normalized["citation_warnings"] = list(citation_warnings)
+        elif citation_warnings:
+            normalized["citation_warnings"] = [citation_warnings]
         for key in (
             "source_record_count",
             "analysis_record_count",

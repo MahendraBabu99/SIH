@@ -94,6 +94,12 @@ def _build_artifact_entry(finding: dict[str, Any]) -> dict[str, Any]:
         "metadata": dict(finding.get("metadata") or {}),
         "hash_status": finding.get("hash_status", ""),
     }
+    if "citation_warnings" in finding:
+        citation_warnings = finding.get("citation_warnings") or []
+        if isinstance(citation_warnings, list):
+            entry["citation_warnings"] = list(citation_warnings)
+        else:
+            entry["citation_warnings"] = [citation_warnings]
     for key in (
         "source_record_count",
         "analysis_record_count",

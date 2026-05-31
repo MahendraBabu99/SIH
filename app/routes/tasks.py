@@ -32,6 +32,7 @@ from ..analyzer.core import ForensicAnalyzer
 from ..logging.case_logging import case_log_context
 from ..parser import ForensicParser
 from ..parser.core import ParserCancelledError
+from ..reporter.normalization import normalize_per_artifact_findings
 from .state import (
     ANALYSIS_PROGRESS,
     PARSE_PROGRESS,
@@ -822,21 +823,15 @@ def run_multi_image_analysis_task(
         # Build a combined summary for the SSE stream.
         cross_summary = str(output.get("cross_image_summary", "") or "")
         images_output = output.get("images", {})
-
-        # Build a flat per_artifact list for the current frontend.  For
-        # true multi-image display we enrich rows with image labels so
-        # duplicate artifact names do not collide; for one-image display
-        # the SSE shape remains visually identical to the existing UI.
-        flat_per_artifact: list[dict[str, Any]] = []
+        normalized_images_output: dict[str, dict[str, Any]] = {}
         for img_id, img_data in images_output.items():
-            if isinstance(img_data, dict):
-                for pa in img_data.get("per_artifact", []):
-                    if isinstance(pa, dict):
-                        enriched = dict(pa)
-                        if display_multi_image:
-                            enriched["image_id"] = img_id
-                            enriched["image_label"] = str(img_data.get("label", img_id))
-                        flat_per_artifact.append(enriched)
+            if not isinstance(img_data, dict):
+                continue
+            normalized_images_output[str(img_id)] = {
+                "label": str(img_data.get("label", img_id)),
+                "per_artifact": normalize_per_artifact_findings(img_data),
+                "summary": str(img_data.get("summary", "")),
+            }
 
         # For the summary event: if cross-image summary exists, combine it
         # with per-image summaries; otherwise use the single image summary.
@@ -868,19 +863,13 @@ def run_multi_image_analysis_task(
         set_progress_status(ANALYSIS_PROGRESS, case_id, "completed")
         emit_progress(ANALYSIS_PROGRESS, case_id, {
             "type": "analysis_completed",
-            "artifact_count": len(flat_per_artifact),
-            "per_artifact": flat_per_artifact,
+            "artifact_count": sum(
+                len(img_data.get("per_artifact", []))
+                for img_data in normalized_images_output.values()
+            ),
             "multi_image": display_multi_image,
             "image_scoped": True,
-            "images": {
-                img_id: {
-                    "label": str(img_data.get("label", img_id)),
-                    "per_artifact": list(img_data.get("per_artifact", [])),
-                    "summary": str(img_data.get("summary", "")),
-                }
-                for img_id, img_data in images_output.items()
-                if isinstance(img_data, dict)
-            },
+            "images": normalized_images_output,
             "cross_image_summary": cross_summary,
             "skipped_images": skipped_images,
         })

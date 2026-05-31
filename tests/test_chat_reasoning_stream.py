@@ -74,7 +74,20 @@ def test_chat_stream_emits_reasoning_without_persisting_it() -> None:
             patch.object(tasks_chat, "set_progress_status", lambda *_args, **_kwargs: None),
             patch.object(tasks_chat, "emit_progress", lambda _collection, _case_id, event: events.append(event)),
             patch.object(tasks_chat, "create_provider", return_value=_ReasoningChatProvider()),
-            patch.object(tasks, "load_case_analysis_results", return_value={"summary": "result"}),
+            patch.object(
+                tasks,
+                "load_case_analysis_results",
+                return_value={
+                    "images": {
+                        "img1": {
+                            "label": "Image 1",
+                            "summary": "result",
+                            "per_artifact": [],
+                        },
+                    },
+                    "cross_image_summary": None,
+                },
+            ),
             patch.object(tasks, "resolve_case_investigation_context", return_value={}),
             patch.object(tasks, "resolve_case_parsed_dir", return_value=parsed_dir),
             patch.object(tasks_chat, "collect_case_image_csv_paths", return_value=[]),

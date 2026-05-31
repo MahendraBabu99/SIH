@@ -34,11 +34,13 @@ from typing import Any, Mapping
 from ..logging.audit import _utc_now_iso8601_ms
 from ..reporter.normalization import (
     append_unavailable_artifact_notes,
-    artifact_analysis_unavailable,
     image_analysis_unavailable,
+    mapping_to_kv_text,
+    normalize_report_inputs,
     normalize_per_artifact_findings,
     normalize_processing_warnings,
     normalize_skipped_images,
+    resolve_hash_verification,
     summary_analysis_unavailable,
 )
 from ..utils import stringify as _stringify
@@ -263,6 +265,7 @@ class ChatManager:
         analysis_results: Mapping[str, Any] | None,
         investigation_context: str,
         metadata: Mapping[str, Any] | None,
+        evidence_hashes: Mapping[str, Any] | None = None,
     ) -> str:
         """Build a compact, complete context block for chat prompts.
 
@@ -291,7 +294,11 @@ class ChatManager:
         per_artifact_lines = self._format_per_artifact_findings(analysis)
         findings_section = f"Per-Artifact Findings:\n{per_artifact_lines}"
         return self._assemble_context(
-            analysis_results, investigation_context, metadata, findings_section,
+            analysis_results,
+            investigation_context,
+            metadata,
+            findings_section,
+            evidence_hashes=evidence_hashes,
         )
 
     def rebuild_context_with_compressed_findings(
@@ -300,6 +307,7 @@ class ChatManager:
         investigation_context: str,
         metadata: Mapping[str, Any] | None,
         compressed_findings: str,
+        evidence_hashes: Mapping[str, Any] | None = None,
     ) -> str:
         """Rebuild the context block using pre-compressed per-artifact findings.
 
@@ -321,7 +329,11 @@ class ChatManager:
         """
         findings_section = f"Per-Artifact Findings (compressed):\n{compressed_findings}"
         return self._assemble_context(
-            analysis_results, investigation_context, metadata, findings_section,
+            analysis_results,
+            investigation_context,
+            metadata,
+            findings_section,
+            evidence_hashes=evidence_hashes,
             use_provided_findings=True,
         )
 
@@ -629,6 +641,7 @@ class ChatManager:
         investigation_context: str,
         metadata: Mapping[str, Any] | None,
         findings_section: str,
+        evidence_hashes: Mapping[str, Any] | None = None,
         use_provided_findings: bool = False,
     ) -> str:
         """Assemble context sections shared by build and rebuild methods.
@@ -668,6 +681,7 @@ class ChatManager:
         """
         analysis = analysis_results if isinstance(analysis_results, Mapping) else {}
         metadata_map = metadata if isinstance(metadata, Mapping) else {}
+        hashes_map = evidence_hashes if isinstance(evidence_hashes, Mapping) else {}
 
         hostname = _stringify(metadata_map.get("hostname"), default="Unknown")
         os_value = _stringify(
@@ -686,13 +700,38 @@ class ChatManager:
 
         images_data = analysis.get("images")
         if isinstance(images_data, Mapping) and images_data:
+            try:
+                normalized_inputs = normalize_report_inputs(
+                    analysis,
+                    metadata_map,
+                    hashes_map,
+                    default_label=_stringify(analysis.get("case_name"), "Evidence Image"),
+                )
+                images_data = normalized_inputs.images_data
+                image_records_by_id = {
+                    str(record.get("image_id", "")): record
+                    for record in normalized_inputs.image_records
+                }
+                processing_note_lines = self._format_processing_note_lines(
+                    normalized_inputs.processing_notes
+                )
+            except ValueError:
+                image_records_by_id = {}
+                processing_note_lines = self._format_top_level_data_gap_lines(analysis)
+
             cross_summary = _stringify(analysis.get("cross_image_summary"))
             if len(images_data) == 1 and not cross_summary:
                 image_id, img_data = next(iter(images_data.items()))
                 img_map = img_data if isinstance(img_data, Mapping) else {}
-                img_metadata = img_map.get("metadata")
+                image_record = image_records_by_id.get(str(image_id), {})
+                img_metadata = image_record.get("metadata")
+                if not isinstance(img_metadata, Mapping):
+                    img_metadata = img_map.get("metadata")
                 if not isinstance(img_metadata, Mapping):
                     img_metadata = {}
+                img_hashes = image_record.get("hashes")
+                if not isinstance(img_hashes, Mapping):
+                    img_hashes = {}
                 single_hostname = _stringify(
                     img_metadata.get("hostname") or metadata_map.get("hostname"),
                     default="Unknown",
@@ -720,6 +759,13 @@ class ChatManager:
                 )
                 sections.append(f"Executive Summary:\n{single_summary}")
                 sections.append(findings_section)
+                hash_status = self._hash_status_from_record(image_record, img_hashes)
+                if hash_status:
+                    sections.append(f"Hash Verification:\n- Status: {hash_status}")
+                self._append_processing_notes_section(
+                    sections,
+                    processing_note_lines,
+                )
                 return "\n\n".join(sections)
 
             system_lines: list[str] = []
@@ -750,16 +796,20 @@ class ChatManager:
                     if not isinstance(img_data, Mapping):
                         continue
                     label = _stringify(img_data.get("label"), default=image_id)
+                    image_record = image_records_by_id.get(str(image_id), {})
+                    hash_status = self._hash_status_from_record(image_record)
                     img_summary = _stringify(img_data.get("summary"), default="No summary.")
 
                     artifact_lines = self._format_image_artifact_and_gap_lines(
                         str(image_id),
                         img_data,
                     )
+                    hash_line = f"Hash Verification: {hash_status}\n" if hash_status else ""
 
                     sections.append(
                         f"=== Image: {label} ===\n"
                         f"{artifact_lines}\n"
+                        f"{hash_line}"
                         f"Summary: {img_summary}"
                     )
 
@@ -768,19 +818,18 @@ class ChatManager:
                 sections.append(
                     f"=== Cross-Image Correlation ===\n{cross_summary}"
                 )
+            self._append_processing_notes_section(
+                sections,
+                processing_note_lines,
+            )
         else:
-            # Single-image layout.
             sections.append(
                 "System Under Analysis:\n"
                 f"- Hostname: {hostname}\n"
                 f"- OS: {os_value}\n"
                 f"- Domain: {domain}"
             )
-            summary = _stringify(
-                analysis.get("summary") or analysis.get("executive_summary"),
-                default="No executive summary available.",
-            )
-            sections.append(f"Executive Summary:\n{summary}")
+            sections.append("Analysis Results:\nNo canonical analysis results available.")
 
         # For non-image-scoped or empty analysis data, append the
         # caller-provided findings section.
@@ -805,7 +854,6 @@ class ChatManager:
             A newline-joined string of bullet-pointed findings, or a
             placeholder message when no findings are available.
         """
-        # Multi-image: check for ``images`` dict first.
         images_data = analysis_results.get("images")
         top_level_gap_lines = self._format_top_level_data_gap_lines(analysis_results)
         if isinstance(images_data, Mapping) and images_data:
@@ -829,17 +877,8 @@ class ChatManager:
                 top_level_gap_lines,
             )
 
-        raw_findings = analysis_results.get("per_artifact")
-        if raw_findings is None:
-            raw_findings = analysis_results.get("per_artifact_findings")
-
-        artifact_lines = self._format_normalized_artifact_lines(
-            normalize_per_artifact_findings({"per_artifact": raw_findings})
-        )
-        if artifact_lines == "- No per-artifact findings available.":
-            artifact_lines = self._format_legacy_artifact_lines(raw_findings)
         return self._combine_artifact_and_gap_lines(
-            artifact_lines,
+            "- No canonical analysis results available.",
             top_level_gap_lines,
         )
 
@@ -975,10 +1014,16 @@ class ChatManager:
                 finding.get("artifact_name") or finding.get("artifact_key"),
                 default="Unknown Artifact",
             )
+            artifact_key = _stringify(finding.get("artifact_key"))
             analysis_text = _stringify(
                 finding.get("analysis_text") or finding.get("analysis"),
             )
             details: list[str] = []
+            if artifact_key:
+                details.append(f"key={artifact_key}")
+            confidence = _stringify(finding.get("confidence_label") or finding.get("confidence"))
+            if confidence and confidence != "UNSPECIFIED":
+                details.append(f"confidence={confidence}")
             record_count = _stringify(finding.get("record_count"))
             if record_count and record_count != "N/A":
                 details.append(f"records={record_count}")
@@ -994,75 +1039,85 @@ class ChatManager:
                 details.append(f"source_csv={source_csv}")
             if analysis_csv and analysis_csv != source_csv:
                 details.append(f"analysis_csv={analysis_csv}")
+            hash_status = _stringify(finding.get("hash_status"))
+            if hash_status:
+                details.append(f"hash_status={hash_status}")
+            metadata = finding.get("metadata")
+            if isinstance(metadata, Mapping):
+                metadata_parts: list[str] = []
+                for key in ("hostname", "os_version", "os", "domain"):
+                    value = _stringify(metadata.get(key))
+                    if value:
+                        metadata_parts.append(f"{key}={value}")
+                if metadata_parts:
+                    details.append("metadata=" + ", ".join(metadata_parts))
             metadata_suffix = f" ({'; '.join(details)})" if details else ""
             lines.append(f"- {artifact_name}{metadata_suffix}: {analysis_text}")
+            key_points = finding.get("key_data_points")
+            if isinstance(key_points, list):
+                for point in key_points[:5]:
+                    if isinstance(point, Mapping):
+                        timestamp = _stringify(point.get("timestamp"))
+                        value = _stringify(point.get("value"))
+                        if value:
+                            prefix = f"{timestamp}: " if timestamp else ""
+                            lines.append(f"  - Key data point: {prefix}{value}")
+            citation_warnings = finding.get("citation_warnings")
+            if isinstance(citation_warnings, list):
+                for warning in citation_warnings[:3]:
+                    if isinstance(warning, Mapping):
+                        warning_text = _stringify(
+                            warning.get("message")
+                            or warning.get("warning")
+                            or warning.get("reason")
+                            or mapping_to_kv_text(warning)
+                        )
+                    else:
+                        warning_text = _stringify(warning)
+                    if warning_text:
+                        lines.append(f"  - Citation warning: {warning_text}")
         return "\n".join(lines)
 
     @classmethod
-    def _format_legacy_artifact_lines(cls, raw_findings: Any) -> str:
-        """Format non-canonical chat-only fallback findings."""
-        items = cls._normalize_findings_items(raw_findings)
-        findings = cls._extract_findings_tuples(items)
-        if not findings:
-            return "- No per-artifact findings available."
-        return "\n".join(
-            f"- {artifact_name}: {analysis_text}"
-            for artifact_name, analysis_text in findings
-        )
+    def _format_processing_note_lines(cls, notes: list[dict[str, str]]) -> list[str]:
+        """Format shared report processing notes for chat context."""
+        lines: list[str] = []
+        for note in notes:
+            category = _stringify(note.get("category"), default="processing_note")
+            label = _stringify(note.get("image_label") or note.get("image_id"))
+            message = _stringify(note.get("message"))
+            if not message:
+                continue
+            prefix = f"{label}: " if label else ""
+            lines.append(f"- {category}: {prefix}{message}")
+        return lines
 
     @staticmethod
-    def _normalize_findings_items(raw_findings: Any) -> list[Any]:
-        """Normalize raw per-artifact findings into a flat list of items.
-
-        Args:
-            raw_findings: Raw findings value (dict, list, or ``None``).
-
-        Returns:
-            A list of finding items (dicts or strings).
-        """
-        if isinstance(raw_findings, Mapping):
-            items: list[Any] = []
-            for artifact_name, value in raw_findings.items():
-                if isinstance(value, Mapping):
-                    merged = dict(value)
-                    merged.setdefault("artifact_name", artifact_name)
-                    items.append(merged)
-                else:
-                    items.append({"artifact_name": artifact_name, "analysis": value})
-            return items
-        if isinstance(raw_findings, list):
-            return list(raw_findings)
-        return []
+    def _append_processing_notes_section(
+        sections: list[str],
+        processing_note_lines: list[str],
+    ) -> None:
+        """Append processing notes as their own context section."""
+        filtered = [line for line in processing_note_lines if line]
+        if filtered:
+            sections.append("Processing Notes:\n" + "\n".join(filtered))
 
     @staticmethod
-    def _extract_findings_tuples(items: list[Any]) -> list[tuple[str, str]]:
-        """Extract (artifact_name, analysis_text) tuples from finding items.
-
-        Args:
-            items: List of finding items (dicts or raw strings).
-
-        Returns:
-            List of (name, text) tuples with non-empty text.
-        """
-        findings: list[tuple[str, str]] = []
-        for item in items:
-            if isinstance(item, Mapping):
-                if artifact_analysis_unavailable(item):
-                    continue
-                artifact_name = _stringify(
-                    item.get("artifact_name") or item.get("name") or item.get("artifact_key"),
-                    default="Unknown Artifact",
-                )
-                analysis_text = _stringify(
-                    item.get("analysis")
-                    or item.get("finding")
-                    or item.get("summary")
-                    or item.get("text"),
-                )
-            else:
-                artifact_name = "Unknown Artifact"
-                analysis_text = _stringify(item)
-
-            if analysis_text:
-                findings.append((artifact_name, analysis_text))
-        return findings
+    def _hash_status_from_record(
+        image_record: Mapping[str, Any],
+        hashes: Mapping[str, Any] | None = None,
+    ) -> str:
+        """Return normalized hash-verification status from a report image record."""
+        row = image_record.get("hash_verification")
+        if isinstance(row, Mapping):
+            return _stringify(row.get("label") or row.get("status"))
+        for candidate in (
+            image_record.get("hash_row"),
+            image_record.get("hashes"),
+            hashes,
+        ):
+            if isinstance(candidate, Mapping) and candidate:
+                status = _stringify(resolve_hash_verification(candidate).get("label"))
+                if status:
+                    return status
+        return ""

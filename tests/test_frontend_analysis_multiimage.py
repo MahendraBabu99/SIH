@@ -318,7 +318,7 @@ class TestMultiImageChatContext(unittest.TestCase):
         self.assertIn("attacker pivoted from PC01 to DC01", context)
 
     def test_build_context_with_single_image_results(self) -> None:
-        """build_chat_context should work normally for single-image results."""
+        """build_chat_context ignores retired flat single-image results."""
         single_results: dict[str, Any] = {
             "per_artifact": [
                 {"artifact_name": "runkeys", "analysis": "No anomalies."},
@@ -334,7 +334,8 @@ class TestMultiImageChatContext(unittest.TestCase):
         )
 
         self.assertIn("DESKTOP-01", context)
-        self.assertIn("Clean system.", context)
+        self.assertIn("No canonical analysis results available.", context)
+        self.assertNotIn("Clean system.", context)
         self.assertIn("Routine check.", context)
 
     def test_format_multi_image_findings(self) -> None:
@@ -390,50 +391,14 @@ class TestMultiImageTaskFunction(unittest.TestCase):
 
 
 class TestChatManagerNormalizationHelpers(unittest.TestCase):
-    """Unit tests for ChatManager static helper methods used in multi-image flows."""
+    """Unit tests for shared canonical chat/report normalization."""
 
-    def test_normalize_findings_items_with_dict(self) -> None:
-        """_normalize_findings_items should convert a dict into a list of dicts."""
+    def test_flat_helper_surfaces_are_removed(self) -> None:
+        """Chat no longer exposes flat findings coercion helpers."""
         from app.chat.manager import ChatManager
-        raw = {"runkeys": "Persistence found.", "evtx": {"analysis": "Logins."}}
-        items = ChatManager._normalize_findings_items(raw)
-        self.assertEqual(len(items), 2)
-        names = [item.get("artifact_name") for item in items]
-        self.assertIn("runkeys", names)
-        self.assertIn("evtx", names)
 
-    def test_normalize_findings_items_with_list(self) -> None:
-        """_normalize_findings_items should pass through a list unchanged."""
-        from app.chat.manager import ChatManager
-        raw = [{"artifact_name": "runkeys", "analysis": "Clean."}]
-        items = ChatManager._normalize_findings_items(raw)
-        self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["artifact_name"], "runkeys")
-
-    def test_normalize_findings_items_with_none(self) -> None:
-        """_normalize_findings_items should return empty list for None."""
-        from app.chat.manager import ChatManager
-        self.assertEqual(ChatManager._normalize_findings_items(None), [])
-
-    def test_extract_findings_tuples(self) -> None:
-        """_extract_findings_tuples should produce (name, text) pairs."""
-        from app.chat.manager import ChatManager
-        items = [
-            {"artifact_name": "runkeys", "analysis": "Persistence found."},
-            {"artifact_name": "empty", "analysis": ""},
-            "raw string finding",
-        ]
-        tuples = ChatManager._extract_findings_tuples(items)
-        # Empty analysis text should be excluded.
-        self.assertEqual(len(tuples), 2)
-        self.assertEqual(tuples[0], ("runkeys", "Persistence found."))
-        self.assertEqual(tuples[1][0], "Unknown Artifact")
-        self.assertEqual(tuples[1][1], "raw string finding")
-
-    def test_extract_findings_tuples_empty_list(self) -> None:
-        """_extract_findings_tuples should return empty list for empty input."""
-        from app.chat.manager import ChatManager
-        self.assertEqual(ChatManager._extract_findings_tuples([]), [])
+        self.assertFalse(hasattr(ChatManager, "_normalize_findings_items"))
+        self.assertFalse(hasattr(ChatManager, "_extract_findings_tuples"))
 
 
 class TestMultiImageChatContextEdgeCases(unittest.TestCase):
@@ -450,8 +415,8 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
         """Clean up the temporary directory."""
         self._tmpdir.cleanup()
 
-    def test_empty_images_dict_falls_through_to_single_image(self) -> None:
-        """An empty images dict should use the single-image layout."""
+    def test_empty_images_dict_does_not_fall_through_to_flat_fields(self) -> None:
+        """An empty images dict should not consume retired flat fields."""
         results: dict[str, Any] = {
             "images": {},
             "summary": "Single-image summary.",
@@ -464,9 +429,8 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
             investigation_context="Test.",
             metadata={"hostname": "HOST1"},
         )
-        # Should use single-image layout (Executive Summary present).
-        self.assertIn("Executive Summary", context)
-        self.assertIn("Single-image summary.", context)
+        self.assertIn("No canonical analysis results available.", context)
+        self.assertNotIn("Single-image summary.", context)
 
     def test_image_with_no_per_artifact(self) -> None:
         """An image with no per_artifact should still appear with a placeholder."""

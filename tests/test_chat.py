@@ -19,6 +19,8 @@ from app.chat.csv_retrieval import (
     CSV_RETRIEVAL_KEYWORDS,
     CSV_ROW_LIMIT,
 )
+from app.reporter.normalization import normalize_per_artifact_findings
+from app.routes.tasks_chat import _collect_image_scoped_case_records
 
 
 class ChatManagerTests(unittest.TestCase):
@@ -63,6 +65,31 @@ class ChatManagerTests(unittest.TestCase):
         self.assertIn("Domain: CORP", context)
         self.assertIn("Shimcache", context)
         self.assertIn("Prefetch", context)
+
+    def test_collect_chat_context_records_keeps_image_keyed_metadata(self) -> None:
+        case_snapshot = {
+            "analysis_results": {
+                "images": {
+                    "img1": {
+                        "label": "Image 1",
+                        "summary": "summary",
+                        "per_artifact": [],
+                    },
+                },
+            },
+            "image_metadata": {
+                "img1": {
+                    "hostname": "HOST-IMG1",
+                    "os_version": "Windows 11",
+                },
+            },
+        }
+
+        records = _collect_image_scoped_case_records(case_snapshot, "image_metadata")
+
+        self.assertEqual(records["img1"]["hostname"], "HOST-IMG1")
+        self.assertEqual(records["img1"]["os_version"], "Windows 11")
+        self.assertEqual(records["img1"]["label"], "Image 1")
 
     def test_retrieve_csv_data_artifact_match_retrieves_target_csv(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-retrieval-test-") as temp_dir:
@@ -310,6 +337,31 @@ class ChatManagerTests(unittest.TestCase):
             self.assertNotIn("Full verbose finding B.", rebuilt)
             # Cross-image summary should still be present.
             self.assertIn("Cross-Image Correlation", rebuilt)
+
+    def test_rebuild_context_preserves_processing_notes(self) -> None:
+        """Compressed context keeps normalized processing notes outside findings."""
+        results = self._make_analysis_results()
+        results["processing_warnings"] = ["Parser capped an artifact."]
+        results["skipped_images"] = [
+            {
+                "image_id": "img2",
+                "label": "Skipped Image",
+                "reason": "No parsed CSV directory.",
+            }
+        ]
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            rebuilt = mgr.rebuild_context_with_compressed_findings(
+                analysis_results=results,
+                investigation_context="ctx",
+                metadata={"img1": {"hostname": "HOST"}},
+                compressed_findings="- Image 1/shimcache: compressed.",
+            )
+
+            self.assertIn("Processing Notes:", rebuilt)
+            self.assertIn("Parser capped an artifact.", rebuilt)
+            self.assertIn("Skipped Skipped Image", rebuilt)
+            self.assertIn("compressed.", rebuilt)
 
     # ------------------------------------------------------------------
     # fit_history
@@ -698,8 +750,7 @@ class ChatManagerTests(unittest.TestCase):
                 metadata=None,
             )
             self.assertIn("Investigation Context:", context)
-            self.assertIn("No executive summary available.", context)
-            self.assertIn("No per-artifact findings available.", context)
+            self.assertIn("No canonical analysis results available.", context)
             self.assertIn("Hostname: Unknown", context)
 
     def test_build_chat_context_none_metadata(self) -> None:
@@ -735,11 +786,56 @@ class ChatManagerTests(unittest.TestCase):
             )
             self.assertIn("OS: Windows 10", context)
 
+    def test_build_chat_context_uses_image_scoped_metadata_and_hashes(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            context = mgr.build_chat_context(
+                analysis_results=self._make_analysis_results(),
+                investigation_context="ctx",
+                metadata={
+                    "img1": {
+                        "hostname": "HOST-IMG1",
+                        "os_version": "Windows 11",
+                        "domain": "CORP",
+                    },
+                },
+                evidence_hashes={
+                    "img1": {
+                        "filename": "host.E01",
+                        "hash_verified": True,
+                    },
+                },
+            )
+            self.assertIn("Hostname: HOST-IMG1", context)
+            self.assertIn("OS: Windows 11", context)
+            self.assertIn("Domain: CORP", context)
+            self.assertIn("Hash Verification:", context)
+            self.assertIn("Status: PASS", context)
+
+    def test_build_chat_context_includes_normalized_processing_notes(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            results = self._make_analysis_results()
+            results["processing_warnings"] = ["Partial artifact parsing for Image 1."]
+            context = mgr.build_chat_context(
+                analysis_results=results,
+                investigation_context="ctx",
+                metadata={
+                    "img1": {
+                        "hostname": "HOST-IMG1",
+                        "os_version": "Windows 11",
+                    },
+                },
+            )
+
+            self.assertIn("Processing Notes:", context)
+            self.assertIn("Partial artifact parsing for Image 1.", context)
+
     # ==================================================================
     # NEW TESTS: _format_per_artifact_findings
     # ==================================================================
 
-    def test_format_findings_dict_keyed_by_artifact_name(self) -> None:
+    def test_format_findings_rejects_flat_dict_keyed_by_artifact_name(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
@@ -749,10 +845,10 @@ class ChatManagerTests(unittest.TestCase):
                 },
             }
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("- shimcache: Found evil.exe", text)
-            self.assertIn("- prefetch: PSExec ran", text)
+            self.assertIn("No canonical analysis results available.", text)
+            self.assertNotIn("Found evil.exe", text)
 
-    def test_format_findings_dict_with_plain_string_values(self) -> None:
+    def test_format_findings_rejects_flat_plain_string_values(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
@@ -761,26 +857,27 @@ class ChatManagerTests(unittest.TestCase):
                 },
             }
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("- amcache: Interesting binary detected", text)
+            self.assertIn("No canonical analysis results available.", text)
+            self.assertNotIn("Interesting binary", text)
 
-    def test_format_findings_list_of_raw_strings(self) -> None:
+    def test_format_findings_rejects_flat_list_of_raw_strings(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
                 "per_artifact": ["Finding one", "Finding two"],
             }
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("- Unknown Artifact: Finding one", text)
-            self.assertIn("- Unknown Artifact: Finding two", text)
+            self.assertIn("No canonical analysis results available.", text)
+            self.assertNotIn("Finding one", text)
 
     def test_format_findings_empty_list(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {"per_artifact": []}
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("No per-artifact findings available.", text)
+            self.assertIn("No canonical analysis results available.", text)
 
-    def test_format_findings_uses_per_artifact_findings_key(self) -> None:
+    def test_format_findings_rejects_top_level_per_artifact_findings_key(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
@@ -789,7 +886,8 @@ class ChatManagerTests(unittest.TestCase):
                 ],
             }
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("- evtx: Logon events", text)
+            self.assertIn("No canonical analysis results available.", text)
+            self.assertNotIn("Logon events", text)
 
     def test_format_findings_keeps_failed_artifact_as_data_gap(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
@@ -840,15 +938,20 @@ class ChatManagerTests(unittest.TestCase):
             mgr = ChatManager(tmp)
             results = {"summary": "something"}
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("No per-artifact findings available.", text)
+            self.assertIn("No canonical analysis results available.", text)
+            self.assertNotIn("something", text)
 
     def test_format_findings_uses_name_key_fallback(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
-                "per_artifact": [
-                    {"name": "registry", "finding": "Autorun key found"},
-                ],
+                "images": {
+                    "img1": {
+                        "per_artifact": [
+                            {"name": "registry", "finding": "Autorun key found"},
+                        ],
+                    },
+                },
             }
             text = mgr._format_per_artifact_findings(results)
             self.assertIn("- registry: Autorun key found", text)
@@ -857,21 +960,69 @@ class ChatManagerTests(unittest.TestCase):
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
-                "per_artifact": [
-                    {"artifact_key": "mft", "summary": "Large file created"},
-                ],
+                "images": {
+                    "img1": {
+                        "per_artifact": [
+                            {
+                                "artifact_key": "mft",
+                                "summary": "Large file created",
+                                "confidence": "HIGH",
+                                "record_count": 42,
+                                "time_range_start": "2026-01-01T00:00:00",
+                                "time_range_end": "2026-01-01T00:05:00",
+                                "hash_status": "PASS",
+                                "key_data_points": [
+                                    {"timestamp": "2026-01-01T00:02:00", "value": "evil.exe"}
+                                ],
+                            },
+                        ],
+                    },
+                },
             }
             text = mgr._format_per_artifact_findings(results)
-            self.assertIn("- mft: Large file created", text)
+            self.assertIn("- mft (key=mft; confidence=HIGH; records=42", text)
+            self.assertIn("time_start=2026-01-01T00:00:00", text)
+            self.assertIn("hash_status=PASS", text)
+            self.assertIn("Key data point: 2026-01-01T00:02:00: evil.exe", text)
+
+    def test_format_findings_matches_shared_normalizer_semantics(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            image_data = {
+                "per_artifact": [
+                    {
+                        "artifact_key": "evtx",
+                        "artifact_name": "Event Logs",
+                        "analysis": "Suspicious logon. Confidence: HIGH",
+                        "record_count": 5,
+                        "citation_warnings": [
+                            {"message": "row_ref 9 was not found."},
+                        ],
+                    }
+                ]
+            }
+            shared = normalize_per_artifact_findings(image_data)
+            text = mgr._format_normalized_artifact_lines(shared)
+
+            self.assertEqual(shared[0]["artifact_key"], "evtx")
+            self.assertEqual(shared[0]["record_count"], "5")
+            self.assertEqual(shared[0]["confidence_label"], "HIGH")
+            self.assertIn("key=evtx", text)
+            self.assertIn("records=5", text)
+            self.assertIn("Citation warning: row_ref 9 was not found.", text)
 
     def test_format_findings_skips_items_with_empty_analysis(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)
             results = {
-                "per_artifact": [
-                    {"artifact_name": "empty", "analysis": ""},
-                    {"artifact_name": "has_data", "analysis": "real finding"},
-                ],
+                "images": {
+                    "img1": {
+                        "per_artifact": [
+                            {"artifact_name": "empty", "analysis": ""},
+                            {"artifact_name": "has_data", "analysis": "real finding"},
+                        ],
+                    },
+                },
             }
             text = mgr._format_per_artifact_findings(results)
             self.assertNotIn("- empty:", text)

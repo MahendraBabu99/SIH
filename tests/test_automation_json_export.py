@@ -557,6 +557,7 @@ class TestExportJsonReport(unittest.TestCase):
                                     "event": r"HKCU\Run suspicious.exe",
                                 }
                             ],
+                            "citation_warnings": ["row_ref 99 was not found"],
                             "metadata": {"csv_path": "runkeys.csv"},
                             "hash_status": "PASS",
                             "model": "fake-model",
@@ -589,6 +590,7 @@ class TestExportJsonReport(unittest.TestCase):
         )
         self.assertEqual(runkeys["confidence"], "CRITICAL")
         self.assertEqual(runkeys["confidence_class"], "confidence-critical")
+        self.assertEqual(runkeys["citation_warnings"], ["row_ref 99 was not found"])
         self.assertEqual(runkeys["metadata"], {"csv_path": "runkeys.csv"})
         self.assertEqual(runkeys["hash_status"], "PASS")
         self.assertEqual(by_key["shimcache"]["analysis_text"], "No notable execution.")

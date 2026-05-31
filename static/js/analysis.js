@@ -206,9 +206,9 @@
     if (t === "analysis_summary") {
       st.analysis.summary = String(p.summary || "");
       st.analysis.model = A.isObj(p.model_info) ? p.model_info : {};
-      // Store multi-image data if present.
-      if (p.multi_image && A.isObj(p.images)) {
-        st.analysis.multiImage = true;
+      // Store canonical image-scoped summary data when present.
+      if (A.isObj(p.images)) {
+        st.analysis.multiImage = Boolean(p.multi_image || Object.keys(p.images).length > 1);
         st.analysis.imageResults = p.images;
         st.analysis.crossImageSummary = String(p.cross_image_summary || "");
       }
@@ -222,13 +222,13 @@
       return;
     }
     if (t === "analysis_completed") {
-      // Handle multi-image completed payload.
-      if (p.multi_image && A.isObj(p.images)) {
-        st.analysis.multiImage = true;
+      // Handle canonical image-scoped completed payload.
+      if (A.isObj(p.images)) {
+        st.analysis.multiImage = Boolean(p.multi_image || Object.keys(p.images).length > 1);
         st.analysis.imageResults = p.images;
         st.analysis.crossImageSummary = String(p.cross_image_summary || "");
       }
-      const finalArtifacts = Array.isArray(p.per_artifact) ? p.per_artifact : [];
+      const finalArtifacts = flattenImageScopedArtifacts(p.images);
       finalArtifacts.forEach((entry) => {
         if (A.isObj(entry)) upsertAnalysis(entry);
       });
@@ -293,6 +293,24 @@
    * @param {Object} r - Raw event payload.
    * @returns {{key: string, name: string, model: string, current: Object, imageId: string, imageLabel: string}}
    */
+  function flattenImageScopedArtifacts(images) {
+    if (!A.isObj(images)) return [];
+    const rows = [];
+    Object.keys(images).forEach(function(imageId) {
+      const imgData = images[imageId];
+      if (!A.isObj(imgData) || !Array.isArray(imgData.per_artifact)) return;
+      const imageLabel = String(imgData.label || imageId);
+      imgData.per_artifact.forEach(function(item) {
+        if (!A.isObj(item)) return;
+        rows.push(Object.assign({}, item, {
+          image_id: item.image_id || imageId,
+          image_label: item.image_label || imageLabel,
+        }));
+      });
+    });
+    return rows;
+  }
+
   function extractAnalysisIdentifiers(r) {
     const rawKey = String(r.artifact_key || r.key || `artifact_${st.analysis.order.length + 1}`);
     const name = String(r.artifact_name || A.artifactName(rawKey));

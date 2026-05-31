@@ -52,6 +52,81 @@ COMPRESS_FINDINGS_FALLBACK_PROMPT = (
 )
 
 
+def _collect_image_scoped_case_records(
+    case_snapshot: Mapping[str, Any],
+    record_key: str,
+) -> dict[str, dict[str, Any]]:
+    """Collect metadata or hash records keyed by image ID for chat context."""
+    records: dict[str, dict[str, Any]] = {}
+    analysis_results = case_snapshot.get("analysis_results")
+    images = analysis_results.get("images") if isinstance(analysis_results, Mapping) else {}
+
+    def _label_for_image(image_id: str, image_state: Mapping[str, Any] | None = None) -> str:
+        if isinstance(image_state, Mapping):
+            label = image_state.get("label") or image_state.get("image_label")
+            if label:
+                return str(label)
+        if isinstance(images, Mapping):
+            image_data = images.get(image_id)
+            if isinstance(image_data, Mapping):
+                label = image_data.get("label")
+                if label:
+                    return str(label)
+        return ""
+
+    image_states = case_snapshot.get("image_states")
+    if isinstance(image_states, Mapping):
+        for image_id_raw, image_state in image_states.items():
+            if not isinstance(image_state, Mapping):
+                continue
+            record = image_state.get(record_key)
+            if not isinstance(record, Mapping):
+                continue
+            image_id = str(image_id_raw).strip()
+            if not image_id:
+                continue
+            item = dict(record)
+            item.setdefault("image_id", image_id)
+            label = _label_for_image(image_id, image_state)
+            if label:
+                item.setdefault("label", str(label))
+            records[image_id] = item
+    if records:
+        return records
+
+    single_record = case_snapshot.get(record_key)
+    if not isinstance(single_record, Mapping) or not isinstance(images, Mapping):
+        return records
+
+    image_ids = {str(image_id).strip() for image_id in images if str(image_id).strip()}
+    keyed_records = {
+        image_id: raw_record
+        for image_id, raw_record in single_record.items()
+        if str(image_id).strip() in image_ids and isinstance(raw_record, Mapping)
+    }
+    if keyed_records:
+        for image_id_raw, raw_record in keyed_records.items():
+            image_id = str(image_id_raw).strip()
+            item = dict(raw_record)
+            item.setdefault("image_id", image_id)
+            label = _label_for_image(image_id)
+            if label:
+                item.setdefault("label", label)
+            records[image_id] = item
+        return records
+
+    if len(images) == 1:
+        image_id = str(next(iter(images))).strip()
+        if image_id:
+            item = dict(single_record)
+            item.setdefault("image_id", image_id)
+            label = _label_for_image(image_id)
+            if label:
+                item.setdefault("label", label)
+            records[image_id] = item
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Prompt / context helpers (chat-specific)
 # ---------------------------------------------------------------------------
@@ -287,12 +362,23 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
         provider = create_provider(copy.deepcopy(config_snapshot))
 
         investigation_context = resolve_case_investigation_context(case_snapshot)
-        image_metadata = dict(case_snapshot.get("image_metadata", {}))
+        record_source = dict(case_snapshot)
+        if isinstance(analysis_results, Mapping):
+            record_source["analysis_results"] = analysis_results
+        image_metadata = _collect_image_scoped_case_records(
+            record_source,
+            "image_metadata",
+        )
+        evidence_hashes = _collect_image_scoped_case_records(
+            record_source,
+            "evidence_hashes",
+        )
 
         context_block = chat_manager.build_chat_context(
             analysis_results=analysis_results,
             investigation_context=investigation_context,
             metadata=image_metadata,
+            evidence_hashes=evidence_hashes,
         )
 
         if chat_manager.context_needs_compression(context_block, prompt_budget):
@@ -306,6 +392,7 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
                     investigation_context=investigation_context,
                     metadata=image_metadata,
                     compressed_findings=compressed,
+                    evidence_hashes=evidence_hashes,
                 )
 
         # Collect additional parsed directories from multi-image state,
