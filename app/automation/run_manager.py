@@ -125,6 +125,7 @@ class AutomationRunManager:
                 run_id
                 for run_id, run in self._runs.items()
                 if run.get("status") in FINISHED_STATUSES
+                and self._worker_terminal(run)
                 and (now - run.get("_finished_mono", now)) > self._ttl_seconds
             ]
             for run_id in expired:
@@ -178,6 +179,8 @@ class AutomationRunManager:
             "errors": [],
             "cancel_event": cancel_event,
             "_started_mono": time.monotonic(),
+            "_cancel_requested": False,
+            "_worker_terminal": False,
         }
         if metadata:
             run_state.update(metadata)
@@ -260,7 +263,8 @@ class AutomationRunManager:
             run["status"] = "cancelled"
             run["message"] = "Run cancelled by user"
             run["elapsed_seconds"] = self._elapsed(run)
-            run["_finished_mono"] = time.monotonic()
+            run["_cancel_requested"] = True
+            run["_cancel_requested_mono"] = time.monotonic()
             cancel_event = run.get("cancel_event")
             if isinstance(cancel_event, threading.Event):
                 cancel_event.set()
@@ -335,7 +339,11 @@ class AutomationRunManager:
         def _progress(phase: str, message: str, percentage: float) -> None:
             with self._lock:
                 run = self._runs.get(run_id)
-                if run is None or run["status"] == "cancelled":
+                if (
+                    run is None
+                    or run.get("status") == "cancelled"
+                    or run.get("_cancel_requested")
+                ):
                     return
                 run["status"] = "running"
                 run["phase"] = phase
@@ -354,7 +362,11 @@ class AutomationRunManager:
                 run = self._runs.get(run_id)
                 if run is None:
                     return
-                if run["status"] == "cancelled" or cancel_event.is_set():
+                if (
+                    run.get("status") == "cancelled"
+                    or run.get("_cancel_requested")
+                    or cancel_event.is_set()
+                ):
                     self._mark_cancelled(run)
                     return
                 run["status"] = "failed"
@@ -363,19 +375,25 @@ class AutomationRunManager:
                 run["errors"] = [str(exc)]
                 run["elapsed_seconds"] = self._elapsed(run)
                 run["_finished_mono"] = time.monotonic()
+                run["_worker_terminal"] = True
             return
 
         with self._lock:
             run = self._runs.get(run_id)
             if run is None:
                 return
-            if run["status"] == "cancelled" or cancel_event.is_set():
-                self._mark_cancelled(run)
+            if (
+                run.get("status") == "cancelled"
+                or run.get("_cancel_requested")
+                or cancel_event.is_set()
+            ):
+                self._mark_cancelled(run, result)
                 return
 
             run["case_id"] = result.case_id
             run["elapsed_seconds"] = self._elapsed(run)
             run["_finished_mono"] = time.monotonic()
+            run["_worker_terminal"] = True
 
             if result.success:
                 run["status"] = "completed"
@@ -392,17 +410,38 @@ class AutomationRunManager:
                 payload = _result_payload(result)
                 run["result"] = payload if _has_output_path(payload) else None
 
-    def _mark_cancelled(self, run: dict[str, Any]) -> None:
+    def _mark_cancelled(
+        self,
+        run: dict[str, Any],
+        result: AutomationResult | None = None,
+    ) -> None:
         """Mark an existing run dict as cancelled without replacing outputs."""
         run["status"] = "cancelled"
         run["message"] = run.get("message") or "Run cancelled by user"
+        if result is not None:
+            if result.case_id:
+                run["case_id"] = result.case_id
+            payload = _result_payload(result)
+            if _has_output_path(payload):
+                run["result"] = payload
         run["elapsed_seconds"] = self._elapsed(run)
         run["_finished_mono"] = time.monotonic()
+        run["_worker_terminal"] = True
 
     def _elapsed(self, run: dict[str, Any]) -> float:
         """Compute elapsed seconds since a run started."""
         start = run.get("_started_mono", time.monotonic())
         return round(time.monotonic() - start, 1)
+
+    def _worker_terminal(self, run: dict[str, Any]) -> bool:
+        """Return whether a run's background worker has stopped."""
+        if run.get("_worker_terminal") is True:
+            return True
+        thread = run.get("thread")
+        is_alive = getattr(thread, "is_alive", None)
+        if callable(is_alive):
+            return not bool(is_alive())
+        return "_worker_terminal" not in run
 
     def _build_status_response(self, run: dict[str, Any]) -> dict[str, Any]:
         """Build the JSON-serialisable status payload for a run."""
@@ -429,6 +468,8 @@ class AutomationRunManager:
             payload["errors"] = run.get("errors", [])
             if run.get("result") is not None:
                 payload["result"] = run.get("result")
+        if status == "cancelled" and run.get("result") is not None:
+            payload["result"] = run.get("result")
         return payload
 
     def _public_run_snapshot(self, run: dict[str, Any]) -> dict[str, Any]:

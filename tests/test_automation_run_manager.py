@@ -178,6 +178,30 @@ class TestAutomationRunManager(unittest.TestCase):
             str(partial_path),
         )
 
+    def test_exception_failed_run_is_ttl_evicted(self) -> None:
+        """Unexpected worker exceptions still mark the worker terminal."""
+        def fake_run(*args: object, **kwargs: object) -> AutomationResult:
+            del args, kwargs
+            raise RuntimeError("boom")
+
+        manager = AutomationRunManager(
+            run_automation_func=fake_run,
+            ttl_seconds=0.01,
+            thread_factory=ImmediateThread,
+        )
+
+        run_id = manager.start_run(_request())["run_id"]
+        status = manager.get_status(run_id)
+
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status["status"], "failed")
+
+        time.sleep(0.03)
+        manager.cleanup_expired_runs()
+
+        self.assertIsNone(manager.get_status(run_id))
+
     def test_progress_callback_updates_running_snapshot(self) -> None:
         """The manager records engine progress while a run is active."""
         engine_started = threading.Event()
@@ -215,8 +239,8 @@ class TestAutomationRunManager(unittest.TestCase):
         finish_engine.set()
         recorder.join_all()
 
-    def test_cancel_run_signals_engine_and_is_not_overwritten(self) -> None:
-        """Cancelling an active run sets the event passed to fake automation."""
+    def test_cancel_run_signals_engine_and_status_stays_cancelled(self) -> None:
+        """Cancelling sets the event and final metadata does not revive status."""
         engine_started = threading.Event()
         engine_saw_cancel = threading.Event()
         recorder = JoinableThreadRecorder()
@@ -252,7 +276,82 @@ class TestAutomationRunManager(unittest.TestCase):
         assert status is not None
         self.assertEqual(status["status"], "cancelled")
         self.assertEqual(status["message"], "Run cancelled by user")
-        self.assertNotEqual(status["case_id"], "case-after-cancel")
+        self.assertEqual(status["case_id"], "case-after-cancel")
+        self.assertEqual(
+            status["result"]["html_report_path"],
+            str(Path("/cases/case-ok/reports/report.html")),
+        )
+
+    def test_cancelled_active_worker_is_not_ttl_evicted(self) -> None:
+        """Cancelled runs are retained until their worker actually stops."""
+        engine_started = threading.Event()
+        finish_engine = threading.Event()
+        recorder = JoinableThreadRecorder()
+
+        def fake_run(
+            request: AutomationRequest,
+            progress_callback: object | None = None,
+            cancel_check: object | None = None,
+        ) -> AutomationResult:
+            del request, progress_callback, cancel_check
+            engine_started.set()
+            self.assertTrue(finish_engine.wait(timeout=1.0))
+            return _successful_result("case-cancel-terminal")
+
+        manager = AutomationRunManager(
+            run_automation_func=fake_run,
+            ttl_seconds=0.01,
+            thread_factory=recorder,
+        )
+
+        run_id = manager.start_run(_request())["run_id"]
+        self.assertTrue(engine_started.wait(timeout=1.0))
+        self.assertTrue(manager.cancel_run(run_id)["success"])
+        time.sleep(0.03)
+
+        manager.cleanup_expired_runs()
+        self.assertIsNotNone(manager.get_status(run_id))
+
+        finish_engine.set()
+        recorder.join_all()
+        time.sleep(0.03)
+        manager.cleanup_expired_runs()
+        self.assertIsNone(manager.get_status(run_id))
+
+    def test_progress_after_cancel_does_not_restore_running(self) -> None:
+        """Late progress callbacks after cancellation are ignored."""
+        engine_started = threading.Event()
+        engine_can_progress = threading.Event()
+        recorder = JoinableThreadRecorder()
+
+        def fake_run(
+            request: AutomationRequest,
+            progress_callback: object | None = None,
+            cancel_check: object | None = None,
+        ) -> AutomationResult:
+            del request, cancel_check
+            engine_started.set()
+            self.assertTrue(engine_can_progress.wait(timeout=1.0))
+            if callable(progress_callback):
+                progress_callback("analysis", "Analyzing after cancel", 75.0)
+            return _successful_result("case-late-progress")
+
+        manager = AutomationRunManager(
+            run_automation_func=fake_run,
+            thread_factory=recorder,
+        )
+
+        run_id = manager.start_run(_request())["run_id"]
+        self.assertTrue(engine_started.wait(timeout=1.0))
+        self.assertTrue(manager.cancel_run(run_id)["success"])
+        engine_can_progress.set()
+        recorder.join_all()
+
+        status = manager.get_status(run_id)
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status["status"], "cancelled")
+        self.assertNotEqual(status["phase"], "analysis")
 
     def test_list_runs_and_ttl_cleanup(self) -> None:
         """Finished runs are evicted after the configured TTL."""

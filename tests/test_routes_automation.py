@@ -872,8 +872,8 @@ class TestCancelRun(AutomationRoutesTestBase):
         self.assertEqual(run["status"], "cancelled")
         self.assertTrue(cancel_event.is_set())
 
-    def test_cancel_running_run_cleans_upload_staging(self) -> None:
-        """Cancellation acknowledgement removes pre-case upload staging."""
+    def test_cancel_running_run_preserves_upload_staging(self) -> None:
+        """Cancellation acknowledgement does not remove active worker inputs."""
         cancel_event = threading.Event()
         upload_root = Path(self.temp_dir.name) / "cases"
         upload_dir = upload_root / "_automation_uploads" / "run-cancel-upload"
@@ -902,7 +902,7 @@ class TestCancelRun(AutomationRoutesTestBase):
             )
 
         self.assertEqual(resp.status_code, 200)
-        self.assertFalse(upload_dir.exists())
+        self.assertTrue(upload_dir.exists())
         self.assertTrue(cancel_event.is_set())
 
     def test_cancel_completed_run_returns_409(self) -> None:
@@ -1188,6 +1188,33 @@ class TestRunCleanup(AutomationRoutesTestBase):
         automation_mod._cleanup_expired_runs()
         self.assertIn("active-run", automation_mod.AUTOMATION_RUNS)
 
+    def test_cancelled_run_with_active_worker_not_evicted(self) -> None:
+        """Cancelled runs are not TTL-cleaned until the worker has stopped."""
+        old_mono = time.monotonic() - automation_mod.RUN_TTL_SECONDS - 100
+        never_finished = threading.Event()
+        thread = threading.Thread(target=never_finished.wait, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: never_finished.set())
+        self.addCleanup(lambda: thread.join(timeout=1.0))
+
+        with automation_mod.RUNS_LOCK:
+            automation_mod.AUTOMATION_RUNS["active-cancelled-run"] = {
+                "run_id": "active-cancelled-run",
+                "status": "cancelled",
+                "phase": "parsing",
+                "message": "Run cancelled by user",
+                "started_at": "",
+                "evidence_path": "/fake",
+                "thread": thread,
+                "_started_mono": old_mono,
+                "_finished_mono": old_mono,
+                "_cancel_requested": True,
+                "_worker_terminal": False,
+            }
+
+        automation_mod._cleanup_expired_runs()
+        self.assertIn("active-cancelled-run", automation_mod.AUTOMATION_RUNS)
+
 
 class TestBackgroundThread(AutomationRoutesTestBase):
     """Tests for the background automation thread behaviour."""
@@ -1324,7 +1351,10 @@ class TestBackgroundThread(AutomationRoutesTestBase):
             is_set = getattr(cancel_check, "is_set", None)
             self.assertTrue(bool(is_set()) if callable(is_set) else False)
             engine_saw_cancel.set()
-            return _make_successful_result("case-after-cancel")
+            return _make_successful_result(
+                "case-after-cancel",
+                Path("/cases/case-after-cancel/analysis_results.json"),
+            )
 
         mock_run.side_effect = _long_run
 
@@ -1350,8 +1380,8 @@ class TestBackgroundThread(AutomationRoutesTestBase):
             run = dict(automation_mod.AUTOMATION_RUNS.get(run_id, {}))
         self.assertIsNotNone(run)
         self.assertEqual(run["status"], "cancelled")
-        self.assertNotEqual(run.get("case_id"), "case-after-cancel")
-        self.assertIsNone(run.get("result"))
+        self.assertEqual(run.get("case_id"), "case-after-cancel")
+        self.assertIsNotNone(run.get("result"))
 
 
 class TestProgressCallback(AutomationRoutesTestBase):

@@ -471,8 +471,9 @@ def list_runs() -> tuple[Response, int]:
 def cancel_run(run_id: str) -> tuple[Response, int]:
     """Cancel a running automation run.
 
-    Sets the cancel event and marks the run as cancelled.  The background
-    thread will stop updating the run state once it observes the flag.
+    Sets the cancel event and records a cancellation request.  Staged uploads
+    remain available until finished-run eviction so active workers are not
+    deprived of their evidence path before they observe the flag.
 
     Args:
         run_id: UUID of the run.
@@ -481,18 +482,12 @@ def cancel_run(run_id: str) -> tuple[Response, int]:
         JSON success message, 404 if not found, or 409 if not running.
     """
     _sync_run_manager_ttl()
-    upload_dir: Any = None
-    with RUNS_LOCK:
-        run = AUTOMATION_RUNS.get(run_id)
-        if run is not None:
-            upload_dir = run.get("_upload_dir")
     payload = ROUTE_RUN_MANAGER.cancel_run(run_id)
     if not payload.get("success"):
         return error_response(
             str(payload.get("error", "Unable to cancel run.")),
             int(payload.get("status_code", 400)),
         )
-    _cleanup_upload_dir(upload_dir)
     return success_response({"message": payload["message"]})
 
 
