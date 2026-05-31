@@ -17,14 +17,14 @@ import logging
 import shutil
 from pathlib import Path
 
-from ..evidence_archive_selection import select_best_extracted_descriptor
-from ..evidence_descriptor import EvidenceDescriptor
-from ..evidence_archives import (
+from ..evidence.archive_selection import select_best_extracted_descriptor
+from ..evidence.descriptor import EvidenceDescriptor
+from ..evidence.archives import (
     ArchiveExtractionLimits,
     DEFAULT_ARCHIVE_LIMITS,
     extract_archive_to_directory,
 )
-from ..evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
+from ..evidence.constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
 
 __all__ = [
     "EVIDENCE_FILE_EXTENSIONS",

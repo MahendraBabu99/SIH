@@ -31,7 +31,7 @@ from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.case_manager import CaseManager
 from app.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
-from app.evidence_descriptor import EvidenceDescriptor, descriptor_for_path
+from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
 from app.hasher import (
     apply_hash_verification_result,
     compute_hashes,

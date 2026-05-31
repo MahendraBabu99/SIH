@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .evidence_segments import collect_segment_group_paths, segment_identity
+from .segments import collect_segment_group_paths, segment_identity
 
 __all__ = [
     "EvidenceDescriptor",

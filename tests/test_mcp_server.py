@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import aift_mcp
 from app import mcp_server
-from app.evidence_descriptor import EvidenceDescriptor
+from app.evidence.descriptor import EvidenceDescriptor
 
 
 class FakeFastMCP:

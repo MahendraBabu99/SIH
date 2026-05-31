@@ -104,7 +104,7 @@ def discover_evidence(
 
 def descriptor_to_payload(descriptor: Any) -> dict[str, Any]:
     """Lazy proxy for evidence descriptor serialization."""
-    from app.evidence_descriptor import descriptor_to_payload as _to_payload
+    from app.evidence.descriptor import descriptor_to_payload as _to_payload
 
     return _to_payload(descriptor)
 

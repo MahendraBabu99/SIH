@@ -25,7 +25,7 @@ import pytest
 import app.automation.engine as engine_module
 from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
-from app.evidence_descriptor import descriptor_for_path
+from app.evidence.descriptor import descriptor_for_path
 from tests.conftest import (
     FAKE_HASHES,
     FakeAnalyzer,

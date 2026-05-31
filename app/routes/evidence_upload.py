@@ -23,20 +23,20 @@ from typing import Any
 from flask import current_app, request
 from werkzeug.utils import secure_filename
 
-from ..evidence_descriptor import (
+from ..evidence.descriptor import (
     EvidenceDescriptor,
     descriptor_for_path,
     descriptor_to_payload,
 )
-from ..evidence_segments import (
+from ..evidence.segments import (
     EWF_SEGMENT_RE,
     SPLIT_RAW_SEGMENT_RE,
     collect_segment_group_paths,
     segment_identity,
     validate_segment_group_paths,
 )
-from ..evidence_archives import DEFAULT_ARCHIVE_LIMITS, ArchiveExtractionLimits
-from ..evidence_constants import ARCHIVE_EVIDENCE_EXTENSIONS
+from ..evidence.archives import DEFAULT_ARCHIVE_LIMITS, ArchiveExtractionLimits
+from ..evidence.constants import ARCHIVE_EVIDENCE_EXTENSIONS
 from .evidence_archive import extract_archive_descriptor
 from .state import safe_name
 

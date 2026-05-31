@@ -15,7 +15,7 @@ Attributes:
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
-from app.evidence_descriptor import EvidenceDescriptor
+from app.evidence.descriptor import EvidenceDescriptor
 
 __all__ = [
     "AutomationRequest",

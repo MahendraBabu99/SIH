@@ -15,11 +15,11 @@ from pathlib import Path
 
 from dissect.target import Target
 
-from app.evidence_archive_selection import select_best_extracted_descriptor
-from app.evidence_descriptor import EvidenceDescriptor, descriptor_for_path
-from app.evidence_archives import ARCHIVE_EXTENSIONS, extract_archive_to_directory
-from app.evidence_constants import DISSECT_EVIDENCE_EXTENSIONS
-from app.evidence_segments import (
+from app.evidence.archive_selection import select_best_extracted_descriptor
+from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
+from app.evidence.archives import ARCHIVE_EXTENSIONS, extract_archive_to_directory
+from app.evidence.constants import DISSECT_EVIDENCE_EXTENSIONS
+from app.evidence.segments import (
     collect_segment_group_paths,
     segment_identity,
     validate_segment_group_paths,

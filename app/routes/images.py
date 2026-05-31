@@ -24,7 +24,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, request
 
 from ..case_manager import CaseManager
-from ..evidence_descriptor import descriptor_to_payload
+from ..evidence.descriptor import descriptor_to_payload
 from .evidence_upload import resolve_evidence_payload
 from .evidence_utils import (
     compute_evidence_hashes as _compute_evidence_hashes,

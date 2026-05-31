@@ -35,8 +35,8 @@ import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
-from app.evidence_archives import ArchiveExtractionLimits, validate_archive_member_target
-from app.evidence_constants import (
+from app.evidence.archives import ArchiveExtractionLimits, validate_archive_member_target
+from app.evidence.constants import (
     EVIDENCE_UI_ACCEPT,
     EVIDENCE_UI_ACCEPT_EXTENSIONS,
     NON_ARCHIVE_EVIDENCE_EXTENSIONS,

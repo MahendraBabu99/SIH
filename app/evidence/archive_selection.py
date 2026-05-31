@@ -14,8 +14,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from .evidence_constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
-from .evidence_descriptor import EvidenceDescriptor, descriptor_for_path
+from .constants import NON_ARCHIVE_EVIDENCE_EXTENSIONS
+from .descriptor import EvidenceDescriptor, descriptor_for_path
 
 __all__ = ["select_best_extracted_descriptor"]
 

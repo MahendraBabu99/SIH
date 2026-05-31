@@ -51,7 +51,7 @@ from ..case_logging import (
     register_case_log_handler,
 )
 from ..config import load_config, save_config, validate_config
-from ..evidence_constants import evidence_ui_metadata
+from ..evidence.constants import evidence_ui_metadata
 from ..version import TOOL_VERSION
 
 from .state import (
