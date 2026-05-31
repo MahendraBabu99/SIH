@@ -8,6 +8,7 @@ The tool implementations are thin adapters over the shared automation helpers.
 from __future__ import annotations
 
 import logging
+import json
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -33,9 +34,19 @@ MCP_TOOL_NAMES = [
     "aift_get_report_paths",
 ]
 
+MCP_RESOURCE_URIS = [
+    "aift://runs/{run_id}/status",
+    "aift://runs/{run_id}/report/json",
+    "aift://runs/{run_id}/analysis-results",
+    "aift://cases/{case_id}/audit",
+]
+
+MCP_RESOURCE_MAX_BYTES = 200_000
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
 _DEFAULT_DISCOVERY_ROOT = _PROJECT_ROOT / "cases" / "_mcp_discovery"
+_DEFAULT_CASES_ROOT = _PROJECT_ROOT / "cases"
 
 
 class MissingMCPDependencyError(RuntimeError):
@@ -151,7 +162,8 @@ def _aift_server_info_payload() -> dict[str, Any]:
         },
         "capabilities": {
             "tools": list(MCP_TOOL_NAMES),
-            "resources": [],
+            "resources": list(MCP_RESOURCE_URIS),
+            "resource_templates": list(MCP_RESOURCE_URIS),
             "prompts": [],
             "automation_tools_enabled": True,
         },
@@ -615,11 +627,218 @@ def _report_paths_payload(
         )
 
 
-def build_mcp_server(run_manager: Any | None = None) -> Any:
+def _json_text(payload: dict[str, Any]) -> str:
+    """Return indented JSON text for MCP resources."""
+    return json.dumps(payload, indent=2, ensure_ascii=True) + "\n"
+
+
+def _read_bounded_text_resource(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> str:
+    """Read a text resource, returning a bounded JSON preview when truncated."""
+    limit = MCP_RESOURCE_MAX_BYTES if max_bytes is None else max_bytes
+    with path.open("rb") as resource_file:
+        raw = resource_file.read(limit + 1)
+    truncated = len(raw) > limit
+    returned = raw[:limit]
+    text = returned.decode("utf-8", errors="replace")
+    if not truncated:
+        return text
+    return _json_text({
+        "preview_truncated": True,
+        "bytes_returned": len(returned),
+        "full_path": str(path),
+        "preview": text,
+    })
+
+
+def _require_run_status_for_resource(
+    run_manager: Any,
+    run_id: str,
+) -> tuple[str, dict[str, Any]]:
+    """Return one run status for a resource read, rejecting unknown runs."""
+    normalized_run_id = _required_text(run_id, "run_id")
+    payload = run_manager.get_status(normalized_run_id)
+    if payload is None:
+        raise ValueError(f"Run not found: {normalized_run_id}")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Run status is invalid for run: {normalized_run_id}")
+    return normalized_run_id, payload
+
+
+def _status_resource_text(run_manager: Any, run_id: str) -> str:
+    """Return current run status as JSON resource text."""
+    _normalized_run_id, payload = _require_run_status_for_resource(
+        run_manager, run_id
+    )
+    return _json_text(_ok(_public_status_payload(payload)))
+
+
+def _resolve_run_output_path(
+    run_manager: Any,
+    run_id: str,
+    output_key: str,
+    *,
+    label: str,
+    cases_root: Path,
+) -> Path:
+    """Resolve and validate one run-scoped output file path."""
+    normalized_run_id, status_payload = _require_run_status_for_resource(
+        run_manager, run_id
+    )
+    paths_payload = run_manager.get_report_paths(normalized_run_id)
+    if not isinstance(paths_payload, dict) or not paths_payload.get("success"):
+        message = (
+            _public_text(paths_payload.get("error"), "Report not available.")
+            if isinstance(paths_payload, dict)
+            else "Report not available."
+        )
+        raise FileNotFoundError(message)
+
+    reported_status = _public_text(paths_payload.get("status")) or _public_text(
+        status_payload.get("status")
+    )
+    if reported_status not in {"completed", "failed"}:
+        raise FileNotFoundError("Report not available - run has not completed.")
+
+    path_value = paths_payload.get(output_key)
+    path_text = _public_path_value(path_value)
+    if path_text is None:
+        raise FileNotFoundError(f"{label} was not generated for this run.")
+
+    path = Path(path_text).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} file not found on disk: {path}")
+
+    if output_key == "json_report_path" and path.suffix.lower() != ".json":
+        raise ValueError(f"{label} path is not a JSON file: {path}")
+
+    case_id = _public_text(paths_payload.get("case_id")) or _public_text(
+        status_payload.get("case_id")
+    )
+    if not case_id:
+        raise ValueError(f"{label} path cannot be validated without a case_id.")
+
+    cases_root = cases_root.resolve()
+    case_dir = (cases_root / case_id).resolve()
+    if not case_dir.is_relative_to(cases_root):
+        raise ValueError(f"{label} case_id resolves outside the AIFT cases root.")
+
+    if output_key == "json_report_path":
+        reports_dir = (case_dir / "reports").resolve()
+        if not path.is_relative_to(reports_dir):
+            raise ValueError(
+                f"{label} path is outside the known AIFT report output: {path}"
+            )
+
+    elif output_key == "analysis_results_path":
+        if path.name != "analysis_results.json":
+            raise ValueError(f"{label} path is not analysis_results.json: {path}")
+        if path != (case_dir / "analysis_results.json").resolve():
+            raise ValueError(
+                f"{label} path is outside the known AIFT case output: {path}"
+            )
+
+    return path
+
+
+def _run_output_resource_text(
+    run_manager: Any,
+    run_id: str,
+    output_key: str,
+    *,
+    label: str,
+    cases_root: Path,
+) -> str:
+    """Return a bounded run output resource as JSON text."""
+    path = _resolve_run_output_path(
+        run_manager,
+        run_id,
+        output_key,
+        label=label,
+        cases_root=cases_root,
+    )
+    return _read_bounded_text_resource(path)
+
+
+def _resolve_case_audit_path(cases_root: Path, case_id: str) -> Path:
+    """Resolve a case audit file below the known AIFT cases root."""
+    normalized_case_id = _required_text(case_id, "case_id")
+    root = cases_root.resolve()
+    case_dir = (root / normalized_case_id).resolve()
+    if not case_dir.is_relative_to(root):
+        raise ValueError(f"Invalid case_id: path traversal detected ({case_id!r}).")
+    if not case_dir.is_dir():
+        raise FileNotFoundError(f"Case not found: {normalized_case_id}")
+
+    audit_path = (case_dir / "audit.jsonl").resolve()
+    if not audit_path.is_relative_to(case_dir) or not audit_path.is_relative_to(root):
+        raise ValueError(
+            f"Audit path is outside the known AIFT cases root: {audit_path}"
+        )
+    if not audit_path.is_file():
+        raise FileNotFoundError(f"Audit file not found on disk: {audit_path}")
+    return audit_path
+
+
+def _audit_resource_text(
+    cases_root: Path,
+    case_id: str,
+    *,
+    max_bytes: int | None = None,
+) -> str:
+    """Return parsed audit entries as bounded JSON resource text."""
+    limit = MCP_RESOURCE_MAX_BYTES if max_bytes is None else max_bytes
+    audit_path = _resolve_case_audit_path(cases_root, case_id)
+    with audit_path.open("rb") as audit_file:
+        raw = audit_file.read(limit + 1)
+
+    truncated = len(raw) > limit
+    returned = raw[:limit]
+    text = returned.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if truncated and not text.endswith(("\n", "\r")):
+        lines = lines[:-1]
+
+    entries: list[Any] = []
+    parse_errors: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entries.append(json.loads(stripped))
+        except json.JSONDecodeError as exc:
+            parse_errors.append({
+                "line": line_number,
+                "error": _public_text(exc, "Invalid JSON audit entry."),
+            })
+
+    payload: dict[str, Any] = {
+        "case_id": audit_path.parent.name,
+        "entries": entries,
+        "entry_count": len(entries),
+        "preview_truncated": truncated,
+        "bytes_returned": len(returned),
+        "full_path": str(audit_path),
+    }
+    if parse_errors:
+        payload["parse_errors"] = parse_errors
+    return _json_text(payload)
+
+
+def build_mcp_server(
+    run_manager: Any | None = None,
+    *,
+    cases_root: str | Path | None = None,
+) -> Any:
     """Create the optional AIFT FastMCP server without creating Flask.
 
     Args:
         run_manager: Optional automation manager override for tests.
+        cases_root: Optional AIFT cases root override for tests.
 
     Returns:
         A configured ``mcp.server.fastmcp.FastMCP`` instance.
@@ -642,6 +861,11 @@ def build_mcp_server(run_manager: Any | None = None) -> Any:
         json_response=True,
     )
     manager = run_manager or _DefaultRunManagerProxy()
+    active_cases_root = (
+        Path(cases_root).expanduser().resolve()
+        if cases_root is not None
+        else _DEFAULT_CASES_ROOT.resolve()
+    )
 
     @mcp.tool(
         name="aift_server_info",
@@ -744,5 +968,57 @@ def build_mcp_server(run_manager: Any | None = None) -> Any:
     def aift_get_report_paths(run_id: str) -> dict[str, Any]:
         """Return generated output paths for a run."""
         return _report_paths_payload(manager, run_id)
+
+    @mcp.resource(
+        "aift://runs/{run_id}/status",
+        name="aift_run_status",
+        description="Current JSON status payload for an AIFT automation run.",
+        mime_type="application/json",
+    )
+    def aift_run_status(run_id: str) -> str:
+        """Return current status for a run as JSON resource text."""
+        return _status_resource_text(manager, run_id)
+
+    @mcp.resource(
+        "aift://runs/{run_id}/report/json",
+        name="aift_run_json_report",
+        description="Generated AIFT JSON report for a completed automation run.",
+        mime_type="application/json",
+    )
+    def aift_run_json_report(run_id: str) -> str:
+        """Return the generated JSON report for a run."""
+        return _run_output_resource_text(
+            manager,
+            run_id,
+            "json_report_path",
+            label="JSON report",
+            cases_root=active_cases_root,
+        )
+
+    @mcp.resource(
+        "aift://runs/{run_id}/analysis-results",
+        name="aift_run_analysis_results",
+        description="Persisted analysis_results.json for an AIFT automation run.",
+        mime_type="application/json",
+    )
+    def aift_run_analysis_results(run_id: str) -> str:
+        """Return persisted analysis_results.json for a run."""
+        return _run_output_resource_text(
+            manager,
+            run_id,
+            "analysis_results_path",
+            label="analysis_results.json",
+            cases_root=active_cases_root,
+        )
+
+    @mcp.resource(
+        "aift://cases/{case_id}/audit",
+        name="aift_case_audit",
+        description="Parsed AIFT audit.jsonl entries for a known case.",
+        mime_type="application/json",
+    )
+    def aift_case_audit(case_id: str) -> str:
+        """Return parsed audit entries for a case."""
+        return _audit_resource_text(active_cases_root, case_id)
 
     return mcp

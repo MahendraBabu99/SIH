@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import subprocess
 import sys
 import textwrap
@@ -10,6 +11,7 @@ import types
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import aift_mcp
@@ -24,11 +26,19 @@ class FakeFastMCP:
         self.args = args
         self.kwargs = kwargs
         self.registered_tools: list[tuple[dict[str, object], object]] = []
+        self.registered_resources: list[tuple[dict[str, object], object]] = []
         self.run_calls: list[str] = []
 
     def tool(self, **kwargs: object):
         def decorator(func: object) -> object:
             self.registered_tools.append((kwargs, func))
+            return func
+
+        return decorator
+
+    def resource(self, uri: str, **kwargs: object):
+        def decorator(func: object) -> object:
+            self.registered_resources.append(({"uri": uri, **kwargs}, func))
             return func
 
         return decorator
@@ -66,6 +76,13 @@ class TestMCPServerFactory(unittest.TestCase):
             [tool_kwargs["name"] for tool_kwargs, _func in server.registered_tools],
             mcp_server.MCP_TOOL_NAMES,
         )
+        self.assertEqual(
+            [
+                resource_kwargs["uri"]
+                for resource_kwargs, _func in server.registered_resources
+            ],
+            mcp_server.MCP_RESOURCE_URIS,
+        )
 
         tool_kwargs, tool_func = server.registered_tools[0]
         self.assertEqual(tool_kwargs["name"], "aift_server_info")
@@ -76,6 +93,10 @@ class TestMCPServerFactory(unittest.TestCase):
         self.assertEqual(payload["tool"]["name"], "AIFT")
         self.assertEqual(payload["mcp_server"]["transport_default"], "stdio")
         self.assertEqual(payload["capabilities"]["tools"], mcp_server.MCP_TOOL_NAMES)
+        self.assertEqual(
+            payload["capabilities"]["resources"],
+            mcp_server.MCP_RESOURCE_URIS,
+        )
         self.assertTrue(payload["capabilities"]["automation_tools_enabled"])
         self.assertNotIn("api_key", repr(payload).lower())
         self.assertNotIn("secret", repr(payload).lower())
@@ -124,9 +145,15 @@ class TestMCPServerFactory(unittest.TestCase):
             class FakeFastMCP:
                 def __init__(self, *args, **kwargs):
                     self.tools = []
+                    self.resources = []
                 def tool(self, **kwargs):
                     def decorator(func):
                         self.tools.append((kwargs, func))
+                        return func
+                    return decorator
+                def resource(self, uri, **kwargs):
+                    def decorator(func):
+                        self.resources.append(({"uri": uri, **kwargs}, func))
                         return func
                     return decorator
 
@@ -148,6 +175,10 @@ class TestMCPServerFactory(unittest.TestCase):
             server = build_mcp_server()
             if len(server.tools) != 8:
                 raise AssertionError(f"unexpected tool count: {len(server.tools)}")
+            if len(server.resources) != 4:
+                raise AssertionError(
+                    f"unexpected resource count: {len(server.resources)}"
+                )
             loaded = [
                 name for name in sys.modules
                 if any(
@@ -250,6 +281,14 @@ def _tool(server: FakeFastMCP, name: str):
         if kwargs["name"] == name:
             return func
     raise AssertionError(f"tool not registered: {name}")
+
+
+def _resource(server: FakeFastMCP, uri: str):
+    """Return a registered fake resource function by URI template."""
+    for kwargs, func in server.registered_resources:
+        if kwargs["uri"] == uri:
+            return func
+    raise AssertionError(f"resource not registered: {uri}")
 
 
 class TestMCPTools(unittest.TestCase):
@@ -492,6 +531,197 @@ class TestMCPTools(unittest.TestCase):
         self.assertFalse(paths["success"])
         self.assertIsNone(paths["html_report_path"])
         self.assertNotIn("Traceback", repr(paths))
+
+
+class TestMCPResources(unittest.TestCase):
+    """Focused MCP resource tests with fake dependencies and files."""
+
+    def test_status_resource_returns_current_run_status_json(self) -> None:
+        """The run status resource wraps the run manager status payload."""
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+
+        text = _resource(server, "aift://runs/{run_id}/status")("run-1")
+        payload = json.loads(text)
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["run_id"], "run-1")
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["result"]["json_report_path"], "report.json")
+
+    def test_report_and_analysis_resources_read_known_output_files(self) -> None:
+        """Report resources read paths supplied by the run manager."""
+        with TemporaryDirectory(prefix="aift-mcp-resources-") as temp_dir:
+            root = Path(temp_dir)
+            cases_root = root / "cases"
+            case_dir = cases_root / "case-1"
+            reports_dir = case_dir / "reports"
+            reports_dir.mkdir(parents=True)
+            json_report = reports_dir / "AIFT_report.json"
+            analysis_results = case_dir / "analysis_results.json"
+            json_report.write_text('{"report_metadata":{"tool":"AIFT"}}', encoding="utf-8")
+            analysis_results.write_text('{"images":{}}', encoding="utf-8")
+
+            manager = FakeRunManager()
+            manager.report_paths_payload.update({
+                "json_report_path": str(json_report),
+                "analysis_results_path": str(analysis_results),
+            })
+            manager.status_payload["result"].update({
+                "json_report_path": str(json_report),
+                "analysis_results_path": str(analysis_results),
+            })
+
+            with patch.dict(sys.modules, _fake_mcp_modules()):
+                server = mcp_server.build_mcp_server(
+                    run_manager=manager,
+                    cases_root=cases_root,
+                )
+
+            report_text = _resource(server, "aift://runs/{run_id}/report/json")(
+                "run-1"
+            )
+            analysis_text = _resource(
+                server, "aift://runs/{run_id}/analysis-results"
+            )("run-1")
+
+        self.assertEqual(json.loads(report_text)["report_metadata"]["tool"], "AIFT")
+        self.assertEqual(json.loads(analysis_text), {"images": {}})
+
+    def test_case_audit_resource_returns_parsed_entries(self) -> None:
+        """Audit resources parse JSONL entries below the cases root."""
+        with TemporaryDirectory(prefix="aift-mcp-audit-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            case_dir = cases_root / "case-1"
+            case_dir.mkdir(parents=True)
+            (case_dir / "audit.jsonl").write_text(
+                '{"action":"case_created","details":{"case_id":"case-1"}}\n'
+                '{"action":"report_generated","details":{}}\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(sys.modules, _fake_mcp_modules()):
+                server = mcp_server.build_mcp_server(
+                    run_manager=FakeRunManager(),
+                    cases_root=cases_root,
+                )
+
+            text = _resource(server, "aift://cases/{case_id}/audit")("case-1")
+
+        payload = json.loads(text)
+        self.assertEqual(payload["case_id"], "case-1")
+        self.assertEqual(payload["entry_count"], 2)
+        self.assertFalse(payload["preview_truncated"])
+        self.assertEqual(payload["entries"][0]["action"], "case_created")
+
+    def test_resources_reject_unknown_runs_and_missing_files(self) -> None:
+        """Unknown run IDs and absent files raise clear read errors."""
+        manager = FakeRunManager()
+        manager.status_payload = None
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=manager)
+
+        with self.assertRaisesRegex(ValueError, "Run not found"):
+            _resource(server, "aift://runs/{run_id}/status")("missing")
+
+        missing_manager = FakeRunManager()
+        missing_manager.report_paths_payload["json_report_path"] = (
+            "Z:/missing/AIFT_report.json"
+        )
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=missing_manager)
+
+        with self.assertRaisesRegex(FileNotFoundError, "not found on disk"):
+            _resource(server, "aift://runs/{run_id}/report/json")("run-1")
+
+        unavailable_manager = FakeRunManager()
+        unavailable_manager.report_paths_payload = {
+            "success": False,
+            "error": "Report not available - run has not completed.",
+        }
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=unavailable_manager)
+
+        with self.assertRaisesRegex(FileNotFoundError, "Report not available"):
+            _resource(server, "aift://runs/{run_id}/report/json")("run-1")
+
+        with TemporaryDirectory(prefix="aift-mcp-missing-audit-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            (cases_root / "case-1").mkdir(parents=True)
+            with patch.dict(sys.modules, _fake_mcp_modules()):
+                server = mcp_server.build_mcp_server(
+                    run_manager=FakeRunManager(),
+                    cases_root=cases_root,
+                )
+
+            with self.assertRaisesRegex(FileNotFoundError, "Audit file not found"):
+                _resource(server, "aift://cases/{case_id}/audit")("case-1")
+
+    def test_resources_reject_path_escape_attempts(self) -> None:
+        """Case audit and analysis resources stay under the known cases root."""
+        with TemporaryDirectory(prefix="aift-mcp-escape-") as temp_dir:
+            root = Path(temp_dir)
+            cases_root = root / "cases"
+            cases_root.mkdir()
+            outside_case = root / "outside-case"
+            outside_case.mkdir()
+            outside_analysis = outside_case / "analysis_results.json"
+            outside_analysis.write_text('{"images":{}}', encoding="utf-8")
+            outside_report = outside_case / "AIFT_report.json"
+            outside_report.write_text('{"report_metadata":{}}', encoding="utf-8")
+
+            manager = FakeRunManager()
+            manager.report_paths_payload["analysis_results_path"] = str(
+                outside_analysis
+            )
+            manager.report_paths_payload["json_report_path"] = str(outside_report)
+
+            with patch.dict(sys.modules, _fake_mcp_modules()):
+                server = mcp_server.build_mcp_server(
+                    run_manager=manager,
+                    cases_root=cases_root,
+                )
+
+            with self.assertRaisesRegex(ValueError, "path traversal"):
+                _resource(server, "aift://cases/{case_id}/audit")("../outside-case")
+
+            with self.assertRaisesRegex(ValueError, "outside the known AIFT case"):
+                _resource(server, "aift://runs/{run_id}/analysis-results")("run-1")
+
+            with self.assertRaisesRegex(ValueError, "outside the known AIFT report"):
+                _resource(server, "aift://runs/{run_id}/report/json")("run-1")
+
+    def test_large_report_resource_returns_truncated_preview_shape(self) -> None:
+        """Large resource reads return a bounded JSON preview payload."""
+        with TemporaryDirectory(prefix="aift-mcp-truncate-") as temp_dir:
+            root = Path(temp_dir)
+            cases_root = root / "cases"
+            case_dir = cases_root / "case-1"
+            reports_dir = case_dir / "reports"
+            reports_dir.mkdir(parents=True)
+            json_report = reports_dir / "AIFT_report.json"
+            json_report.write_text('{"large":"' + ("x" * 200) + '"}', encoding="utf-8")
+
+            manager = FakeRunManager()
+            manager.report_paths_payload["json_report_path"] = str(json_report)
+
+            with (
+                patch.dict(sys.modules, _fake_mcp_modules()),
+                patch.object(mcp_server, "MCP_RESOURCE_MAX_BYTES", 32),
+            ):
+                server = mcp_server.build_mcp_server(
+                    run_manager=manager,
+                    cases_root=cases_root,
+                )
+                text = _resource(server, "aift://runs/{run_id}/report/json")(
+                    "run-1"
+                )
+
+        payload = json.loads(text)
+        self.assertTrue(payload["preview_truncated"])
+        self.assertEqual(payload["bytes_returned"], 32)
+        self.assertEqual(payload["full_path"], str(json_report.resolve()))
+        self.assertLessEqual(len(payload["preview"].encode("utf-8")), 32)
 
 
 class TestAIFTMCPEntryPoint(unittest.TestCase):
