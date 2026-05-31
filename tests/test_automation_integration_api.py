@@ -682,7 +682,7 @@ class TestDiscoveryIntegration(unittest.TestCase):
 
         self._touch("\u6d4b\u8bd5_evidence.e01")
         result = discover_evidence(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertIn("\u6d4b\u8bd5_evidence.e01", names)
 
     @pytest.mark.requires_symlink
@@ -741,7 +741,7 @@ class TestDiscoveryIntegration(unittest.TestCase):
             side_effect=_target_open,
         ):
             result = discover_evidence(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertIn("image.E01", names)
         self.assertIn("disk.vmdk", names)
         self.assertIn("acquire_output", names)
@@ -757,7 +757,7 @@ class TestDiscoveryIntegration(unittest.TestCase):
         self._touch("beta.E03")
 
         result = discover_evidence(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertIn("alpha.E01", names)
         self.assertIn("beta.E01", names)
         self.assertNotIn("alpha.E02", names)

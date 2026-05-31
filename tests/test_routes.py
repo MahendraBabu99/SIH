@@ -1774,7 +1774,12 @@ class RoutesTests(unittest.TestCase):
                 json={"path": str(zip_path)},
             )
             self.assertEqual(evidence_resp.status_code, 200)
-            self.assertTrue(evidence_resp.get_json()["evidence_path"].lower().endswith(".e01"))
+            evidence_payload = evidence_resp.get_json()
+            descriptor = evidence_payload["evidence_descriptor"]
+            resolved_zip = zip_path.resolve()
+            self.assertEqual(Path(descriptor["source_path"]).resolve(), resolved_zip)
+            self.assertEqual(Path(descriptor["files_to_hash"][0]).resolve(), resolved_zip)
+            self.assertEqual(Path(evidence_payload["source_path"]).resolve(), resolved_zip)
 
             # Verify evidence_file_hashes was stored with the zip path.
             with routes_state.STATE_LOCK:
@@ -1806,29 +1811,53 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(details.get("expected_sha256"), "a" * 64)
             self.assertTrue(details.get("match"))
 
-    def test_extract_zip_without_image_returns_directory_target(self) -> None:
+    def test_archive_descriptor_without_image_returns_directory_target(self) -> None:
         zip_path = Path(self.temp_dir.name) / "triage.zip"
         destination = Path(self.temp_dir.name) / "triage_extract"
         with ZipFile(zip_path, "w") as archive:
             archive.writestr("Windows/System32/config/SAM", b"sam")
             archive.writestr("Users/Alice/NTUSER.DAT", b"profile")
 
-        dissect_target = routes_evidence_archive.extract_zip(zip_path, destination)
+        with patch(
+            "app.evidence.archive_resolver.can_open_with_dissect",
+            return_value=False,
+        ):
+            descriptor = routes_evidence_archive.extract_archive_descriptor(
+                zip_path,
+                destination,
+            )
 
-        self.assertEqual(dissect_target, destination)
-        self.assertTrue(dissect_target.is_dir())
+        resolved_zip = zip_path.resolve()
+        self.assertEqual(descriptor.dissect_path, destination.resolve())
+        self.assertEqual(descriptor.source_path, resolved_zip)
+        self.assertEqual(descriptor.files_to_hash, (resolved_zip,))
+        self.assertEqual(descriptor.extracted_from, resolved_zip)
+        self.assertEqual(descriptor.extraction_root, destination.resolve())
+        self.assertTrue(descriptor.dissect_path.is_dir())
 
-    def test_extract_zip_with_wrapper_directory_returns_wrapper_path(self) -> None:
+    def test_archive_descriptor_with_wrapper_directory_returns_wrapper_path(self) -> None:
         zip_path = Path(self.temp_dir.name) / "triage_wrapped.zip"
         destination = Path(self.temp_dir.name) / "triage_wrapped_extract"
         with ZipFile(zip_path, "w") as archive:
             archive.writestr("collection/Windows/System32/config/SAM", b"sam")
             archive.writestr("collection/Users/Alice/NTUSER.DAT", b"profile")
 
-        dissect_target = routes_evidence_archive.extract_zip(zip_path, destination)
+        with patch(
+            "app.evidence.archive_resolver.can_open_with_dissect",
+            return_value=False,
+        ):
+            descriptor = routes_evidence_archive.extract_archive_descriptor(
+                zip_path,
+                destination,
+            )
 
-        self.assertEqual(dissect_target, destination / "collection")
-        self.assertTrue(dissect_target.is_dir())
+        resolved_zip = zip_path.resolve()
+        self.assertEqual(descriptor.dissect_path, (destination / "collection").resolve())
+        self.assertEqual(descriptor.source_path, resolved_zip)
+        self.assertEqual(descriptor.files_to_hash, (resolved_zip,))
+        self.assertEqual(descriptor.extracted_from, resolved_zip)
+        self.assertEqual(descriptor.extraction_root, destination.resolve())
+        self.assertTrue(descriptor.dissect_path.is_dir())
 
     def test_evidence_intake_unexpected_error_returns_friendly_message(self) -> None:
         with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):

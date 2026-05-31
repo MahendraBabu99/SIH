@@ -21,6 +21,7 @@ from zipfile import ZipFile
 import pytest
 
 from app.automation.discovery import discover_evidence, validate_evidence_path
+from app.evidence.descriptor import EvidenceDescriptor
 from tests.conftest import require_symlink_support
 
 
@@ -126,7 +127,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         path: Path,
         *,
         workspace_dir: Path | None = None,
-    ) -> list[Path]:
+    ) -> list[EvidenceDescriptor]:
         """Run discovery with Dissect target probes forced to fail."""
         kwargs = {"workspace_dir": workspace_dir} if workspace_dir is not None else {}
         with patch(
@@ -135,12 +136,44 @@ class TestDiscoverEvidence(unittest.TestCase):
         ):
             return discover_evidence(path, **kwargs)
 
+    def _assert_direct_descriptor(
+        self,
+        descriptor: EvidenceDescriptor,
+        expected_path: Path,
+    ) -> None:
+        """Assert a descriptor for evidence that is not archive-extracted."""
+        resolved_path = expected_path.resolve()
+        self.assertEqual(descriptor.dissect_path, resolved_path)
+        self.assertEqual(descriptor.source_path, resolved_path)
+        self.assertEqual(descriptor.source_mode, "path")
+        if resolved_path.is_file():
+            self.assertEqual(descriptor.files_to_hash, (resolved_path,))
+        else:
+            self.assertEqual(descriptor.files_to_hash, ())
+        self.assertIsNone(descriptor.extracted_from)
+        self.assertIsNone(descriptor.extraction_root)
+
+    def _assert_archive_descriptor(
+        self,
+        descriptor: EvidenceDescriptor,
+        archive_path: Path,
+        workspace: Path,
+    ) -> None:
+        """Assert the archive fallback descriptor contract."""
+        resolved_archive = archive_path.resolve()
+        self.assertEqual(descriptor.source_path, resolved_archive)
+        self.assertEqual(descriptor.source_mode, "path")
+        self.assertEqual(descriptor.files_to_hash, (resolved_archive,))
+        self.assertEqual(descriptor.extracted_from, resolved_archive)
+        self.assertTrue(descriptor.extraction_root.is_relative_to(workspace.resolve()))
+
     def test_single_e01_file(self) -> None:
         """Single E01 file returns one-element list."""
         f = self._touch("image.E01")
         with patch("app.automation.discovery.Target.open") as mock_open:
             result = discover_evidence(f)
-        self.assertEqual(result, [f])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], f)
         mock_open.assert_not_called()
 
     def test_single_vmdk_file(self) -> None:
@@ -148,7 +181,8 @@ class TestDiscoverEvidence(unittest.TestCase):
         f = self._touch("disk.vmdk")
         with patch("app.automation.discovery.Target.open") as mock_open:
             result = discover_evidence(f)
-        self.assertEqual(result, [f])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], f)
         mock_open.assert_not_called()
 
     def test_unsupported_extension_raises(self) -> None:
@@ -166,7 +200,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("notes.doc")
 
         result = self._discover_with_dissect_fail(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertIn("image.e01", names)
         self.assertIn("disk.vmdk", names)
         self.assertNotIn("readme.txt", names)
@@ -186,7 +220,8 @@ class TestDiscoverEvidence(unittest.TestCase):
         ) as mock_open:
             result = discover_evidence(sub)
 
-        self.assertEqual(result, [sub.resolve()])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], sub)
         mock_open.assert_called_once_with(sub.resolve())
         fake_target.close.assert_called_once()
 
@@ -206,7 +241,8 @@ class TestDiscoverEvidence(unittest.TestCase):
         with patch("app.automation.discovery.Target.open", side_effect=fake_open) as mock_open:
             result = discover_evidence(wrapper)
 
-        self.assertEqual(result, [wrapper.resolve()])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], wrapper)
         mock_open.assert_called_once_with(wrapper.resolve())
 
     def test_folder_not_loadable_recursively_scans_children(self) -> None:
@@ -214,7 +250,8 @@ class TestDiscoverEvidence(unittest.TestCase):
         nested = self._touch("outer", "inner", "evidence.E01")
 
         result = self._discover_with_dissect_fail(self.root)
-        self.assertEqual(result, [nested])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], nested)
 
     def test_directory_no_evidence_returns_empty(self) -> None:
         """Directory with no evidence files and no subdirs returns empty."""
@@ -231,7 +268,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("image.E03")
 
         result = self._discover_with_dissect_fail(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertIn("image.E01", names)
         self.assertNotIn("image.E02", names)
         self.assertNotIn("image.E03", names)
@@ -259,7 +296,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("outer", "image.E03")
 
         result = self._discover_with_dissect_fail(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertEqual(names, ["image.E01"])
 
     def test_hidden_files_skipped(self) -> None:
@@ -268,7 +305,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("visible.e01")
 
         result = self._discover_with_dissect_fail(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertNotIn(".hidden.e01", names)
         self.assertIn("visible.e01", names)
 
@@ -280,7 +317,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("evidence.e01")
 
         result = self._discover_with_dissect_fail(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertNotIn("Thumbs.db", names)
         self.assertNotIn("desktop.ini", names)
         self.assertNotIn(".DS_Store", names)
@@ -294,7 +331,8 @@ class TestDiscoverEvidence(unittest.TestCase):
         visible = self._touch("outer", "inner", "visible.e01")
 
         result = self._discover_with_dissect_fail(self.root)
-        self.assertEqual(result, [visible])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], visible)
 
     def test_zip_directly_loadable_by_dissect(self) -> None:
         """Loadable ZIP files are returned as evidence targets."""
@@ -309,7 +347,8 @@ class TestDiscoverEvidence(unittest.TestCase):
         ) as mock_open:
             result = discover_evidence(archive)
 
-        self.assertEqual(result, [archive.resolve()])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], archive)
         mock_open.assert_called_once_with(archive.resolve())
         fake_target.close.assert_called_once()
 
@@ -326,8 +365,9 @@ class TestDiscoverEvidence(unittest.TestCase):
         )
 
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].name, "evidence.E01")
-        self.assertTrue(result[0].is_relative_to(workspace.resolve()))
+        self._assert_archive_descriptor(result[0], archive, workspace)
+        self.assertEqual(result[0].dissect_path.name, "evidence.E01")
+        self.assertTrue(result[0].dissect_path.is_relative_to(workspace.resolve()))
 
     def test_archive_fallback_prefers_best_extracted_target(self) -> None:
         """Archive fallback uses the same extracted-target selection as intake."""
@@ -344,8 +384,7 @@ class TestDiscoverEvidence(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].dissect_path.name, "disk.E01")
-        self.assertEqual(result[0].source_path, archive.resolve())
-        self.assertEqual(result[0].files_to_hash, (archive.resolve(),))
+        self._assert_archive_descriptor(result[0], archive, workspace)
 
     def test_nested_archive_fallback_keeps_selection_inside_outer_root(self) -> None:
         """Nested archive fallback keeps selected targets under the outer root."""
@@ -364,6 +403,7 @@ class TestDiscoverEvidence(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         descriptor = result[0]
+        self._assert_archive_descriptor(descriptor, archive, workspace)
         self.assertEqual(descriptor.dissect_path.name, "disk.E01")
         self.assertTrue(
             descriptor.dissect_path.is_relative_to(descriptor.extraction_root)
@@ -384,11 +424,8 @@ class TestDiscoverEvidence(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         descriptor = result[0]
+        self._assert_archive_descriptor(descriptor, archive, workspace)
         self.assertEqual(descriptor.dissect_path.name, "evidence.E01")
-        self.assertEqual(descriptor.source_path, archive.resolve())
-        self.assertEqual(descriptor.files_to_hash, (archive.resolve(),))
-        self.assertEqual(descriptor.extracted_from, archive.resolve())
-        self.assertTrue(descriptor.extraction_root.is_relative_to(workspace.resolve()))
 
     def test_tar_not_loadable_extracts_and_discovers_nested_evidence(self) -> None:
         """Archive fallback applies to tarballs as well as ZIP files."""
@@ -404,8 +441,9 @@ class TestDiscoverEvidence(unittest.TestCase):
         )
 
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].name, "disk.raw")
-        self.assertTrue(result[0].is_relative_to(workspace.resolve()))
+        self._assert_archive_descriptor(result[0], archive, workspace)
+        self.assertEqual(result[0].dissect_path.name, "disk.raw")
+        self.assertTrue(result[0].dissect_path.is_relative_to(workspace.resolve()))
 
     def test_zip_path_traversal_entry_is_rejected_safely(self) -> None:
         """Unsafe ZIP paths raise ValueError and do not escape workspace."""
@@ -442,7 +480,8 @@ class TestDiscoverEvidence(unittest.TestCase):
 
         result = self._discover_with_dissect_fail(selected)
 
-        self.assertEqual(result, [inside_evidence.resolve()])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], inside_evidence)
 
     @pytest.mark.requires_symlink(target_is_directory=True)
     def test_top_level_symlink_target_still_discovers_selected_tree(self) -> None:
@@ -457,7 +496,8 @@ class TestDiscoverEvidence(unittest.TestCase):
 
         result = self._discover_with_dissect_fail(link)
 
-        self.assertEqual(result, [evidence.resolve()])
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], evidence)
 
     def test_results_are_sorted(self) -> None:
         """Returned list is sorted by path string."""
@@ -466,7 +506,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("middle.vmdk")
 
         result = self._discover_with_dissect_fail(self.root)
-        path_strings = [str(p) for p in result]
+        path_strings = [str(descriptor.dissect_path) for descriptor in result]
         self.assertEqual(path_strings, sorted(path_strings))
 
     def test_nonexistent_directory_raises(self) -> None:
@@ -490,7 +530,7 @@ class TestDiscoverEvidence(unittest.TestCase):
         self._touch("case_b.E03")
 
         result = self._discover_with_dissect_fail(self.root)
-        names = [p.name for p in result]
+        names = [descriptor.dissect_path.name for descriptor in result]
         self.assertIn("case_a.E01", names)
         self.assertIn("case_b.E01", names)
         self.assertNotIn("case_a.E02", names)

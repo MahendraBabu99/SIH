@@ -42,6 +42,7 @@ from app.evidence.constants import (
     EVIDENCE_UI_ACCEPT_EXTENSIONS,
     NON_ARCHIVE_EVIDENCE_EXTENSIONS,
 )
+from app.evidence.descriptor import EvidenceDescriptor
 from app.routes.evidence_archive import extract_archive_descriptor
 
 
@@ -62,6 +63,33 @@ def _install_minimal_canonical_analysis(case_id: str) -> None:
         },
         "cross_image_summary": None,
     }
+
+
+def _resolve_archive_fallback_descriptor(
+    archive_path: Path,
+    destination: Path,
+    **kwargs: object,
+) -> EvidenceDescriptor:
+    """Resolve an archive descriptor through fallback extraction."""
+    with patch(
+        "app.evidence.archive_resolver.can_open_with_dissect",
+        return_value=False,
+    ):
+        return extract_archive_descriptor(archive_path, destination, **kwargs)
+
+
+def _assert_archive_descriptor(
+    test_case: unittest.TestCase,
+    descriptor: EvidenceDescriptor,
+    archive_path: Path,
+    destination: Path,
+) -> None:
+    """Assert the archive fallback descriptor contract."""
+    resolved_archive = archive_path.resolve()
+    test_case.assertEqual(descriptor.source_path, resolved_archive)
+    test_case.assertEqual(descriptor.files_to_hash, (resolved_archive,))
+    test_case.assertEqual(descriptor.extracted_from, resolved_archive)
+    test_case.assertEqual(descriptor.extraction_root, destination.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -211,32 +239,36 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("case/Disk.E01", b"EWF-DATA")
             zf.writestr("case/Disk.E02", b"EWF-DATA-2")
-        result = routes_evidence_archive.extract_zip(zip_path, dest)
-        self.assertTrue(str(result).endswith(".E01"))
+        result = _resolve_archive_fallback_descriptor(zip_path, dest)
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".E01"))
 
     def test_zip_containing_vmdk(self) -> None:
         zip_path = self.root / "vm.zip"
         dest = self.root / "extracted"
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("server.vmdk", b"VMDK-DATA")
-        result = routes_evidence_archive.extract_zip(zip_path, dest)
-        self.assertTrue(str(result).endswith(".vmdk"))
+        result = _resolve_archive_fallback_descriptor(zip_path, dest)
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".vmdk"))
 
     def test_zip_containing_dd(self) -> None:
         zip_path = self.root / "raw.zip"
         dest = self.root / "extracted"
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("disk.dd", b"RAW-DATA")
-        result = routes_evidence_archive.extract_zip(zip_path, dest)
-        self.assertTrue(str(result).endswith(".dd"))
+        result = _resolve_archive_fallback_descriptor(zip_path, dest)
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".dd"))
 
     def test_zip_containing_vhd(self) -> None:
         zip_path = self.root / "hyperv.zip"
         dest = self.root / "extracted"
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("machine.vhdx", b"VHDX-DATA")
-        result = routes_evidence_archive.extract_zip(zip_path, dest)
-        self.assertTrue(str(result).endswith(".vhdx"))
+        result = _resolve_archive_fallback_descriptor(zip_path, dest)
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".vhdx"))
 
     def test_zip_prefers_e01_over_other_formats(self) -> None:
         zip_path = self.root / "mixed.zip"
@@ -244,8 +276,9 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("disk.vmdk", b"VMDK-DATA")
             zf.writestr("disk.E01", b"EWF-DATA")
-        result = routes_evidence_archive.extract_zip(zip_path, dest)
-        self.assertTrue(str(result).endswith(".E01"))
+        result = _resolve_archive_fallback_descriptor(zip_path, dest)
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".E01"))
 
     def test_zip_triage_collection_returns_directory(self) -> None:
         zip_path = self.root / "triage.zip"
@@ -253,8 +286,9 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("Windows/System32/config/SAM", b"sam")
             zf.writestr("Users/Admin/NTUSER.DAT", b"reg")
-        result = routes_evidence_archive.extract_zip(zip_path, dest)
-        self.assertTrue(result.is_dir())
+        result = _resolve_archive_fallback_descriptor(zip_path, dest)
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertTrue(result.dissect_path.is_dir())
 
     def test_zip_prefers_dissect_directory_over_nested_bin(self) -> None:
         class FakeTarget:
@@ -280,10 +314,11 @@ class TestExtractZip(unittest.TestCase):
             "app.automation.discovery.Target.open",
             side_effect=open_only_collection,
         ):
-            result = routes_evidence_archive.extract_zip(zip_path, dest)
+            result = _resolve_archive_fallback_descriptor(zip_path, dest)
 
-        self.assertEqual(result, (dest / "collection").resolve())
-        self.assertTrue(result.is_dir())
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertEqual(result.dissect_path, (dest / "collection").resolve())
+        self.assertTrue(result.dissect_path.is_dir())
 
     def test_zip_empty_raises(self) -> None:
         zip_path = self.root / "empty.zip"
@@ -291,7 +326,7 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             pass  # empty archive
         with self.assertRaises(ValueError, msg="Evidence ZIP is empty."):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
 
     def test_zip_path_traversal_raises(self) -> None:
         zip_path = self.root / "evil.zip"
@@ -299,7 +334,7 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("../../etc/passwd", b"root:x:0:0")
         with self.assertRaises(ValueError, msg="unsafe paths"):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
 
     def test_zip_rejects_windows_unsafe_member_names(self) -> None:
         """Reject ZIP members that Windows would reinterpret unsafely."""
@@ -321,7 +356,7 @@ class TestExtractZip(unittest.TestCase):
                 with ZipFile(zip_path, "w") as zf:
                     zf.writestr(member_name, b"data")
                 with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-                    routes_evidence_archive.extract_zip(zip_path, dest)
+                    _resolve_archive_fallback_descriptor(zip_path, dest)
                 self.assertFalse(dest.exists())
 
     def test_zip_rejects_windows_drive_path(self) -> None:
@@ -330,7 +365,7 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("C:\\Windows\\System32\\config\\SAM", b"sam")
         with self.assertRaises(ValueError):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
 
     def test_zip_rejects_duplicate_normalized_targets(self) -> None:
         """Reject ZIP members that collide after slash normalization."""
@@ -340,7 +375,7 @@ class TestExtractZip(unittest.TestCase):
             zf.writestr("case/Disk.E01", b"one")
             zf.writestr("case\\Disk.E01", b"two")
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
         self.assertFalse(dest.exists())
 
     def test_zip_rejects_case_insensitive_target_collision(self) -> None:
@@ -351,7 +386,7 @@ class TestExtractZip(unittest.TestCase):
             zf.writestr("case/Disk.E01", b"one")
             zf.writestr("CASE/disk.e01", b"two")
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
         self.assertFalse(dest.exists())
 
     def test_zip_nested_archive_selects_inner_evidence(self) -> None:
@@ -368,10 +403,11 @@ class TestExtractZip(unittest.TestCase):
             "app.automation.discovery.Target.open",
             side_effect=RuntimeError("not directly loadable"),
         ):
-            result = routes_evidence_archive.extract_zip(zip_path, dest)
+            result = _resolve_archive_fallback_descriptor(zip_path, dest)
 
-        self.assertEqual(result.name, "Disk.E01")
-        self.assertTrue(result.is_relative_to(dest.resolve()))
+        _assert_archive_descriptor(self, result, zip_path, dest)
+        self.assertEqual(result.dissect_path.name, "Disk.E01")
+        self.assertTrue(result.dissect_path.is_relative_to(dest.resolve()))
 
     def test_zip_rejects_unsafe_nested_archive_and_cleans_destination(self) -> None:
         """Reject unsafe nested ZIP extraction instead of falling back."""
@@ -389,7 +425,7 @@ class TestExtractZip(unittest.TestCase):
             side_effect=RuntimeError("not directly loadable"),
         ):
             with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-                routes_evidence_archive.extract_zip(zip_path, dest)
+                _resolve_archive_fallback_descriptor(zip_path, dest)
 
         self.assertFalse(dest.exists())
         self.assertFalse((self.root / "escape.E01").exists())
@@ -404,7 +440,7 @@ class TestExtractZip(unittest.TestCase):
             zf.writestr(symlink_dir, b"target")
 
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
 
         self.assertFalse(dest.exists())
 
@@ -414,7 +450,7 @@ class TestExtractZip(unittest.TestCase):
         with ZipFile(zip_path, "w") as zf:
             zf.writestr("disk.E01", b"A" * 32)
         with self.assertRaises(ValueError):
-            routes_evidence_archive.extract_zip(
+            _resolve_archive_fallback_descriptor(
                 zip_path,
                 dest,
                 limits=ArchiveExtractionLimits(
@@ -440,7 +476,7 @@ class TestExtractZip(unittest.TestCase):
         dest.symlink_to(target, target_is_directory=True)
 
         with self.assertRaises(ValueError):
-            routes_evidence_archive.extract_zip(zip_path, dest)
+            _resolve_archive_fallback_descriptor(zip_path, dest)
 
         self.assertTrue(marker.exists())
 
@@ -487,20 +523,23 @@ class TestExtractTar(unittest.TestCase):
     def test_tar_containing_e01(self) -> None:
         tar_path = self._make_tar("evidence.tar", {"Disk.E01": b"EWF", "Disk.E02": b"EWF2"})
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_tar(tar_path, dest)
-        self.assertTrue(str(result).endswith(".E01"))
+        result = _resolve_archive_fallback_descriptor(tar_path, dest)
+        _assert_archive_descriptor(self, result, tar_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".E01"))
 
     def test_tar_gz_containing_vmdk(self) -> None:
         tar_path = self._make_tar("vm.tar.gz", {"server.vmdk": b"VMDK"}, compress=True)
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_tar(tar_path, dest)
-        self.assertTrue(str(result).endswith(".vmdk"))
+        result = _resolve_archive_fallback_descriptor(tar_path, dest)
+        _assert_archive_descriptor(self, result, tar_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".vmdk"))
 
     def test_tar_containing_raw_image(self) -> None:
         tar_path = self._make_tar("raw.tar", {"disk.raw": b"RAW"})
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_tar(tar_path, dest)
-        self.assertTrue(str(result).endswith(".raw"))
+        result = _resolve_archive_fallback_descriptor(tar_path, dest)
+        _assert_archive_descriptor(self, result, tar_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".raw"))
 
     def test_tar_triage_returns_directory(self) -> None:
         tar_path = self._make_tar("triage.tar", {
@@ -508,14 +547,15 @@ class TestExtractTar(unittest.TestCase):
             "Users/Admin/NTUSER.DAT": b"reg",
         })
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_tar(tar_path, dest)
-        self.assertTrue(result.is_dir())
+        result = _resolve_archive_fallback_descriptor(tar_path, dest)
+        _assert_archive_descriptor(self, result, tar_path, dest)
+        self.assertTrue(result.dissect_path.is_dir())
 
     def test_tar_path_traversal_raises(self) -> None:
         tar_path = self._make_tar("evil.tar", {"../../etc/passwd": b"root"})
         dest = self.root / "extracted"
         with self.assertRaises(ValueError, msg="unsafe paths"):
-            routes_evidence_archive.extract_tar(tar_path, dest)
+            _resolve_archive_fallback_descriptor(tar_path, dest)
 
     def test_tar_rejects_windows_unsafe_member_names(self) -> None:
         """Reject tar members that Windows would reinterpret unsafely."""
@@ -538,7 +578,7 @@ class TestExtractTar(unittest.TestCase):
                 )
                 dest = self.root / "extracted"
                 with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-                    routes_evidence_archive.extract_tar(tar_path, dest)
+                    _resolve_archive_fallback_descriptor(tar_path, dest)
                 self.assertFalse(dest.exists())
 
     def test_tar_rejects_duplicate_normalized_targets(self) -> None:
@@ -552,7 +592,7 @@ class TestExtractTar(unittest.TestCase):
         )
         dest = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_tar(tar_path, dest)
+            _resolve_archive_fallback_descriptor(tar_path, dest)
         self.assertFalse(dest.exists())
 
     def test_tar_rejects_case_insensitive_target_collision(self) -> None:
@@ -566,7 +606,7 @@ class TestExtractTar(unittest.TestCase):
         )
         dest = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_tar(tar_path, dest)
+            _resolve_archive_fallback_descriptor(tar_path, dest)
         self.assertFalse(dest.exists())
 
     def test_tar_empty_raises(self) -> None:
@@ -576,7 +616,7 @@ class TestExtractTar(unittest.TestCase):
             pass
         dest = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "empty"):
-            routes_evidence_archive.extract_tar(tar_path, dest)
+            _resolve_archive_fallback_descriptor(tar_path, dest)
 
     def test_tar_nested_archive_selects_inner_evidence(self) -> None:
         """Select evidence discovered inside a nested tar member archive."""
@@ -595,10 +635,11 @@ class TestExtractTar(unittest.TestCase):
             "app.automation.discovery.Target.open",
             side_effect=RuntimeError("not directly loadable"),
         ):
-            result = routes_evidence_archive.extract_tar(tar_path, dest)
+            result = _resolve_archive_fallback_descriptor(tar_path, dest)
 
-        self.assertEqual(result.name, "Disk.E01")
-        self.assertTrue(result.is_relative_to(dest.resolve()))
+        _assert_archive_descriptor(self, result, tar_path, dest)
+        self.assertEqual(result.dissect_path.name, "Disk.E01")
+        self.assertTrue(result.dissect_path.is_relative_to(dest.resolve()))
 
     def test_tar_rejects_symlink_member(self) -> None:
         tar_path = self.root / "evil-link.tar"
@@ -609,7 +650,7 @@ class TestExtractTar(unittest.TestCase):
             tf.addfile(info)
         dest = self.root / "extracted"
         with self.assertRaises(ValueError):
-            routes_evidence_archive.extract_tar(tar_path, dest)
+            _resolve_archive_fallback_descriptor(tar_path, dest)
 
 
 class TestExtract7z(unittest.TestCase):
@@ -638,20 +679,23 @@ class TestExtract7z(unittest.TestCase):
     def test_7z_containing_e01(self) -> None:
         archive_path = self._make_7z("evidence.7z", {"Disk.E01": b"EWF", "Disk.E02": b"EWF2"})
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_7z(archive_path, dest)
-        self.assertTrue(str(result).endswith(".E01"))
+        result = _resolve_archive_fallback_descriptor(archive_path, dest)
+        _assert_archive_descriptor(self, result, archive_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".E01"))
 
     def test_7z_containing_vmdk(self) -> None:
         archive_path = self._make_7z("vm.7z", {"server.vmdk": b"VMDK-DATA"})
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_7z(archive_path, dest)
-        self.assertTrue(str(result).endswith(".vmdk"))
+        result = _resolve_archive_fallback_descriptor(archive_path, dest)
+        _assert_archive_descriptor(self, result, archive_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".vmdk"))
 
     def test_7z_containing_dd(self) -> None:
         archive_path = self._make_7z("raw.7z", {"disk.dd": b"RAW-DATA"})
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_7z(archive_path, dest)
-        self.assertTrue(str(result).endswith(".dd"))
+        result = _resolve_archive_fallback_descriptor(archive_path, dest)
+        _assert_archive_descriptor(self, result, archive_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".dd"))
 
     def test_7z_triage_returns_directory(self) -> None:
         archive_path = self._make_7z("triage.7z", {
@@ -659,8 +703,9 @@ class TestExtract7z(unittest.TestCase):
             "Users/Admin/NTUSER.DAT": b"reg",
         })
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_7z(archive_path, dest)
-        self.assertTrue(result.is_dir())
+        result = _resolve_archive_fallback_descriptor(archive_path, dest)
+        _assert_archive_descriptor(self, result, archive_path, dest)
+        self.assertTrue(result.dissect_path.is_dir())
 
     def test_7z_prefers_e01(self) -> None:
         archive_path = self._make_7z("mixed.7z", {
@@ -668,8 +713,9 @@ class TestExtract7z(unittest.TestCase):
             "disk.E01": b"EWF",
         })
         dest = self.root / "extracted"
-        result = routes_evidence_archive.extract_7z(archive_path, dest)
-        self.assertTrue(str(result).endswith(".E01"))
+        result = _resolve_archive_fallback_descriptor(archive_path, dest)
+        _assert_archive_descriptor(self, result, archive_path, dest)
+        self.assertTrue(str(result.dissect_path).endswith(".E01"))
 
     def test_shared_member_validator_rejects_backslash_traversal(self) -> None:
         dest = (self.root / "extracted").resolve()
@@ -716,7 +762,7 @@ class TestExtract7z(unittest.TestCase):
                 )
                 dest = self.root / "extracted"
                 with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-                    routes_evidence_archive.extract_7z(archive_path, dest)
+                    _resolve_archive_fallback_descriptor(archive_path, dest)
                 self.assertFalse(dest.exists())
 
     def test_7z_rejects_duplicate_normalized_targets(self) -> None:
@@ -730,7 +776,7 @@ class TestExtract7z(unittest.TestCase):
         )
         dest = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_7z(archive_path, dest)
+            _resolve_archive_fallback_descriptor(archive_path, dest)
         self.assertFalse(dest.exists())
 
     def test_7z_rejects_case_insensitive_target_collision(self) -> None:
@@ -744,7 +790,7 @@ class TestExtract7z(unittest.TestCase):
         )
         dest = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "unsafe file paths"):
-            routes_evidence_archive.extract_7z(archive_path, dest)
+            _resolve_archive_fallback_descriptor(archive_path, dest)
         self.assertFalse(dest.exists())
 
     def test_7z_empty_raises(self) -> None:
@@ -754,7 +800,7 @@ class TestExtract7z(unittest.TestCase):
             pass
         dest = self.root / "extracted"
         with self.assertRaisesRegex(ValueError, "empty"):
-            routes_evidence_archive.extract_7z(archive_path, dest)
+            _resolve_archive_fallback_descriptor(archive_path, dest)
 
     def test_7z_nested_archive_selects_inner_evidence(self) -> None:
         """Select evidence discovered inside a nested 7z member archive."""
@@ -771,10 +817,11 @@ class TestExtract7z(unittest.TestCase):
             "app.automation.discovery.Target.open",
             side_effect=RuntimeError("not directly loadable"),
         ):
-            result = routes_evidence_archive.extract_7z(archive_path, dest)
+            result = _resolve_archive_fallback_descriptor(archive_path, dest)
 
-        self.assertEqual(result.name, "Disk.E01")
-        self.assertTrue(result.is_relative_to(dest.resolve()))
+        _assert_archive_descriptor(self, result, archive_path, dest)
+        self.assertEqual(result.dissect_path.name, "Disk.E01")
+        self.assertTrue(result.dissect_path.is_relative_to(dest.resolve()))
 
 
 # ---------------------------------------------------------------------------
@@ -1461,17 +1508,18 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             "app.automation.discovery.Target.open",
             side_effect=RuntimeError("not directly loadable"),
         ):
-            descriptor = extract_archive_descriptor(
+            descriptor = _resolve_archive_fallback_descriptor(
                 outer_zip,
                 destination,
                 source_mode="path",
             )
 
+        resolved_outer_zip = outer_zip.resolve()
         self.assertEqual(descriptor.dissect_path.name, "Disk.E01")
         self.assertTrue(descriptor.dissect_path.is_relative_to(destination.resolve()))
-        self.assertEqual(descriptor.source_path, outer_zip)
-        self.assertEqual(descriptor.files_to_hash, (outer_zip,))
-        self.assertEqual(descriptor.extracted_from, outer_zip)
+        self.assertEqual(descriptor.source_path, resolved_outer_zip)
+        self.assertEqual(descriptor.files_to_hash, (resolved_outer_zip,))
+        self.assertEqual(descriptor.extracted_from, resolved_outer_zip)
         self.assertEqual(descriptor.extraction_root, destination.resolve())
 
     def test_archive_report_verifies_via_evidence_file_hashes(self) -> None:
@@ -1958,8 +2006,10 @@ class TestExtractionDirNoStaleFiles(unittest.TestCase):
         stale = dest / "stale_leftover.txt"
         stale.write_text("I should not survive")
 
-        routes_evidence_archive.extract_zip(zip_path, dest)
+        descriptor = _resolve_archive_fallback_descriptor(zip_path, dest)
 
+        _assert_archive_descriptor(self, descriptor, zip_path, dest)
+        self.assertEqual(descriptor.dissect_path, (dest / "new_file.e01").resolve())
         self.assertFalse(stale.exists(), "Stale file survived extraction")
         self.assertTrue((dest / "new_file.e01").exists())
 
@@ -1977,8 +2027,10 @@ class TestExtractionDirNoStaleFiles(unittest.TestCase):
         stale = dest / "old_artifact.bin"
         stale.write_bytes(b"stale")
 
-        routes_evidence_archive.extract_tar(tar_path, dest)
+        descriptor = _resolve_archive_fallback_descriptor(tar_path, dest)
 
+        _assert_archive_descriptor(self, descriptor, tar_path, dest)
+        self.assertEqual(descriptor.dissect_path, (dest / "new_file.vmdk").resolve())
         self.assertFalse(stale.exists(), "Stale file survived tar extraction")
         self.assertTrue((dest / "new_file.vmdk").exists())
 
@@ -1993,8 +2045,10 @@ class TestExtractionDirNoStaleFiles(unittest.TestCase):
         stale = dest / "leftover.dat"
         stale.write_text("stale data")
 
-        routes_evidence_archive.extract_7z(archive_path, dest)
+        descriptor = _resolve_archive_fallback_descriptor(archive_path, dest)
 
+        _assert_archive_descriptor(self, descriptor, archive_path, dest)
+        self.assertEqual(descriptor.dissect_path, (dest / "new_file.e01").resolve())
         self.assertFalse(stale.exists(), "Stale file survived 7z extraction")
         self.assertTrue((dest / "new_file.e01").exists())
 
@@ -2020,15 +2074,19 @@ class TestExtractionDirNoStaleFiles(unittest.TestCase):
         zip_a = self.root / "a.zip"
         with ZipFile(zip_a, "w") as zf:
             zf.writestr("file_a.e01", b"DATA-A")
-        routes_evidence_archive.extract_zip(zip_a, dest)
+        descriptor_a = _resolve_archive_fallback_descriptor(zip_a, dest)
+        _assert_archive_descriptor(self, descriptor_a, zip_a, dest)
+        self.assertEqual(descriptor_a.dissect_path, (dest / "file_a.e01").resolve())
         self.assertTrue((dest / "file_a.e01").exists())
 
         # Second ZIP with file_b.e01 into the SAME destination
         zip_b = self.root / "b.zip"
         with ZipFile(zip_b, "w") as zf:
             zf.writestr("file_b.e01", b"DATA-B")
-        routes_evidence_archive.extract_zip(zip_b, dest)
+        descriptor_b = _resolve_archive_fallback_descriptor(zip_b, dest)
 
+        _assert_archive_descriptor(self, descriptor_b, zip_b, dest)
+        self.assertEqual(descriptor_b.dissect_path, (dest / "file_b.e01").resolve())
         self.assertTrue((dest / "file_b.e01").exists())
         self.assertFalse((dest / "file_a.e01").exists(),
                          "File from first extraction leaked into second")

@@ -55,41 +55,6 @@ class EvidenceDescriptor:
                 Path(self.extraction_root),
             )
 
-    def __fspath__(self) -> str:
-        return str(self.dissect_path)
-
-    def __str__(self) -> str:
-        return str(self.dissect_path)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.dissect_path, name)
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, EvidenceDescriptor):
-            return (
-                self.dissect_path == other.dissect_path
-                and self.source_path == other.source_path
-                and self.label == other.label
-                and self.source_mode == other.source_mode
-                and self.files_to_hash == other.files_to_hash
-                and self.extracted_from == other.extracted_from
-                and self.extraction_root == other.extraction_root
-            )
-        if isinstance(other, Path):
-            return self.dissect_path == other
-        return False
-
-    def __hash__(self) -> int:
-        return hash((
-            self.dissect_path,
-            self.source_path,
-            self.label,
-            self.source_mode,
-            self.files_to_hash,
-            self.extracted_from,
-            self.extraction_root,
-        ))
-
     def with_archive_source(
         self,
         archive_path: Path,
