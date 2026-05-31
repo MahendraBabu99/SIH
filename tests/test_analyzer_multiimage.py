@@ -9,10 +9,12 @@ and prompt construction.
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.multi_image import (
@@ -30,6 +32,17 @@ from app.analyzer.multi_image import (
 # ---------------------------------------------------------------------------
 
 from conftest import FakeAuditLogger, FakeProvider
+
+
+def _load_analysis_schema() -> dict[str, Any]:
+    """Load the public analysis_results schema."""
+    schema_path = (
+        Path(__file__).resolve().parents[1]
+        / "SPECs"
+        / "reference"
+        / "analysis-results.schema.json"
+    )
+    return json.loads(schema_path.read_text(encoding="utf-8"))
 
 
 def _write_artifact_csv(parsed_dir: Path, artifact_key: str, rows: list[dict[str, str]]) -> Path:
@@ -119,6 +132,7 @@ class TestSingleImageAnalysis:
         assert len(img_data["per_artifact"]) == 1
         assert isinstance(img_data["summary"], str)
         assert img_data["summary"] != ""
+        Draft202012Validator(_load_analysis_schema()).validate(result)
 
     def test_single_image_preserves_canonical_artifact_metadata(self, tmp_path: Path) -> None:
         """Multi-image pipeline keeps analyzer metadata in image per_artifact."""

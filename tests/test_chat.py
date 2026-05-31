@@ -791,6 +791,50 @@ class ChatManagerTests(unittest.TestCase):
             text = mgr._format_per_artifact_findings(results)
             self.assertIn("- evtx: Logon events", text)
 
+    def test_format_findings_keeps_failed_artifact_as_data_gap(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            results = {
+                "images": {
+                    "img1": {
+                        "label": "Image 1",
+                        "summary": "",
+                        "per_artifact": [
+                            {
+                                "artifact_key": "tasks",
+                                "artifact_name": "Scheduled Tasks",
+                                "analysis": "Analysis unavailable; recorded as a data gap.",
+                                "status": "failed",
+                                "error": "provider secret stack trace",
+                                "analysis_available": False,
+                            },
+                        ],
+                    },
+                },
+            }
+            text = mgr._format_per_artifact_findings(results)
+            self.assertIn("Data gap [artifact_analysis_unavailable]", text)
+            self.assertIn("Scheduled Tasks analysis was unavailable", text)
+            self.assertNotIn("- Scheduled Tasks: Analysis unavailable", text)
+            self.assertNotIn("provider secret", text)
+
+    def test_format_findings_includes_top_level_skipped_image_gap(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            results = self._make_analysis_results()
+            results["skipped_images"] = [
+                {
+                    "image_id": "img2",
+                    "label": "Damaged Disk",
+                    "reason": "Parsed data directory not found.",
+                },
+            ]
+            results["processing_warnings"] = ["Partial artifact parsing for Image 1."]
+            text = mgr._format_per_artifact_findings(results)
+            self.assertIn("Data gap [skipped_image]: Skipped Damaged Disk", text)
+            self.assertIn("Data gap [processing_warning]: Partial artifact parsing", text)
+            self.assertIn("- shimcache:", text)
+
     def test_format_findings_no_findings_key(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)

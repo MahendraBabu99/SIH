@@ -17,6 +17,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+from jsonschema import Draft202012Validator, ValidationError
+
 from app.automation.json_export import (
     DISCLAIMER_TEXT,
     _resolve_confidence,
@@ -25,6 +27,18 @@ from app.automation.json_export import (
 
 SAMPLE_CASE_ID = "test-case-001"
 SAMPLE_CASE_NAME = "Unit Test Case"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_schema(name: str) -> dict[str, Any]:
+    """Load a JSON schema from SPECs/reference."""
+    path = PROJECT_ROOT / "SPECs" / "reference" / name
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _assert_valid(schema_name: str, instance: dict[str, Any]) -> None:
+    """Validate an instance against a repository JSON schema."""
+    Draft202012Validator(_load_schema(schema_name)).validate(instance)
 
 
 def _make_single_image_analysis() -> dict[str, Any]:
@@ -216,6 +230,27 @@ class TestExportJsonReport(unittest.TestCase):
             "audit_trail", "disclaimer",
         }
         self.assertEqual(set(data.keys()), expected_keys)
+
+    def test_generated_json_report_matches_schema(self) -> None:
+        """Generated automation JSON reports validate against the public schema."""
+        _, data = self._export()
+
+        _assert_valid("automation-json-report.schema.json", data)
+
+    def test_analysis_results_schema_requires_canonical_images(self) -> None:
+        """analysis_results schema accepts image-scoped data and rejects flat data."""
+        schema = _load_schema("analysis-results.schema.json")
+        validator = Draft202012Validator(schema)
+
+        validator.validate(_make_single_image_analysis())
+        with self.assertRaises(ValidationError):
+            validator.validate(
+                {
+                    "per_artifact": [],
+                    "summary": "Flat summary.",
+                    "model_info": {"provider": "fake", "model": "fake-model"},
+                }
+            )
 
     def test_report_metadata_fields(self) -> None:
         """report_metadata contains tool, version, timestamp, case info."""
@@ -609,6 +644,41 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(artifact["date_filtered_count"], 1)
         self.assertEqual(artifact["deduplicated_records"], 1)
         self.assertTrue(artifact["projection_applied"])
+
+    def test_failed_artifacts_export_as_processing_notes_not_findings(self) -> None:
+        """Unavailable artifact analyses are data gaps, not artifact findings."""
+        analysis = _make_single_image_analysis()
+        analysis["images"]["img-1"]["per_artifact"] = [
+            {
+                "artifact_key": "runkeys",
+                "artifact_name": "Run/RunOnce Keys",
+                "analysis": "Successful finding. Confidence: HIGH",
+                "model": "fake-model",
+                "status": "success",
+                "analysis_available": True,
+            },
+            {
+                "artifact_key": "tasks",
+                "artifact_name": "Scheduled Tasks",
+                "analysis": "Analysis unavailable; recorded as a data gap.",
+                "model": "fake-model",
+                "status": "failed",
+                "error": "provider secret stack trace",
+                "analysis_available": False,
+            },
+        ]
+
+        _, data = self._export(analysis=analysis)
+
+        artifacts = data["analysis"]["images"]["img-1"]["artifacts"]
+        self.assertEqual([artifact["artifact_key"] for artifact in artifacts], ["runkeys"])
+        notes = data["processing_notes"]
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["category"], "artifact_analysis_unavailable")
+        self.assertEqual(notes[0]["artifact_key"], "tasks")
+        self.assertIn("Scheduled Tasks analysis was unavailable", notes[0]["message"])
+        self.assertNotIn("provider secret", json.dumps(data))
+        _assert_valid("automation-json-report.schema.json", data)
 
     def test_multi_image_accepts_per_artifact_findings_key(self) -> None:
         """JSON normalization keeps alternate keys inside image sections."""

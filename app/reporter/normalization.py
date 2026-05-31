@@ -30,6 +30,13 @@ UNKNOWN_IP_VALUES = {
     "null",
     "unavailable",
 }
+UNAVAILABLE_ARTIFACT_STATUSES = {
+    "failed",
+    "error",
+    "cancelled",
+    "skipped",
+    "unavailable",
+}
 
 
 @dataclass(frozen=True)
@@ -192,7 +199,7 @@ def normalize_report_records(value: Any, *, record_kind: str) -> ReportRecordInd
     )
 
 
-def _note_key(note: Mapping[str, str]) -> tuple[str, str, str, str]:
+def _note_key(note: Mapping[str, str]) -> tuple[str, str, str, str, str, str]:
     """Build a stable duplicate-detection key for a processing note.
 
     Args:
@@ -205,6 +212,8 @@ def _note_key(note: Mapping[str, str]) -> tuple[str, str, str, str]:
         str(note.get("category", "")),
         str(note.get("image_id", "")),
         str(note.get("image_label", "")),
+        str(note.get("artifact_key", "")),
+        str(note.get("artifact_name", "")),
         str(note.get("message", "")),
     )
 
@@ -218,6 +227,7 @@ def append_processing_note(
     severity: str = "warning",
     image_id: str = "",
     image_label: str = "",
+    **extra_fields: str,
 ) -> None:
     """Append a deduplicated processing note and warning string.
 
@@ -229,6 +239,7 @@ def append_processing_note(
         severity: Severity label. Defaults to ``"warning"``.
         image_id: Optional image identifier.
         image_label: Optional human-readable image label.
+        **extra_fields: Additional string fields, such as artifact identity.
     """
     clean_message = stringify(message)
     if not clean_message:
@@ -241,6 +252,11 @@ def append_processing_note(
         "image_label": stringify(image_label),
         "message": clean_message,
     }
+    for key, value in extra_fields.items():
+        clean_key = stringify(key)
+        clean_value = stringify(value)
+        if clean_key and clean_value:
+            note[clean_key] = clean_value
     existing_keys = {_note_key(existing) for existing in notes}
     if _note_key(note) not in existing_keys:
         notes.append(note)
@@ -350,6 +366,112 @@ def normalize_processing_warnings(
         if message and message not in warnings:
             warnings.append(message)
     return warnings
+
+
+def artifact_analysis_unavailable(finding: Mapping[str, Any]) -> bool:
+    """Return whether an artifact record represents unavailable analysis.
+
+    Args:
+        finding: Raw per-artifact analysis mapping.
+
+    Returns:
+        ``True`` when status, error, or ``analysis_available`` mark the
+        record as a processing/data gap instead of a finding.
+    """
+    status = stringify(finding.get("status")).strip().lower()
+    if status in UNAVAILABLE_ARTIFACT_STATUSES:
+        return True
+    if finding.get("analysis_available") is False:
+        return True
+    if stringify(finding.get("error")):
+        return True
+    return False
+
+
+def _artifact_identity(
+    finding: Mapping[str, Any],
+    *,
+    fallback_index: int,
+) -> tuple[str, str]:
+    """Resolve artifact key/name from a raw per-artifact mapping."""
+    artifact_key = stringify(
+        finding.get("artifact_key") or finding.get("artifact"),
+        default="",
+    )
+    artifact_name = stringify(
+        finding.get("artifact_name")
+        or finding.get("name")
+        or finding.get("artifact")
+        or artifact_key,
+        default=f"Artifact {fallback_index}",
+    )
+    return artifact_key, artifact_name
+
+
+def append_unavailable_artifact_notes(
+    image_data: Mapping[str, Any],
+    notes: list[dict[str, str]],
+    warnings: list[str],
+    *,
+    image_id: str,
+    image_label: str,
+) -> None:
+    """Append processing notes for failed/unavailable artifact records."""
+    raw_findings = image_data.get("per_artifact")
+    if raw_findings is None:
+        raw_findings = image_data.get("per_artifact_findings")
+
+    for index, finding in enumerate(coerce_per_artifact_iterable(raw_findings), start=1):
+        if not isinstance(finding, Mapping):
+            continue
+        if not artifact_analysis_unavailable(finding):
+            continue
+        artifact_key, artifact_name = _artifact_identity(
+            finding,
+            fallback_index=index,
+        )
+        append_processing_note(
+            notes,
+            warnings,
+            category="artifact_analysis_unavailable",
+            severity="warning",
+            image_id=image_id,
+            image_label=image_label,
+            artifact_key=artifact_key,
+            artifact_name=artifact_name,
+            message=(
+                f"{artifact_name} analysis was unavailable and is recorded "
+                "as a data gap."
+            ),
+        )
+
+
+def image_analysis_unavailable(image_data: Mapping[str, Any]) -> bool:
+    """Return whether an image has no usable analysis payload."""
+    status = stringify(
+        image_data.get("status")
+    ).strip().lower()
+    has_findings = bool(normalize_per_artifact_findings(image_data))
+    has_summary = bool(stringify(image_data.get("summary")))
+    failure_marked = (
+        status in UNAVAILABLE_ARTIFACT_STATUSES
+        or image_data.get("analysis_available") is False
+        or stringify(image_data.get("error"))
+        or summary_analysis_unavailable(image_data)
+    )
+    return not has_findings and not has_summary and failure_marked
+
+
+def summary_analysis_unavailable(image_data: Mapping[str, Any]) -> bool:
+    """Return whether an image summary is explicitly unavailable."""
+    status = stringify(image_data.get("summary_status")).strip().lower()
+    if status in UNAVAILABLE_ARTIFACT_STATUSES:
+        return True
+    if image_data.get("summary_available") is False:
+        return True
+    if stringify(image_data.get("summary_error")):
+        return True
+    return False
 
 
 def _coerce_image_mapping(value: Any) -> dict[str, Any]:
@@ -664,6 +786,41 @@ def normalize_report_inputs(
             "metadata_match_source": metadata_source,
             "hashes_match_source": hashes_source,
         })
+
+        if not bool(entry["skipped"]):
+            append_unavailable_artifact_notes(
+                image_data,
+                processing_notes,
+                warnings,
+                image_id=image_id,
+                image_label=label,
+            )
+            if summary_analysis_unavailable(image_data):
+                append_processing_note(
+                    processing_notes,
+                    warnings,
+                    category="image_summary_unavailable",
+                    severity="warning",
+                    image_id=image_id,
+                    image_label=label,
+                    message=(
+                        f"{label} summary analysis was unavailable and is "
+                        "recorded as a data gap."
+                    ),
+                )
+            if image_analysis_unavailable(image_data):
+                append_processing_note(
+                    processing_notes,
+                    warnings,
+                    category="image_analysis_unavailable",
+                    severity="warning",
+                    image_id=image_id,
+                    image_label=label,
+                    message=(
+                        f"{label} has no usable AI analysis output and is "
+                        "recorded as a data gap."
+                    ),
+                )
 
     known_image_ids = {
         str(record["image_id"]) for record in image_records
@@ -1009,17 +1166,12 @@ def normalize_per_artifact_findings(
     for index, finding in enumerate(iterable, start=1):
         if not isinstance(finding, Mapping):
             continue
+        if artifact_analysis_unavailable(finding):
+            continue
 
-        artifact_key = stringify(
-            finding.get("artifact_key") or finding.get("artifact"),
-            default="",
-        )
-        artifact_name = stringify(
-            finding.get("artifact_name")
-            or finding.get("name")
-            or finding.get("artifact")
-            or artifact_key,
-            default=f"Artifact {index}",
+        artifact_key, artifact_name = _artifact_identity(
+            finding,
+            fallback_index=index,
         )
         analysis_text = stringify(
             finding.get("analysis")

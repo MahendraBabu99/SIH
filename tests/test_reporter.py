@@ -228,6 +228,47 @@ class ReporterTests(unittest.TestCase):
         self.assertIn(">1</span>", html)
         self.assertIn("2026-01-15T12:00:00", html)
 
+    def test_failed_artifacts_render_as_processing_notes_not_findings(self) -> None:
+        """Failed artifact records are visible as data gaps, not findings."""
+        with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = self._create_report_generator(cases_root)
+
+            report_path = reporter.generate(
+                analysis_results=_single_image_analysis(
+                    case_id="case-failed-artifact",
+                    summary="Executive summary.",
+                    per_artifact=[
+                        {
+                            "artifact_key": "runkeys",
+                            "artifact_name": "Run/RunOnce Keys",
+                            "analysis": "Successful finding. Confidence: HIGH",
+                            "status": "success",
+                            "analysis_available": True,
+                        },
+                        {
+                            "artifact_key": "tasks",
+                            "artifact_name": "Scheduled Tasks",
+                            "analysis": "Analysis unavailable; recorded as a data gap.",
+                            "status": "failed",
+                            "error": "provider secret stack trace",
+                            "analysis_available": False,
+                        },
+                    ],
+                ),
+                image_metadata=_image_record(hostname="host1"),
+                evidence_hashes=_image_record(sha256="a" * 64, md5="b" * 32),
+                investigation_context="Investigate failed artifact handling.",
+                audit_log_entries=[],
+            )
+            html = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("Processing Notes", html)
+        self.assertIn("Scheduled Tasks analysis was unavailable", html)
+        self.assertIn("Run/RunOnce Keys", html)
+        self.assertEqual(html.count('class="artifact-card"'), 1)
+        self.assertNotIn("provider secret", html)
+
     def test_generate_marks_hash_verification_fail_on_mismatch(self) -> None:
         with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
             cases_root = Path(temp_dir) / "cases"

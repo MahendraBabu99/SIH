@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from app.logging.audit import AuditLogger as RealAuditLogger
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
@@ -33,6 +34,12 @@ from tests.conftest import (
 )
 
 _ENGINE = "app.automation.engine"
+
+
+def _load_schema(name: str) -> dict[str, Any]:
+    """Load a JSON schema from SPECs/reference."""
+    path = Path(__file__).resolve().parents[1] / "SPECs" / "reference" / name
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -304,12 +311,29 @@ class _IntegrationTestBase(unittest.TestCase):
             out = Path(kwargs["output_path"])
             out.parent.mkdir(parents=True, exist_ok=True)
             report = {
-                "report_metadata": {"case_id": "case-integ-001"},
+                "report_metadata": {
+                    "tool": "AIFT",
+                    "tool_version": "1.6.0-test",
+                    "report_generated_utc": "2026-05-31T00:00:00+00:00",
+                    "case_id": "case-integ-001",
+                    "case_name": "Integration Case",
+                },
                 "investigation_context": kwargs.get(
                     "investigation_context", ""
                 ),
                 "evidence": [],
-                "analysis": {"images": {}, "cross_image_summary": None},
+                "hash_verification": [],
+                "processing_notes": [],
+                "analysis": {
+                    "images": {
+                        "img-001": {
+                            "label": "Evidence Image",
+                            "summary": "summary",
+                            "artifacts": [],
+                        }
+                    },
+                    "cross_image_summary": None,
+                },
                 "audit_trail": [],
                 "disclaimer": DISCLAIMER_TEXT,
             }
@@ -482,6 +506,15 @@ class TestFullPipelineIntegration(_IntegrationTestBase):
         self.assertEqual(data["report_metadata"]["case_id"], "case-integ-001")
         self.assertIn("analysis", data)
         self.assertIn("disclaimer", data)
+        Draft202012Validator(
+            _load_schema("automation-json-report.schema.json")
+        ).validate(data)
+        analysis_data = json.loads(
+            result.analysis_results_path.read_text(encoding="utf-8")
+        )
+        Draft202012Validator(
+            _load_schema("analysis-results.schema.json")
+        ).validate(analysis_data)
 
     def test_skip_hashing_integration(self) -> None:
         """Pipeline completes with skip_hashing=True."""

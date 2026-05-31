@@ -32,7 +32,15 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..logging.audit import _utc_now_iso8601_ms
-from ..reporter.normalization import normalize_per_artifact_findings
+from ..reporter.normalization import (
+    append_unavailable_artifact_notes,
+    artifact_analysis_unavailable,
+    image_analysis_unavailable,
+    normalize_per_artifact_findings,
+    normalize_processing_warnings,
+    normalize_skipped_images,
+    summary_analysis_unavailable,
+)
 from ..utils import stringify as _stringify
 from .csv_retrieval import (
     contains_heuristic_term as _contains_heuristic_term,
@@ -744,8 +752,10 @@ class ChatManager:
                     label = _stringify(img_data.get("label"), default=image_id)
                     img_summary = _stringify(img_data.get("summary"), default="No summary.")
 
-                    normalized_findings = normalize_per_artifact_findings(img_data)
-                    artifact_lines = self._format_normalized_artifact_lines(normalized_findings)
+                    artifact_lines = self._format_image_artifact_and_gap_lines(
+                        str(image_id),
+                        img_data,
+                    )
 
                     sections.append(
                         f"=== Image: {label} ===\n"
@@ -797,17 +807,27 @@ class ChatManager:
         """
         # Multi-image: check for ``images`` dict first.
         images_data = analysis_results.get("images")
+        top_level_gap_lines = self._format_top_level_data_gap_lines(analysis_results)
         if isinstance(images_data, Mapping) and images_data:
             if len(images_data) == 1:
                 _image_id, img_data = next(iter(images_data.items()))
                 if isinstance(img_data, Mapping):
-                    artifact_lines = self._format_normalized_artifact_lines(
-                        normalize_per_artifact_findings(img_data)
+                    artifact_lines = self._format_image_artifact_and_gap_lines(
+                        str(_image_id),
+                        img_data,
                     )
-                    if artifact_lines != "- No per-artifact findings available.":
-                        return artifact_lines
-                return "- No per-artifact findings available."
-            return self._format_multi_image_findings(images_data)
+                    return self._combine_artifact_and_gap_lines(
+                        artifact_lines,
+                        top_level_gap_lines,
+                    )
+                return self._combine_artifact_and_gap_lines(
+                    "- No per-artifact findings available.",
+                    top_level_gap_lines,
+                )
+            return self._combine_artifact_and_gap_lines(
+                self._format_multi_image_findings(images_data),
+                top_level_gap_lines,
+            )
 
         raw_findings = analysis_results.get("per_artifact")
         if raw_findings is None:
@@ -818,7 +838,10 @@ class ChatManager:
         )
         if artifact_lines == "- No per-artifact findings available.":
             artifact_lines = self._format_legacy_artifact_lines(raw_findings)
-        return artifact_lines
+        return self._combine_artifact_and_gap_lines(
+            artifact_lines,
+            top_level_gap_lines,
+        )
 
     def _format_multi_image_findings(self, images_data: Mapping[str, Any]) -> str:
         """Format per-artifact findings from a multi-image analysis result.
@@ -839,8 +862,9 @@ class ChatManager:
             if not isinstance(img_data, Mapping):
                 continue
             label = _stringify(img_data.get("label"), default=image_id)
-            artifact_lines = self._format_normalized_artifact_lines(
-                normalize_per_artifact_findings(img_data)
+            artifact_lines = self._format_image_artifact_and_gap_lines(
+                str(image_id),
+                img_data,
             )
 
             all_findings.append(f"=== Image: {label} ===")
@@ -850,6 +874,94 @@ class ChatManager:
                 all_findings.extend(artifact_lines.splitlines())
 
         return "\n".join(all_findings) if all_findings else "- No per-artifact findings available."
+
+    def _format_image_artifact_and_gap_lines(
+        self,
+        image_id: str,
+        image_data: Mapping[str, Any],
+    ) -> str:
+        """Format successful findings plus unavailable-analysis data gaps."""
+        finding_lines = self._format_normalized_artifact_lines(
+            normalize_per_artifact_findings(image_data)
+        )
+        gap_lines = self._format_image_data_gap_lines(image_id, image_data)
+        if finding_lines == "- No per-artifact findings available.":
+            return "\n".join(gap_lines) if gap_lines else finding_lines
+        if gap_lines:
+            return finding_lines + "\n" + "\n".join(gap_lines)
+        return finding_lines
+
+    def _format_image_data_gap_lines(
+        self,
+        image_id: str,
+        image_data: Mapping[str, Any],
+    ) -> list[str]:
+        """Return chat-context lines for unavailable analysis records."""
+        label = _stringify(image_data.get("label"), default=image_id)
+        notes: list[dict[str, str]] = []
+        warnings: list[str] = []
+        append_unavailable_artifact_notes(
+            image_data,
+            notes,
+            warnings,
+            image_id=image_id,
+            image_label=label,
+        )
+        if summary_analysis_unavailable(image_data):
+            notes.append({
+                "category": "image_summary_unavailable",
+                "message": (
+                    f"{label} summary analysis was unavailable and is "
+                    "recorded as a data gap."
+                ),
+            })
+        if image_analysis_unavailable(image_data):
+            notes.append({
+                "category": "image_analysis_unavailable",
+                "message": (
+                    f"{label} has no usable AI analysis output and is "
+                    "recorded as a data gap."
+                ),
+            })
+        lines: list[str] = []
+        for note in notes:
+            category = _stringify(note.get("category"), default="data_gap")
+            message = _stringify(note.get("message"))
+            if message:
+                lines.append(f"- Data gap [{category}]: {message}")
+        return lines
+
+    @staticmethod
+    def _combine_artifact_and_gap_lines(
+        artifact_lines: str,
+        gap_lines: list[str],
+    ) -> str:
+        """Combine finding lines with top-level data-gap lines."""
+        if not gap_lines:
+            return artifact_lines
+        if artifact_lines == "- No per-artifact findings available.":
+            return "\n".join(gap_lines)
+        return artifact_lines + "\n" + "\n".join(gap_lines)
+
+    @staticmethod
+    def _format_top_level_data_gap_lines(
+        analysis_results: Mapping[str, Any],
+    ) -> list[str]:
+        """Return chat-context lines for skipped images and workflow warnings."""
+        lines: list[str] = []
+        for skipped in normalize_skipped_images(analysis_results):
+            label = _stringify(
+                skipped.get("label") or skipped.get("image_id"),
+                default="image",
+            )
+            reason = _stringify(
+                skipped.get("reason"),
+                default="Image was skipped during processing.",
+            )
+            lines.append(f"- Data gap [skipped_image]: Skipped {label}: {reason}")
+        for warning in normalize_processing_warnings(analysis_results):
+            lines.append(f"- Data gap [processing_warning]: {warning}")
+        return lines
 
     @staticmethod
     def _format_normalized_artifact_lines(findings: list[dict[str, Any]]) -> str:
@@ -935,6 +1047,8 @@ class ChatManager:
         findings: list[tuple[str, str]] = []
         for item in items:
             if isinstance(item, Mapping):
+                if artifact_analysis_unavailable(item):
+                    continue
                 artifact_name = _stringify(
                     item.get("artifact_name") or item.get("name") or item.get("artifact_key"),
                     default="Unknown Artifact",

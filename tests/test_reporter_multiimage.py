@@ -448,6 +448,53 @@ class TestMultiImageReport(unittest.TestCase):
             self.assertIn("Skipped Damaged Disk", html)
             self.assertIn("Parsed data directory not found", html)
 
+    def test_failed_artifact_and_empty_image_are_processing_notes(self) -> None:
+        """Unavailable artifacts/images are not rendered as normal findings."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            analysis = _multi_image_analysis_results()
+            analysis["images"]["img-001"]["per_artifact"].append(
+                {
+                    "artifact_key": "tasks",
+                    "artifact_name": "Scheduled Tasks",
+                    "analysis": "Analysis unavailable; recorded as a data gap.",
+                    "status": "failed",
+                    "error": "provider secret stack trace",
+                    "analysis_available": False,
+                }
+            )
+            analysis["images"]["img-003"] = {
+                "label": "Empty Image",
+                "per_artifact": [],
+                "summary": "",
+                "summary_status": "failed",
+                "summary_error": "provider secret summary error",
+                "summary_available": False,
+            }
+
+            report_path = reporter.generate(
+                analysis_results=analysis,
+                image_metadata=[
+                    *_multi_image_metadata(),
+                    {"image_id": "img-003", "hostname": "empty-host"},
+                ],
+                evidence_hashes=[
+                    *_multi_image_hashes(),
+                    {"image_id": "img-003", "filename": "empty.E01", "sha256": "3" * 64},
+                ],
+                investigation_context="Failed artifact and image.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+            self.assertIn("Processing Notes", html)
+            self.assertIn("Scheduled Tasks analysis was unavailable", html)
+            self.assertIn("Empty Image has no usable AI analysis output", html)
+            self.assertNotIn("provider secret", html)
+            self.assertNotIn("Scheduled Tasks (tasks)", html)
+
     def test_multi_image_hash_verification_per_image(self) -> None:
         """Hash verification shows per-image PASS/FAIL status."""
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
