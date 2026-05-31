@@ -766,19 +766,27 @@ class TaskHelperTests(unittest.TestCase):
     """Tests for helper functions in app.routes.tasks."""
 
     def test_load_case_analysis_results_from_memory(self) -> None:
+        canonical_results = {
+            "images": {
+                "img-001": {
+                    "summary": "test",
+                    "per_artifact": [],
+                },
+            },
+        }
         case = {
             "case_dir": "/tmp/fake",
-            "analysis_results": {"summary": "test", "per_artifact": []},
+            "analysis_results": canonical_results,
         }
         result = routes_tasks.load_case_analysis_results(case)
-        self.assertEqual(result["summary"], "test")
+        self.assertEqual(result, canonical_results)
 
     def test_load_case_analysis_results_empty_dict_no_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
             case = {"case_dir": tmpdir, "analysis_results": {}}
             result = routes_tasks.load_case_analysis_results(case)
-        # Empty dict in memory with no file on disk returns empty dict (not None)
-        self.assertEqual(result, {})
+        # Empty in-memory analysis state intentionally blocks stale disk fallback.
+        self.assertIsNone(result)
 
     def test_load_case_analysis_results_none_no_file(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -788,14 +796,30 @@ class TaskHelperTests(unittest.TestCase):
 
     def test_load_case_analysis_results_from_disk(self) -> None:
         with TemporaryDirectory() as tmpdir:
+            canonical_results = {
+                "images": {
+                    "img-001": {
+                        "summary": "disk_result",
+                        "per_artifact": [],
+                    },
+                },
+            }
             results_path = Path(tmpdir) / "analysis_results.json"
             results_path.write_text(
-                json.dumps({"summary": "disk_result", "per_artifact": []}),
+                json.dumps(canonical_results),
                 encoding="utf-8",
             )
-            case = {"case_dir": tmpdir, "analysis_results": {}}
+            case = {"case_dir": tmpdir}
             result = routes_tasks.load_case_analysis_results(case)
-        self.assertEqual(result["summary"], "disk_result")
+        self.assertEqual(result, canonical_results)
+
+    def test_load_case_analysis_results_rejects_flat_memory_results(self) -> None:
+        case = {
+            "case_dir": "/tmp/fake",
+            "analysis_results": {"summary": "test", "per_artifact": []},
+        }
+        result = routes_tasks.load_case_analysis_results(case)
+        self.assertIsNone(result)
 
     def test_load_case_analysis_results_missing_file(self) -> None:
         with TemporaryDirectory() as tmpdir:

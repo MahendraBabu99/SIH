@@ -45,6 +45,7 @@ from .state import (
     mark_case_status,
     success_response,
 )
+from .evidence_utils import has_current_canonical_analysis_results
 
 __all__ = [
     "evidence_bp",
@@ -763,7 +764,12 @@ def _report_is_stale(report_path: Path, case_dir: str | Path) -> bool:
         ``True`` when the analysis results file is newer than the report.
     """
     analysis_path = Path(case_dir) / "analysis_results.json"
-    return analysis_path.is_file() and report_path.stat().st_mtime < analysis_path.stat().st_mtime
+    return (not analysis_path.is_file()) or report_path.stat().st_mtime < analysis_path.stat().st_mtime
+
+
+def _case_has_current_report_inputs(case: dict[str, Any]) -> bool:
+    """Return whether report download may serve or generate current output."""
+    return has_current_canonical_analysis_results(case)
 
 
 @evidence_bp.get("/api/cases/<case_id>/report")
@@ -786,6 +792,12 @@ def download_report(case_id: str) -> Response | tuple[Response, int]:
     # Check if a report was already auto-generated after analysis.
     with STATE_LOCK:
         case_dir = case["case_dir"]
+        has_current_results = _case_has_current_report_inputs(dict(case))
+    if not has_current_results:
+        return error_response(
+            "No current canonical analysis results are available for this case. Run analysis first.",
+            400,
+        )
     report_path = _latest_report_file(case_dir, "html")
     if report_path is not None:
         # Regenerate stale reports before serving so GUI downloads reflect
@@ -852,6 +864,12 @@ def download_json_report(case_id: str) -> Response | tuple[Response, int]:
 
     with STATE_LOCK:
         case_dir = case["case_dir"]
+        has_current_results = _case_has_current_report_inputs(dict(case))
+    if not has_current_results:
+        return error_response(
+            "No current canonical analysis results are available for this case. Run analysis first.",
+            400,
+        )
     report_path = _latest_report_file(case_dir, "json")
     if report_path is not None:
         stale = False

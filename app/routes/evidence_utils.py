@@ -12,6 +12,7 @@ Attributes:
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -24,8 +25,10 @@ from ..chat.csv_retrieval import invalidate_header_cache
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
+    "clear_analysis_outputs",
     "cleanup_parsed_data",
     "compute_evidence_hashes",
+    "has_current_canonical_analysis_results",
     "open_dissect_target",
     "safe_rmtree",
     "should_skip_hashing",
@@ -33,6 +36,104 @@ __all__ = [
 
 _TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 _FALSE_VALUES = {"", "0", "false", "no", "n", "off"}
+
+
+def _has_canonical_images(analysis_results: Any) -> bool:
+    """Return whether analysis results contain current image-scoped output."""
+    if not isinstance(analysis_results, dict):
+        return False
+    images = analysis_results.get("images")
+    return isinstance(images, dict) and bool(images)
+
+
+def has_current_canonical_analysis_results(case: dict[str, Any]) -> bool:
+    """Return whether a case has current canonical analysis results.
+
+    In-memory ``analysis_results`` is authoritative when the key is present.
+    This prevents stale ``analysis_results.json`` files from being treated as
+    current after a route has intentionally invalidated analysis state.
+    """
+    if "analysis_results" in case:
+        return _has_canonical_images(case.get("analysis_results"))
+
+    case_dir = case.get("case_dir")
+    if not case_dir:
+        return False
+
+    results_path = Path(case_dir) / "analysis_results.json"
+    if not results_path.is_file():
+        return False
+    try:
+        parsed = json.loads(results_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        LOGGER.warning(
+            "Failed to read analysis results for canonical check: %s",
+            results_path,
+            exc_info=True,
+        )
+        return False
+    return _has_canonical_images(parsed)
+
+
+def clear_analysis_outputs(
+    case_dir: Path,
+    *,
+    case: dict[str, Any] | None = None,
+    remove_prompt: bool,
+    remove_chat_history: bool,
+    remove_reports: bool,
+    remove_analysis_results: bool,
+) -> None:
+    """Invalidate downstream analysis artifacts for a case.
+
+    Args:
+        case_dir: Case directory containing analysis/report/chat files.
+        case: Optional in-memory case state to update alongside disk cleanup.
+        remove_prompt: Remove ``prompt.txt`` and clear investigation context.
+        remove_chat_history: Remove ``chat_history.jsonl``.
+        remove_reports: Remove generated HTML and JSON report files.
+        remove_analysis_results: Remove ``analysis_results.json`` and clear
+            in-memory analysis results.
+    """
+    if case is not None:
+        try:
+            from .state import STATE_LOCK
+
+            with STATE_LOCK:
+                if remove_analysis_results:
+                    case["analysis_results"] = {}
+                if remove_prompt:
+                    case["investigation_context"] = ""
+        except Exception:
+            LOGGER.warning("Failed to clear in-memory analysis output state.", exc_info=True)
+
+    stale_names: list[str] = []
+    if remove_analysis_results:
+        stale_names.append("analysis_results.json")
+    if remove_prompt:
+        stale_names.append("prompt.txt")
+    if remove_chat_history:
+        stale_names.append("chat_history.jsonl")
+
+    for stale_name in stale_names:
+        stale_path = case_dir / stale_name
+        try:
+            stale_path.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning("Failed to remove stale case artifact: %s", stale_path, exc_info=True)
+
+    if not remove_reports:
+        return
+
+    reports_dir = case_dir / "reports"
+    if not reports_dir.is_dir():
+        return
+    for suffix in ("html", "json"):
+        for report_path in reports_dir.glob(f"report_*.{suffix}"):
+            try:
+                report_path.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning("Failed to remove stale report: %s", report_path, exc_info=True)
 
 
 def _parse_bool_flag(value: Any) -> bool:

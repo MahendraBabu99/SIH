@@ -30,6 +30,7 @@ from .state import (
 )
 from .artifacts import sanitize_prompt
 from .evidence import build_image_artifact_csv_paths
+from .evidence_utils import clear_analysis_outputs
 from .tasks import (
     build_multi_image_analysis_payload_from_case,
     run_task_with_case_log_context,
@@ -173,7 +174,14 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         case["investigation_context"] = prompt
         # Invalidate prior analysis outputs so a subsequent failure cannot
         # leave stale results accessible via chat/report/download routes.
-        case["analysis_results"] = {}
+        clear_analysis_outputs(
+            Path(case_dir),
+            case=case,
+            remove_prompt=False,
+            remove_chat_history=True,
+            remove_reports=True,
+            remove_analysis_results=True,
+        )
         analysis_artifacts_snapshot = sorted({
             str(artifact).strip()
             for img in images_payload
@@ -187,12 +195,6 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
     # state and avoids blocking other threads during file I/O.
     try:
         prompt_path.write_text(prompt, encoding="utf-8")
-
-        # Remove the on-disk results file outside the lock to avoid holding
-        # the lock during I/O.
-        stale_results_path = Path(case_dir) / "analysis_results.json"
-        if stale_results_path.exists():
-            stale_results_path.unlink(missing_ok=True)
 
         audit_logger.log("prompt_submitted", prompt_details)
 
@@ -269,9 +271,20 @@ def cancel_analysis_route(case_id: str) -> tuple[Response, int]:
     Returns:
         ``(Response, 200)`` confirming cancellation, or error.
     """
-    if get_case(case_id) is None:
+    case = get_case(case_id)
+    if case is None:
         return error_response(f"Case not found: {case_id}", 404)
     cancelled = cancel_progress(ANALYSIS_PROGRESS, case_id, "analysis_cancel_requested")
     if not cancelled:
         return error_response("No running analysis to cancel.", 409)
+    case_dir = case.get("case_dir")
+    if case_dir:
+        clear_analysis_outputs(
+            Path(case_dir),
+            case=case,
+            remove_prompt=True,
+            remove_chat_history=True,
+            remove_reports=True,
+            remove_analysis_results=True,
+        )
     return success_response({"status": "cancelling", "case_id": case_id})

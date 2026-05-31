@@ -208,12 +208,15 @@ def _purge_stale_downstream_case_files(case_dir: Path) -> None:
     Args:
         case_dir: Path to the case directory.
     """
-    for stale_name in ("analysis_results.json", "prompt.txt", "chat_history.jsonl"):
-        stale_path = case_dir / stale_name
-        try:
-            stale_path.unlink(missing_ok=True)
-        except OSError:
-            LOGGER.warning("Failed to remove stale case artifact: %s", stale_path, exc_info=True)
+    from .evidence_utils import clear_analysis_outputs
+
+    clear_analysis_outputs(
+        case_dir,
+        remove_prompt=True,
+        remove_chat_history=True,
+        remove_reports=True,
+        remove_analysis_results=True,
+    )
 
 
 @artifact_bp.post("/api/cases/<case_id>/parse/cancel")

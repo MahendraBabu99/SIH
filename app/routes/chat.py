@@ -31,6 +31,7 @@ from .tasks import (
     run_task_with_case_log_context,
     load_case_analysis_results,
 )
+from .evidence_utils import has_current_canonical_analysis_results
 from .tasks_chat import run_chat
 
 __all__ = ["chat_bp"]
@@ -140,6 +141,12 @@ def get_case_chat_history(case_id: str) -> Response | tuple[Response, int]:
         return error_response(f"Case not found: {case_id}", 404)
     with STATE_LOCK:
         case_dir = case["case_dir"]
+        has_current_results = has_current_canonical_analysis_results(dict(case))
+    if not has_current_results:
+        return error_response(
+            "No current analysis results available for this case. Run analysis first.",
+            400,
+        )
     manager = ChatManager(case_dir)
     return success_response({"messages": manager.get_history()})
 

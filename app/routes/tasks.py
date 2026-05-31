@@ -53,6 +53,10 @@ from .evidence import (
     collect_case_csv_paths,
     generate_case_report,
 )
+from .evidence_utils import (
+    clear_analysis_outputs,
+    has_current_canonical_analysis_results,
+)
 
 __all__ = [
     "run_task_with_case_log_context",
@@ -82,23 +86,25 @@ def load_case_analysis_results(case: dict[str, Any]) -> dict[str, Any] | None:
     Returns:
         Analysis results dict, or ``None``.
     """
-    in_memory = case.get("analysis_results")
-    if isinstance(in_memory, dict) and in_memory:
-        return dict(in_memory)
+    if "analysis_results" in case:
+        in_memory = case.get("analysis_results")
+        if has_current_canonical_analysis_results(case):
+            return dict(in_memory) if isinstance(in_memory, dict) else None
+        return None
 
     results_path = Path(case["case_dir"]) / "analysis_results.json"
     if not results_path.exists():
-        return dict(in_memory) if isinstance(in_memory, dict) else None
+        return None
 
     try:
         parsed = json.loads(results_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         LOGGER.warning("Failed to load analysis results from %s", results_path, exc_info=True)
-        return dict(in_memory) if isinstance(in_memory, dict) else None
+        return None
 
-    if isinstance(parsed, dict):
+    if isinstance(parsed, dict) and has_current_canonical_analysis_results({"analysis_results": parsed}):
         return parsed
-    return dict(in_memory) if isinstance(in_memory, dict) else None
+    return None
 
 
 def resolve_case_investigation_context(case: dict[str, Any]) -> str:
@@ -470,25 +476,14 @@ def _purge_stale_analysis(case: dict[str, Any], case_dir: str) -> None:
         case: The in-memory case state dictionary.
         case_dir: Path string to the case directory.
     """
-    try:
-        with STATE_LOCK:
-            case["analysis_results"] = {}
-    except Exception:
-        LOGGER.warning("Failed to clear stale in-memory analysis results.", exc_info=True)
-    try:
-        results_path = Path(case_dir) / "analysis_results.json"
-        if results_path.exists():
-            results_path.unlink(missing_ok=True)
-    except Exception:
-        LOGGER.warning("Failed to remove stale analysis results from disk.", exc_info=True)
-    try:
-        reports_dir = Path(case_dir) / "reports"
-        if reports_dir.is_dir():
-            for suffix in ("html", "json"):
-                for report_path in reports_dir.glob(f"report_*.{suffix}"):
-                    report_path.unlink(missing_ok=True)
-    except Exception:
-        LOGGER.warning("Failed to remove stale generated reports from disk.", exc_info=True)
+    clear_analysis_outputs(
+        Path(case_dir),
+        case=case,
+        remove_prompt=True,
+        remove_chat_history=True,
+        remove_reports=True,
+        remove_analysis_results=True,
+    )
 
 
 def _make_analysis_progress_callback(
@@ -633,6 +628,7 @@ def run_analysis(case_id: str, prompt: str, config_snapshot: dict[str, Any]) -> 
         return
 
     message = "No image-scoped parsed CSV artifacts available."
+    _purge_stale_analysis(case, str(case.get("case_dir", "")))
     mark_case_status(case_id, "failed")
     set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", message)
     emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_failed", "error": message})
@@ -773,6 +769,7 @@ def run_multi_image_analysis_task(
             message = "No valid images with artifacts for multi-image analysis."
         else:
             message = "No valid image with artifacts for analysis."
+        _purge_stale_analysis(case, str(case_dir))
         mark_case_status(case_id, "failed")
         set_progress_status(ANALYSIS_PROGRESS, case_id, "failed", message)
         emit_progress(ANALYSIS_PROGRESS, case_id, {"type": "analysis_failed", "error": message})
@@ -893,6 +890,7 @@ def run_multi_image_analysis_task(
         _auto_generate_report(case_id)
     except AnalysisCancelledError:
         LOGGER.info("Multi-image analysis cancelled for case %s", case_id)
+        _purge_stale_analysis(case, case_dir)
         # Reset case status back to "parsed" so the user can retry
         # analysis without being stuck in "running" state.
         mark_case_status(case_id, "parsed")

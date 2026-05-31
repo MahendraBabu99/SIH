@@ -27,6 +27,7 @@ from ..logging.case_manager import CaseManager
 from ..evidence.descriptor import descriptor_to_payload
 from .evidence_upload import resolve_evidence_payload
 from .evidence_utils import (
+    clear_analysis_outputs,
     compute_evidence_hashes as _compute_evidence_hashes,
     open_dissect_target as _open_dissect_target,
     should_skip_hashing as _should_skip_hashing,
@@ -128,19 +129,13 @@ def _purge_case_downstream_files(case_dir: Path) -> None:
         case_dir: Path to the case directory whose downstream files should
             be removed.
     """
-    for stale_name in ("analysis_results.json", "prompt.txt", "chat_history.jsonl"):
-        try:
-            (case_dir / stale_name).unlink(missing_ok=True)
-        except OSError:
-            LOGGER.warning("Failed to remove stale case artifact: %s", case_dir / stale_name, exc_info=True)
-    reports_dir = case_dir / "reports"
-    if reports_dir.is_dir():
-        for suffix in ("html", "json"):
-            for report_path in reports_dir.glob(f"report_*.{suffix}"):
-                try:
-                    report_path.unlink(missing_ok=True)
-                except OSError:
-                    LOGGER.warning("Failed to remove stale report: %s", report_path, exc_info=True)
+    clear_analysis_outputs(
+        case_dir,
+        remove_prompt=True,
+        remove_chat_history=True,
+        remove_reports=True,
+        remove_analysis_results=True,
+    )
 
 
 def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) -> bool:
@@ -154,8 +149,14 @@ def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) ->
         ``True`` when at least one image still has parsed output.
     """
     aggregate = rebuild_case_parse_artifacts(case)
-    case["analysis_results"] = {}
-    case["investigation_context"] = ""
+    clear_analysis_outputs(
+        Path(case["case_dir"]),
+        case=case,
+        remove_prompt=True,
+        remove_chat_history=False,
+        remove_reports=False,
+        remove_analysis_results=True,
+    )
     if not aggregate["image_artifact_csv_paths"]:
         case["analysis_date_range"] = None
         mark_case_status(case_id, "evidence_loaded")
@@ -890,8 +891,6 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
 
         # Also refresh the case-level image-scoped aggregate from any
         # other images that are still parsed.
-        case["analysis_results"] = {}
-        case["investigation_context"] = ""
         _rebuild_case_parse_state_from_images(case_id, case)
         case["analysis_date_range"] = analysis_date_range
         mark_case_status(case_id, "running")

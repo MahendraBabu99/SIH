@@ -144,31 +144,57 @@ class CompressFindingsWithAiTests(unittest.TestCase):
 
 
 class LoadCaseAnalysisResultsTests(unittest.TestCase):
-    def test_invalid_json_on_disk_falls_back_to_in_memory_results(self) -> None:
+    def test_invalid_json_on_disk_does_not_override_canonical_memory_results(self) -> None:
         with TemporaryDirectory() as tmpdir:
             results_path = Path(tmpdir) / "analysis_results.json"
             results_path.write_text("{invalid json", encoding="utf-8")
+            canonical_results = {
+                "images": {
+                    "img-001": {
+                        "summary": "memory result",
+                        "per_artifact": [],
+                    },
+                },
+            }
             case = {
                 "case_dir": tmpdir,
-                "analysis_results": {"summary": "memory result", "per_artifact": []},
+                "analysis_results": canonical_results,
             }
 
             result = routes_tasks.load_case_analysis_results(case)
 
-        self.assertEqual(result, {"summary": "memory result", "per_artifact": []})
+        self.assertEqual(result, canonical_results)
 
-    def test_non_mapping_results_on_disk_fall_back_to_in_memory_results(self) -> None:
+    def test_non_mapping_results_on_disk_do_not_override_canonical_memory_results(self) -> None:
         with TemporaryDirectory() as tmpdir:
             results_path = Path(tmpdir) / "analysis_results.json"
             results_path.write_text('["not", "a", "mapping"]', encoding="utf-8")
+            canonical_results = {
+                "images": {
+                    "img-001": {
+                        "summary": "memory result",
+                        "per_artifact": [],
+                    },
+                },
+            }
             case = {
                 "case_dir": tmpdir,
-                "analysis_results": {"summary": "memory result", "per_artifact": []},
+                "analysis_results": canonical_results,
             }
 
             result = routes_tasks.load_case_analysis_results(case)
 
-        self.assertEqual(result, {"summary": "memory result", "per_artifact": []})
+        self.assertEqual(result, canonical_results)
+
+    def test_flat_in_memory_results_are_rejected(self) -> None:
+        case = {
+            "case_dir": "/tmp/fake",
+            "analysis_results": {"summary": "memory result", "per_artifact": []},
+        }
+
+        result = routes_tasks.load_case_analysis_results(case)
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

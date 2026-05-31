@@ -22,6 +22,7 @@ import pytest
 
 from app import create_app
 from app.ai_providers import AIProviderError
+from app.chat.manager import ChatManager
 from app.logging.case_logging import case_log_context, unregister_all_case_log_handlers
 from app.parser import WINDOWS_ARTIFACT_REGISTRY
 from app.utils.version import TOOL_VERSION
@@ -2293,7 +2294,7 @@ class RoutesTests(unittest.TestCase):
             report_resp = self.client.get(f"/api/cases/{case_id}/report")
             self.assertEqual(report_resp.status_code, 400)
             body = report_resp.get_json()
-            self.assertIn("canonical image-scoped format", body["error"])
+            self.assertIn("No current canonical analysis results", body["error"])
 
             # Case must NOT be transitioned to completed.
             self.assertNotEqual(routes_state.CASE_STATES[case_id]["status"], "completed")
@@ -2558,6 +2559,155 @@ class RoutesTests(unittest.TestCase):
             # blocking report generation — the request still fails because
             # analysis has not been completed, not because of hash data.
             self.assertEqual(resp.status_code, 400)
+
+    def test_reanalysis_start_invalidates_old_report_and_chat_history(self) -> None:
+        """Starting a new analysis must not expose prior report/chat output."""
+        evidence_path = Path(self.temp_dir.name) / "reanalyze-start.E01"
+        evidence_path.write_bytes(b"demo")
+
+        class BlockingThread:
+            """Thread fake that records start without running the target."""
+
+            started: list["BlockingThread"] = []
+
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                del args, kwargs
+
+            def start(self) -> None:
+                BlockingThread.started.append(self)
+
+        with self._evidence_patches(
+            analyzer_cls=FakeAnalyzer,
+            report_cls=FakeReportGenerator,
+            verify_rv=(True, "a" * 64),
+            thread_cls=ImmediateThread,
+        ):
+            create_resp = self.client.post("/api/cases", json={"case_name": "Reanalysis Start"})
+            self.assertEqual(create_resp.status_code, 201)
+            case_id = create_resp.get_json()["case_id"]
+
+            self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
+            first_analysis = self.client.post(
+                f"/api/cases/{case_id}/analyze",
+                json={"prompt": "First prompt"},
+            )
+            self.assertEqual(first_analysis.status_code, 202)
+
+            case_dir = self.cases_root / case_id
+            ChatManager(case_dir).add_message("user", "old question")
+            ChatManager(case_dir).add_message("assistant", "old answer")
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report").status_code, 200)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report/json").status_code, 200)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/chat/history").status_code, 200)
+
+            with patch.object(routes_images.threading, "Thread", BlockingThread):
+                second_analysis = self.client.post(
+                    f"/api/cases/{case_id}/analyze",
+                    json={"prompt": "Second prompt"},
+                )
+
+            self.assertEqual(second_analysis.status_code, 202)
+            self.assertTrue(BlockingThread.started)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report").status_code, 400)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report/json").status_code, 400)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/chat/history").status_code, 400)
+            self.assertFalse((case_dir / "analysis_results.json").exists())
+            self.assertFalse((case_dir / "chat_history.jsonl").exists())
+            self.assertEqual(list((case_dir / "reports").glob("report_*.html")), [])
+            self.assertEqual(list((case_dir / "reports").glob("report_*.json")), [])
+
+    def test_analysis_cancel_invalidates_old_report_and_chat_history(self) -> None:
+        """Cancelled reanalysis returns to parsed without reviving old outputs."""
+        evidence_path = Path(self.temp_dir.name) / "reanalyze-cancel.E01"
+        evidence_path.write_bytes(b"demo")
+
+        class CancellingAnalyzer(FakeAnalyzer):
+            """Analyzer fake that raises the normal cancellation exception."""
+
+            def run_multi_image_analysis(self, **kwargs: object) -> dict[str, object]:
+                del kwargs
+                raise routes_tasks.AnalysisCancelledError("cancelled")
+
+        with self._evidence_patches(
+            analyzer_cls=FakeAnalyzer,
+            report_cls=FakeReportGenerator,
+            verify_rv=(True, "a" * 64),
+            thread_cls=ImmediateThread,
+        ):
+            create_resp = self.client.post("/api/cases", json={"case_name": "Reanalysis Cancel"})
+            self.assertEqual(create_resp.status_code, 201)
+            case_id = create_resp.get_json()["case_id"]
+            self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
+            self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "First prompt"})
+
+            case_dir = self.cases_root / case_id
+            ChatManager(case_dir).add_message("user", "old question")
+            ChatManager(case_dir).add_message("assistant", "old answer")
+
+            with patch.object(routes_tasks, "ForensicAnalyzer", CancellingAnalyzer):
+                cancel_resp = self.client.post(
+                    f"/api/cases/{case_id}/analyze",
+                    json={"prompt": "Cancelled prompt"},
+                )
+
+            self.assertEqual(cancel_resp.status_code, 202)
+            with routes_state.STATE_LOCK:
+                self.assertEqual(routes_state.CASE_STATES[case_id]["status"], "parsed")
+                self.assertEqual(routes_state.CASE_STATES[case_id].get("analysis_results"), {})
+                self.assertEqual(routes_state.CASE_STATES[case_id].get("investigation_context"), "")
+                self.assertEqual(routes_state.ANALYSIS_PROGRESS[case_id]["status"], "cancelled")
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report").status_code, 400)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report/json").status_code, 400)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/chat/history").status_code, 400)
+
+    def test_analysis_failure_invalidates_old_report_and_chat_history(self) -> None:
+        """Failed reanalysis clears stale analysis, reports, prompt, and chat."""
+        evidence_path = Path(self.temp_dir.name) / "reanalyze-fail.E01"
+        evidence_path.write_bytes(b"demo")
+
+        class FailingAnalyzer(FakeAnalyzer):
+            """Analyzer fake that raises a provider-style failure."""
+
+            def run_multi_image_analysis(self, **kwargs: object) -> dict[str, object]:
+                del kwargs
+                raise RuntimeError("provider failed")
+
+        with self._evidence_patches(
+            analyzer_cls=FakeAnalyzer,
+            report_cls=FakeReportGenerator,
+            verify_rv=(True, "a" * 64),
+            thread_cls=ImmediateThread,
+        ):
+            create_resp = self.client.post("/api/cases", json={"case_name": "Reanalysis Fail"})
+            self.assertEqual(create_resp.status_code, 201)
+            case_id = create_resp.get_json()["case_id"]
+            self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
+            self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "First prompt"})
+
+            case_dir = self.cases_root / case_id
+            ChatManager(case_dir).add_message("user", "old question")
+            ChatManager(case_dir).add_message("assistant", "old answer")
+
+            with patch.object(routes_tasks, "ForensicAnalyzer", FailingAnalyzer):
+                failed_resp = self.client.post(
+                    f"/api/cases/{case_id}/analyze",
+                    json={"prompt": "Failing prompt"},
+                )
+
+            self.assertEqual(failed_resp.status_code, 202)
+            with routes_state.STATE_LOCK:
+                self.assertEqual(routes_state.CASE_STATES[case_id]["status"], "error")
+                self.assertEqual(routes_state.CASE_STATES[case_id].get("analysis_results"), {})
+                self.assertEqual(routes_state.CASE_STATES[case_id].get("investigation_context"), "")
+                self.assertEqual(routes_state.ANALYSIS_PROGRESS[case_id]["status"], "failed")
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report").status_code, 400)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/report/json").status_code, 400)
+            self.assertEqual(self.client.get(f"/api/cases/{case_id}/chat/history").status_code, 400)
+            self.assertFalse((case_dir / "prompt.txt").exists())
+            self.assertFalse((case_dir / "chat_history.jsonl").exists())
 
     def test_replace_evidence_clears_stale_downstream_state(self) -> None:
         """Loading new evidence must invalidate parse, analysis, and chat state."""
