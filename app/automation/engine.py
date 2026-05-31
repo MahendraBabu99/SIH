@@ -98,9 +98,13 @@ class AutomationResult:
     Attributes:
         success: Whether the run completed without fatal errors.
         case_id: UUID of the created case.
-        html_report_path: Path to the generated HTML report, or None if
+        html_report_path: Primary path to the generated HTML report, or None
+            if report generation failed.
+        json_report_path: Primary path to the generated JSON report, or None
+            if report generation failed.
+        case_local_html_report_path: Case-owned HTML report path, or None if
             report generation failed.
-        json_report_path: Path to the generated JSON report, or None if
+        case_local_json_report_path: Case-owned JSON report path, or None if
             report generation failed.
         analysis_results_path: Path to the persisted analysis_results.json,
             or None if analysis did not complete successfully.
@@ -114,6 +118,8 @@ class AutomationResult:
     case_id: str
     html_report_path: Path | None = None
     json_report_path: Path | None = None
+    case_local_html_report_path: Path | None = None
+    case_local_json_report_path: Path | None = None
     evidence_files: list[Path] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -552,6 +558,11 @@ def _generate_report_basename(case_id: str) -> str:
     """
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return f"AIFT_report_{case_id}_{ts}"
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    """Return whether two paths resolve to the same filesystem location."""
+    return left.resolve() == right.resolve()
 
 
 def _coerce_evidence_descriptor(value: Any) -> EvidenceDescriptor:
@@ -1490,7 +1501,8 @@ def run_automation(
         if isinstance(item, dict) and str(item.get("image_id", "")).strip()
     }
 
-    # HTML report.
+    # HTML report.  Record the case-local report as soon as generation
+    # succeeds so a later export/copy failure does not hide useful output.
     try:
         cancelled = _stop_if_cancelled()
         if cancelled is not None:
@@ -1507,22 +1519,31 @@ def run_automation(
             investigation_context=prompt,
             audit_log_entries=audit_entries,
         )
-        # Copy to output_dir.
-        dest_html = output_dir / f"{basename}.html"
-        shutil.copy2(str(html_path), str(dest_html))
-        result.html_report_path = dest_html
+        result.case_local_html_report_path = html_path
+        result.html_report_path = html_path
     except Exception as exc:
         msg = f"HTML report generation failed: {exc}"
         LOGGER.error(msg, exc_info=True)
         result.errors.append(msg)
+    else:
+        try:
+            dest_html = output_dir / f"{basename}.html"
+            if not _same_resolved_path(html_path, dest_html):
+                shutil.copy2(str(html_path), str(dest_html))
+            result.html_report_path = dest_html
+        except Exception as exc:
+            msg = f"HTML report copy failed: {exc}"
+            LOGGER.error(msg, exc_info=True)
+            result.errors.append(msg)
 
-    # JSON report.
+    # JSON report.  Generate a case-local export first, then copy/export to the
+    # requested output directory so failed runs can still expose the local JSON.
     try:
         cancelled = _stop_if_cancelled()
         if cancelled is not None:
             return cancelled
 
-        dest_json = output_dir / f"{basename}.json"
+        case_json_path = case_dir / "reports" / f"{basename}.json"
         export_json_report(
             case_id=case_id,
             case_name=case_name,
@@ -1531,13 +1552,24 @@ def run_automation(
             evidence_hashes=report_hashes_by_image_id,
             investigation_context=prompt,
             audit_log_entries=audit_entries,
-            output_path=dest_json,
+            output_path=case_json_path,
         )
-        result.json_report_path = dest_json
+        result.case_local_json_report_path = case_json_path
+        result.json_report_path = case_json_path
     except Exception as exc:
         msg = f"JSON report generation failed: {exc}"
         LOGGER.error(msg, exc_info=True)
         result.errors.append(msg)
+    else:
+        try:
+            dest_json = output_dir / f"{basename}.json"
+            if not _same_resolved_path(case_json_path, dest_json):
+                shutil.copy2(str(case_json_path), str(dest_json))
+            result.json_report_path = dest_json
+        except Exception as exc:
+            msg = f"JSON report copy failed: {exc}"
+            LOGGER.error(msg, exc_info=True)
+            result.errors.append(msg)
 
     _notify(progress_callback, "reporting", "Reports generated.", 100.0)
 

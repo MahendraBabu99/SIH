@@ -47,6 +47,16 @@ def _result_payload(result: AutomationResult) -> dict[str, Any]:
         "json_report_path": (
             str(result.json_report_path) if result.json_report_path else None
         ),
+        "case_local_html_report_path": (
+            str(result.case_local_html_report_path)
+            if result.case_local_html_report_path
+            else None
+        ),
+        "case_local_json_report_path": (
+            str(result.case_local_json_report_path)
+            if result.case_local_json_report_path
+            else None
+        ),
         "analysis_results_path": (
             str(result.analysis_results_path)
             if result.analysis_results_path
@@ -64,6 +74,8 @@ def _has_output_path(result_payload: dict[str, Any]) -> bool:
         for key in (
             "html_report_path",
             "json_report_path",
+            "case_local_html_report_path",
+            "case_local_json_report_path",
             "analysis_results_path",
         )
     )
@@ -297,6 +309,12 @@ class AutomationRunManager:
                 "status": run.get("status", ""),
                 "html_report_path": result.get("html_report_path"),
                 "json_report_path": result.get("json_report_path"),
+                "case_local_html_report_path": result.get(
+                    "case_local_html_report_path"
+                ),
+                "case_local_json_report_path": result.get(
+                    "case_local_json_report_path"
+                ),
                 "analysis_results_path": result.get("analysis_results_path"),
             }
 
@@ -312,9 +330,15 @@ class AutomationRunManager:
             "html": "html_report_path",
             "html_report": "html_report_path",
             "html_report_path": "html_report_path",
+            "case_local_html": "case_local_html_report_path",
+            "case_local_html_report": "case_local_html_report_path",
+            "case_local_html_report_path": "case_local_html_report_path",
             "json": "json_report_path",
             "json_report": "json_report_path",
             "json_report_path": "json_report_path",
+            "case_local_json": "case_local_json_report_path",
+            "case_local_json_report": "case_local_json_report_path",
+            "case_local_json_report_path": "case_local_json_report_path",
             "analysis": "analysis_results_path",
             "analysis_results": "analysis_results_path",
             "analysis_results_path": "analysis_results_path",

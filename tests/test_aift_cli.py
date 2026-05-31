@@ -109,6 +109,55 @@ class TestPrintSummary(unittest.TestCase):
         self.assertIn("Analysis Results", output)
         self.assertIn(str(path), output)
 
+    def test_failed_summary_prints_available_partial_reports(self) -> None:
+        """Failed runs still print report paths that were generated."""
+        html_path = Path("/fake/case/reports/report.html")
+        json_path = Path("/fake/case/reports/report.json")
+        result = AutomationResult(
+            success=False,
+            case_id="case-cli-partial",
+            html_report_path=html_path,
+            json_report_path=json_path,
+            evidence_files=[Path("/fake/evidence.E01")],
+            errors=["HTML report copy failed: export denied"],
+            duration_seconds=3.0,
+        )
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_summary(result)
+
+        output = stdout.getvalue()
+        self.assertIn("AIFT Automation Complete (with errors)", output)
+        self.assertIn("Reports:", output)
+        self.assertIn(str(html_path), output)
+        self.assertIn(str(json_path), output)
+
+    def test_summary_prints_case_local_report_paths_when_distinct(self) -> None:
+        """Explicit exports keep case-local report paths visible."""
+        case_local_html = Path("/cases/case-cli-export/reports/report.html")
+        result = AutomationResult(
+            success=True,
+            case_id="case-cli-export",
+            html_report_path=Path("/exports/report.html"),
+            json_report_path=Path("/exports/report.json"),
+            case_local_html_report_path=case_local_html,
+            case_local_json_report_path=Path(
+                "/cases/case-cli-export/reports/report.json"
+            ),
+            evidence_files=[Path("/fake/evidence.E01")],
+            duration_seconds=3.0,
+        )
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_summary(result)
+
+        output = stdout.getvalue()
+        self.assertIn("Case-local HTML:", output)
+        self.assertIn("Case-local JSON:", output)
+        self.assertIn(str(case_local_html), output)
+
 
 class TestResolvePrompt(unittest.TestCase):
     """Tests for _resolve_prompt."""

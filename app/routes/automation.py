@@ -104,6 +104,56 @@ def _sync_run_manager_ttl() -> None:
     ROUTE_RUN_MANAGER.ttl_seconds = _configured_run_ttl_seconds()
 
 
+def _resolve_report_download_path(
+    paths_payload: dict[str, Any],
+    *,
+    output_key: str,
+    case_local_key: str,
+    suffix: str,
+    label: str,
+) -> tuple[Path | None, str | None]:
+    """Return a validated case-local report path for REST download."""
+    case_id = str(paths_payload.get("case_id") or "").strip()
+    if not case_id:
+        return None, f"{label} path cannot be validated without a case ID."
+
+    try:
+        cases_root = CASES_ROOT.resolve()
+        case_dir = (cases_root / case_id).resolve()
+        reports_dir = (case_dir / "reports").resolve()
+    except Exception as exc:
+        return None, f"{label} path could not be validated: {exc}"
+
+    if not case_dir.is_relative_to(cases_root):
+        return None, f"{label} case ID resolves outside the AIFT cases root."
+
+    candidates = [
+        paths_payload.get(case_local_key),
+        paths_payload.get(output_key),
+    ]
+    last_error: str | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            path = Path(str(candidate)).expanduser().resolve()
+        except Exception as exc:
+            last_error = f"{label} path could not be resolved: {exc}"
+            continue
+        if path.suffix.lower() != suffix:
+            last_error = f"{label} path has an unexpected file type."
+            continue
+        if not path.is_relative_to(reports_dir):
+            last_error = f"{label} path is outside the known AIFT report output."
+            continue
+        if not path.is_file():
+            last_error = f"{label} file not found on disk."
+            continue
+        return path, None
+
+    return None, last_error or f"{label} was not generated for this run."
+
+
 def _automation_upload_root() -> Path:
     """Return the root directory used for staged automation uploads."""
     return (CASES_ROOT / AUTOMATION_UPLOAD_ROOT_NAME).resolve()
@@ -509,13 +559,18 @@ def download_html_report(run_id: str) -> Response | tuple[Response, int]:
             int(paths_payload.get("status_code", 404)),
         )
 
-    html_path_str = paths_payload.get("html_report_path")
-    if not html_path_str:
-        return error_response("HTML report was not generated for this run.", 404)
-
-    html_path = Path(html_path_str)
-    if not html_path.is_file():
-        return error_response("HTML report file not found on disk.", 404)
+    html_path, error = _resolve_report_download_path(
+        paths_payload,
+        output_key="html_report_path",
+        case_local_key="case_local_html_report_path",
+        suffix=".html",
+        label="HTML report",
+    )
+    if html_path is None:
+        return error_response(
+            error or "HTML report was not generated for this run.",
+            404,
+        )
 
     return send_file(html_path, as_attachment=True, download_name=html_path.name)
 
@@ -538,12 +593,17 @@ def download_json_report(run_id: str) -> Response | tuple[Response, int]:
             int(paths_payload.get("status_code", 404)),
         )
 
-    json_path_str = paths_payload.get("json_report_path")
-    if not json_path_str:
-        return error_response("JSON report was not generated for this run.", 404)
-
-    json_path = Path(json_path_str)
-    if not json_path.is_file():
-        return error_response("JSON report file not found on disk.", 404)
+    json_path, error = _resolve_report_download_path(
+        paths_payload,
+        output_key="json_report_path",
+        case_local_key="case_local_json_report_path",
+        suffix=".json",
+        label="JSON report",
+    )
+    if json_path is None:
+        return error_response(
+            error or "JSON report was not generated for this run.",
+            404,
+        )
 
     return send_file(json_path, as_attachment=True, download_name=json_path.name)

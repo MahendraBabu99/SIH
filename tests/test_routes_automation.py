@@ -119,6 +119,14 @@ class AutomationRoutesTestBase(unittest.TestCase):
         """Set up Flask test client and clear automation run state."""
         self.temp_dir = TemporaryDirectory(prefix="aift-auto-test-")
         self.config_path = Path(self.temp_dir.name) / "config.yaml"
+        self.cases_root = Path(self.temp_dir.name) / "cases"
+        self.cases_root.mkdir()
+        self.cases_root_patcher = patch.object(
+            automation_mod,
+            "CASES_ROOT",
+            self.cases_root,
+        )
+        self.cases_root_patcher.start()
         self.app = create_app(str(self.config_path))
         self.app.testing = True
         self.client = self.app.test_client()
@@ -127,6 +135,7 @@ class AutomationRoutesTestBase(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Clean up temp directory."""
+        self.cases_root_patcher.stop()
         self.temp_dir.cleanup()
 
     def _post_json(self, url: str, data: dict) -> object:
@@ -144,6 +153,13 @@ class AutomationRoutesTestBase(unittest.TestCase):
             data=json.dumps(data),
             content_type="application/json",
         )
+
+    def _write_case_report(self, case_id: str, filename: str, content: str) -> Path:
+        """Write a report fixture below the patched automation cases root."""
+        report_path = self.cases_root / case_id / "reports" / filename
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(content, encoding="utf-8")
+        return report_path
 
 
 class TestStartRunValidation(AutomationRoutesTestBase):
@@ -948,17 +964,58 @@ class TestReportDownload(AutomationRoutesTestBase):
         resp = self.client.get("/api/automation/run/run-r/report/html")
         self.assertEqual(resp.status_code, 404)
 
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_failed_engine_result_downloads_partial_html(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """A failed engine run can still expose a generated partial HTML file."""
+        html_file = self._write_case_report(
+            "case-partial",
+            "partial-report.html",
+            "<html><body>Case-local partial</body></html>",
+        )
+        mock_run.return_value = AutomationResult(
+            success=False,
+            case_id="case-partial",
+            html_report_path=html_file,
+            case_local_html_report_path=html_file,
+            analysis_results_path=Path(self.temp_dir.name) / "analysis_results.json",
+            evidence_files=[Path("/fake/evidence.E01")],
+            errors=["HTML report copy failed: export denied"],
+            duration_seconds=1.2,
+        )
+
+        start_resp = self._post_json(
+            "/api/automation/run",
+            {"evidence_path": "/fake/path.E01", "prompt": "test"},
+        )
+        self.assertEqual(start_resp.status_code, 202)
+        run_id = start_resp.get_json()["run_id"]
+
+        status_resp = self.client.get(f"/api/automation/run/{run_id}/status")
+        self.assertEqual(status_resp.status_code, 200)
+        status_body = status_resp.get_json()
+        self.assertEqual(status_body["status"], "failed")
+        self.assertEqual(status_body["result"]["html_report_path"], str(html_file))
+
+        download_resp = self.client.get(f"/api/automation/run/{run_id}/report/html")
+        self.assertEqual(download_resp.status_code, 200)
+        self.assertIn(b"Case-local partial", download_resp.data)
+
     def test_html_report_download(self) -> None:
         """Download HTML report when run is completed and file exists."""
-        html_file = Path(self.temp_dir.name) / "report.html"
-        html_file.write_text(
+        html_file = self._write_case_report(
+            "case-html",
+            "report.html",
             "<html><body>AIFT Forensic Report: Run/RunOnce Keys</body></html>",
-            encoding="utf-8",
         )
 
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-ok"] = {
                 "run_id": "run-ok",
+                "case_id": "case-html",
                 "status": "completed",
                 "phase": "done",
                 "message": "",
@@ -984,17 +1041,18 @@ class TestReportDownload(AutomationRoutesTestBase):
 
     def test_json_report_download(self) -> None:
         """Download JSON report when run is completed and file exists."""
-        json_file = Path(self.temp_dir.name) / "report.json"
-        json_file.write_text(
+        json_file = self._write_case_report(
+            "case-json",
+            "report.json",
             '{"report_metadata": {"tool": "AIFT", "case_name": "Download Case"}, '
             '"analysis": {"images": {"default": {"artifacts": '
-            '[{"artifact_key": "runkeys", "analysis_text": "Persistence found."}]}}}}',
-            encoding="utf-8",
+            '[{"artifact_key": "runkeys", "analysis_text": "Persistence found."}]}}}}'
         )
 
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-j"] = {
                 "run_id": "run-j",
+                "case_id": "case-json",
                 "status": "completed",
                 "phase": "done",
                 "message": "",
@@ -1024,12 +1082,16 @@ class TestReportDownload(AutomationRoutesTestBase):
 
     def test_failed_run_html_report_download_when_file_exists(self) -> None:
         """Failed runs can still serve partial HTML report outputs."""
-        html_file = Path(self.temp_dir.name) / "partial.html"
-        html_file.write_text("<html><body>Partial</body></html>", encoding="utf-8")
+        html_file = self._write_case_report(
+            "case-partial-html",
+            "partial.html",
+            "<html><body>Partial</body></html>",
+        )
 
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-partial-html"] = {
                 "run_id": "run-partial-html",
+                "case_id": "case-partial-html",
                 "status": "failed",
                 "phase": "reporting",
                 "message": "JSON failed",
@@ -1054,12 +1116,16 @@ class TestReportDownload(AutomationRoutesTestBase):
 
     def test_failed_run_json_report_download_when_file_exists(self) -> None:
         """Failed runs can still serve partial JSON report outputs."""
-        json_file = Path(self.temp_dir.name) / "partial.json"
-        json_file.write_text('{"partial": true}', encoding="utf-8")
+        json_file = self._write_case_report(
+            "case-partial-json",
+            "partial.json",
+            '{"partial": true}',
+        )
 
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-partial-json"] = {
                 "run_id": "run-partial-json",
+                "case_id": "case-partial-json",
                 "status": "failed",
                 "phase": "reporting",
                 "message": "HTML failed",
@@ -1082,11 +1148,76 @@ class TestReportDownload(AutomationRoutesTestBase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"partial", resp.data)
 
+    def test_report_download_prefers_validated_case_local_path(self) -> None:
+        """Explicit output copies are not used for REST download validation."""
+        case_local = self._write_case_report(
+            "case-exported",
+            "report.html",
+            "<html><body>Case local</body></html>",
+        )
+        exported = Path(self.temp_dir.name) / "outside-output" / "report.html"
+        exported.parent.mkdir()
+        exported.write_text("<html><body>Exported</body></html>", encoding="utf-8")
+
+        with automation_mod.RUNS_LOCK:
+            automation_mod.AUTOMATION_RUNS["run-exported"] = {
+                "run_id": "run-exported",
+                "case_id": "case-exported",
+                "status": "completed",
+                "phase": "done",
+                "message": "",
+                "percentage": 100,
+                "started_at": "",
+                "evidence_path": "/fake",
+                "_started_mono": time.monotonic(),
+                "result": {
+                    "html_report_path": str(exported),
+                    "case_local_html_report_path": str(case_local),
+                    "json_report_path": None,
+                    "evidence_files_processed": 1,
+                    "warnings": [],
+                },
+            }
+
+        resp = self.client.get("/api/automation/run/run-exported/report/html")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b"Case local", resp.data)
+        self.assertNotIn(b"Exported", resp.data)
+
+    def test_report_download_rejects_paths_outside_case_reports(self) -> None:
+        """REST downloads do not serve arbitrary paths from run state."""
+        outside = Path(self.temp_dir.name) / "outside-report.html"
+        outside.write_text("<html><body>Outside</body></html>", encoding="utf-8")
+
+        with automation_mod.RUNS_LOCK:
+            automation_mod.AUTOMATION_RUNS["run-outside"] = {
+                "run_id": "run-outside",
+                "case_id": "case-outside",
+                "status": "failed",
+                "phase": "reporting",
+                "message": "HTML report copy failed",
+                "percentage": 90,
+                "started_at": "",
+                "evidence_path": "/fake",
+                "_started_mono": time.monotonic(),
+                "errors": ["HTML report copy failed"],
+                "result": {
+                    "html_report_path": str(outside),
+                    "json_report_path": None,
+                    "evidence_files_processed": 1,
+                    "warnings": [],
+                },
+            }
+
+        resp = self.client.get("/api/automation/run/run-outside/report/html")
+        self.assertEqual(resp.status_code, 404)
+
     def test_json_report_file_missing_on_disk(self) -> None:
         """Return 404 when the report file doesn't exist on disk."""
         with automation_mod.RUNS_LOCK:
             automation_mod.AUTOMATION_RUNS["run-miss"] = {
                 "run_id": "run-miss",
+                "case_id": "case-miss",
                 "status": "completed",
                 "phase": "done",
                 "message": "",

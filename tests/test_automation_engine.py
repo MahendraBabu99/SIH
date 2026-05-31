@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 import threading
 import unittest
 from pathlib import Path
@@ -241,6 +242,8 @@ class TestAutomationResult(unittest.TestCase):
         res = AutomationResult(success=True, case_id="abc")
         self.assertIsNone(res.html_report_path)
         self.assertIsNone(res.json_report_path)
+        self.assertIsNone(res.case_local_html_report_path)
+        self.assertIsNone(res.case_local_json_report_path)
         self.assertIsNone(res.analysis_results_path)
         self.assertEqual(res.evidence_files, [])
         self.assertEqual(res.errors, [])
@@ -621,6 +624,48 @@ class TestRunAutomation(unittest.TestCase):
         )
         self.assertTrue(
             any("JSON report generation failed" in e for e in result.errors)
+        )
+
+    def test_report_copy_failure_keeps_case_local_outputs(self) -> None:
+        """Failed output copies expose generated case-local report files."""
+        real_copy2 = shutil.copy2
+
+        def _copy_or_fail(src: str, dst: str) -> str:
+            if Path(dst).suffix.lower() in {".html", ".json"}:
+                raise PermissionError("export denied")
+            return str(real_copy2(src, dst))
+
+        with patch(f"{_ENGINE}.shutil.copy2", side_effect=_copy_or_fail):
+            result = run_automation(self._make_request())
+
+        expected_analysis = self.cases_dir / "case-001" / "analysis_results.json"
+        expected_dir = self.cases_dir / "case-001" / "reports"
+        self.assertFalse(result.success)
+        self.assertEqual(result.analysis_results_path, expected_analysis)
+        self.assertIsNotNone(result.html_report_path)
+        self.assertIsNotNone(result.json_report_path)
+        self.assertEqual(result.case_local_html_report_path, result.html_report_path)
+        self.assertEqual(result.case_local_json_report_path, result.json_report_path)
+        assert result.html_report_path is not None
+        assert result.json_report_path is not None
+        self.assertEqual(
+            result.html_report_path.parent,
+            self.cases_dir / "case-001" / "reports",
+        )
+        self.assertEqual(
+            result.json_report_path.parent,
+            self.cases_dir / "case-001" / "reports",
+        )
+        self.assertTrue(result.html_report_path.is_file())
+        self.assertTrue(result.json_report_path.is_file())
+        self.assertTrue(
+            any("HTML report copy failed" in error for error in result.errors)
+        )
+        self.assertTrue(
+            any("JSON report copy failed" in error for error in result.errors)
+        )
+        self.assertFalse(
+            any("report generation failed" in error.lower() for error in result.errors)
         )
 
     def test_pre_report_hash_verification_pass(self) -> None:
@@ -1483,6 +1528,16 @@ class TestRunAutomation(unittest.TestCase):
         result = run_automation(self._make_request(output_dir=str(new_output)))
         self.assertTrue(result.success)
         self.assertTrue(new_output.exists())
+        self.assertEqual(result.html_report_path.parent, new_output)
+        self.assertEqual(result.json_report_path.parent, new_output)
+        self.assertEqual(
+            result.case_local_html_report_path.parent,
+            self.cases_dir / "case-001" / "reports",
+        )
+        self.assertEqual(
+            result.case_local_json_report_path.parent,
+            self.cases_dir / "case-001" / "reports",
+        )
         self.assertEqual(list(new_output.glob(".aift-write-probe-*")), [])
 
     def test_missing_output_dir_defaults_to_case_reports_dir(self) -> None:
@@ -1493,6 +1548,8 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.html_report_path.parent, expected_dir)
         self.assertEqual(result.json_report_path.parent, expected_dir)
+        self.assertEqual(result.case_local_html_report_path.parent, expected_dir)
+        self.assertEqual(result.case_local_json_report_path, result.json_report_path)
         self.assertTrue(result.html_report_path.exists())
         self.assertTrue(result.json_report_path.exists())
         self.assertEqual(list(expected_dir.glob(".aift-write-probe-*")), [])

@@ -278,6 +278,8 @@ class FakeRunManager:
             "result": {
                 "html_report_path": "report.html",
                 "json_report_path": "report.json",
+                "case_local_html_report_path": "report.html",
+                "case_local_json_report_path": "report.json",
                 "analysis_results_path": "analysis_results.json",
                 "evidence_files_processed": 1,
                 "warnings": ["partial parse"],
@@ -298,6 +300,8 @@ class FakeRunManager:
             "status": "completed",
             "html_report_path": "report.html",
             "json_report_path": "report.json",
+            "case_local_html_report_path": "report.html",
+            "case_local_json_report_path": "report.json",
             "analysis_results_path": "analysis_results.json",
         }
 
@@ -634,6 +638,7 @@ class TestMCPTools(unittest.TestCase):
         self.assertTrue(paths["success"])
         self.assertEqual(paths["case_id"], "case-1")
         self.assertEqual(paths["json_report_path"], "report.json")
+        self.assertEqual(paths["case_local_json_report_path"], "report.json")
 
     def test_lifecycle_tools_return_errors_without_tracebacks(self) -> None:
         """Manager errors become errors lists without traceback details."""
@@ -823,6 +828,79 @@ class TestMCPResources(unittest.TestCase):
 
         self.assertEqual(json.loads(report_text)["report_metadata"]["tool"], "AIFT")
         self.assertEqual(json.loads(analysis_text), {"images": {}})
+
+    def test_failed_run_report_paths_and_resource_expose_partial_json(self) -> None:
+        """MCP exposes validated partial JSON outputs for failed runs."""
+        with TemporaryDirectory(prefix="aift-mcp-partial-") as temp_dir:
+            root = Path(temp_dir)
+            cases_root = root / "cases"
+            case_dir = cases_root / "case-1"
+            reports_dir = case_dir / "reports"
+            reports_dir.mkdir(parents=True)
+            json_report = reports_dir / "partial.json"
+            json_report.write_text('{"partial": true}', encoding="utf-8")
+
+            manager = FakeRunManager()
+            manager.status_payload["status"] = "failed"
+            manager.status_payload["phase"] = "reporting"
+            manager.status_payload["message"] = "JSON report copy failed"
+            manager.status_payload["errors"] = ["JSON report copy failed"]
+            manager.status_payload["result"]["json_report_path"] = str(json_report)
+            manager.report_paths_payload.update({
+                "status": "failed",
+                "json_report_path": str(json_report),
+            })
+
+            with patch.dict(sys.modules, _fake_mcp_modules()):
+                server = mcp_server.build_mcp_server(
+                    run_manager=manager,
+                    cases_root=cases_root,
+                )
+
+            paths = _tool(server, "aift_get_report_paths")("run-1")
+            report_text = _resource(server, "aift://runs/{run_id}/report/json")(
+                "run-1"
+            )
+
+        self.assertTrue(paths["success"])
+        self.assertEqual(paths["status"], "failed")
+        self.assertEqual(paths["json_report_path"], str(json_report))
+        self.assertEqual(json.loads(report_text), {"partial": True})
+
+    def test_report_resource_prefers_case_local_json_over_export_path(self) -> None:
+        """MCP resources read the validated case-local report path."""
+        with TemporaryDirectory(prefix="aift-mcp-exported-") as temp_dir:
+            root = Path(temp_dir)
+            cases_root = root / "cases"
+            reports_dir = cases_root / "case-1" / "reports"
+            reports_dir.mkdir(parents=True)
+            case_local_json = reports_dir / "case-local.json"
+            case_local_json.write_text('{"source":"case"}', encoding="utf-8")
+            exported_json = root / "exports" / "exported.json"
+            exported_json.parent.mkdir()
+            exported_json.write_text('{"source":"export"}', encoding="utf-8")
+
+            manager = FakeRunManager()
+            manager.report_paths_payload.update({
+                "json_report_path": str(exported_json),
+                "case_local_json_report_path": str(case_local_json),
+            })
+            manager.status_payload["result"].update({
+                "json_report_path": str(exported_json),
+                "case_local_json_report_path": str(case_local_json),
+            })
+
+            with patch.dict(sys.modules, _fake_mcp_modules()):
+                server = mcp_server.build_mcp_server(
+                    run_manager=manager,
+                    cases_root=cases_root,
+                )
+
+            report_text = _resource(server, "aift://runs/{run_id}/report/json")(
+                "run-1"
+            )
+
+        self.assertEqual(json.loads(report_text), {"source": "case"})
 
     def test_case_audit_resource_returns_parsed_entries(self) -> None:
         """Audit resources parse JSONL entries below the cases root."""

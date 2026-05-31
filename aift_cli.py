@@ -302,6 +302,12 @@ def _print_summary(result: Any) -> None:
             print(f"    HTML: {result.html_report_path}")
         if result.json_report_path:
             print(f"    JSON: {result.json_report_path}")
+        case_local_html = getattr(result, "case_local_html_report_path", None)
+        if case_local_html and case_local_html != result.html_report_path:
+            print(f"    Case-local HTML: {case_local_html}")
+        case_local_json = getattr(result, "case_local_json_report_path", None)
+        if case_local_json and case_local_json != result.json_report_path:
+            print(f"    Case-local JSON: {case_local_json}")
         print()
 
     if getattr(result, "analysis_results_path", None):

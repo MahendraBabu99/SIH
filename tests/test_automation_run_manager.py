@@ -32,6 +32,8 @@ def _successful_result(case_id: str = "case-ok") -> AutomationResult:
         case_id=case_id,
         html_report_path=Path("/cases/case-ok/reports/report.html"),
         json_report_path=Path("/cases/case-ok/reports/report.json"),
+        case_local_html_report_path=Path("/cases/case-ok/reports/report.html"),
+        case_local_json_report_path=Path("/cases/case-ok/reports/report.json"),
         analysis_results_path=Path("/cases/case-ok/analysis_results.json"),
         evidence_files=[Path("/fake/evidence.E01")],
         warnings=["minor warning"],
@@ -144,6 +146,10 @@ class TestAutomationRunManager(unittest.TestCase):
             str(Path("/cases/case-ok/reports/report.html")),
         )
         self.assertEqual(
+            paths["case_local_html_report_path"],
+            str(Path("/cases/case-ok/reports/report.html")),
+        )
+        self.assertEqual(
             manager.get_output_path(run_id, "analysis_results"),
             Path("/cases/case-ok/analysis_results.json"),
         )
@@ -151,14 +157,20 @@ class TestAutomationRunManager(unittest.TestCase):
     def test_failed_run_keeps_partial_output_paths(self) -> None:
         """A failed run includes errors and partial output paths when present."""
         partial_path = Path("/cases/case-fail/analysis_results.json")
+        html_path = Path("/cases/case-fail/reports/report.html")
+        json_path = Path("/cases/case-fail/reports/report.json")
 
         def fake_run(*args: object, **kwargs: object) -> AutomationResult:
             del args, kwargs
             return AutomationResult(
                 success=False,
                 case_id="case-fail",
+                html_report_path=html_path,
+                json_report_path=json_path,
+                case_local_html_report_path=html_path,
+                case_local_json_report_path=json_path,
                 analysis_results_path=partial_path,
-                errors=["AI analysis failed"],
+                errors=["HTML report copy failed"],
             )
 
         manager = AutomationRunManager(
@@ -172,7 +184,17 @@ class TestAutomationRunManager(unittest.TestCase):
         self.assertIsNotNone(status)
         assert status is not None
         self.assertEqual(status["status"], "failed")
-        self.assertEqual(status["errors"], ["AI analysis failed"])
+        self.assertEqual(status["errors"], ["HTML report copy failed"])
+        self.assertEqual(status["result"]["html_report_path"], str(html_path))
+        self.assertEqual(status["result"]["json_report_path"], str(json_path))
+        self.assertEqual(
+            status["result"]["case_local_html_report_path"],
+            str(html_path),
+        )
+        self.assertEqual(
+            status["result"]["case_local_json_report_path"],
+            str(json_path),
+        )
         self.assertEqual(
             status["result"]["analysis_results_path"],
             str(partial_path),

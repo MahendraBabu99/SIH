@@ -371,6 +371,12 @@ def _public_result_payload(value: Any) -> dict[str, Any] | None:
     return {
         "html_report_path": _public_path_value(value.get("html_report_path")),
         "json_report_path": _public_path_value(value.get("json_report_path")),
+        "case_local_html_report_path": _public_path_value(
+            value.get("case_local_html_report_path")
+        ),
+        "case_local_json_report_path": _public_path_value(
+            value.get("case_local_json_report_path")
+        ),
         "analysis_results_path": _public_path_value(
             value.get("analysis_results_path")
         ),
@@ -718,6 +724,8 @@ def _report_paths_payload(
                     "status": status,
                     "html_report_path": None,
                     "json_report_path": None,
+                    "case_local_html_report_path": None,
+                    "case_local_json_report_path": None,
                     "analysis_results_path": None,
                 },
             )
@@ -727,6 +735,12 @@ def _report_paths_payload(
             "status": _public_text(payload.get("status")),
             "html_report_path": _public_path_value(payload.get("html_report_path")),
             "json_report_path": _public_path_value(payload.get("json_report_path")),
+            "case_local_html_report_path": _public_path_value(
+                payload.get("case_local_html_report_path")
+            ),
+            "case_local_json_report_path": _public_path_value(
+                payload.get("case_local_json_report_path")
+            ),
             "analysis_results_path": _public_path_value(
                 payload.get("analysis_results_path")
             ),
@@ -818,18 +832,6 @@ def _resolve_run_output_path(
     if reported_status not in {"completed", "failed"}:
         raise FileNotFoundError("Report not available - run has not completed.")
 
-    path_value = paths_payload.get(output_key)
-    path_text = _public_path_value(path_value)
-    if path_text is None:
-        raise FileNotFoundError(f"{label} was not generated for this run.")
-
-    path = Path(path_text).expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"{label} file not found on disk: {path}")
-
-    if output_key == "json_report_path" and path.suffix.lower() != ".json":
-        raise ValueError(f"{label} path is not a JSON file: {path}")
-
     case_id = _public_text(paths_payload.get("case_id")) or _public_text(
         status_payload.get("case_id")
     )
@@ -841,22 +843,50 @@ def _resolve_run_output_path(
     if not case_dir.is_relative_to(cases_root):
         raise ValueError(f"{label} case_id resolves outside the AIFT cases root.")
 
+    candidate_keys = [output_key]
     if output_key == "json_report_path":
-        reports_dir = (case_dir / "reports").resolve()
-        if not path.is_relative_to(reports_dir):
-            raise ValueError(
-                f"{label} path is outside the known AIFT report output: {path}"
-            )
+        candidate_keys = ["case_local_json_report_path", "json_report_path"]
 
-    elif output_key == "analysis_results_path":
-        if path.name != "analysis_results.json":
-            raise ValueError(f"{label} path is not analysis_results.json: {path}")
-        if path != (case_dir / "analysis_results.json").resolve():
-            raise ValueError(
-                f"{label} path is outside the known AIFT case output: {path}"
-            )
+    last_error: BaseException | None = None
+    for candidate_key in candidate_keys:
+        path_value = paths_payload.get(candidate_key)
+        path_text = _public_path_value(path_value)
+        if path_text is None:
+            continue
 
-    return path
+        path = Path(path_text).expanduser().resolve()
+        if not path.is_file():
+            last_error = FileNotFoundError(f"{label} file not found on disk: {path}")
+            continue
+
+        if output_key == "json_report_path":
+            if path.suffix.lower() != ".json":
+                last_error = ValueError(f"{label} path is not a JSON file: {path}")
+                continue
+            reports_dir = (case_dir / "reports").resolve()
+            if not path.is_relative_to(reports_dir):
+                last_error = ValueError(
+                    f"{label} path is outside the known AIFT report output: {path}"
+                )
+                continue
+
+        elif output_key == "analysis_results_path":
+            if path.name != "analysis_results.json":
+                last_error = ValueError(
+                    f"{label} path is not analysis_results.json: {path}"
+                )
+                continue
+            if path != (case_dir / "analysis_results.json").resolve():
+                last_error = ValueError(
+                    f"{label} path is outside the known AIFT case output: {path}"
+                )
+                continue
+
+        return path
+
+    if last_error is not None:
+        raise last_error
+    raise FileNotFoundError(f"{label} was not generated for this run.")
 
 
 def _run_output_resource_text(
