@@ -27,7 +27,7 @@ from app.parser.core import ForensicParser, ParserCancelledError
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
-from tests.conftest import FAKE_HASHES, FakeAnalyzer, FakeAuditLogger
+from tests.conftest import FAKE_HASHES, FakeAnalyzer, FakeAuditLogger, FakeParser
 
 _ENGINE = "app.automation.engine"
 _PATCH_TARGET_OPEN = "app.parser.core.Target.open"
@@ -182,6 +182,20 @@ class _FailingParser:
         }
 
 
+class _CancellingParser(_FailingParser):
+    """Parser fake that reports user cancellation during parsing."""
+
+    def parse_artifact(
+        self,
+        artifact_key: str,
+        progress_callback: object | None = None,
+        cancel_check: object | None = None,
+    ) -> dict[str, Any]:
+        """Raise the parser cancellation sentinel."""
+        del artifact_key, progress_callback, cancel_check
+        raise ParserCancelledError("Parsing cancelled by user.")
+
+
 class RouteParseValidationStateTests(unittest.TestCase):
     """Tests for route-level validation, cancellation, and zero-success state."""
 
@@ -251,6 +265,29 @@ class RouteParseValidationStateTests(unittest.TestCase):
             }
             routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress()
         return case_dir
+
+    def _add_image_to_case(
+        self,
+        case_id: str,
+        image_id: str,
+        available_artifacts: list[dict[str, Any]],
+    ) -> Path:
+        """Add a second image fixture to an installed case."""
+        case_dir = self.cases_root / case_id
+        image_dir = case_dir / "images" / image_id
+        image_dir.mkdir(parents=True, exist_ok=True)
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            case.setdefault("images", []).append({
+                "image_id": image_id,
+                "label": image_id,
+            })
+            case.setdefault("image_states", {})[image_id] = {
+                "evidence_path": str(image_dir / "evidence.E01"),
+                "available_artifacts": available_artifacts,
+                "os_type": "windows",
+            }
+        return image_dir
 
     def test_unknown_artifact_rejected_before_worker_starts(self) -> None:
         """Unknown artifact keys fail synchronously at route level."""
@@ -475,6 +512,179 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self.assertEqual(image_state.get("csv_output_dir"), "")
         self.assertEqual(progress["status"], "failed")
         self.assertEqual(progress["events"][-1]["reason"], "zero_success")
+
+    def test_mixed_multi_image_zero_success_keeps_case_parsed(self) -> None:
+        """One zero-output image does not poison another image's parsed CSVs."""
+        case_id = "partial-zero-multi"
+        img1 = "img-success"
+        img2 = "img-empty"
+        available = [{"key": "runkeys", "name": "Run Keys", "available": True}]
+        case_dir = self._install_case(case_id, available, image_id=img1)
+        img1_dir = case_dir / "images" / img1
+        img2_dir = self._add_image_to_case(case_id, img2, available)
+
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img1}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+        with patch.object(routes_tasks, "ForensicParser", FakeParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img1,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img1_dir / "evidence.E01"),
+                parsed_dir=str(img1_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img2}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id]["status"] = "running"
+            routes_state.mark_case_status(case_id, "running")
+        with patch.object(routes_tasks, "ForensicParser", _FailingParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img2,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img2_dir / "evidence.E01"),
+                parsed_dir=str(img2_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            aggregate_event = aggregate_progress["events"][-1]
+        self.assertEqual(case["status"], "parsed")
+        self.assertNotIn("_terminal_since", case)
+        self.assertEqual(aggregate_progress["status"], "completed")
+        self.assertEqual(aggregate_event["aggregate_outcome"], "partial_success")
+        self.assertEqual(aggregate_event["aggregate_status"], "completed")
+        self.assertIn(img1, aggregate_event["usable_image_ids"])
+        self.assertIn(img2, aggregate_event["failed_image_ids"])
+        self.assertIn(
+            {
+                "image_id": img2,
+                "status": "failed",
+                "has_usable_csvs": False,
+                "error": "No requested artifacts produced usable parsed output.",
+            },
+            aggregate_event["image_outcomes"],
+        )
+        self.assertEqual(set(case["image_artifact_csv_paths"]), {img1})
+        self.assertEqual(
+            routes_tasks.build_multi_image_analysis_payload_from_case(case),
+            [{"image_id": img1, "artifacts": ["runkeys"]}],
+        )
+
+    def test_mixed_multi_image_cancel_keeps_existing_csvs_parsed(self) -> None:
+        """Cancelling one image parse leaves successful image CSVs analyzable."""
+        case_id = "partial-cancel-multi"
+        img1 = "img-success"
+        img2 = "img-cancel"
+        available = [{"key": "runkeys", "name": "Run Keys", "available": True}]
+        case_dir = self._install_case(case_id, available, image_id=img1)
+        img1_dir = case_dir / "images" / img1
+        img2_dir = self._add_image_to_case(case_id, img2, available)
+
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img1}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+        with patch.object(routes_tasks, "ForensicParser", FakeParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img1,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img1_dir / "evidence.E01"),
+                parsed_dir=str(img1_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img2}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id]["status"] = "running"
+            routes_state.mark_case_status(case_id, "running")
+        with patch.object(routes_tasks, "ForensicParser", _CancellingParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img2,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img2_dir / "evidence.E01"),
+                parsed_dir=str(img2_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            aggregate_event = aggregate_progress["events"][-1]
+        self.assertEqual(case["status"], "parsed")
+        self.assertEqual(aggregate_progress["status"], "completed")
+        self.assertEqual(aggregate_event["aggregate_outcome"], "partial_success")
+        self.assertIn(img2, aggregate_event["cancelled_image_ids"])
+        self.assertIn(
+            {
+                "image_id": img2,
+                "status": "cancelled",
+                "has_usable_csvs": False,
+                "error": None,
+            },
+            aggregate_event["image_outcomes"],
+        )
+        self.assertEqual(set(case["image_artifact_csv_paths"]), {img1})
+
+    def test_all_empty_multi_image_parse_remains_non_analyzable(self) -> None:
+        """All-empty image parses fail aggregate progress without parsed CSVs."""
+        case_id = "all-empty-multi"
+        img1 = "img-empty-1"
+        img2 = "img-empty-2"
+        available = [{"key": "runkeys", "name": "Run Keys", "available": True}]
+        case_dir = self._install_case(case_id, available, image_id=img1)
+        img1_dir = case_dir / "images" / img1
+        img2_dir = self._add_image_to_case(case_id, img2, available)
+
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img1}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img2}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+        with patch.object(routes_tasks, "ForensicParser", _FailingParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img1,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img1_dir / "evidence.E01"),
+                parsed_dir=str(img1_dir / "parsed"),
+            )
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img2,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img2_dir / "evidence.E01"),
+                parsed_dir=str(img2_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            aggregate_event = aggregate_progress["events"][-1]
+        self.assertEqual(case["status"], "evidence_loaded")
+        self.assertEqual(case.get("image_artifact_csv_paths"), {})
+        self.assertEqual(aggregate_progress["status"], "failed")
+        self.assertEqual(aggregate_event["aggregate_outcome"], "no_usable_output")
+        self.assertIsNone(routes_tasks.build_multi_image_analysis_payload_from_case(case))
 
     def test_route_cancel_progress_stream_includes_cancel_events(self) -> None:
         """Route cancellation emits requested and final SSE progress events."""

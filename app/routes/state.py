@@ -82,6 +82,7 @@ __all__ = [
     "safe_int",
     "normalize_case_status",
     "new_progress",
+    "resolve_image_parse_aggregate",
     "set_progress_status",
     "set_progress_status_and_emit",
     "emit_progress",
@@ -256,6 +257,87 @@ def new_progress(status: str = "idle") -> dict[str, Any]:
         "error": None,
         "created_at": time.monotonic(),
         "cancel_event": threading.Event(),
+    }
+
+
+def resolve_image_parse_aggregate(
+    image_statuses: dict[str, str],
+    image_artifact_csv_paths: dict[str, Any],
+    *,
+    no_usable_case_status: str = "evidence_loaded",
+) -> dict[str, Any]:
+    """Resolve aggregate parse progress and lifecycle from image outcomes.
+
+    The public operation-progress enum does not include a partial status.
+    Mixed outcomes with usable parsed CSVs therefore remain ``completed`` at
+    the progress level and carry ``aggregate_outcome="partial_success"`` in
+    the emitted event.
+
+    Args:
+        image_statuses: Mapping of image ID to terminal/current parse status.
+        image_artifact_csv_paths: Current parsed CSV aggregate by image ID.
+        no_usable_case_status: Case lifecycle status to use when all related
+            parses are non-cancelled failures and no usable CSVs remain.
+
+    Returns:
+        JSON-compatible aggregate policy details.
+    """
+    normalized_statuses = {
+        str(image_id): normalize_case_status(status)
+        for image_id, status in image_statuses.items()
+        if str(image_id).strip()
+    }
+    usable_image_ids = [
+        str(image_id)
+        for image_id, csv_map in image_artifact_csv_paths.items()
+        if str(image_id).strip() and isinstance(csv_map, dict) and bool(csv_map)
+    ]
+    usable_set = set(usable_image_ids)
+    failed_image_ids = [
+        image_id for image_id, status in normalized_statuses.items()
+        if status == "failed"
+    ]
+    cancelled_image_ids = [
+        image_id for image_id, status in normalized_statuses.items()
+        if status == "cancelled"
+    ]
+    completed_image_ids = [
+        image_id for image_id, status in normalized_statuses.items()
+        if status == "completed"
+    ]
+    non_usable_image_ids = [
+        image_id for image_id in normalized_statuses
+        if image_id not in usable_set
+    ]
+    statuses = list(normalized_statuses.values())
+    has_usable_csvs = bool(usable_image_ids)
+
+    if statuses and all(status == "cancelled" for status in statuses):
+        aggregate_status = "cancelled"
+        aggregate_outcome = "cancelled"
+        case_status = "parsed" if has_usable_csvs else "evidence_loaded"
+    elif has_usable_csvs:
+        aggregate_status = "completed"
+        if failed_image_ids or cancelled_image_ids or non_usable_image_ids:
+            aggregate_outcome = "partial_success"
+        else:
+            aggregate_outcome = "full_success"
+        case_status = "parsed"
+    else:
+        aggregate_status = "failed"
+        aggregate_outcome = "no_usable_output"
+        case_status = normalize_case_status(no_usable_case_status) or "evidence_loaded"
+
+    return {
+        "aggregate_status": aggregate_status,
+        "aggregate_outcome": aggregate_outcome,
+        "case_status": case_status,
+        "has_usable_csvs": has_usable_csvs,
+        "usable_image_ids": usable_image_ids,
+        "failed_image_ids": failed_image_ids,
+        "cancelled_image_ids": cancelled_image_ids,
+        "completed_image_ids": completed_image_ids,
+        "non_usable_image_ids": non_usable_image_ids,
     }
 
 

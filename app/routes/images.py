@@ -46,6 +46,7 @@ from .state import (
     mark_case_status,
     new_progress,
     now_iso,
+    resolve_image_parse_aggregate,
     stream_sse,
     success_response,
 )
@@ -171,7 +172,8 @@ def _finish_image_parse_progress(
     status: str,
     event: dict[str, Any],
     error: str | None = None,
-) -> str | None:
+    no_usable_case_status: str = "evidence_loaded",
+) -> dict[str, Any] | None:
     """Finish one image parse and atomically update aggregate case progress.
 
     Args:
@@ -180,10 +182,12 @@ def _finish_image_parse_progress(
         status: Terminal status for the image-level parse progress.
         event: SSE event payload to append to image and aggregate progress.
         error: Optional error message for failed aggregate progress.
+        no_usable_case_status: Case lifecycle status to apply when no
+            usable parsed CSVs remain and the aggregate is not all-cancelled.
 
     Returns:
-        The aggregate case-level parse status when no related image parses
-        remain active, or ``None`` while other image parses are still active.
+        Aggregate parse policy details when no related image parses remain
+        active, or ``None`` while other image parses are still active.
     """
     progress_key = _progress_key(case_id, image_id)
     event = {**event, "image_id": image_id}
@@ -209,25 +213,45 @@ def _finish_image_parse_progress(
         if active:
             return None
 
-        statuses = [str(value.get("status", "")).lower() for value in related.values()]
-        if any(item == "failed" for item in statuses):
-            aggregate_status = "failed"
-        elif any(item == "completed" for item in statuses):
-            aggregate_status = "completed"
-        elif statuses and all(item == "cancelled" for item in statuses):
-            aggregate_status = "cancelled"
-        else:
-            aggregate_status = status
+        status_by_image_id = {
+            key.split("::", 1)[1]: str(value.get("status", "")).lower()
+            for key, value in related.items()
+            if "::" in key
+        }
+        case = get_case(case_id)
+        image_artifact_csv_paths = {}
+        if isinstance(case, dict):
+            raw_csv_paths = case.get("image_artifact_csv_paths")
+            if isinstance(raw_csv_paths, dict):
+                image_artifact_csv_paths = copy.deepcopy(raw_csv_paths)
+        aggregate_policy = resolve_image_parse_aggregate(
+            status_by_image_id,
+            image_artifact_csv_paths,
+            no_usable_case_status=no_usable_case_status,
+        )
+        usable_image_ids = set(aggregate_policy.get("usable_image_ids", []))
+        image_outcomes = [
+            {
+                "image_id": image_id,
+                "status": status_by_image_id[image_id],
+                "has_usable_csvs": image_id in usable_image_ids,
+                "error": related[f"{case_id}::{image_id}"].get("error"),
+            }
+            for image_id in sorted(status_by_image_id)
+            if f"{case_id}::{image_id}" in related
+        ]
+        aggregate_status = str(aggregate_policy["aggregate_status"])
 
         aggregate = PARSE_PROGRESS.setdefault(case_id, new_progress())
         aggregate["status"] = aggregate_status
         aggregate["error"] = error if aggregate_status == "failed" else None
         aggregate_event = dict(event)
-        aggregate_event["aggregate_status"] = aggregate_status
+        aggregate_event.update(aggregate_policy)
+        aggregate_event["image_outcomes"] = image_outcomes
         aggregate_event.setdefault("timestamp", now_iso())
         aggregate_event["sequence"] = len(aggregate.setdefault("events", []))
         aggregate["events"].append(aggregate_event)
-        return aggregate_status
+        return aggregate_policy
 
 
 # ---------------------------------------------------------------------------
@@ -1110,14 +1134,14 @@ def _run_image_parse(
         if outcome is None:
             # Parsing was cancelled — reset status so the user can retry.
             # Only transition case status when no other image is still parsing.
-            aggregate_status = _finish_image_parse_progress(
+            aggregate_policy = _finish_image_parse_progress(
                 case_id,
                 image_id,
                 "cancelled",
                 {"type": "parse_cancelled", "image_id": image_id},
             )
-            if aggregate_status is not None:
-                mark_case_status(case_id, "evidence_loaded")
+            if aggregate_policy is not None:
+                mark_case_status(case_id, str(aggregate_policy["case_status"]))
             return
 
         results, csv_map = outcome
@@ -1139,7 +1163,7 @@ def _run_image_parse(
                 image_states = case.setdefault("image_states", {})
                 img_state = image_states.setdefault(image_id, {})
                 img_state["csv_output_dir"] = ""
-            aggregate_status = _finish_image_parse_progress(
+            aggregate_policy = _finish_image_parse_progress(
                 case_id,
                 image_id,
                 "failed",
@@ -1152,9 +1176,10 @@ def _run_image_parse(
                     "failed_artifacts": failed,
                 },
                 error=user_message,
+                no_usable_case_status="evidence_loaded",
             )
-            if aggregate_status is not None:
-                mark_case_status(case_id, "evidence_loaded")
+            if aggregate_policy is not None:
+                mark_case_status(case_id, str(aggregate_policy["case_status"]))
             return
 
         with STATE_LOCK:
@@ -1177,9 +1202,9 @@ def _run_image_parse(
             "failed_artifacts": failed,
             "image_artifact_csv_paths": image_artifact_csv_paths,
         }
-        aggregate_status = _finish_image_parse_progress(case_id, image_id, "completed", completion_event)
-        if aggregate_status is not None:
-            mark_case_status(case_id, "parsed" if aggregate_status == "completed" else "error")
+        aggregate_policy = _finish_image_parse_progress(case_id, image_id, "completed", completion_event)
+        if aggregate_policy is not None:
+            mark_case_status(case_id, str(aggregate_policy["case_status"]))
         invalidate_header_cache(parsed_dir)
     except Exception:
         LOGGER.exception("Background parse failed for case %s image %s", case_id, image_id)
@@ -1187,12 +1212,13 @@ def _run_image_parse(
             "Parsing failed due to an internal error. "
             "Check logs and retry after confirming the evidence file is readable."
         )
-        aggregate_status = _finish_image_parse_progress(
+        aggregate_policy = _finish_image_parse_progress(
             case_id,
             image_id,
             "failed",
             {"type": "parse_failed", "error": user_message},
             error=user_message,
+            no_usable_case_status="error",
         )
-        if aggregate_status is not None:
-            mark_case_status(case_id, "error")
+        if aggregate_policy is not None:
+            mark_case_status(case_id, str(aggregate_policy["case_status"]))
