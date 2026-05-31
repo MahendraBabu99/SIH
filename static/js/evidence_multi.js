@@ -16,6 +16,33 @@
 
   /** Counter for generating unique image form indices. */
   let imageFormCounter = 0;
+  const discoveryDescriptorsByCard = new WeakMap();
+
+  /** Return a descriptor payload with only fields the backend understands. */
+  function discoveryDescriptorPayload(entry) {
+    if (!A.isObj(entry)) return null;
+    const payload = {};
+    [
+      "dissect_path",
+      "source_path",
+      "label",
+      "source_mode",
+      "files_to_hash",
+      "extracted_from",
+      "extraction_root",
+    ].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(entry, key)) payload[key] = entry[key];
+    });
+    if (!payload.dissect_path && entry.path) payload.dissect_path = entry.path;
+    return payload.dissect_path || payload.source_path ? payload : null;
+  }
+
+  /** Clear any discovery descriptor associated with a card. */
+  function clearDiscoveryDescriptor(card) {
+    if (!card) return;
+    discoveryDescriptorsByCard.delete(card);
+    delete card.dataset.discoveryPath;
+  }
 
   /** Add a new image intake form to the container. */
   function addImageForm() {
@@ -40,6 +67,7 @@
     const forms = A.getImageForms();
     /* Don't allow removing the last remaining image form. */
     if (forms.length <= 1) return;
+    clearDiscoveryDescriptor(card);
     A.clearDroppedFilesForCard(card);
     card.remove();
     renumberImageForms();
@@ -78,6 +106,7 @@
         setImageStatusMsg(statusMsg, "Choose one or more evidence files first.", "error");
         return null;
       }
+      clearDiscoveryDescriptor(card);
       return { uploadMode: true, files, path: "", label };
     }
 
@@ -87,7 +116,14 @@
       setImageStatusMsg(statusMsg, "Enter a local evidence path.", "error");
       return null;
     }
-    return { uploadMode: false, files: [], path, label };
+    const descriptor = discoveryDescriptorsByCard.get(card);
+    const descriptorPath = A.sanitizeEvidencePath(
+      descriptor && (descriptor.dissect_path || descriptor.path),
+    );
+    const evidenceDescriptor = descriptor && descriptorPath === path
+      ? discoveryDescriptorPayload(descriptor)
+      : null;
+    return { uploadMode: false, files: [], path, label, evidenceDescriptor };
   }
 
   /**
@@ -127,7 +163,7 @@
     const path = A.sanitizeEvidencePath(entry.path);
     if (!path) return null;
     const label = String(entry.label || "").trim() || labelFromPath(path);
-    return { path, label };
+    return Object.assign({}, entry, { path, label });
   }
 
   /** Fill a form card with a discovered local-path evidence entry. */
@@ -142,6 +178,13 @@
 
     const pathInput = card.querySelector(".image-path-input");
     if (pathInput) pathInput.value = entry.path;
+    const descriptor = discoveryDescriptorPayload(entry);
+    if (descriptor) {
+      discoveryDescriptorsByCard.set(card, descriptor);
+      card.dataset.discoveryPath = entry.path;
+    } else {
+      clearDiscoveryDescriptor(card);
+    }
 
     const fileInput = card.querySelector(".image-file-input");
     if (fileInput) fileInput.value = "";
@@ -351,9 +394,11 @@
             { method: "POST", body: fd, timeout: intakeTimeoutMs, signal: token.signal },
           );
         } else {
+          const jsonPayload = { path: data.path, skip_hashing: skipHashing };
+          if (data.evidenceDescriptor) jsonPayload.evidence_descriptor = data.evidenceDescriptor;
           ev = await A.apiJson(
             `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/evidence`,
-            { method: "POST", json: { path: data.path, skip_hashing: skipHashing }, timeout: intakeTimeoutMs, signal: token.signal },
+            { method: "POST", json: jsonPayload, timeout: intakeTimeoutMs, signal: token.signal },
           );
         }
         if (!A.isEvidenceOperationCurrent(token)) return;
@@ -874,6 +919,7 @@
   // ── Public API ─────────────────────────────────────────────────────────
   A.submitEvidence = submitEvidence;
   A.scanEvidenceDirectory = scanEvidenceDirectory;
+  A.clearDiscoveryDescriptor = clearDiscoveryDescriptor;
   A.addImageForm = addImageForm;
   A.removeImageForm = removeImageForm;
   A.renderImageSummaries = renderImageSummaries;

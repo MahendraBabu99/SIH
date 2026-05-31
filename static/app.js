@@ -448,6 +448,7 @@
         if (labelInput) labelInput.value = "";
         const pathInput = firstCard.querySelector(".image-path-input");
         if (pathInput) pathInput.value = "";
+        if (typeof A.clearDiscoveryDescriptor === "function") A.clearDiscoveryDescriptor(firstCard);
         const fileInput = firstCard.querySelector(".image-file-input");
         if (fileInput) fileInput.value = "";
         A.clearDroppedFilesForCard(firstCard);

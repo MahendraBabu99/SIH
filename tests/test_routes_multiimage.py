@@ -7,6 +7,7 @@ the same image-scoped parsing API as multi-image cases.
 from __future__ import annotations
 
 import json
+import shutil
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -244,6 +245,215 @@ class MultiImageRoutesTests(unittest.TestCase):
         self.assertTrue(discovered_path.is_relative_to(self.cases_root.resolve()))
         self.assertIn("_managed_discovery", discovered_path.parts)
         self.assertTrue(discovered_path.exists())
+
+    def test_archive_discovery_descriptor_intake_reextracts_into_image_evidence_dir(self) -> None:
+        """Scan Directory archive descriptors are re-resolved into case evidence."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                discover_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+            self.assertEqual(discover_resp.status_code, 200)
+            entry = discover_resp.get_json()["evidence"][0]
+
+            case_id = self._create_case()
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images",
+                json={"label": entry["label"]},
+            )
+            image_id = add_resp.get_json()["image_id"]
+
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                intake_resp = self.client.post(
+                    f"/api/cases/{case_id}/images/{image_id}/evidence",
+                    json={
+                        "path": entry["path"],
+                        "evidence_descriptor": entry,
+                    },
+                )
+
+        self.assertEqual(intake_resp.status_code, 200)
+        payload = intake_resp.get_json()
+        descriptor = payload["evidence_descriptor"]
+        evidence_path = Path(payload["evidence_path"]).resolve()
+        extraction_root = Path(descriptor["extraction_root"]).resolve()
+        image_evidence_dir = (
+            self.cases_root / case_id / "images" / image_id / "evidence"
+        ).resolve()
+
+        self.assertTrue(evidence_path.is_relative_to(image_evidence_dir))
+        self.assertTrue(extraction_root.is_relative_to(image_evidence_dir))
+        self.assertNotIn("_managed_discovery", evidence_path.parts)
+        self.assertEqual(Path(descriptor["source_path"]).resolve(), archive_path.resolve())
+        self.assertEqual(Path(descriptor["extracted_from"]).resolve(), archive_path.resolve())
+        self.assertEqual(
+            [Path(path).resolve() for path in descriptor["files_to_hash"]],
+            [archive_path.resolve()],
+        )
+
+    def test_archive_discovery_managed_path_without_descriptor_is_rejected(self) -> None:
+        """Intake rejects temporary managed discovery paths as permanent evidence."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                discover_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+            self.assertEqual(discover_resp.status_code, 200)
+            entry = discover_resp.get_json()["evidence"][0]
+
+            case_id = self._create_case()
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images",
+                json={"label": entry["label"]},
+            )
+            image_id = add_resp.get_json()["image_id"]
+            intake_resp = self.client.post(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                json={"path": entry["path"]},
+            )
+
+        self.assertEqual(intake_resp.status_code, 400)
+        self.assertIn("Managed discovery extraction paths", intake_resp.get_json()["error"])
+
+    def test_archive_discovery_descriptor_reextracts_after_managed_workspace_cleanup(self) -> None:
+        """Intake re-resolves archive descriptors even if discovery temps are gone."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                discover_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+            self.assertEqual(discover_resp.status_code, 200)
+            entry = discover_resp.get_json()["evidence"][0]
+            shutil.rmtree(Path(entry["extraction_root"]), ignore_errors=True)
+            self.assertFalse(Path(entry["path"]).exists())
+
+            case_id = self._create_case()
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images",
+                json={"label": entry["label"]},
+            )
+            image_id = add_resp.get_json()["image_id"]
+
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                intake_resp = self.client.post(
+                    f"/api/cases/{case_id}/images/{image_id}/evidence",
+                    json={
+                        "path": entry["path"],
+                        "evidence_descriptor": entry,
+                    },
+                )
+
+        self.assertEqual(intake_resp.status_code, 200)
+        descriptor = intake_resp.get_json()["evidence_descriptor"]
+        self.assertTrue(Path(descriptor["dissect_path"]).exists())
+        self.assertNotIn("_managed_discovery", Path(descriptor["dissect_path"]).parts)
+
+    def test_archive_discovery_descriptor_rejects_forged_extraction_root(self) -> None:
+        """Forged descriptors cannot point targets outside their extraction root."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                discover_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+            self.assertEqual(discover_resp.status_code, 200)
+            entry = discover_resp.get_json()["evidence"][0]
+            forged = dict(entry)
+            forged["extraction_root"] = str(Path(self.temp_dir.name).resolve())
+
+            case_id = self._create_case()
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images",
+                json={"label": entry["label"]},
+            )
+            image_id = add_resp.get_json()["image_id"]
+            intake_resp = self.client.post(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                json={
+                    "path": entry["path"],
+                    "evidence_descriptor": forged,
+                },
+            )
+
+        self.assertEqual(intake_resp.status_code, 400)
+        self.assertIn("extraction root", intake_resp.get_json()["error"])
+
+    def test_archive_discovery_descriptor_rejects_forged_target_outside_extraction_root(self) -> None:
+        """Forged descriptors cannot point to sibling managed-discovery targets."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                discover_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+            self.assertEqual(discover_resp.status_code, 200)
+            entry = discover_resp.get_json()["evidence"][0]
+            forged = dict(entry)
+            extraction_root = Path(entry["extraction_root"]).resolve()
+            forged_target = extraction_root.parent / "sibling" / "pc01.E01"
+            forged["path"] = str(forged_target)
+            forged["dissect_path"] = str(forged_target)
+
+            case_id = self._create_case()
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images",
+                json={"label": entry["label"]},
+            )
+            image_id = add_resp.get_json()["image_id"]
+            intake_resp = self.client.post(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                json={
+                    "path": forged["path"],
+                    "evidence_descriptor": forged,
+                },
+            )
+
+        self.assertEqual(intake_resp.status_code, 400)
+        self.assertIn("outside its extraction root", intake_resp.get_json()["error"])
 
     def test_image_specific_evidence_intake(self) -> None:
         """POST /api/cases/<id>/images/<img_id>/evidence ingests evidence."""

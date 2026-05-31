@@ -253,6 +253,76 @@ describe("scanEvidenceDirectory", () => {
     expect(results.textContent).toContain("SUSPECT");
   });
 
+  test("submits preserved discovery descriptor fields for archive fallback targets", async () => {
+    const pathInput = document.getElementById("scan-directory-path");
+    pathInput.value = "E:\\evidence\\archives";
+    const descriptor = {
+      path: "E:\\AIFT\\cases\\_managed_discovery\\discovery_abc\\extracted_bundle_0001\\nested\\SUSPECT.E01",
+      dissect_path: "E:\\AIFT\\cases\\_managed_discovery\\discovery_abc\\extracted_bundle_0001\\nested\\SUSPECT.E01",
+      source_path: "E:\\evidence\\bundle.zip",
+      label: "SUSPECT",
+      source_mode: "path",
+      files_to_hash: ["E:\\evidence\\bundle.zip"],
+      extracted_from: "E:\\evidence\\bundle.zip",
+      extraction_root: "E:\\AIFT\\cases\\_managed_discovery\\discovery_abc\\extracted_bundle_0001",
+    };
+
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ success: true, evidence: [descriptor] }),
+        text: async () => JSON.stringify({ success: true, evidence: [descriptor] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: { get: () => "application/json" },
+        json: async () => ({ success: true, case_id: "case-1", case_name: "Case 1" }),
+        text: async () => JSON.stringify({ success: true, case_id: "case-1", case_name: "Case 1" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: { get: () => "application/json" },
+        json: async () => ({ success: true, image_id: "image-1", label: "SUSPECT" }),
+        text: async () => JSON.stringify({ success: true, image_id: "image-1", label: "SUSPECT" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({
+          success: true,
+          metadata: { hostname: "host" },
+          hashes: {},
+          os_type: "windows",
+          available_artifacts: [],
+        }),
+        text: async () => JSON.stringify({ success: true, metadata: {}, hashes: {}, os_type: "windows", available_artifacts: [] }),
+      });
+
+    await A.scanEvidenceDirectory();
+    await A.submitEvidence();
+
+    const evidenceRequest = global.fetch.mock.calls.find((call) => (
+      String(call[0]).includes("/images/") && String(call[0]).includes("/evidence")
+    ));
+    expect(evidenceRequest).toBeTruthy();
+    const body = JSON.parse(evidenceRequest[1].body);
+    expect(body.path).toBe(descriptor.path);
+    expect(body.evidence_descriptor).toMatchObject({
+      dissect_path: descriptor.dissect_path,
+      source_path: descriptor.source_path,
+      source_mode: "path",
+      extracted_from: descriptor.extracted_from,
+      extraction_root: descriptor.extraction_root,
+    });
+    expect(body.evidence_descriptor.files_to_hash).toEqual(["E:\\evidence\\bundle.zip"]);
+  });
+
   test("shows an error when no scan path is entered", async () => {
     global.fetch = jest.fn();
     await A.scanEvidenceDirectory();

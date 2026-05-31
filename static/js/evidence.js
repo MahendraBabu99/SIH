@@ -86,8 +86,15 @@
     const dropzoneHelp = card.querySelector(".image-dropzone-help");
     if (fileInput) {
       fileInput.addEventListener("change", () => {
+        if (typeof A.clearDiscoveryDescriptor === "function") A.clearDiscoveryDescriptor(card);
         clearDroppedFilesForCard(card);
         updateDropzoneHelp(fileInput, dropzoneHelp);
+      });
+    }
+    const pathInput = card.querySelector(".image-path-input");
+    if (pathInput) {
+      pathInput.addEventListener("input", () => {
+        if (typeof A.clearDiscoveryDescriptor === "function") A.clearDiscoveryDescriptor(card);
       });
     }
     initImageDropzone(card);
