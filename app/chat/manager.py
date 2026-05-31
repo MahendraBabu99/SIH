@@ -45,6 +45,7 @@ from ..reporter.normalization import (
 )
 from ..utils import stringify as _stringify
 from .csv_retrieval import (
+    CSV_ROW_LIMIT as _CSV_ROW_LIMIT,
     contains_heuristic_term as _contains_heuristic_term,
     retrieve_csv_data as _retrieve_csv_data,
     retrieve_csv_data_from_paths as _retrieve_csv_data_from_paths,
@@ -391,8 +392,7 @@ class ChatManager:
                 question=question,
                 csv_path_groups=csv_path_groups,
             )
-            if grouped_result.get("retrieved"):
-                return grouped_result
+            return grouped_result
 
         primary = _retrieve_csv_data(question, parsed_dir)
 
@@ -479,7 +479,10 @@ class ChatManager:
         all_artifacts: list[str] = []
         data_parts: list[str] = []
 
+        rows_remaining = _CSV_ROW_LIMIT
         for image_id, label, paths in groups_to_search:
+            if rows_remaining <= 0:
+                break
             valid_paths = [Path(path) for path in paths if Path(path).is_file()]
             if not valid_paths:
                 continue
@@ -502,11 +505,13 @@ class ChatManager:
             result = _retrieve_csv_data_from_paths(
                 question=question,
                 csv_paths=valid_paths,
+                row_limit=rows_remaining,
                 display_name_by_path=display_names,
                 extra_aliases_by_path=extra_aliases,
             )
             if not result.get("retrieved"):
                 continue
+            rows_remaining -= int(result.get("rows_returned") or 0)
             all_artifacts.extend(
                 str(item)
                 for item in result.get("artifacts", [])
@@ -517,12 +522,16 @@ class ChatManager:
                 data_parts.append(data_text)
 
         if not data_parts:
-            return {"retrieved": False}
+            result: dict[str, Any] = {"retrieved": False}
+            if group_alias_filter_active:
+                result["scoped"] = True
+            return result
 
         return {
             "retrieved": True,
             "artifacts": all_artifacts,
             "data": "\n\n".join(data_parts),
+            "scoped": group_alias_filter_active,
         }
 
     # ------------------------------------------------------------------

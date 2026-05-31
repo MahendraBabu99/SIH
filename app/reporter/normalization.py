@@ -17,10 +17,12 @@ from ..utils import stringify as _stringify_impl
 from .markdown import CONFIDENCE_CLASS_MAP
 
 CONFIDENCE_LABEL_PATTERN = re.compile(
-    r"\bconfidence\b[\s:]+(?:\w+[\s:]+){0,3}(CRITICAL|HIGH|MEDIUM|LOW)\b",
+    r"\bconfidence\b(?:\s+level)?\s*(?::|=|-|\bis\b)?\s*"
+    r"(?:\*\*|__|\*|_|`|<strong>|<em>|<code>)*"
+    r"(CRITICAL|HIGH|MEDIUM|LOW)(?![A-Za-z0-9])"
+    r"(?:\*\*|__|\*|_|`|</strong>|</em>|</code>)*",
     re.IGNORECASE,
 )
-CONFIDENCE_ALLCAPS_PATTERN = re.compile(r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b")
 UNKNOWN_IP_VALUES = {
     "",
     "unknown",
@@ -1110,16 +1112,16 @@ def build_json_evidence_entries(
         if not isinstance(hashes, Mapping):
             hashes = {}
 
+        evidence_row = build_evidence_row(image_record)
+        hash_row = build_hash_row(image_record)
+        size_value = hashes.get("size_bytes")
+        if size_value is None:
+            size_value = hashes.get("file_size_bytes", 0)
+
         entry = {
             "image_id": stringify(image_record.get("image_id")),
             "label": stringify(image_record.get("label")),
-            "filename": metadata.get(
-                "filename",
-                metadata.get(
-                    "evidence_file",
-                    hashes.get("filename", hashes.get("file_name", "")),
-                ),
-            ),
+            "filename": evidence_row["filename"],
             "hostname": metadata.get("hostname", ""),
             "os_version": metadata.get("os_version", ""),
             "domain": metadata.get("domain", ""),
@@ -1131,11 +1133,9 @@ def build_json_evidence_entries(
             "hashes": {
                 "sha256": hashes.get("sha256", ""),
                 "md5": hashes.get("md5", ""),
-                "size_bytes": hashes.get("size_bytes", 0),
-                "verification_status": hashes.get(
-                    "verification_status",
-                    hashes.get("status", "UNAVAILABLE"),
-                ),
+                "size_bytes": size_value,
+                "verification_status": hash_row.get("label", "UNAVAILABLE"),
+                "verification_detail": hash_row.get("detail", ""),
             },
         }
         if image_record.get("skipped"):
@@ -1440,11 +1440,6 @@ def resolve_confidence(explicit_value: str, analysis_text: str) -> tuple[str, st
 
     text = analysis_text or ""
     match = CONFIDENCE_LABEL_PATTERN.search(text)
-    if match:
-        label = match.group(1).upper()
-        return label, CONFIDENCE_CLASS_MAP[label]
-
-    match = CONFIDENCE_ALLCAPS_PATTERN.search(text)
     if match:
         label = match.group(1).upper()
         return label, CONFIDENCE_CLASS_MAP[label]

@@ -203,6 +203,61 @@ class ChatManagerTests(unittest.TestCase):
         self.assertIn("Total rows: 1", result["data"])
         self.assertNotIn("showing first", result["data"])
 
+    def test_retrieve_csv_data_image_alias_does_not_fall_back_to_flat_rows(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-scoped-test-") as temp_dir:
+            root = Path(temp_dir)
+            img1_dir = root / "pc01"
+            img2_dir = root / "pc02"
+            img1_dir.mkdir(parents=True, exist_ok=True)
+            img2_dir.mkdir(parents=True, exist_ok=True)
+            for index in range(4):
+                self._write_csv(
+                    img1_dir / f"artifact_{index}.csv",
+                    "value",
+                    [f"pc01-only-{index}"],
+                )
+            self._write_csv(img2_dir / "runkeys.csv", "value", ["wrong-image-row"])
+
+            manager = ChatManager(temp_dir)
+            result = manager.retrieve_csv_data(
+                question="Show PC01 runkeys rows",
+                parsed_dir=img2_dir,
+                additional_parsed_dirs=[img1_dir],
+                csv_path_groups=[
+                    ("img1", "PC01", sorted(img1_dir.glob("*.csv"))),
+                    ("img2", "PC02", [img2_dir / "runkeys.csv"]),
+                ],
+            )
+
+        self.assertEqual(result, {"retrieved": False, "scoped": True})
+
+    def test_retrieve_csv_data_with_group_map_does_not_use_unscoped_fallback(self) -> None:
+        with TemporaryDirectory(prefix="aift-chat-grouped-test-") as temp_dir:
+            root = Path(temp_dir)
+            img1_dir = root / "pc01"
+            flat_dir = root / "flat"
+            img1_dir.mkdir(parents=True, exist_ok=True)
+            flat_dir.mkdir(parents=True, exist_ok=True)
+            for index in range(4):
+                self._write_csv(
+                    img1_dir / f"artifact_{index}.csv",
+                    "value",
+                    [f"pc01-only-{index}"],
+                )
+            self._write_csv(flat_dir / "amcache.csv", "value", ["unscoped-row"])
+
+            manager = ChatManager(temp_dir)
+            result = manager.retrieve_csv_data(
+                question="Show amcache rows",
+                parsed_dir=flat_dir,
+                additional_parsed_dirs=[img1_dir],
+                csv_path_groups=[
+                    ("img1", "PC01", sorted(img1_dir.glob("*.csv"))),
+                ],
+            )
+
+        self.assertEqual(result, {"retrieved": False})
+
     def test_estimate_token_count_and_max_context_tokens(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-token-test-") as temp_dir:
             manager = ChatManager(temp_dir)

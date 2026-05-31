@@ -35,7 +35,7 @@ window.AIFT = (() => {
   ];
   const EVIDENCE_ACCEPT = EVIDENCE_ACCEPT_EXTENSIONS.join(",");
   const DROP_HELP = "Drag and drop evidence here (.E01-.E99, .dd, .raw, .vmdk, .vhd, .vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...)";
-  const CONFIDENCE_TOKEN_PATTERN = /\b(CRITICAL|HIGH|MEDIUM|LOW)\b/gi;
+  const CONFIDENCE_TOKEN_PATTERN = /\bconfidence\b(?:\s+level)?\s*(?::|=|-|\bis\b)?\s*(?:\*\*|__|\*|_|`|<strong>|<em>|<code>)*(CRITICAL|HIGH|MEDIUM|LOW)(?![A-Za-z0-9])(?:\*\*|__|\*|_|`|<\/strong>|<\/em>|<\/code>)*/gi;
   const AI_MAX_TOKENS_WARNING_THRESHOLD = 32000;
   const CONFIDENCE_CLASS_MAP = {
     CRITICAL: "confidence-critical",

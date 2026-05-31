@@ -283,7 +283,7 @@
   }
 
   /**
-   * Wrap confidence-level tokens (CRITICAL, HIGH, MEDIUM, LOW) in coloured
+   * Wrap confidence-level tokens in explicit confidence contexts in coloured
    * `<span>` badges using CONFIDENCE_CLASS_MAP.
    *
    * @param {string} text - HTML string (already escaped).
@@ -294,7 +294,10 @@
     return String(text || "").replace(A.CONFIDENCE_TOKEN_PATTERN, (match, token) => {
       const normalized = String(token || match || "").toUpperCase();
       const cssClass = A.CONFIDENCE_CLASS_MAP[normalized] || "confidence-unknown";
-      return `<span class="confidence-inline ${cssClass}">${normalized}</span>`;
+      const tokenIndex = match.toLowerCase().lastIndexOf(String(token || "").toLowerCase());
+      const prefix = tokenIndex >= 0 ? match.slice(0, tokenIndex) : "";
+      const suffix = tokenIndex >= 0 ? match.slice(tokenIndex + String(token || "").length) : "";
+      return `${prefix}<span class="confidence-inline ${cssClass}">${normalized}</span>${suffix}`;
     });
   }
 

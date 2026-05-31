@@ -217,42 +217,51 @@ describe("inline formatting", () => {
 // ── Confidence tokens ───────────────────────────────────────────────────────
 
 describe("confidence token highlighting", () => {
-  test("wraps CRITICAL token in span", () => {
-    const c = renderMd("Risk: CRITICAL");
+  test("wraps CRITICAL confidence token in span", () => {
+    const c = renderMd("Confidence: CRITICAL");
     const span = c.querySelector(".confidence-inline.confidence-critical");
     expect(span).not.toBeNull();
     expect(span.textContent).toBe("CRITICAL");
   });
 
-  test("wraps HIGH token in span", () => {
-    const c = renderMd("Level: HIGH");
+  test("wraps HIGH confidence token in span", () => {
+    const c = renderMd("Confidence HIGH");
     const span = c.querySelector(".confidence-inline.confidence-high");
     expect(span).not.toBeNull();
   });
 
-  test("wraps MEDIUM token in span", () => {
-    const c = renderMd("Level: MEDIUM");
+  test("wraps MEDIUM confidence token in span", () => {
+    const c = renderMd("confidence level: medium");
     const span = c.querySelector(".confidence-inline.confidence-medium");
     expect(span).not.toBeNull();
   });
 
-  test("wraps LOW token in span", () => {
-    const c = renderMd("Level: LOW");
+  test("wraps LOW confidence token in span", () => {
+    const c = renderMd("confidence: LOW");
     const span = c.querySelector(".confidence-inline.confidence-low");
     expect(span).not.toBeNull();
   });
 
   test("highlights case-insensitive tokens", () => {
-    const c = renderMd("risk: critical");
+    const c = renderMd("confidence: critical");
     const span = c.querySelector(".confidence-inline.confidence-critical");
     expect(span).not.toBeNull();
     expect(span.textContent).toBe("CRITICAL");
   });
 
-  test("highlights multiple tokens in one line", () => {
-    const c = renderMd("HIGH risk and LOW impact");
+  test("wraps markdown-emphasized explicit confidence token", () => {
+    const c = renderMd("Confidence: **HIGH**");
+    const strong = c.querySelector("strong");
+    const span = c.querySelector(".confidence-inline.confidence-high");
+    expect(strong).not.toBeNull();
+    expect(span).not.toBeNull();
+    expect(strong.contains(span)).toBe(true);
+  });
+
+  test("does not highlight ordinary prose tokens", () => {
+    const c = renderMd("a high number of events. LOW-value rows. HIGH CPU usage.");
     const spans = c.querySelectorAll(".confidence-inline");
-    expect(spans.length).toBeGreaterThanOrEqual(2);
+    expect(spans.length).toBe(0);
   });
 });
 

@@ -155,9 +155,9 @@ class TestResolveConfidence(unittest.TestCase):
         """Extract confidence from 'Confidence: HIGH' pattern."""
         self.assertEqual(_resolve_confidence("Confidence: HIGH"), "HIGH")
 
-    def test_allcaps_fallback(self) -> None:
-        """Extract standalone ALL-CAPS confidence word."""
-        self.assertEqual(_resolve_confidence("This is CRITICAL"), "CRITICAL")
+    def test_allcaps_ordinary_prose_is_not_confidence(self) -> None:
+        """Do not extract standalone ALL-CAPS confidence words."""
+        self.assertIsNone(_resolve_confidence("This is CRITICAL"))
 
     def test_no_match(self) -> None:
         """Return None when no confidence pattern found."""
@@ -170,6 +170,15 @@ class TestResolveConfidence(unittest.TestCase):
     def test_case_insensitive_context(self) -> None:
         """Context pattern is case-insensitive."""
         self.assertEqual(_resolve_confidence("confidence level: medium"), "MEDIUM")
+
+    def test_markdown_wrapped_context(self) -> None:
+        """Extract explicit confidence labels wrapped in markdown emphasis."""
+        self.assertEqual(_resolve_confidence("Confidence: **HIGH**"), "HIGH")
+
+    def test_ordinary_words_do_not_match(self) -> None:
+        for text in ("a high number of events", "LOW-value rows", "HIGH CPU usage"):
+            with self.subTest(text=text):
+                self.assertIsNone(_resolve_confidence(text))
 
 
 class TestExportJsonReport(unittest.TestCase):
@@ -516,6 +525,53 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(ev["hashes"]["sha256"], "a" * 64)
         self.assertEqual(ev["hashes"]["md5"], "b" * 32)
         self.assertEqual(ev["hashes"]["size_bytes"], 1024)
+
+    def test_json_evidence_uses_report_filename_precedence(self) -> None:
+        """JSON evidence filename mirrors HTML evidence-row precedence."""
+        metadata = {**_make_metadata(), "filename": "metadata-name.E01"}
+        hashes = {**_make_hashes(), "filename": "hash-name.E01"}
+
+        _, data = self._export(metadata=metadata, hashes=hashes)
+
+        self.assertEqual(data["evidence"][0]["filename"], "hash-name.E01")
+
+    def test_json_evidence_hash_status_uses_normalized_verification(self) -> None:
+        """Evidence hash status agrees with top-level hash verification."""
+        cases = (
+            ({"hash_verified": True}, "PASS"),
+            ({"hash_verified": False}, "FAIL"),
+            ({"hash_verified": "skipped"}, "SKIPPED"),
+            (
+                {
+                    "expected_sha256": "a" * 64,
+                    "reverified_sha256": "a" * 64,
+                },
+                "PASS",
+            ),
+            (
+                {
+                    "expected_sha256": "a" * 64,
+                    "reverified_sha256": "b" * 64,
+                },
+                "FAIL",
+            ),
+        )
+        for hash_fields, expected in cases:
+            with self.subTest(expected=expected, hash_fields=hash_fields):
+                hashes = {
+                    "image_id": "img-1",
+                    "sha256": "a" * 64,
+                    "md5": "b" * 32,
+                    "size_bytes": 1024,
+                    **hash_fields,
+                }
+                _, data = self._export(hashes=hashes)
+
+                self.assertEqual(
+                    data["evidence"][0]["hashes"]["verification_status"],
+                    expected,
+                )
+                self.assertEqual(data["hash_verification"][0]["status"], expected)
 
     def test_audit_trail_included(self) -> None:
         """Audit trail entries are present in output."""

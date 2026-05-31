@@ -170,6 +170,7 @@ def retrieve_csv_data_from_paths(
     artifacts = [display_names.get(path, path.name) for path in target_paths]
     formatted_blocks: list[str] = []
     rows_remaining = row_limit
+    rows_returned = 0
 
     for csv_path in target_paths:
         if rows_remaining <= 0:
@@ -179,6 +180,7 @@ def retrieve_csv_data_from_paths(
             continue
 
         rows_remaining -= len(rows)
+        rows_returned += len(rows)
         formatted_blocks.append(
             _format_csv_block(
                 display_names.get(csv_path, csv_path.name),
@@ -193,12 +195,14 @@ def retrieve_csv_data_from_paths(
             "retrieved": True,
             "artifacts": artifacts,
             "data": "No readable rows found in selected CSV files.",
+            "rows_returned": 0,
         }
 
     return {
         "retrieved": True,
         "artifacts": artifacts,
         "data": "\n\n".join(formatted_blocks),
+        "rows_returned": rows_returned,
     }
 
 

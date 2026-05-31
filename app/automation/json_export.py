@@ -39,7 +39,8 @@ DISCLAIMER_TEXT = (
 def _resolve_confidence(text: str) -> str | None:
     """Extract a confidence label from free-text analysis.
 
-    Uses a context-aware pattern first, then falls back to ALL-CAPS matching.
+    Uses the shared report confidence resolver, which only infers labels
+    from explicit confidence contexts.
 
     Args:
         text: Analysis text to search.

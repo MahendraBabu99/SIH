@@ -356,7 +356,7 @@ class ReporterTests(unittest.TestCase):
                             "artifact_name": "Run/RunOnce Keys",
                             "analysis": (
                                 "### Baseline Profile (Cross-Artifact)\n"
-                                "- severity: CRITICAL\n"
+                                "- confidence level: CRITICAL\n"
                                 "- **Host and Domain**: `DESKTOP-23PS6ES`\n"
                                 "- confidence: HIGH\n"
                             ),
@@ -416,7 +416,7 @@ class ReporterTests(unittest.TestCase):
         self.assertIn("<td>Browser Downloads</td>", html)
         self.assertIn("<td>Test event</td>", html)
         self.assertNotIn("| Timestamp (UTC) | Source Artifact(s) | Event | Confidence |", html)
-        self.assertIn("confidence-inline confidence-high", html)
+        self.assertNotIn("confidence-inline confidence-high", html)
 
 
 # ===================================================================
@@ -1060,6 +1060,11 @@ class TestResolveConfidence(unittest.TestCase):
         self.assertEqual(label, "MEDIUM")
         self.assertEqual(cls, "confidence-medium")
 
+    def test_from_text_pattern_allows_markdown_wrapped_label(self) -> None:
+        label, cls = ReportGenerator._resolve_confidence("", "Confidence: **HIGH**")
+        self.assertEqual(label, "HIGH")
+        self.assertEqual(cls, "confidence-high")
+
     def test_unspecified(self) -> None:
         label, cls = ReportGenerator._resolve_confidence("", "No severity mentioned.")
         self.assertEqual(label, "UNSPECIFIED")
@@ -1067,8 +1072,15 @@ class TestResolveConfidence(unittest.TestCase):
 
     def test_explicit_invalid_falls_to_text(self) -> None:
         label, cls = ReportGenerator._resolve_confidence("UNKNOWN_LEVEL", "LOW risk found.")
-        self.assertEqual(label, "LOW")
-        self.assertEqual(cls, "confidence-low")
+        self.assertEqual(label, "UNSPECIFIED")
+        self.assertEqual(cls, "confidence-unknown")
+
+    def test_ordinary_words_do_not_infer_confidence(self) -> None:
+        for text in ("a high number of events", "LOW-value rows", "HIGH CPU usage"):
+            with self.subTest(text=text):
+                label, cls = ReportGenerator._resolve_confidence("", text)
+                self.assertEqual(label, "UNSPECIFIED")
+                self.assertEqual(cls, "confidence-unknown")
 
 
 class TestNestedLookup(unittest.TestCase):
@@ -1428,8 +1440,18 @@ class TestRenderInlineMarkdown(unittest.TestCase):
         self.assertIn("<em>italic</em>", result)
 
     def test_confidence_highlighted(self) -> None:
-        result = render_inline_markdown("severity: CRITICAL")
+        result = render_inline_markdown("Confidence: CRITICAL")
         self.assertIn("confidence-critical", result)
+
+    def test_markdown_wrapped_confidence_highlighted(self) -> None:
+        result = render_inline_markdown("Confidence: **HIGH**")
+        self.assertIn("<strong>", result)
+        self.assertIn("confidence-high", result)
+
+    def test_escapes_html_by_default(self) -> None:
+        result = render_inline_markdown("<img src=x onerror=alert(1)>")
+        self.assertNotIn("<img", result)
+        self.assertIn("&lt;img", result)
 
     def test_mixed_code_and_formatting(self) -> None:
         result = render_inline_markdown("Run `cmd` with **admin** rights")
@@ -1551,31 +1573,28 @@ class HtmlEscapingTests(unittest.TestCase):
 class ConfidenceHighlightingTests(unittest.TestCase):
     """Test confidence token highlighting in _highlight_confidence_tokens."""
 
-    def test_critical_token_highlighted(self) -> None:
-        result = highlight_confidence_tokens("Severity: CRITICAL")
-        self.assertIn("confidence-critical", result)
-        self.assertIn("CRITICAL", result)
-
     def test_high_token_highlighted(self) -> None:
         result = highlight_confidence_tokens("Confidence HIGH")
         self.assertIn("confidence-high", result)
 
     def test_medium_token_highlighted(self) -> None:
-        result = highlight_confidence_tokens("Risk level: MEDIUM")
+        result = highlight_confidence_tokens("confidence level: medium")
         self.assertIn("confidence-medium", result)
 
     def test_low_token_highlighted(self) -> None:
-        result = highlight_confidence_tokens("Priority: LOW")
+        result = highlight_confidence_tokens("confidence: LOW")
         self.assertIn("confidence-low", result)
 
     def test_case_insensitive_matching(self) -> None:
         result = highlight_confidence_tokens("confidence high here")
         self.assertIn("confidence-high", result)
 
-    def test_multiple_tokens_highlighted(self) -> None:
-        result = highlight_confidence_tokens("CRITICAL and LOW findings")
-        self.assertIn("confidence-critical", result)
-        self.assertIn("confidence-low", result)
+    def test_ordinary_words_are_not_highlighted(self) -> None:
+        for text in ("a high number of events", "LOW-value rows", "HIGH CPU usage"):
+            with self.subTest(text=text):
+                result = highlight_confidence_tokens(text)
+                self.assertNotIn("confidence-inline", result)
+                self.assertEqual(result, text)
 
     def test_no_tokens_returns_unchanged(self) -> None:
         text = "No severity tokens here"
@@ -1584,12 +1603,18 @@ class ConfidenceHighlightingTests(unittest.TestCase):
 
     def test_markdown_to_html_highlights_confidence_inline(self) -> None:
         result = markdown_to_html("- severity: CRITICAL\n- confidence: HIGH")
-        self.assertIn("confidence-inline confidence-critical", result)
+        self.assertNotIn("confidence-inline confidence-critical", result)
         self.assertIn("confidence-inline confidence-high", result)
 
     def test_span_structure(self) -> None:
-        result = highlight_confidence_tokens("CRITICAL")
+        result = highlight_confidence_tokens("Confidence: CRITICAL")
         self.assertIn('<span class="confidence-inline confidence-critical">CRITICAL</span>', result)
+
+    def test_preserves_markdown_generated_wrapper_around_confidence(self) -> None:
+        result = highlight_confidence_tokens("Confidence: <strong>HIGH</strong>")
+        self.assertIn("<strong>", result)
+        self.assertIn("</strong>", result)
+        self.assertIn('<span class="confidence-inline confidence-high">HIGH</span>', result)
 
 
 class TestFormatBlock(unittest.TestCase):
@@ -1614,7 +1639,7 @@ class TestFormatBlock(unittest.TestCase):
         self.assertIn("<br>", str(result))
 
     def test_confidence_tokens_highlighted(self) -> None:
-        result = format_block("Risk: HIGH")
+        result = format_block("Confidence: HIGH")
         self.assertIn("confidence-high", str(result))
 
     def test_html_escaped(self) -> None:
@@ -1670,11 +1695,17 @@ class TestConfidenceConstants(unittest.TestCase):
 
     def test_confidence_pattern_matches_all_levels(self) -> None:
         for level in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
-            self.assertIsNotNone(CONFIDENCE_PATTERN.search(level))
+            self.assertIsNotNone(CONFIDENCE_PATTERN.search(f"Confidence: {level}"))
 
     def test_confidence_pattern_case_insensitive(self) -> None:
-        self.assertIsNotNone(CONFIDENCE_PATTERN.search("critical"))
-        self.assertIsNotNone(CONFIDENCE_PATTERN.search("High"))
+        self.assertIsNotNone(CONFIDENCE_PATTERN.search("confidence: critical"))
+        self.assertIsNotNone(CONFIDENCE_PATTERN.search("Confidence High"))
+
+    def test_confidence_pattern_allows_markdown_wrapped_label(self) -> None:
+        self.assertIsNotNone(CONFIDENCE_PATTERN.search("Confidence: **HIGH**"))
+
+    def test_confidence_pattern_requires_context(self) -> None:
+        self.assertIsNone(CONFIDENCE_PATTERN.search("HIGH CPU usage"))
 
 
 # ===================================================================

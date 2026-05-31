@@ -311,6 +311,27 @@ def test_grouped_chat_csv_retrieval_respects_image_alias(tmp_path: Path) -> None
     assert "only-img2" not in result["data"]
 
 
+def test_grouped_chat_csv_retrieval_returns_false_for_scoped_miss(tmp_path: Path) -> None:
+    """An image-scoped miss must not borrow same-named artifacts elsewhere."""
+    img1_paths = []
+    for index in range(4):
+        csv_path = tmp_path / "img1" / f"artifact_{index}.csv"
+        _write_csv(csv_path, f"only-img1-{index}")
+        img1_paths.append(csv_path)
+    img2_csv = tmp_path / "img2" / "runkeys.csv"
+    _write_csv(img2_csv, "only-img2")
+
+    result = ChatManager._retrieve_grouped_csv_data(
+        question="Show PC01 runkeys CSV rows",
+        csv_path_groups=[
+            ("img1", "PC01", img1_paths),
+            ("img2", "PC02", [img2_csv]),
+        ],
+    )
+
+    assert result == {"retrieved": False, "scoped": True}
+
+
 class RecordingMultiImageAnalyzer:
     """Analyzer fake that records multi-image descriptors from routes_state.
 

@@ -11,11 +11,11 @@ Key capabilities:
 * **Block elements** -- headings, ordered/unordered lists, fenced code blocks,
   paragraphs with ``<br>`` line breaks.
 * **Tables** -- pipe-delimited Markdown tables rendered as ``<table>`` elements.
-* **Confidence highlighting** -- severity tokens (``CRITICAL``, ``HIGH``,
-  ``MEDIUM``, ``LOW``) wrapped in coloured ``<span>`` elements.
+* **Confidence highlighting** -- explicit confidence labels
+  (``Confidence: HIGH`` etc.) wrapped in coloured ``<span>`` elements.
 
 Attributes:
-    CONFIDENCE_PATTERN: Regex matching severity tokens (case-insensitive).
+    CONFIDENCE_PATTERN: Regex matching explicit confidence labels.
     CONFIDENCE_CLASS_MAP: Maps severity label strings to CSS class names.
     MARKDOWN_HEADING_PATTERN: Regex matching ATX-style headings (``#``--``######``).
     MARKDOWN_ORDERED_LIST_PATTERN: Regex matching ordered list items.
@@ -48,17 +48,12 @@ __all__ = [
     "render_inline_markdown",
 ]
 
-CONFIDENCE_PATTERN = re.compile(r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b", re.IGNORECASE)
-
-# Stricter pattern for highlight_confidence_tokens.  Matches confidence
-# keywords in two contexts to avoid colouring ordinary adjectives:
-#   1. Preceded by "confidence" (case-insensitive), e.g. "confidence high"
-#   2. Written in ALL CAPS without "confidence" prefix, e.g. standalone "HIGH"
-# This prevents "a high number of events" from being highlighted while
-# still catching "confidence: high" and standalone "HIGH".
-_CONFIDENCE_CONTEXT_OR_CAPS_PATTERN = re.compile(
-    r"(?i:\bconfidence\b[\s:]*(?:level[\s:]*)?)(CRITICAL|HIGH|MEDIUM|LOW|critical|high|medium|low|Critical|High|Medium|Low)"
-    r"|\b(CRITICAL|HIGH|MEDIUM|LOW)\b"
+CONFIDENCE_PATTERN = re.compile(
+    r"\bconfidence\b(?:\s+level)?\s*(?::|=|-|\bis\b)?\s*"
+    r"(?:\*\*|__|\*|_|`|<strong>|<em>|<code>)*"
+    r"(CRITICAL|HIGH|MEDIUM|LOW)(?![A-Za-z0-9])"
+    r"(?:\*\*|__|\*|_|`|</strong>|</em>|</code>)*",
+    re.IGNORECASE,
 )
 MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 MARKDOWN_ORDERED_LIST_PATTERN = re.compile(r"^\d+\.\s+(.*)$")
@@ -95,16 +90,10 @@ def _stringify(value: Any, default: str = "") -> str:
 def highlight_confidence_tokens(text: str) -> str:
     """Wrap confidence-related severity tokens in coloured ``<span>`` elements.
 
-    Matches severity keywords only in contexts that indicate a confidence
-    rating, not as ordinary English adjectives:
-
-    * When preceded by the word ``confidence`` (case-insensitive), e.g.
-      ``"confidence: high"`` or ``"Confidence HIGH"``.
-    * When written in ALL CAPS as a standalone word, e.g. ``"HIGH"`` or
-      ``"CRITICAL"``.
-
-    Ordinary lowercase uses like ``"a high number of events"`` are **not**
-    highlighted.
+    Matches severity keywords only in explicit confidence contexts, not as
+    ordinary English adjectives or all-caps prose.  Examples include
+    ``"Confidence: HIGH"``, ``"confidence level: medium"``, and
+    ``"confidence high"``.
 
     Args:
         text: Pre-escaped HTML string to scan for severity tokens.
@@ -115,29 +104,24 @@ def highlight_confidence_tokens(text: str) -> str:
     def _replace_confidence(match: re.Match[str]) -> str:
         """Replace a confidence token match with a styled span.
 
-        The regex has two alternatives: group(1) captures a keyword
-        preceded by 'confidence', group(2) captures a standalone
-        ALL-CAPS keyword.  Only the keyword portion is wrapped in
-        the coloured span; the 'confidence' prefix text is preserved
-        as-is.
+        Only the keyword portion is wrapped in the coloured span; the
+        confidence prefix text is preserved as-is.
         """
-        keyword = match.group(1) or match.group(2)
+        keyword = match.group(1)
         label = keyword.upper()
         css_class = CONFIDENCE_CLASS_MAP.get(label, "confidence-unknown")
         span = f'<span class="confidence-inline {css_class}">{label}</span>'
 
-        if match.group(1):
-            # Context-preceded match: replace the keyword but keep the prefix
-            full = match.group(0)
-            keyword_start = full.lower().rfind(keyword.lower())
-            prefix = full[:keyword_start]
-            return f'{prefix}{span}'
-        return span
+        full = match.group(0)
+        keyword_start = full.lower().rfind(keyword.lower())
+        prefix = full[:keyword_start]
+        suffix = full[keyword_start + len(keyword):]
+        return f'{prefix}{span}{suffix}'
 
-    return _CONFIDENCE_CONTEXT_OR_CAPS_PATTERN.sub(_replace_confidence, text)
+    return CONFIDENCE_PATTERN.sub(_replace_confidence, text)
 
 
-def render_inline_markdown(value: str, *, escape_html: bool = False) -> str:
+def render_inline_markdown(value: str, *, escape_html: bool = True) -> str:
     """Render inline Markdown formatting to HTML.
 
     Handles backtick code spans, bold (``**`` and ``__``), italic
@@ -145,20 +129,14 @@ def render_inline_markdown(value: str, *, escape_html: bool = False) -> str:
 
     .. warning:: Security consideration
 
-        This function expects **pre-escaped** HTML input by default.
-        When called from :func:`markdown_to_html`, the input has already
-        been passed through :func:`html.escape`, so it is safe.  However,
-        if you call this function directly on untrusted user input, you
-        **must** pass ``escape_html=True`` to prevent XSS injection.
-        Failing to do so will pass raw HTML through unescaped.
+        This function escapes HTML by default.  Internal callers that
+        already pass pre-escaped text use ``escape_html=False`` to avoid
+        double escaping.
 
     Args:
-        value: Inline Markdown text.  Must be pre-escaped HTML unless
-            *escape_html* is ``True``.
+        value: Inline Markdown text.
         escape_html: When ``True``, apply :func:`html.escape` to *value*
-            before processing Markdown formatting.  Defaults to ``False``
-            for backward compatibility with callers that already escape
-            their input.
+            before processing Markdown formatting.  Defaults to ``True``.
 
     Returns:
         An HTML string with inline formatting applied.
@@ -312,7 +290,7 @@ def markdown_to_html(value: str) -> str:
         if not paragraph_lines:
             return
         paragraph_text = "\n".join(paragraph_lines)
-        rendered = render_inline_markdown(paragraph_text).replace("\n", "<br>\n")
+        rendered = render_inline_markdown(paragraph_text, escape_html=False).replace("\n", "<br>\n")
         blocks.append(f"<p>{rendered}</p>")
         paragraph_lines = []
 
@@ -400,7 +378,7 @@ def markdown_to_html(value: str) -> str:
             flush_paragraph()
             flush_list()
             level = len(heading_match.group(1))
-            heading_text = render_inline_markdown(heading_match.group(2))
+            heading_text = render_inline_markdown(heading_match.group(2), escape_html=False)
             blocks.append(f"<h{level}>{heading_text}</h{level}>")
             index += 1
             continue
@@ -412,7 +390,7 @@ def markdown_to_html(value: str) -> str:
                 flush_list()
                 list_type = "ol"
                 list_items = []
-            list_items.append(render_inline_markdown(ordered_match.group(1)))
+            list_items.append(render_inline_markdown(ordered_match.group(1), escape_html=False))
             index += 1
             continue
 
@@ -423,7 +401,7 @@ def markdown_to_html(value: str) -> str:
                 flush_list()
                 list_type = "ul"
                 list_items = []
-            list_items.append(render_inline_markdown(unordered_match.group(1)))
+            list_items.append(render_inline_markdown(unordered_match.group(1), escape_html=False))
             index += 1
             continue
 
