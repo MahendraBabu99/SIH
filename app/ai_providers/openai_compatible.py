@@ -222,7 +222,9 @@ class OpenAICompatibleChatMixin:
             cleaned_attachment_response = self._clean_openai_compatible_response_text(
                 attachment_response
             )
-            return cleaned_attachment_response or attachment_response.strip()
+            if cleaned_attachment_response:
+                return cleaned_attachment_response
+            self._raise_openai_compatible_empty_response(None, empty_response_message)
 
         prompt_for_completion = self._build_openai_compatible_prompt(
             user_prompt=user_prompt,
@@ -235,7 +237,9 @@ class OpenAICompatibleChatMixin:
         text = _extract_openai_text(response)
         if text:
             cleaned_text = self._clean_openai_compatible_response_text(text)
-            return cleaned_text or text.strip()
+            if cleaned_text:
+                return cleaned_text
+            self._raise_openai_compatible_empty_response(response, empty_response_message)
 
         self._raise_openai_compatible_empty_response(response, empty_response_message)
 

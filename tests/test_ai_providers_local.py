@@ -29,6 +29,7 @@ from app.ai_providers.base import (
     DEFAULT_LOCAL_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
     RATE_LIMIT_MAX_RETRIES,
+    _RATE_LIMIT_STATE,
 )
 from app.ai_providers.utils import (
     upload_and_request_via_responses_api,
@@ -41,6 +42,12 @@ def _make_openai_response(text: str) -> SimpleNamespace:
     message = SimpleNamespace(content=text)
     choice = SimpleNamespace(message=message)
     return SimpleNamespace(choices=[choice])
+
+
+def _raise_after_chunks(chunks: list[SimpleNamespace], error: Exception):
+    """Yield test stream chunks, then raise ``error``."""
+    yield from chunks
+    raise error
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +605,27 @@ class TestLocalProvider(unittest.TestCase):
         self.assertEqual(result, "Final answer.")
 
     @patch("openai.OpenAI")
+    def test_analyze_reasoning_only_think_block_raises_empty_response(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Reasoning-only local markup must not become final answer text."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            "<think>hidden chain-of-thought</think>"
+        )
+
+        provider = LocalProvider(
+            base_url="http://localhost:11434/v1", model="llama3.1:70b"
+        )
+        with self.assertRaises(AIProviderError) as ctx:
+            provider.analyze("system", "user")
+
+        self.assertIn("empty response", str(ctx.exception))
+        self.assertNotIn("hidden chain-of-thought", str(ctx.exception))
+
+    @patch("openai.OpenAI")
     def test_analyze_retries_with_model_token_cap_when_max_tokens_too_large(
         self,
         mock_openai_cls: MagicMock,
@@ -660,6 +688,39 @@ class TestLocalProvider(unittest.TestCase):
         self.assertEqual(result, "Attachment result")
         self.assertEqual(mock_client.files.create.call_count, 1)
         self.assertEqual(mock_client.responses.create.call_count, 1)
+        self.assertEqual(mock_client.files.delete.call_count, 1)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_attachments_reasoning_only_response_raises_empty(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Responses API reasoning markup is not returned as attachment answer text."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.files.create.return_value = SimpleNamespace(id="file-123")
+        mock_client.responses.create.return_value = SimpleNamespace(
+            output_text="<think>hidden attachment reasoning</think>"
+        )
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+
+            provider = LocalProvider(
+                base_url="http://localhost:11434/v1", model="llama3.1:70b"
+            )
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_attachments(
+                    "system",
+                    "user",
+                    attachments=[
+                        {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+                    ],
+                )
+
+        self.assertIn("empty response", str(ctx.exception))
+        self.assertNotIn("hidden attachment reasoning", str(ctx.exception))
         self.assertEqual(mock_client.files.delete.call_count, 1)
 
     @patch("openai.OpenAI")
@@ -797,6 +858,120 @@ class TestLocalProvider(unittest.TestCase):
             chunks = list(provider.analyze_stream("system", "user"))
 
         self.assertEqual(chunks, ["Non-stream fallback"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_retries_rate_limit_before_output(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Progress streams retry rate limits only before visible output."""
+        class _FakeRateLimitError(Exception):
+            """Fake rate-limit error for progress retry tests."""
+
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.side_effect = [
+            _FakeRateLimitError("rate limited before output"),
+            [
+                SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Recovered"))]),
+            ],
+        ]
+
+        with patch("openai.RateLimitError", _FakeRateLimitError), patch(
+            "app.ai_providers.base.time.sleep"
+        ) as mock_sleep:
+            provider = LocalProvider(base_url="http://localhost:11434/v1", model="test")
+            result = provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=lambda _payload: None,
+            )
+
+        self.assertEqual(result, "Recovered")
+        self.assertEqual(mock_client.chat.completions.create.call_count, 2)
+        self.assertTrue(mock_sleep.called)
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_rate_limit_after_answer_does_not_retry(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Progress streams stop instead of replaying after answer output."""
+        class _FakeRateLimitError(Exception):
+            """Fake rate-limit error for progress retry tests."""
+
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        error = _FakeRateLimitError("rate limited after answer")
+        mock_client.chat.completions.create.return_value = _raise_after_chunks(
+            [
+                SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Partial "))]),
+            ],
+            error,
+        )
+        progress_updates: list[dict[str, str]] = []
+
+        with patch("openai.RateLimitError", _FakeRateLimitError), patch(
+            "app.ai_providers.base.time.sleep"
+        ) as mock_sleep:
+            provider = LocalProvider(base_url="http://localhost:11434/v1", model="test")
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=progress_updates.append,
+                )
+
+        self.assertIn("partial output", str(ctx.exception))
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+        self.assertFalse(mock_sleep.called)
+        self.assertTrue(any("Partial" in item.get("partial_text", "") for item in progress_updates))
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_rate_limit_after_reasoning_does_not_retry(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Reasoning progress also blocks automatic stream replay."""
+        class _FakeRateLimitError(Exception):
+            """Fake rate-limit error for progress retry tests."""
+
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        error = _FakeRateLimitError("rate limited after reasoning")
+        mock_client.chat.completions.create.return_value = _raise_after_chunks(
+            [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(reasoning="Thinking before failure"))]
+                ),
+            ],
+            error,
+        )
+        progress_updates: list[dict[str, str]] = []
+
+        with patch("openai.RateLimitError", _FakeRateLimitError), patch(
+            "app.ai_providers.base.time.sleep"
+        ) as mock_sleep:
+            provider = LocalProvider(base_url="http://localhost:11434/v1", model="test")
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=progress_updates.append,
+                )
+
+        self.assertIn("partial output", str(ctx.exception))
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+        self.assertFalse(mock_sleep.called)
+        self.assertTrue(
+            any("Thinking before failure" in item.get("thinking_text", "") for item in progress_updates)
+        )
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
 
 
 # ---------------------------------------------------------------------------

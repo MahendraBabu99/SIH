@@ -35,6 +35,18 @@ def _make_openai_response(text: str) -> SimpleNamespace:
 
 class TestKimiProvider(unittest.TestCase):
     @patch("openai.OpenAI")
+    def test_missing_api_key_message_mentions_supported_env_vars(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        with self.assertRaises(AIProviderError) as ctx:
+            KimiProvider(api_key="")
+
+        self.assertIn("MOONSHOT_API_KEY", str(ctx.exception))
+        self.assertIn("KIMI_API_KEY", str(ctx.exception))
+        mock_openai_cls.assert_not_called()
+
+    @patch("openai.OpenAI")
     def test_analyze_returns_text(self, mock_openai_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client

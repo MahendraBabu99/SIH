@@ -27,6 +27,7 @@ from .base import (
     _normalize_api_key_value,
     _normalize_openai_compatible_base_url,
     _resolve_timeout_seconds,
+    _run_stream_with_rate_limit_retries,
 )
 from .openai_compatible import OpenAICompatibleChatMixin
 from .utils import (
@@ -35,7 +36,8 @@ from .utils import (
     _extract_openai_stream_chunk_delta,
     _split_openai_stream_delta_text,
     _strip_leading_reasoning_blocks,
-    stream_chunk_has_text,
+    stream_chunk_answer_text,
+    stream_chunk_reasoning_text,
 )
 
 logger = logging.getLogger(__name__)
@@ -319,38 +321,59 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
                 max_tokens=max_tokens,
             )
 
-        def _request() -> str:
-            """Run the local progress request and collect the final answer.
-
-            Returns:
-                The generated analysis text.
-            """
-            result = self._build_stream_or_result(
+        attachment_response = self._run_request(
+            lambda: self._request_with_csv_attachments(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
                 attachments=attachments,
             )
-            if isinstance(result, str):
-                return result
-            stream = result
+        )
+        if attachment_response:
+            cleaned_response = self._clean_openai_compatible_response_text(attachment_response)
+            if cleaned_response:
+                return cleaned_response
+            self._raise_openai_compatible_empty_response(
+                None,
+                "Local AI provider returned an empty response",
+            )
 
-            thinking_parts: list[str] = []
-            answer_parts: list[str] = []
-            content_splitter = _LeadingReasoningStreamSplitter()
+        prompt_for_completion = self._build_chat_completion_prompt(
+            user_prompt=user_prompt,
+            attachments=attachments,
+        )
+        messages = self._chat_completion_messages(system_prompt, prompt_for_completion)
+
+        def _stream_factory() -> Any:
+            """Open a progress stream or fall back to a non-streamed answer."""
+            try:
+                return self._create_chat_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    stream=True,
+                )
+            except self._openai.BadRequestError as error:
+                if self._is_stream_unsupported_error(error):
+                    return self._request_non_stream(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        max_tokens=max_tokens,
+                        attachments=attachments,
+                    )
+                raise
+
+        thinking_parts: list[str] = []
+        answer_parts: list[str] = []
+
+        def _progress_chunks(stream: Any) -> Iterator[Any]:
+            """Emit progress while yielding answer/reasoning chunks for retry tracking."""
             last_emit_at = 0.0
             last_sent_thinking = ""
             last_sent_answer = ""
 
-            for chunk in stream:
-                chunk_result = self._process_stream_chunk(
-                    chunk,
-                    content_splitter=content_splitter,
-                )
-                if chunk_result is None:
-                    continue
-
-                thinking_delta, answer_delta = chunk_result
+            for chunk in self._iter_openai_compatible_stream_text(stream):
+                thinking_delta = stream_chunk_reasoning_text(chunk)
+                answer_delta = stream_chunk_answer_text(chunk)
                 if thinking_delta:
                     thinking_parts.append(thinking_delta)
                 if answer_delta:
@@ -372,13 +395,7 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
                         last_sent_answer=last_sent_answer,
                     )
                 )
-
-            remaining_text = content_splitter.flush()
-            if stream_chunk_has_text(remaining_text):
-                if remaining_text.reasoning_text:
-                    thinking_parts.append(remaining_text.reasoning_text)
-                if remaining_text.answer_text:
-                    answer_parts.append(remaining_text.answer_text)
+                yield chunk
 
             final_thinking = "".join(thinking_parts).strip()
             final_answer = _clean_streamed_answer_text(
@@ -397,9 +414,20 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
                 except Exception:
                     pass
 
-            return self._finalize_stream_response(thinking_parts, answer_parts)
-
-        return self._run_request(_request)
+        stream = _run_stream_with_rate_limit_retries(
+            stream_factory=_stream_factory,
+            stream_text_iterator=_progress_chunks,
+            rate_limit_error_type=self._openai.RateLimitError,
+            provider_name=self._provider_display_name,
+            map_error=self._map_api_error,
+            empty_response_message=(
+                "Local AI provider returned an empty streamed response. "
+                "Try a different local model or increase max tokens."
+            ),
+        )
+        for _chunk in stream:
+            pass
+        return self._finalize_stream_response(thinking_parts, answer_parts)
 
     def _build_stream_or_result(
         self,
@@ -435,7 +463,12 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
         )
         if attachment_response:
             cleaned = _strip_leading_reasoning_blocks(attachment_response)
-            return cleaned or attachment_response.strip()
+            if cleaned:
+                return cleaned
+            self._raise_openai_compatible_empty_response(
+                None,
+                "Local AI provider returned an empty response",
+            )
 
         prompt_for_completion = self._build_chat_completion_prompt(
             user_prompt=user_prompt,
@@ -583,10 +616,7 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
 
     def _clean_openai_compatible_response_text(self, text: str) -> str:
         """Strip leading local-model reasoning blocks from completed text."""
-        cleaned_text = _strip_leading_reasoning_blocks(text)
-        if cleaned_text:
-            return cleaned_text
-        return str(text or "").strip()
+        return _strip_leading_reasoning_blocks(text)
 
     def _raise_openai_compatible_empty_response(self, response: Any, message: str) -> None:
         """Raise the local empty-response error with finish-reason detail."""

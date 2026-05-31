@@ -282,6 +282,18 @@ def test_non_streaming_reasoning_only_output_is_empty_contract(provider_name: st
             provider.analyze("system", "user")
 
 
+def test_local_non_streaming_leading_reasoning_markup_only_is_empty_contract() -> None:
+    """Local reasoning markup in content is not answer-channel text."""
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_response(
+        "<think>hidden reasoning only</think>"
+    )
+
+    with _provider_context("local", mock_client) as provider:
+        with pytest.raises(AIProviderError, match="empty"):
+            provider.analyze("system", "user")
+
+
 @pytest.mark.parametrize("provider_name", _OPENAI_COMPATIBLE_PROVIDERS)
 def test_streaming_refusals_raise_provider_error_contract(provider_name: str) -> None:
     """OpenAI-compatible stream refusals surface as provider errors."""
