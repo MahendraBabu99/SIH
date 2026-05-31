@@ -36,6 +36,7 @@ import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
 from app.evidence.archives import ArchiveExtractionLimits, validate_archive_member_target
+from app.evidence.archive_resolver import can_open_with_dissect
 from app.evidence.constants import (
     EVIDENCE_UI_ACCEPT,
     EVIDENCE_UI_ACCEPT_EXTENSIONS,
@@ -1052,6 +1053,10 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch(
+                "app.automation.discovery.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1082,6 +1087,10 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch(
+                "app.automation.discovery.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1218,6 +1227,10 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch(
+                "app.automation.discovery.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1318,6 +1331,79 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
         self.assertEqual(len(file_hashes), 1)
         self.assertEqual(file_hashes[0]["path"], str(zip_path))
         self.assertEqual(file_hashes[0]["sha256"], "a" * 64)
+
+    def test_path_archive_direct_open_uses_archive_descriptor(self) -> None:
+        """Path-mode archives that Dissect opens directly are not extracted."""
+        case_id = self._create_case()
+        zip_path = Path(self.temp_dir.name) / "direct.zip"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("../unsafe.E01", b"ignored when directly loadable")
+
+        class FakeTargetHandle:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        target_handle = FakeTargetHandle()
+        with (
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.automation.discovery.Target.open", return_value=target_handle) as open_mock,
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(zip_path)},
+            )
+            self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+            payload = resp.get_json()
+
+        descriptor = payload["evidence_descriptor"]
+        self.assertEqual(Path(descriptor["dissect_path"]), zip_path.resolve())
+        self.assertEqual(Path(descriptor["source_path"]), zip_path.resolve())
+        self.assertEqual(descriptor["files_to_hash"], [str(zip_path.resolve())])
+        self.assertNotIn("extracted_from", descriptor)
+        self.assertNotIn("extraction_root", descriptor)
+        evidence_dirs = list((self.cases_root / case_id).glob("**/evidence"))
+        self.assertTrue(evidence_dirs)
+        for evidence_dir in evidence_dirs:
+            self.assertFalse(list(evidence_dir.glob("extracted_*")))
+        open_mock.assert_called_once_with(zip_path.resolve())
+        self.assertTrue(target_handle.closed)
+
+    def test_direct_open_probe_survives_cleanup_introspection_failure(self) -> None:
+        """Cleanup internals cannot turn a successful Dissect open into extract fallback."""
+        zip_path = Path(self.temp_dir.name) / "direct.zip"
+        zip_path.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+
+        class BadFilesystemEntries:
+            @property
+            def entries(self):
+                raise RuntimeError("cleanup inspection failed")
+
+        class FakeTargetHandle:
+            def __init__(self) -> None:
+                self.filesystems = BadFilesystemEntries()
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        target_handle = FakeTargetHandle()
+        with patch(
+            "app.evidence.archive_resolver.Target.open",
+            return_value=target_handle,
+        ) as open_mock:
+            self.assertTrue(can_open_with_dissect(zip_path))
+
+        open_mock.assert_called_once_with(zip_path)
+        self.assertTrue(target_handle.closed)
 
     def test_uploaded_archive_descriptor_preserves_upload_source_mode(self) -> None:
         """Uploaded archive descriptors keep upload provenance after discovery."""

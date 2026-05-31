@@ -15,9 +15,12 @@ from pathlib import Path
 
 from dissect.target import Target
 
-from app.evidence.archive_selection import select_best_extracted_descriptor
+from app.evidence.archive_resolver import (
+    can_open_with_dissect,
+    resolve_archive_descriptor,
+)
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
-from app.evidence.archives import ARCHIVE_EXTENSIONS, extract_archive_to_directory
+from app.evidence.archives import ARCHIVE_EXTENSIONS
 from app.evidence.constants import DISSECT_EVIDENCE_EXTENSIONS
 from app.evidence.segments import (
     collect_segment_group_paths,
@@ -135,27 +138,7 @@ def _safe_component(value: str) -> str:
 
 def _can_open_with_dissect(path: Path) -> bool:
     """Probe whether Dissect can open *path* as a target."""
-    try:
-        target = Target.open(path)
-    except Exception:
-        LOGGER.debug("Dissect target probe failed for %s", path, exc_info=True)
-        return False
-
-    try:
-        close = getattr(target, "close", None)
-    except Exception:
-        close = None
-    if callable(close):
-        try:
-            close()
-        except Exception:
-            LOGGER.debug("Dissect target close failed for %s", path, exc_info=True)
-    return True
-
-
-def _safe_extract_archive(archive_path: Path, destination: Path) -> Path:
-    """Safely extract an archive into *destination* and return that directory."""
-    return extract_archive_to_directory(archive_path, destination)
+    return can_open_with_dissect(path)
 
 
 def _deduplicate_segments(paths: list[Path]) -> list[EvidenceDescriptor]:
@@ -228,22 +211,13 @@ def _discover_file(
             ]
         return [descriptor_for_path(path, source_mode="path")]
 
-    if _can_open_with_dissect(path):
-        return [descriptor_for_path(path, source_mode="path")]
-
-    extract_dir = context.next_extraction_dir(path)
-    extracted_root = _safe_extract_archive(path, extract_dir)
-    previous_workspace_root = context.workspace_root
-    context.workspace_root = extracted_root
-    try:
-        discovered = _discover_path(extracted_root, context, strict_extension=False)
-    finally:
-        context.workspace_root = previous_workspace_root
-    selected = select_best_extracted_descriptor(
-        extracted_root,
-        discovered_descriptors=discovered,
-    )
-    return [selected.with_archive_source(path, extracted_root)]
+    return [
+        resolve_archive_descriptor(
+            path,
+            lambda: context.next_extraction_dir(path),
+            source_mode="path",
+        )
+    ]
 
 
 def _discover_directory(path: Path, context: _DiscoveryContext) -> list[EvidenceDescriptor]:

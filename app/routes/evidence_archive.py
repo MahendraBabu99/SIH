@@ -12,13 +12,16 @@ Attributes:
 
 from __future__ import annotations
 
-import gc
 import logging
 import shutil
 from pathlib import Path
 
 from ..evidence.archive_selection import select_best_extracted_descriptor
 from ..evidence.descriptor import EvidenceDescriptor
+from ..evidence.archive_resolver import (
+    discover_extracted_archive_descriptors,
+    resolve_archive_descriptor,
+)
 from ..evidence.archives import (
     ArchiveExtractionLimits,
     DEFAULT_ARCHIVE_LIMITS,
@@ -54,30 +57,7 @@ def _discover_extracted_descriptors(destination: Path) -> list[EvidenceDescripto
     Raises:
         ValueError: If recursive discovery rejects an unsafe nested archive.
     """
-    try:
-        from app.automation.discovery import discover_evidence
-
-        discovered = discover_evidence(destination, workspace_dir=destination)
-    except ValueError as error:
-        if str(error).startswith("Archive rejected:"):
-            raise
-        LOGGER.debug(
-            "Dissect-aware archive discovery failed for %s",
-            destination,
-            exc_info=True,
-        )
-        return []
-    except Exception:
-        LOGGER.debug(
-            "Dissect-aware archive discovery failed for %s",
-            destination,
-            exc_info=True,
-        )
-        return []
-    finally:
-        gc.collect()
-
-    return list(discovered)
+    return discover_extracted_archive_descriptors(destination)
 
 
 def _discover_extracted_target(destination: Path) -> Path | None:
@@ -196,37 +176,30 @@ def extract_archive_descriptor(
     limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
     source_mode: str = "path",
 ) -> EvidenceDescriptor:
-    """Extract an archive and return a descriptor for the selected target.
+    """Resolve an archive and return a descriptor for the selected target.
 
     Args:
-        archive_path: Archive file to extract.
-        destination: Directory to replace with extracted contents.
+        archive_path: Archive file to probe or extract.
+        destination: Directory to replace with extracted contents if fallback
+            extraction is needed.
         limits: Extraction limit values.
         source_mode: Source provenance mode to preserve on the descriptor.
 
     Returns:
-        Descriptor for the selected extracted target with archive provenance.
+        Descriptor for the directly loadable archive or selected extracted
+        target with archive provenance.
 
     Raises:
         ValueError: If the archive is invalid, unsafe, empty, or has no
             selectable target.
         OSError: If extraction cleanup or filesystem operations fail.
     """
-    try:
-        extracted_root = extract_archive_to_directory(
-            archive_path,
-            destination,
-            limits=limits,
-        )
-        return _select_extracted_descriptor(
-            extracted_root,
-            archive_path,
-            source_mode=source_mode,
-        )
-    except Exception:
-        if destination.exists() and not destination.is_symlink():
-            shutil.rmtree(destination, ignore_errors=True)
-        raise
+    return resolve_archive_descriptor(
+        archive_path,
+        destination,
+        limits=limits,
+        source_mode=source_mode,
+    )
 
 
 def extract_zip(
