@@ -50,11 +50,14 @@ local_tests/**/__pycache__/
 .DS_Store
 Thumbs.db
 
-config.yaml
-config.yml
-config/*.yaml
-config/*.yml
+# Local config files can contain API keys. Keep new YAML files ignored by
+# default; force-add intentional non-secret YAML when needed.
+*.yaml
+*.yml
+*.yaml.tmp
+*.yml.tmp
 !config/artifact_ai_columns.yaml
+!SPECs/reference/*.yaml
 
 # pdoc build output
 _site/

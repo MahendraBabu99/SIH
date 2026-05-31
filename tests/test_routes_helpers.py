@@ -704,6 +704,20 @@ class ArtifactHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             artifact_profiles.normalize_profile_name("!@#$%")
 
+    def test_resolve_profiles_root_always_uses_repository_profile_folder(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.object(artifact_profiles, "PROJECT_ROOT", root):
+                default_profiles_root = artifact_profiles.resolve_profiles_root(
+                    root / "config" / "config.yaml"
+                )
+                custom_profiles_root = artifact_profiles.resolve_profiles_root(
+                    root / "settings" / "case-settings.yml"
+                )
+
+        self.assertEqual(default_profiles_root, root / "profile")
+        self.assertEqual(custom_profiles_root, root / "profile")
+
     def test_profile_path_for_new_name(self) -> None:
         with TemporaryDirectory() as tmpdir:
             profiles_root = Path(tmpdir)

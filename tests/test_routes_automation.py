@@ -454,6 +454,29 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
 
     @patch("app.routes.automation.run_automation")
     @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_profile_name_accepts_explicit_json_file_path(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """REST automation forwards profile file paths to the shared engine."""
+        mock_run.return_value = _make_successful_result()
+        profile_path = str(Path(self.temp_dir.name) / "profiles" / "portable.json")
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {
+                "evidence_path": "/fake/path.E01",
+                "prompt": "test",
+                "profile_name": profile_path,
+            },
+        )
+        self.assertEqual(resp.status_code, 202)
+
+        req = mock_run.call_args[0][0]
+        self.assertEqual(req.profile_name, profile_path)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_omitted_output_dir_passes_none_and_does_not_create_run_reports(
         self,
         mock_run: MagicMock,

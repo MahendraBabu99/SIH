@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .config import PROJECT_ROOT
 from ..parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "resolve_profiles_root",
     "compose_profile_response",
     "load_profiles_from_directory",
+    "load_profile_from_file",
     "normalize_profile_name",
     "profile_path_for_new_name",
     "write_profile_file",
@@ -215,13 +217,14 @@ def resolve_profiles_root(config_path: str | Path) -> Path:
     """Resolve the directory where artifact profiles are stored.
 
     Args:
-        config_path: Path to the active YAML config file.
+        config_path: Path to the active YAML config file. Accepted for API
+            compatibility; profile storage is repository-wide.
 
     Returns:
-        The sibling ``profile`` directory used by the GUI for artifact
-        profile storage.
+        The repository ``profile`` directory used by the GUI, CLI, API, and MCP.
     """
-    return Path(config_path).parent / PROFILE_DIRNAME
+    del config_path
+    return PROJECT_ROOT / PROFILE_DIRNAME
 
 
 def _recommended_profile_payload() -> dict[str, Any]:
@@ -240,7 +243,11 @@ def write_profile_file(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(f"{content}\n", encoding="utf-8")
 
 
-def _load_profile_file(path: Path) -> dict[str, Any] | None:
+def _load_profile_file(
+    path: Path,
+    *,
+    preserve_recommended_contents: bool = False,
+) -> dict[str, Any] | None:
     """Load and validate a single artifact profile from a JSON file."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -273,7 +280,7 @@ def _load_profile_file(path: Path) -> dict[str, Any] | None:
         return None
 
     builtin = bool(raw.get("builtin", False))
-    if name.lower() == BUILTIN_RECOMMENDED_PROFILE:
+    if name.lower() == BUILTIN_RECOMMENDED_PROFILE and not preserve_recommended_contents:
         builtin = True
         artifact_options = _recommended_artifact_options()
     elif not artifact_options:
@@ -286,6 +293,14 @@ def _load_profile_file(path: Path) -> dict[str, Any] | None:
         "artifact_options": artifact_options,
         "path": path,
     }
+
+
+def load_profile_from_file(path: str | Path) -> dict[str, Any] | None:
+    """Load one artifact profile JSON file from an explicit path."""
+    return _load_profile_file(
+        Path(path).expanduser().resolve(),
+        preserve_recommended_contents=True,
+    )
 
 
 def _ensure_recommended_profile(profiles_root: Path) -> None:

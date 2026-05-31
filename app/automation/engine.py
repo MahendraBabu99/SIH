@@ -44,6 +44,7 @@ from app.parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGIST
 from app.reporter.generator import ReportGenerator
 from app.utils.artifact_profiles import (
     artifact_options_to_lists,
+    load_profile_from_file,
     load_profiles_from_directory,
     resolve_profiles_root,
 )
@@ -246,7 +247,7 @@ def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], l
 
 
 def _effective_profile_config_path(config_path: str | Path | None) -> Path:
-    """Return the config path whose sibling profile directory should be used.
+    """Return the config path passed through profile-root resolution.
 
     Args:
         config_path: Optional requested config path.
@@ -291,12 +292,30 @@ def _load_profile(
 
     Args:
         profile_name: Requested profile name, or None for default.
-        config_path: Active config path used to resolve the GUI profile root.
+        config_path: Active config path retained for API compatibility.
 
     Returns:
         Tuple of ``(parse_artifacts, analysis_artifacts, warnings)``.
     """
     warnings: list[str] = []
+
+    profile_text = str(profile_name or "").strip()
+    if profile_text:
+        candidate = Path(profile_text).expanduser()
+        if candidate.is_file():
+            matched = load_profile_from_file(candidate)
+            if matched is None:
+                warnings.append(
+                    f"Profile file '{candidate.resolve()}' could not be loaded. "
+                    f"Falling back to '{DEFAULT_PROFILE_NAME}'."
+                )
+            else:
+                artifact_options = matched.get("artifact_options", [])
+                parse_artifacts, analysis_artifacts = artifact_options_to_lists(
+                    artifact_options
+                )
+                return parse_artifacts, analysis_artifacts, warnings
+
     active_config_path = (
         Path(config_path).resolve()
         if config_path is not None
@@ -305,7 +324,7 @@ def _load_profile(
     profiles_root = resolve_profiles_root(active_config_path)
     profiles = load_profiles_from_directory(profiles_root)
 
-    target_name = (profile_name or "").strip().lower() or DEFAULT_PROFILE_NAME
+    target_name = profile_text.lower() or DEFAULT_PROFILE_NAME
     matched = None
     for p in profiles:
         if str(p.get("name", "")).strip().lower() == target_name:

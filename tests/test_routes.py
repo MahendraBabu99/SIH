@@ -813,7 +813,7 @@ class RoutesTests(unittest.TestCase):
 
     def test_artifact_profiles_endpoints_persist_custom_profiles(self) -> None:
         profiles_dir = Path(self.temp_dir.name) / "profile"
-        with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
+        with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root), patch("app.utils.artifact_profiles.PROJECT_ROOT", Path(self.temp_dir.name)):
             list_resp = self.client.get("/api/artifact-profiles")
             self.assertEqual(list_resp.status_code, 200)
             profiles = list_resp.get_json()["profiles"]

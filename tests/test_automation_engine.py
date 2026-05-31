@@ -248,15 +248,16 @@ class TestAutomationResult(unittest.TestCase):
 
 
 class TestAutomationProfileRoots(unittest.TestCase):
-    """Tests for config-relative automation profile loading."""
+    """Tests for repository-wide automation profile loading."""
 
-    def test_load_profile_uses_config_relative_profile_root(self) -> None:
-        """Automation loads profiles from the active config sibling folder."""
+    def test_load_profile_uses_repository_profile_root_with_custom_config(self) -> None:
+        """Automation loads profiles from repository profile/ for custom configs."""
         with TemporaryDirectory(prefix="aift-profile-root-") as temp_dir:
             root = Path(temp_dir)
             config_path = root / "settings" / "case-settings.yml"
-            profile_root = config_path.parent / "profile"
+            profile_root = root / "profile"
             profile_root.mkdir(parents=True)
+            config_path.parent.mkdir(parents=True)
             config_path.write_text("ai_provider: fake\n", encoding="utf-8")
             (profile_root / "custom.json").write_text(
                 json.dumps({
@@ -268,7 +269,10 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(engine_module, "_PROJECT_ROOT", root):
+            with (
+                patch.object(engine_module, "_PROJECT_ROOT", root),
+                patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
+            ):
                 parse, analysis, warnings = engine_module._load_profile(
                     "custom",
                     config_path,
@@ -278,8 +282,60 @@ class TestAutomationProfileRoots(unittest.TestCase):
         self.assertEqual(analysis, [])
         self.assertEqual(warnings, [])
 
-    def test_load_profile_ignores_repository_profile_root(self) -> None:
-        """Automation only reads the profile directory beside the active config."""
+    def test_load_profile_accepts_explicit_profile_file_path(self) -> None:
+        """CLI/MCP profile arguments may point directly to a profile JSON file."""
+        with TemporaryDirectory(prefix="aift-profile-file-") as temp_dir:
+            root = Path(temp_dir)
+            profile_path = root / "external-profiles" / "portable.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(
+                json.dumps({
+                    "name": "Portable",
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                        {"artifact_key": "mft", "mode": "parse_only"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with patch("app.utils.artifact_profiles.PROJECT_ROOT", root):
+                parse, analysis, warnings = engine_module._load_profile(
+                    str(profile_path),
+                    root / "settings" / "case-settings.yml",
+                )
+
+        self.assertEqual(parse, ["runkeys", "mft"])
+        self.assertEqual(analysis, ["runkeys"])
+        self.assertEqual(warnings, [])
+
+    def test_explicit_profile_file_named_recommended_keeps_file_contents(self) -> None:
+        """Explicit profile paths must not be replaced by built-in recommended."""
+        with TemporaryDirectory(prefix="aift-profile-recommended-file-") as temp_dir:
+            root = Path(temp_dir)
+            profile_path = root / "external-profiles" / "recommended.json"
+            profile_path.parent.mkdir()
+            profile_path.write_text(
+                json.dumps({
+                    "name": "recommended",
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            parse, analysis, warnings = engine_module._load_profile(
+                str(profile_path),
+                root / "settings" / "case-settings.yml",
+            )
+
+        self.assertEqual(parse, ["runkeys"])
+        self.assertEqual(analysis, ["runkeys"])
+        self.assertEqual(warnings, [])
+
+    def test_load_profile_ignores_config_sibling_profile_root(self) -> None:
+        """Automation ignores config-adjacent profiles and reads repository profile/."""
         with TemporaryDirectory(prefix="aift-profile-canonical-") as temp_dir:
             root = Path(temp_dir)
             config_path = root / "settings" / "config.yaml"
@@ -308,22 +364,21 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.object(engine_module, "_PROJECT_ROOT", root):
+            with (
+                patch.object(engine_module, "_PROJECT_ROOT", root),
+                patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
+            ):
                 parse, analysis, warnings = engine_module._load_profile(
                     "legacy",
                     config_path,
                 )
 
-        self.assertNotEqual(parse, ["runkeys"])
-        self.assertTrue(parse)
+        self.assertEqual(parse, ["runkeys"])
         self.assertEqual(parse, analysis)
-        self.assertEqual(
-            warnings,
-            ["Profile 'legacy' not found. Falling back to 'recommended'."],
-        )
+        self.assertEqual(warnings, [])
 
-    def test_load_profile_does_not_create_missing_repository_profile_root(self) -> None:
-        """Legacy profile fallback does not create a repository profile folder."""
+    def test_load_profile_creates_repository_profile_root_when_missing(self) -> None:
+        """Built-in recommended fallback is created in repository profile/."""
         with TemporaryDirectory(prefix="aift-profile-no-legacy-") as temp_dir:
             root = Path(temp_dir)
             config_path = root / "settings" / "config.yaml"
@@ -331,13 +386,16 @@ class TestAutomationProfileRoots(unittest.TestCase):
             config_path.write_text("ai_provider: fake\n", encoding="utf-8")
             legacy_root = root / "profile"
 
-            with patch.object(engine_module, "_PROJECT_ROOT", root):
+            with (
+                patch.object(engine_module, "_PROJECT_ROOT", root),
+                patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
+            ):
                 parse, analysis, warnings = engine_module._load_profile(
                     "missing",
                     config_path,
                 )
+                self.assertTrue((legacy_root / "recommended.json").exists())
 
-        self.assertFalse(legacy_root.exists())
         self.assertTrue(parse)
         self.assertEqual(parse, analysis)
         self.assertTrue(any("Profile 'missing' not found" in warning for warning in warnings))

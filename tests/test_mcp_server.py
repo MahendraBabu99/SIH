@@ -546,6 +546,36 @@ class TestMCPTools(unittest.TestCase):
         self.assertTrue(request.skip_hashing)
         self.assertEqual(request.date_range, ("2026-04-01", "2026-04-05"))
 
+    def test_start_triage_accepts_profile_file_path(self) -> None:
+        """MCP profile_name may be a profile name or explicit profile JSON path."""
+        manager = FakeRunManager()
+        evidence_path = Path("D:/Cases/acme/WIN-WS01.E01")
+        profile_path = Path("D:/Cases/acme/profiles/portable.json")
+        with (
+            patch.dict(sys.modules, _fake_mcp_modules()),
+            patch.object(
+                mcp_server,
+                "validate_evidence_path",
+                return_value=evidence_path,
+            ),
+            patch.object(
+                mcp_server,
+                "make_automation_request",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            server = mcp_server.build_mcp_server(run_manager=manager)
+            result = _tool(server, "aift_start_triage")(
+                evidence_path=str(evidence_path),
+                prompt="Investigate persistence.",
+                profile_name=str(profile_path),
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(manager.started_requests), 1)
+        request = manager.started_requests[0]
+        self.assertEqual(request.profile_name, str(profile_path))
+
     def test_start_triage_rejects_empty_prompt_before_starting_run(self) -> None:
         """Validation errors are model-visible and do not call the manager."""
         manager = FakeRunManager()

@@ -350,6 +350,25 @@ class TestCLIExecution(unittest.TestCase):
             req = mock_run.call_args[0][0]
             self.assertEqual(req.output_dir, Path.cwd())
 
+    def test_profile_file_path_passed_to_request(self) -> None:
+        """--profile may be a profile name or an explicit profile JSON path."""
+        profile_path = self.root / "profiles" / "portable.json"
+        profile_path.parent.mkdir()
+        profile_path.write_text(
+            '{"name":"Portable","artifact_options":[{"artifact_key":"runkeys"}]}',
+            encoding="utf-8",
+        )
+
+        code, stderr, mock_run = self._run_main_captured([
+            "--profile",
+            str(profile_path),
+        ])
+
+        self.assertEqual(code, EXIT_SUCCESS)
+        self.assertEqual(stderr, "")
+        req = mock_run.call_args[0][0]
+        self.assertEqual(req.profile_name, str(profile_path))
+
     def test_date_range_passed_to_request(self) -> None:
         """Valid --date-start/--date-end are passed as an engine tuple."""
         code, stderr, mock_run = self._run_main_captured([

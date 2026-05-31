@@ -410,7 +410,10 @@ class TestApiToReportIntegration(unittest.TestCase):
         evidence_path.write_bytes(b"route-level evidence bytes")
         output_dir = workspace / "reports-out"
 
-        with patch("app.automation.engine._PROJECT_ROOT", workspace):
+        with (
+            patch("app.automation.engine._PROJECT_ROOT", workspace),
+            patch("app.utils.artifact_profiles.PROJECT_ROOT", workspace),
+        ):
             start_resp = self._post_json(
                 "/api/automation/run",
                 {

@@ -109,14 +109,17 @@ class TestHeadlessNoFlask(unittest.TestCase):
 
             import aift_cli
             import app.automation.engine as engine
+            import app.utils.artifact_profiles as artifact_profiles
 
             with tempfile.TemporaryDirectory(prefix="aift-headless-profiles-") as td:
                 root = Path(td)
                 aift_cli._PROJECT_ROOT = root
                 engine._PROJECT_ROOT = root
+                artifact_profiles.PROJECT_ROOT = root
                 config_path = root / "custom" / "config.yaml"
-                profile_root = config_path.parent / "profile"
+                profile_root = root / "profile"
                 profile_root.mkdir(parents=True)
+                config_path.parent.mkdir(parents=True)
                 config_path.write_text("ai_provider: fake\\n", encoding="utf-8")
                 (profile_root / "custom.json").write_text(
                     '{"name":"custom","artifact_options":[{"artifact_key":"runkeys","mode":"parse_and_ai"}]}\\n',
@@ -144,7 +147,7 @@ class TestHeadlessNoFlask(unittest.TestCase):
                     raise AssertionError("recommended profile should analyze all generated artifacts")
                 parse_artifacts, analysis_artifacts, warnings = engine._load_profile("custom", config_path)
                 if parse_artifacts != ["runkeys"] or analysis_artifacts != ["runkeys"]:
-                    raise AssertionError("config-relative custom profile did not load")
+                    raise AssertionError("repository custom profile did not load")
                 if warnings:
                     raise AssertionError(f"unexpected warnings: {warnings!r}")
 

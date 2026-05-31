@@ -79,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PROFILE",
         default="recommended",
         help=(
-            'Artifact profile name. Defaults to "recommended". '
+            'Artifact profile name or JSON file path. Defaults to "recommended". '
             "Use --list-profiles to see available profiles."
         ),
     )
@@ -328,8 +328,8 @@ def _list_profiles(config_path: str | Path | None = None) -> None:
     """Load and print all available artifact profiles, then exit.
 
     Args:
-        config_path: Optional config path whose sibling ``profile`` directory
-            should be listed.
+        config_path: Optional config path accepted for API compatibility.
+            Profiles are listed from the repository ``profile`` directory.
 
     Raises:
         SystemExit: Always exits with code 0 after printing.
