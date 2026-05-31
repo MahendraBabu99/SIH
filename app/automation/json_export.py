@@ -109,18 +109,18 @@ def export_json_report(
 ) -> Path:
     """Export a complete JSON report mirroring the HTML report content.
 
-    Handles both V1 (single-image) and multi-image analysis formats,
-    normalising V1 to multi-image structure internally.  Writes atomically
-    via a temporary file and rename.
+    Requires canonical image-scoped analysis results with a non-empty
+    ``"images"`` mapping, whether the case contains one image or many.
+    Writes atomically via a temporary file and rename.
 
     Args:
         case_id: Unique case identifier.
         case_name: Human-readable case name.
-        analysis_results: AI analysis output (V1 or multi-image format).
-        image_metadata: Per-image metadata as a single dict, list of dicts,
-            list/dict keyed by image_id, or legacy positional list.
-        evidence_hashes: Per-image hash info as a single dict, list of dicts,
-            list/dict keyed by image_id, or legacy positional list.
+        analysis_results: Canonical image-scoped AI analysis output.
+        image_metadata: Per-image metadata keyed by image ID, or records
+            carrying ``image_id``.
+        evidence_hashes: Per-image hash info keyed by image ID, or records
+            carrying ``image_id``.
         investigation_context: User's investigation prompt.
         audit_log_entries: Parsed audit.jsonl entries.
         output_path: Where to write the JSON file.
@@ -130,6 +130,7 @@ def export_json_report(
         Path to the written JSON file.
 
     Raises:
+        ValueError: If report inputs are not canonical image-scoped records.
         OSError: If output_path is not writable.
     """
     version = tool_version or TOOL_VERSION

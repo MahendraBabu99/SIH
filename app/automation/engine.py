@@ -1352,6 +1352,16 @@ def run_automation(
     _notify(progress_callback, "reporting", "Generating reports...", 10.0)
     audit_entries = _read_audit_log(case_dir)
     basename = _generate_report_basename(case_id)
+    report_metadata_by_image_id = {
+        str(item["image_id"]): dict(item)
+        for item in all_metadata
+        if isinstance(item, dict) and str(item.get("image_id", "")).strip()
+    }
+    report_hashes_by_image_id = {
+        str(item["image_id"]): dict(item)
+        for item in all_hashes
+        if isinstance(item, dict) and str(item.get("image_id", "")).strip()
+    }
 
     # HTML report.
     try:
@@ -1365,8 +1375,8 @@ def run_automation(
         analysis_results.setdefault("case_name", case_name)
         html_path = generator.generate(
             analysis_results=analysis_results,
-            image_metadata=all_metadata,
-            evidence_hashes=all_hashes,
+            image_metadata=report_metadata_by_image_id,
+            evidence_hashes=report_hashes_by_image_id,
             investigation_context=prompt,
             audit_log_entries=audit_entries,
         )
@@ -1390,8 +1400,8 @@ def run_automation(
             case_id=case_id,
             case_name=case_name,
             analysis_results=analysis_results,
-            image_metadata=all_metadata,
-            evidence_hashes=all_hashes,
+            image_metadata=report_metadata_by_image_id,
+            evidence_hashes=report_hashes_by_image_id,
             investigation_context=prompt,
             audit_log_entries=audit_entries,
             output_path=dest_json,

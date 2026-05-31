@@ -586,16 +586,30 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
         )
 
     # ------------------------------------------------------------------
-    # Determine whether this is a multi-image case.
+    # Validate canonical image-scoped analysis results.
     # ------------------------------------------------------------------
-    image_states = case_snapshot.get("image_states", {})
-    images_list = case_snapshot.get("images", [])
-    is_multi = isinstance(image_states, dict) and len(image_states) > 1
+    analysis_results = dict(case_snapshot.get("analysis_results", {}))
+    analysis_images = analysis_results.get("images")
+    if not isinstance(analysis_images, dict) or not analysis_images:
+        return {
+            "success": False,
+            "error": (
+                "Analysis results must use the canonical image-scoped format "
+                "with a non-empty images mapping."
+            ),
+        }
 
+    analysis_results.setdefault("case_id", case_id)
+    analysis_results.setdefault("case_name", str(case_snapshot.get("case_name", "")))
+
+    image_states_raw = case_snapshot.get("image_states", {})
+    image_states = image_states_raw if isinstance(image_states_raw, dict) else {}
+    images_list_raw = case_snapshot.get("images", [])
+    images_list = images_list_raw if isinstance(images_list_raw, list) else []
     # ------------------------------------------------------------------
-    # Hash verification — per-image when multi, legacy otherwise.
+    # Hash verification and report input assembly use image-scoped state.
     # ------------------------------------------------------------------
-    if is_multi:
+    if analysis_images:
         # Build an ordered list of image IDs from the images list so the
         # metadata/hashes lists align with the analysis "images" dict.
         ordered_image_ids: list[str] = []
@@ -612,19 +626,33 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
         for img_id in image_states:
             if img_id not in ordered_image_ids:
                 ordered_image_ids.append(img_id)
+        for img_id in analysis_images:
+            if str(img_id) not in ordered_image_ids:
+                ordered_image_ids.append(str(img_id))
 
         hash_ok = True
         verification_results: list[dict[str, Any]] = []
-        metadata_list: list[dict[str, Any]] = []
-        hashes_list: list[dict[str, Any]] = []
+        metadata_by_image_id: dict[str, dict[str, Any]] = {}
+        hashes_by_image_id: dict[str, dict[str, Any]] = {}
 
         for img_id in ordered_image_ids:
-            img_st = image_states.get(img_id, {})
-            img_hashes = dict(img_st.get("evidence_hashes", {}))
-            img_file_hashes = list(img_st.get("evidence_file_hashes", []))
-            img_metadata = dict(img_st.get("image_metadata", {}))
+            img_st_raw = image_states.get(img_id, {})
+            img_st = img_st_raw if isinstance(img_st_raw, Mapping) else {}
+            img_hashes_raw = img_st.get("evidence_hashes", {})
+            img_hashes = dict(img_hashes_raw) if isinstance(img_hashes_raw, Mapping) else {}
+            img_file_hashes_raw = img_st.get("evidence_file_hashes", [])
+            img_file_hashes = (
+                list(img_file_hashes_raw)
+                if isinstance(img_file_hashes_raw, list)
+                else []
+            )
+            img_metadata_raw = img_st.get("image_metadata", {})
+            img_metadata = dict(img_metadata_raw) if isinstance(img_metadata_raw, Mapping) else {}
+            img_analysis_raw = analysis_images.get(img_id, {})
+            img_analysis = img_analysis_raw if isinstance(img_analysis_raw, Mapping) else {}
             img_label = image_labels.get(img_id) or str(
-                img_metadata.get("label")
+                img_analysis.get("label")
+                or img_metadata.get("label")
                 or img_metadata.get("hostname")
                 or img_hashes.get("label")
                 or img_hashes.get("filename")
@@ -646,8 +674,8 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
             img_hashes.setdefault("label", img_label)
             img_metadata.setdefault("image_id", img_id)
             img_metadata.setdefault("label", img_label)
-            metadata_list.append(img_metadata)
-            hashes_list.append(img_hashes)
+            metadata_by_image_id[img_id] = img_metadata
+            hashes_by_image_id[img_id] = img_hashes
 
         audit_details = summarize_hash_verification_results(verification_results)
 
@@ -655,77 +683,13 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
             "hash_verification",
             {
                 **audit_details,
-                "multi_image": True,
+                "multi_image": len(ordered_image_ids) > 1,
                 "image_count": len(ordered_image_ids),
             },
         )
 
-        # For backward-compat: build a combined hashes dict.
-        hashes = dict(hashes_list[0]) if hashes_list else {}
-        hashes["case_id"] = case_id
-        hashes["hash_verified"] = hash_ok
-
-        image_metadata_arg: dict[str, Any] | list[dict[str, Any]] = metadata_list
-        evidence_hashes_arg: dict[str, Any] | list[dict[str, Any]] = hashes_list
-    else:
-        # Single-image / legacy path.
-        hashes = dict(case_snapshot.get("evidence_hashes", {}))
-        intake_sha256 = str(hashes.get("sha256", "")).strip()
-        file_hash_entries = list(case_snapshot.get("evidence_file_hashes", []))
-
-        verification_path = None
-        if (
-            not file_hash_entries
-            and intake_sha256
-            and not intake_sha256.startswith("N/A")
-        ):
-            # Fallback for cases created before evidence_file_hashes existed.
-            verification_path = resolve_hash_verification_path(case_snapshot)
-
-        verification_result = verify_hashes_for_report(
-            hashes,
-            file_hash_entries,
-            fallback_path=verification_path,
-            verifier=verify_hash,
-        )
-        hash_ok = bool(verification_result["match"])
-        audit_logger.log(
-            "hash_verification",
-            summarize_hash_verification_results([verification_result]),
-        )
-
-        hashes["case_id"] = case_id
-
-        image_metadata_arg = dict(case_snapshot.get("image_metadata", {}))
-        evidence_hashes_arg = hashes
-
-    # ------------------------------------------------------------------
-    # Validate that analysis has been completed.
-    # ------------------------------------------------------------------
-    analysis_results = dict(case_snapshot.get("analysis_results", {}))
-
-    has_per_artifact = bool(analysis_results.get("per_artifact") or analysis_results.get("per_artifact_findings"))
-    has_summary = bool(
-        str(analysis_results.get("summary", "")).strip()
-        or str(analysis_results.get("executive_summary", "")).strip()
-    )
-    # Multi-image results store findings under "images" (a dict of
-    # image_id -> {per_artifact, summary, label}), not at the top level.
-    has_multi_image = bool(
-        isinstance(analysis_results.get("images"), dict)
-        and analysis_results["images"]
-    )
-    if not has_per_artifact and not has_summary and not has_multi_image:
-        return {
-            "success": False,
-            "error": "Analysis has not been completed for this case.",
-        }
-
-    analysis_results.setdefault("case_id", case_id)
-    analysis_results.setdefault("case_name", str(case_snapshot.get("case_name", "")))
-    analysis_results.setdefault("per_artifact", [])
-    analysis_results.setdefault("summary", "")
-
+        image_metadata_arg = metadata_by_image_id
+        evidence_hashes_arg = hashes_by_image_id
     case_dir = case_snapshot["case_dir"]
     investigation_context = str(case_snapshot.get("investigation_context", ""))
     if not investigation_context:

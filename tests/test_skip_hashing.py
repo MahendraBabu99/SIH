@@ -350,6 +350,26 @@ class TestSkipHashingReport(unittest.TestCase):
         self.assertEqual(resp.status_code, 201)
         return resp.get_json()["case_id"]
 
+    def _set_canonical_analysis(self, case_id: str) -> None:
+        """Populate image-scoped analysis results for report tests."""
+        with routes.STATE_LOCK:
+            case = routes.CASE_STATES[case_id]
+            image_id = case["images"][0]["image_id"]
+            case["analysis_results"] = {
+                "images": {
+                    image_id: {
+                        "label": case["images"][0].get("label", "Evidence Image"),
+                        "summary": "Test summary",
+                        "per_artifact": [
+                            {
+                                "artifact_name": "runkeys",
+                                "analysis": "Found entries.",
+                            }
+                        ],
+                    }
+                }
+            }
+
     def test_report_succeeds_when_hashing_was_skipped(self) -> None:
         """Report generation succeeds without hash verification when hashing was skipped."""
         evidence_path = Path(self.temp_dir.name) / "sample.E01"
@@ -366,12 +386,7 @@ class TestSkipHashingReport(unittest.TestCase):
                 json={"path": str(evidence_path), "skip_hashing": True},
             )
 
-            # Inject analysis results so the report guard passes.
-            with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["analysis_results"] = {
-                    "summary": "Test summary",
-                    "per_artifact": [{"artifact_name": "runkeys", "analysis": "Found entries."}],
-                }
+            self._set_canonical_analysis(case_id)
 
             report_resp = self.client.get(f"/api/cases/{case_id}/report")
             self.assertEqual(report_resp.status_code, 200)
@@ -392,11 +407,7 @@ class TestSkipHashingReport(unittest.TestCase):
                 json={"path": str(evidence_path), "skip_hashing": True},
             )
 
-            with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["analysis_results"] = {
-                    "summary": "Test summary",
-                    "per_artifact": [{"artifact_name": "runkeys", "analysis": "Found entries."}],
-                }
+            self._set_canonical_analysis(case_id)
 
             self.client.get(f"/api/cases/{case_id}/report")
 
@@ -428,11 +439,7 @@ class TestSkipHashingReport(unittest.TestCase):
                 json={"path": str(evidence_path)},
             )
 
-            with routes.STATE_LOCK:
-                routes.CASE_STATES[case_id]["analysis_results"] = {
-                    "summary": "Test summary",
-                    "per_artifact": [{"artifact_name": "runkeys", "analysis": "Found entries."}],
-                }
+            self._set_canonical_analysis(case_id)
 
             report_resp = self.client.get(f"/api/cases/{case_id}/report")
             self.assertEqual(report_resp.status_code, 200)

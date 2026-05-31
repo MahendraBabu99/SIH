@@ -1,9 +1,9 @@
 """Shared normalization helpers for HTML and JSON report generation.
 
-The report generator and JSON exporter both accept analyzer outputs that
-have accumulated several shapes over time. This module keeps the coercion
-rules in one place so both report formats expose the same evidence,
-hash-verification, processing-note, and artifact-detail model.
+The report generator and JSON exporter consume the canonical image-scoped
+analysis shape written by the current analyzer. This module validates that
+contract and builds the shared evidence, hash-verification,
+processing-note, and artifact-detail model used by both report formats.
 """
 
 from __future__ import annotations
@@ -38,13 +38,10 @@ class ReportRecordIndex:
 
     Attributes:
         by_image_id: Records keyed by normalized ``image_id``.
-        legacy_ordered: Records that do not carry an ``image_id`` and may be
-            used for positional fallback.
         ordered: All accepted records in their original input order.
     """
 
     by_image_id: dict[str, dict[str, Any]]
-    legacy_ordered: list[dict[str, Any]]
     ordered: list[dict[str, Any]]
 
 
@@ -53,7 +50,7 @@ class NormalizedReportInputs:
     """Normalized inputs shared by HTML and JSON report renderers.
 
     Attributes:
-        analysis: Analysis results coerced to multi-image shape.
+        analysis: Canonical image-scoped analysis results.
         images_data: Mapping of analyzed image IDs to image analysis data.
         image_records: Ordered report image records, including skipped-image
             placeholders when structured skip information is available.
@@ -95,63 +92,6 @@ def stringify(value: Any, default: str = "") -> str:
     return _stringify_impl(value, default)
 
 
-def convert_v1_to_multi_image(
-    analysis: Mapping[str, Any],
-    *,
-    default_label: str,
-) -> dict[str, Any]:
-    """Convert legacy single-image analysis into multi-image structure.
-
-    Args:
-        analysis: Legacy report analysis mapping.
-        default_label: Label to use for the synthetic ``default`` image.
-
-    Returns:
-        A dict with an ``images`` mapping and ``cross_image_summary`` key.
-    """
-    analysis_dict = dict(analysis or {})
-    per_artifact = (
-        analysis_dict.get("per_artifact")
-        or analysis_dict.get("per_artifact_findings")
-        or []
-    )
-    summary = stringify(
-        analysis_dict.get("summary") or analysis_dict.get("executive_summary")
-    )
-
-    return {
-        **analysis_dict,
-        "images": {
-            "default": {
-                "label": default_label,
-                "per_artifact": per_artifact,
-                "summary": summary,
-            }
-        },
-        "cross_image_summary": None,
-        "model_info": analysis_dict.get("model_info", {}),
-    }
-
-
-def normalize_to_list(value: Any) -> list[dict[str, Any]]:
-    """Normalize a single mapping or sequence of mappings to a list.
-
-    Args:
-        value: Mapping, sequence of mappings, or unsupported value.
-
-    Returns:
-        List of plain dictionaries. Unsupported scalar values become
-        ``[{}]`` for backward compatibility.
-    """
-    if value is None:
-        return [{}]
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [dict(item) if isinstance(item, Mapping) else {} for item in value]
-    if isinstance(value, Mapping):
-        return [dict(value)]
-    return [{}]
-
-
 def record_image_id(record: Mapping[str, Any]) -> str:
     """Return a normalized image identifier from an input record.
 
@@ -179,59 +119,77 @@ def looks_like_image_id_mapping(value: Mapping[str, Any]) -> bool:
     return bool(value) and all(isinstance(item, Mapping) for item in value.values())
 
 
-def normalize_report_records(value: Any) -> ReportRecordIndex:
+def normalize_report_records(value: Any, *, record_kind: str) -> ReportRecordIndex:
     """Normalize metadata or hash records for image-aware matching.
 
     Args:
-        value: Mapping keyed by image ID, sequence of mappings, legacy
-            single-record mapping, or unsupported value.
+        value: Mapping keyed by image ID, a single mapping carrying
+            ``image_id``, or a sequence of mappings carrying ``image_id``.
+        record_kind: Human-readable record kind for validation messages.
 
     Returns:
-        A :class:`ReportRecordIndex` with ID lookups and legacy fallback
-        records separated.
+        A :class:`ReportRecordIndex` with ID lookups.
+
+    Raises:
+        ValueError: If non-empty records are not image-scoped.
     """
     by_image_id: dict[str, dict[str, Any]] = {}
-    legacy_ordered: list[dict[str, Any]] = []
     ordered: list[dict[str, Any]] = []
+
+    if value is None:
+        return ReportRecordIndex({}, [])
 
     if isinstance(value, Mapping):
         if looks_like_image_id_mapping(value):
             for raw_image_id, raw_record in value.items():
                 if not isinstance(raw_record, Mapping):
-                    continue
+                    raise ValueError(
+                        f"Report {record_kind} records must be mappings keyed by image_id."
+                    )
                 image_id = str(raw_image_id).strip()
                 if not image_id:
-                    continue
+                    raise ValueError(
+                        f"Report {record_kind} records must use non-empty image_id keys."
+                    )
                 record = dict(raw_record)
-                record.setdefault("image_id", image_id)
+                record["image_id"] = image_id
                 by_image_id[image_id] = record
                 ordered.append(record)
-            return ReportRecordIndex(by_image_id, legacy_ordered, ordered)
+            return ReportRecordIndex(by_image_id, ordered)
 
         record = dict(value)
-        if record:
-            ordered.append(record)
-            image_id = record_image_id(record)
-            if image_id:
-                by_image_id[image_id] = record
-            else:
-                legacy_ordered.append(record)
-        return ReportRecordIndex(by_image_id, legacy_ordered, ordered)
+        if not record:
+            return ReportRecordIndex({}, [])
+        image_id = record_image_id(record)
+        if not image_id:
+            raise ValueError(
+                f"Report {record_kind} records must be keyed by image_id or include image_id."
+            )
+        ordered.append(record)
+        by_image_id[image_id] = record
+        return ReportRecordIndex(by_image_id, ordered)
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for raw_record in value:
             if not isinstance(raw_record, Mapping):
-                continue
+                raise ValueError(
+                    f"Report {record_kind} record lists may contain only mappings."
+                )
             record = dict(raw_record)
+            if not record:
+                continue
             ordered.append(record)
             image_id = record_image_id(record)
-            if image_id:
-                by_image_id[image_id] = record
-            else:
-                legacy_ordered.append(record)
-        return ReportRecordIndex(by_image_id, legacy_ordered, ordered)
+            if not image_id:
+                raise ValueError(
+                    f"Report {record_kind} records in lists must include image_id."
+                )
+            by_image_id[image_id] = record
+        return ReportRecordIndex(by_image_id, ordered)
 
-    return ReportRecordIndex({}, [], [])
+    raise ValueError(
+        f"Report {record_kind} records must be keyed by image_id or include image_id."
+    )
 
 
 def _note_key(note: Mapping[str, str]) -> tuple[str, str, str, str]:
@@ -443,29 +401,19 @@ def _image_label(
 def _resolve_record_for_image(
     index: ReportRecordIndex,
     image_id: str,
-    *,
-    legacy_position: int,
 ) -> tuple[dict[str, Any], str]:
     """Resolve a metadata/hash record for one image.
 
     Args:
         index: Indexed report records.
         image_id: Image identifier being resolved.
-        legacy_position: Position into legacy records without image IDs.
 
     Returns:
         Tuple of ``(record, match_source)`` where match source is
-        ``"image_id"``, ``"single_default"``, ``"legacy_position"``, or
-        ``"missing"``.
+        ``"image_id"`` or ``"missing"``.
     """
     if image_id in index.by_image_id:
         return index.by_image_id[image_id], "image_id"
-
-    if image_id == "default" and len(index.ordered) == 1:
-        return index.ordered[0], "single_default"
-
-    if legacy_position < len(index.legacy_ordered):
-        return index.legacy_ordered[legacy_position], "legacy_position"
 
     return {}, "missing"
 
@@ -567,36 +515,6 @@ def _unmatched_record_notes(
         )
 
 
-def _unused_legacy_record_notes(
-    *,
-    record_kind: str,
-    index: ReportRecordIndex,
-    used_count: int,
-    notes: list[dict[str, str]],
-    warnings: list[str],
-) -> None:
-    """Add notes for legacy positional records that were not consumed.
-
-    Args:
-        record_kind: Human-readable record kind, such as ``"metadata"``.
-        index: Indexed input records.
-        used_count: Number of legacy records matched positionally.
-        notes: Processing-note list to update.
-        warnings: Warning-string list to update.
-    """
-    unused_count = max(0, len(index.legacy_ordered) - used_count)
-    for offset in range(unused_count):
-        append_processing_note(
-            notes,
-            warnings,
-            category=f"unmatched_{record_kind}",
-            message=(
-                f"Extra legacy {record_kind} record at position "
-                f"{used_count + offset + 1} did not match any report image."
-            ),
-        )
-
-
 def normalize_report_inputs(
     analysis_results: Mapping[str, Any],
     image_metadata: Any,
@@ -607,32 +525,53 @@ def normalize_report_inputs(
 ) -> NormalizedReportInputs:
     """Normalize analysis, metadata, hashes, and processing notes.
 
-    Records that carry ``image_id`` are matched by ID. Positional fallback
-    is only used for legacy records that do not have an image ID.
+    Analysis must be the canonical image-scoped shape with a non-empty
+    ``"images"`` mapping. Metadata and hash records must be keyed by
+    image ID or carry an ``image_id`` field.
 
     Args:
-        analysis_results: V1 or multi-image analysis results.
-        image_metadata: Metadata mapping, list, or mapping keyed by image ID.
-        evidence_hashes: Hash mapping, list, or mapping keyed by image ID.
-        default_label: Label for synthetic single-image analysis.
+        analysis_results: Canonical image-scoped analysis results.
+        image_metadata: Metadata records keyed by image ID or carrying
+            ``image_id``.
+        evidence_hashes: Hash records keyed by image ID or carrying
+            ``image_id``.
+        default_label: Fallback label for current image records.
         processing_warnings: Optional caller-supplied warnings.
 
     Returns:
         A :class:`NormalizedReportInputs` object consumed by report writers.
+
+    Raises:
+        ValueError: If report inputs are not canonical image-scoped records.
     """
     analysis = dict(analysis_results or {})
-    if "images" not in analysis or not isinstance(analysis.get("images"), Mapping):
-        analysis = convert_v1_to_multi_image(analysis, default_label=default_label)
-
-    images_data = {
-        stringify(image_id, default=f"image-{index}"): _coerce_image_mapping(image_data)
-        for index, (image_id, image_data) in enumerate(
-            dict(analysis.get("images", {})).items(),
-            start=1,
+    raw_images = analysis.get("images")
+    if not isinstance(raw_images, Mapping) or not raw_images:
+        raise ValueError(
+            "Report analysis_results must contain a non-empty canonical 'images' mapping."
         )
-    }
-    metadata_index = normalize_report_records(image_metadata)
-    hashes_index = normalize_report_records(evidence_hashes)
+
+    images_data: dict[str, Any] = {}
+    for index, (raw_image_id, raw_image_data) in enumerate(raw_images.items(), start=1):
+        image_id = stringify(raw_image_id)
+        if not image_id:
+            raise ValueError("Report analysis image IDs must be non-empty strings.")
+        if not isinstance(raw_image_data, Mapping):
+            raise ValueError(
+                f"Report analysis image '{image_id}' must be a mapping."
+            )
+        image_data = dict(raw_image_data)
+        image_data.setdefault("label", stringify(image_id, default=f"Image {index}"))
+        images_data[image_id] = image_data
+
+    metadata_index = normalize_report_records(
+        image_metadata,
+        record_kind="metadata",
+    )
+    hashes_index = normalize_report_records(
+        evidence_hashes,
+        record_kind="hash",
+    )
     skipped_images = normalize_skipped_images(analysis)
     processing_notes: list[dict[str, str]] = []
     warnings: list[str] = []
@@ -661,8 +600,6 @@ def normalize_report_inputs(
     image_entries = _build_known_image_entries(images_data, skipped_images)
     image_records: list[dict[str, Any]] = []
     matched_record_image_ids: set[str] = set()
-    metadata_legacy_position = 0
-    hashes_legacy_position = 0
 
     for index, entry in enumerate(image_entries, start=1):
         image_id = str(entry["image_id"])
@@ -671,27 +608,17 @@ def normalize_report_inputs(
         metadata, metadata_source = _resolve_record_for_image(
             metadata_index,
             image_id,
-            legacy_position=metadata_legacy_position,
         )
         metadata_record_image_id = record_image_id(metadata)
-        if metadata_source == "legacy_position" or (
-            metadata_source == "single_default" and not metadata_record_image_id
-        ):
-            metadata_legacy_position += 1
-        elif metadata_source in {"image_id", "single_default"}:
+        if metadata_source == "image_id":
             if metadata_record_image_id:
                 matched_record_image_ids.add(metadata_record_image_id)
         hashes, hashes_source = _resolve_record_for_image(
             hashes_index,
             image_id,
-            legacy_position=hashes_legacy_position,
         )
         hashes_record_image_id = record_image_id(hashes)
-        if hashes_source == "legacy_position" or (
-            hashes_source == "single_default" and not hashes_record_image_id
-        ):
-            hashes_legacy_position += 1
-        elif hashes_source in {"image_id", "single_default"}:
+        if hashes_source == "image_id":
             if hashes_record_image_id:
                 matched_record_image_ids.add(hashes_record_image_id)
 
@@ -755,20 +682,6 @@ def normalize_report_inputs(
         notes=processing_notes,
         warnings=warnings,
     )
-    _unused_legacy_record_notes(
-        record_kind="metadata",
-        index=metadata_index,
-        used_count=metadata_legacy_position,
-        notes=processing_notes,
-        warnings=warnings,
-    )
-    _unused_legacy_record_notes(
-        record_kind="hash",
-        index=hashes_index,
-        used_count=hashes_legacy_position,
-        notes=processing_notes,
-        warnings=warnings,
-    )
 
     evidence_rows = [build_evidence_row(record) for record in image_records]
     hash_rows = [build_hash_row(record) for record in image_records]
@@ -780,11 +693,7 @@ def normalize_report_inputs(
     if not first_hashes and hashes_index.ordered:
         first_hashes = dict(hashes_index.ordered[0])
 
-    is_multi_image = (
-        len(image_records) > 1
-        or len(metadata_index.ordered) > 1
-        or len(hashes_index.ordered) > 1
-    )
+    is_multi_image = len(image_records) > 1
 
     return NormalizedReportInputs(
         analysis=analysis,
@@ -1085,7 +994,7 @@ def normalize_per_artifact_findings(
     """Normalize per-artifact findings into the shared detail model.
 
     Args:
-        analysis: Per-image or legacy analysis mapping.
+        analysis: Per-image analysis mapping.
 
     Returns:
         List of normalized per-artifact finding dictionaries.
@@ -1354,7 +1263,7 @@ def resolve_confidence(explicit_value: str, analysis_text: str) -> tuple[str, st
 
 
 def extract_confidence_label(text: str) -> str | None:
-    """Extract only the report confidence label for JSON compatibility.
+    """Extract only the report confidence label for JSON export.
 
     Args:
         text: Analysis text to scan.

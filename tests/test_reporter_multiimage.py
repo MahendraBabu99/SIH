@@ -1,11 +1,10 @@
 """Tests for multi-image report generation.
 
 Validates that the ReportGenerator correctly handles:
-- V1 single-image format (backward compatibility)
+- Canonical single-image reports
 - Multi-image format with per-image sections
 - Cross-system analysis section rendering
 - Evidence summary table with multiple images
-- Automatic V1-to-multi-image format conversion
 """
 
 from __future__ import annotations
@@ -31,28 +30,33 @@ def _create_report_generator(cases_root: Path) -> ReportGenerator:
     return ReportGenerator(templates_dir=templates_dir, cases_root=cases_root)
 
 
-def _v1_analysis_results() -> dict:
-    """Build a V1-format analysis_results dict for testing.
+def _single_image_analysis_results() -> dict:
+    """Build canonical one-image analysis_results for testing.
 
     Returns:
-        A dict in V1 format with case_id, summary, per_artifact, etc.
+        A dict with one image in the canonical ``images`` mapping.
     """
     return {
-        "case_id": "case-v1-compat",
-        "case_name": "V1 Backward Compat Test",
+        "case_id": "case-single-image",
+        "case_name": "Single Image Test",
         "tool_version": "1.4.0",
         "model_info": {"provider": "openai", "model": "gpt-4o"},
-        "summary": "Executive summary for single image analysis.",
-        "per_artifact": [
-            {
-                "artifact_key": "runkeys",
-                "artifact_name": "Run/RunOnce Keys",
-                "analysis": "Confidence HIGH that persistence was found.",
-                "record_count": 10,
-                "time_range_start": "2026-01-15T09:00:00Z",
-                "time_range_end": "2026-01-15T10:00:00Z",
+        "images": {
+            "img-001": {
+                "label": "Single Evidence Image",
+                "summary": "Executive summary for single image analysis.",
+                "per_artifact": [
+                    {
+                        "artifact_key": "runkeys",
+                        "artifact_name": "Run/RunOnce Keys",
+                        "analysis": "Confidence HIGH that persistence was found.",
+                        "record_count": 10,
+                        "time_range_start": "2026-01-15T09:00:00Z",
+                        "time_range_end": "2026-01-15T10:00:00Z",
+                    }
+                ],
             }
-        ],
+        },
     }
 
 
@@ -120,6 +124,7 @@ def _multi_image_metadata() -> list[dict]:
     """
     return [
         {
+            "image_id": "img-001",
             "hostname": "PC01",
             "os_version": "Windows 10 Pro",
             "domain": "corp.local",
@@ -127,6 +132,7 @@ def _multi_image_metadata() -> list[dict]:
             "label": "Workstation-PC01",
         },
         {
+            "image_id": "img-002",
             "hostname": "DC01",
             "os_version": "Windows Server 2022",
             "domain": "corp.local",
@@ -144,6 +150,7 @@ def _multi_image_hashes() -> list[dict]:
     """
     return [
         {
+            "image_id": "img-001",
             "filename": "pc01-image.E01",
             "sha256": "a" * 64,
             "md5": "b" * 32,
@@ -151,6 +158,7 @@ def _multi_image_hashes() -> list[dict]:
             "reverified_sha256": "a" * 64,
         },
         {
+            "image_id": "img-002",
             "filename": "dc01-image.E01",
             "sha256": "c" * 64,
             "md5": "d" * 32,
@@ -160,29 +168,33 @@ def _multi_image_hashes() -> list[dict]:
     ]
 
 
-class TestSingleImageBackwardCompat(unittest.TestCase):
-    """Verify that V1 single-image reports render identically to before."""
+class TestCanonicalSingleImageReport(unittest.TestCase):
+    """Verify that canonical one-image reports keep the single-image UX."""
 
-    def test_v1_report_renders_correctly(self) -> None:
-        """Single-image V1 format produces a valid report with all sections."""
+    def test_single_image_report_renders_correctly(self) -> None:
+        """Canonical one-image analysis produces a valid single-image report."""
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
             cases_root = Path(temp_dir) / "cases"
             reporter = _create_report_generator(cases_root)
 
-            analysis = _v1_analysis_results()
+            analysis = _single_image_analysis_results()
             metadata = {
-                "hostname": "ws-13",
-                "os_version": "Windows 11 Pro",
-                "domain": "corp.local",
-                "ips": ["10.1.1.45"],
+                "img-001": {
+                    "hostname": "ws-13",
+                    "os_version": "Windows 11 Pro",
+                    "domain": "corp.local",
+                    "ips": ["10.1.1.45"],
+                }
             }
             hashes = {
-                "filename": "disk-image.E01",
-                "sha256": "a" * 64,
-                "md5": "b" * 32,
-                "size_bytes": 1024,
-                "expected_sha256": "c" * 64,
-                "reverified_sha256": "c" * 64,
+                "img-001": {
+                    "filename": "disk-image.E01",
+                    "sha256": "a" * 64,
+                    "md5": "b" * 32,
+                    "size_bytes": 1024,
+                    "expected_sha256": "c" * 64,
+                    "reverified_sha256": "c" * 64,
+                }
             }
 
             report_path = reporter.generate(
@@ -195,14 +207,14 @@ class TestSingleImageBackwardCompat(unittest.TestCase):
 
             html = report_path.read_text(encoding="utf-8")
 
-            # V1 sections present
+            # Single-image sections present
             self.assertIn("Evidence Summary", html)
             self.assertIn("Hash Verification Result", html)
             self.assertIn("Executive Summary", html)
             self.assertIn("Per-Artifact Findings", html)
             self.assertIn("Audit Trail", html)
 
-            # V1 key-value evidence table (not multi-image table)
+            # Single-image key-value evidence table (not multi-image table)
             self.assertIn("kv-table", html)
             self.assertIn("disk-image.E01", html)
             self.assertIn("ws-13", html)
@@ -219,31 +231,24 @@ class TestSingleImageBackwardCompat(unittest.TestCase):
             self.assertIn("Run/RunOnce Keys", html)
             self.assertIn("confidence-high", html)
 
-    def test_v1_format_auto_converted(self) -> None:
-        """V1 analysis_results without 'images' key are auto-wrapped."""
+    def test_flat_analysis_is_rejected(self) -> None:
+        """Flat analysis_results without 'images' are rejected clearly."""
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
             cases_root = Path(temp_dir) / "cases"
             reporter = _create_report_generator(cases_root)
 
-            analysis = _v1_analysis_results()
-            # Confirm no "images" key
-            self.assertNotIn("images", analysis)
-
-            report_path = reporter.generate(
-                analysis_results=analysis,
-                image_metadata={"hostname": "test-host"},
-                evidence_hashes={"filename": "test.E01", "sha256": "x" * 64, "md5": "y" * 32},
-                investigation_context="Test context.",
-                audit_log_entries=[],
-            )
-
-            html = report_path.read_text(encoding="utf-8")
-            # Should render as single-image (no cross-system section)
-            self.assertNotIn("Cross-System Analysis", html)
-            self.assertNotIn('class="image-section"', html)
-            # Should have executive summary
-            self.assertIn("Executive Summary", html)
-            self.assertIn("Executive summary for single image analysis", html)
+            with self.assertRaisesRegex(ValueError, "canonical 'images' mapping"):
+                reporter.generate(
+                    analysis_results={
+                        "case_id": "flat-case",
+                        "summary": "Flat summary.",
+                        "per_artifact": [],
+                    },
+                    image_metadata={"img-001": {"hostname": "test-host"}},
+                    evidence_hashes={"img-001": {"filename": "test.E01"}},
+                    investigation_context="Test context.",
+                    audit_log_entries=[],
+                )
 
 
 class TestMultiImageReport(unittest.TestCase):
@@ -452,6 +457,7 @@ class TestMultiImageReport(unittest.TestCase):
             # One pass, one fail
             hashes = [
                 {
+                    "image_id": "img-001",
                     "filename": "img1.E01",
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -459,6 +465,7 @@ class TestMultiImageReport(unittest.TestCase):
                     "reverified_sha256": "a" * 64,
                 },
                 {
+                    "image_id": "img-002",
                     "filename": "img2.E01",
                     "sha256": "c" * 64,
                     "md5": "d" * 32,
@@ -530,15 +537,21 @@ class TestMultiImageReport(unittest.TestCase):
 
             report_path = reporter.generate(
                 analysis_results=analysis,
-                image_metadata={"hostname": "single-host"},
-                evidence_hashes={"filename": "single.E01", "sha256": "f" * 64, "md5": "0" * 32},
+                image_metadata={"img-only": {"hostname": "single-host"}},
+                evidence_hashes={
+                    "img-only": {
+                        "filename": "single.E01",
+                        "sha256": "f" * 64,
+                        "md5": "0" * 32,
+                    }
+                },
                 investigation_context="Single image test.",
                 audit_log_entries=[],
             )
 
             html = report_path.read_text(encoding="utf-8")
 
-            # Should render as single image (V1 layout)
+            # Should render through the single-image template path.
             self.assertNotIn("Cross-System Analysis", html)
             self.assertNotIn('class="image-section"', html)
             self.assertIn("Executive Summary", html)
@@ -547,74 +560,6 @@ class TestMultiImageReport(unittest.TestCase):
 
 class TestReportGeneratorHelpers(unittest.TestCase):
     """Test internal helper methods for multi-image support."""
-
-    def test_convert_v1_to_multi_image(self) -> None:
-        """_convert_v1_to_multi_image wraps V1 data correctly."""
-        reporter = ReportGenerator.__new__(ReportGenerator)
-        v1 = _v1_analysis_results()
-        result = reporter._convert_v1_to_multi_image(v1)
-
-        self.assertIn("images", result)
-        self.assertIn("default", result["images"])
-        self.assertIsNone(result["cross_image_summary"])
-        self.assertEqual(result["images"]["default"]["label"], "V1 Backward Compat Test")
-        self.assertEqual(len(result["images"]["default"]["per_artifact"]), 1)
-
-    def test_normalize_to_list_single_dict(self) -> None:
-        """_normalize_to_list converts a single dict to a one-element list."""
-        result = ReportGenerator._normalize_to_list({"key": "value"})
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["key"], "value")
-
-    def test_normalize_to_list_already_list(self) -> None:
-        """_normalize_to_list passes a list through unchanged."""
-        input_list = [{"a": 1}, {"b": 2}]
-        result = ReportGenerator._normalize_to_list(input_list)
-        self.assertEqual(len(result), 2)
-
-    def test_normalize_to_list_none(self) -> None:
-        """_normalize_to_list returns [{}] for None input."""
-        result = ReportGenerator._normalize_to_list(None)
-        self.assertEqual(result, [{}])
-
-    def test_normalize_to_list_non_mapping_items(self) -> None:
-        """_normalize_to_list converts non-Mapping list items to empty dicts."""
-        result = ReportGenerator._normalize_to_list(["not_a_dict", 42])
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0], {})
-        self.assertEqual(result[1], {})
-
-    def test_normalize_to_list_string_returns_empty_dict(self) -> None:
-        """_normalize_to_list returns [{}] for a bare string value."""
-        result = ReportGenerator._normalize_to_list("some_string")
-        self.assertEqual(result, [{}])
-
-    def test_build_evidence_rows_mismatched_lengths(self) -> None:
-        """_build_evidence_rows handles mismatched metadata and hashes lengths."""
-        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
-            cases_root = Path(temp_dir) / "cases"
-            reporter = _create_report_generator(cases_root)
-
-            metadata_list = [
-                {"hostname": "HOST-A", "os_version": "Win 10"},
-                {"hostname": "HOST-B", "os_version": "Win 11"},
-            ]
-            hashes_list = [
-                {"filename": "img-a.E01", "sha256": "a" * 64, "md5": "b" * 32},
-            ]
-            images_data = {
-                "img-a": {"label": "Image A"},
-                "img-b": {"label": "Image B"},
-            }
-
-            rows = reporter._build_evidence_rows(metadata_list, hashes_list, images_data)
-            self.assertEqual(len(rows), 2)
-            # First row has metadata + hashes
-            self.assertEqual(rows[0]["hostname"], "HOST-A")
-            self.assertEqual(rows[0]["sha256"], "a" * 64)
-            # Second row has metadata but no hashes
-            self.assertEqual(rows[1]["hostname"], "HOST-B")
-            self.assertEqual(rows[1]["sha256"], "N/A")
 
     def test_build_image_sections_skips_non_mapping(self) -> None:
         """_build_image_sections skips image entries that are not dicts."""
@@ -634,8 +579,8 @@ class TestReportGeneratorHelpers(unittest.TestCase):
             self.assertEqual(len(sections), 1)
             self.assertEqual(sections[0]["label"], "Good Image")
 
-    def test_build_image_sections_accepts_per_artifact_findings_key(self) -> None:
-        """Multi-image sections keep legacy per_artifact_findings entries."""
+    def test_build_image_sections_accepts_per_image_artifact_findings_key(self) -> None:
+        """Per-image sections can normalize alternate finding keys."""
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
             cases_root = Path(temp_dir) / "cases"
             reporter = _create_report_generator(cases_root)
@@ -673,6 +618,7 @@ class TestMultiImageHashDetail(unittest.TestCase):
 
             hashes = [
                 {
+                    "image_id": "img-001",
                     "filename": "img1.E01",
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -680,6 +626,7 @@ class TestMultiImageHashDetail(unittest.TestCase):
                     "reverified_sha256": "a" * 64,
                 },
                 {
+                    "image_id": "img-002",
                     "filename": "img2.E01",
                     "sha256": "c" * 64,
                     "md5": "d" * 32,
@@ -723,93 +670,34 @@ class TestMultiImageHashDetail(unittest.TestCase):
             self.assertNotIn("Cross-System Analysis", html)
 
 
-class TestIsMultiDetection(unittest.TestCase):
-    """Regression tests for multi-image detection logic.
+class TestCanonicalInputValidation(unittest.TestCase):
+    """Regression tests for canonical report input validation."""
 
-    The ``is_multi`` flag in ``ReportGenerator.generate()`` must be True
-    whenever multiple metadata or hashes entries are present, even if the
-    analysis ``images`` dict only contains one entry.  This was fixed in
-    commit 943849a.
-    """
-
-    def test_multi_metadata_single_image_key(self) -> None:
-        """is_multi is True when metadata_list has 2 entries but images has 1."""
+    def test_metadata_list_records_must_include_image_id(self) -> None:
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
-            cases_root = Path(temp_dir) / "cases"
-            reporter = _create_report_generator(cases_root)
+            reporter = _create_report_generator(Path(temp_dir) / "cases")
 
-            analysis = {
-                "case_id": "case-multi-meta",
-                "case_name": "Multi-Meta Test",
-                "images": {
-                    "img-only": {
-                        "label": "Only Image",
-                        "per_artifact": [],
-                        "summary": "Summary.",
-                    }
-                },
-                "cross_image_summary": None,
-                "model_info": {"provider": "openai", "model": "gpt-4o"},
-            }
+            with self.assertRaisesRegex(ValueError, "metadata records in lists"):
+                reporter.generate(
+                    analysis_results=_single_image_analysis_results(),
+                    image_metadata=[{"hostname": "HOST-A"}],
+                    evidence_hashes={"img-001": {"filename": "a.E01"}},
+                    investigation_context="Validate metadata.",
+                    audit_log_entries=[],
+                )
 
-            # Two metadata entries but only one image key.
-            metadata = [
-                {"hostname": "HOST-A", "os_version": "Win 10"},
-                {"hostname": "HOST-B", "os_version": "Win 11"},
-            ]
-            hashes = [
-                {"filename": "a.E01", "sha256": "a" * 64, "md5": "b" * 32},
-                {"filename": "b.E01", "sha256": "c" * 64, "md5": "d" * 32},
-            ]
-
-            report_path = reporter.generate(
-                analysis_results=analysis,
-                image_metadata=metadata,
-                evidence_hashes=hashes,
-                investigation_context="Test multi-meta detection.",
-                audit_log_entries=[],
-            )
-
-            html = report_path.read_text(encoding="utf-8")
-            # Multi-image evidence table should be rendered.
-            self.assertIn("evidence-multi-table", html)
-
-    def test_multi_hashes_single_image_key(self) -> None:
-        """is_multi is True when hashes_list has 2 entries but images has 1."""
+    def test_hash_mapping_records_must_be_keyed_by_image_id(self) -> None:
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
-            cases_root = Path(temp_dir) / "cases"
-            reporter = _create_report_generator(cases_root)
+            reporter = _create_report_generator(Path(temp_dir) / "cases")
 
-            analysis = {
-                "case_id": "case-multi-hash",
-                "case_name": "Multi-Hash Test",
-                "images": {
-                    "img-only": {
-                        "label": "Only Image",
-                        "per_artifact": [],
-                        "summary": "Summary.",
-                    }
-                },
-                "cross_image_summary": None,
-                "model_info": {"provider": "openai", "model": "gpt-4o"},
-            }
-
-            metadata = {"hostname": "HOST-A"}
-            hashes = [
-                {"filename": "a.E01", "sha256": "a" * 64, "md5": "b" * 32},
-                {"filename": "b.E01", "sha256": "c" * 64, "md5": "d" * 32},
-            ]
-
-            report_path = reporter.generate(
-                analysis_results=analysis,
-                image_metadata=metadata,
-                evidence_hashes=hashes,
-                investigation_context="Test multi-hash detection.",
-                audit_log_entries=[],
-            )
-
-            html = report_path.read_text(encoding="utf-8")
-            self.assertIn("evidence-multi-table", html)
+            with self.assertRaisesRegex(ValueError, "hash records must be keyed"):
+                reporter.generate(
+                    analysis_results=_single_image_analysis_results(),
+                    image_metadata={"img-001": {"hostname": "HOST-A"}},
+                    evidence_hashes={"filename": "a.E01", "sha256": "a" * 64},
+                    investigation_context="Validate hashes.",
+                    audit_log_entries=[],
+                )
 
 
 if __name__ == "__main__":

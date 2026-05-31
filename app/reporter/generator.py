@@ -7,9 +7,9 @@ standalone file without a web server.
 
 Key capabilities:
 
-* **Flexible input normalisation** -- Per-artifact findings can be
-  supplied as a list, a dict keyed by artifact name, or a single finding
-  mapping; the generator coerces all shapes into a uniform list.
+* **Canonical report input validation** -- Report generation consumes the
+  current image-scoped analysis shape and turns each image's per-artifact
+  findings into a uniform template model.
 * **Logo embedding** -- The project logo is base64-encoded and embedded as
   a ``data:`` URI so the report is fully self-contained.
 
@@ -43,7 +43,6 @@ from .markdown import format_block, format_markdown_block
 from .normalization import (
     build_evidence_summary,
     coerce_per_artifact_iterable,
-    convert_v1_to_multi_image,
     format_file_size,
     looks_like_single_finding,
     mapping_to_kv_text,
@@ -51,7 +50,6 @@ from .normalization import (
     normalize_report_inputs,
     normalize_key_data_points,
     normalize_per_artifact_findings,
-    normalize_to_list,
     resolve_hash_verification,
     resolve_confidence,
     stringify_ips,
@@ -126,18 +124,14 @@ class ReportGenerator:
         the audit trail into a Jinja2 template context, renders the HTML,
         and writes the output to ``cases/<case_id>/reports/``.
 
-        Supports both the V1 single-image format and the multi-image
-        format produced by :func:`run_multi_image_analysis`.  When
-        ``analysis_results`` contains an ``"images"`` key, it is treated
-        as multi-image; otherwise, it is automatically wrapped into a
-        single-image structure for backward compatibility.
-
         Args:
-            analysis_results: Dictionary containing per-artifact findings,
-                executive summary, model info, and case identifiers.  For
-                multi-image cases, the structure is::
+            analysis_results: Canonical image-scoped analysis results with
+                case metadata and an ``"images"`` mapping.  A one-image
+                case uses the same structure with exactly one image entry::
 
                     {
+                        "case_id": str,
+                        "case_name": str,
                         "images": {
                             "<image_id>": {
                                 "label": str,
@@ -150,12 +144,10 @@ class ReportGenerator:
                         "model_info": dict,
                     }
 
-            image_metadata: System metadata from the disk image (hostname,
-                OS version, domain, IPs, etc.), or a list of such dicts
-                for multi-image cases.
-            evidence_hashes: Hash digests and verification status from
-                evidence intake, or a list of such dicts for multi-image
-                cases.
+            image_metadata: System metadata records keyed by image ID, or
+                records carrying ``image_id``.
+            evidence_hashes: Hash records keyed by image ID, or records
+                carrying ``image_id``.
             investigation_context: Free-text description of the
                 investigation scope and timeline.
             audit_log_entries: List of audit trail JSONL records.
@@ -164,7 +156,9 @@ class ReportGenerator:
             :class:`~pathlib.Path` to the generated HTML report file.
 
         Raises:
-            ValueError: If a case identifier cannot be determined.
+            ValueError: If analysis, metadata, or hash inputs are not
+                canonical image-scoped report inputs, or if a case
+                identifier cannot be determined.
         """
         analysis = dict(analysis_results or {})
         audit_entries = self._normalize_audit_entries(audit_log_entries)
@@ -187,21 +181,14 @@ class ReportGenerator:
         generated_iso = generated_at.isoformat(timespec="seconds").replace("+00:00", "Z")
         report_timestamp = generated_at.strftime("%Y%m%d_%H%M%S")
 
-        # Build per-image data for the template
         images_data = normalized_inputs.images_data
 
-        # Determine whether the template should render multi-image sections.
-        # The shared normalizer keeps compatibility with legacy callers that
-        # supplied multiple positional metadata/hash records.
         is_multi = normalized_inputs.is_multi_image
 
-        # Build evidence rows (one per image)
         evidence_rows = normalized_inputs.evidence_rows
 
-        # Build hash verification rows (one per image)
         hash_rows = normalized_inputs.hash_rows
 
-        # Build per-image sections for the template
         image_sections = self._build_image_sections(images_data)
 
         # Cross-image summary (only for multi-image)
@@ -209,30 +196,16 @@ class ReportGenerator:
             multi_analysis.get("cross_image_summary"), default=""
         )
 
-        # V1 backward-compatibility: the template has two rendering paths
-        # controlled by ``is_multi_image``.  The V1 (single-image) path uses
-        # ``evidence``, ``hash_verification``, ``executive_summary``, and
-        # ``per_artifact_findings`` variables.  These are populated from the
-        # first (and only) image's metadata/hashes so that older single-image
-        # templates continue to work.  When ``is_multi`` is True the template
-        # ignores these variables entirely, using ``evidence_rows``,
-        # ``hash_rows``, and ``image_sections`` instead.
-        #
-        # We still populate ``evidence`` and ``hash_verification`` in the
-        # multi-image branch as a safety net -- if the template ever falls
-        # through, it will at least show first-image data rather than crash.
+        # The template has dedicated single-image and multi-image rendering
+        # paths. The single-image variables are populated from the sole
+        # canonical image entry; multi-image reports use the row/section
+        # collections below.
         evidence_summary = self._build_evidence_summary(first_metadata, first_hashes)
         hash_verification = self._resolve_hash_verification(first_hashes)
 
         if not is_multi:
             first_image_data = next(iter(images_data.values()), {})
-            summary_text = self._stringify(
-                analysis.get("summary") or analysis.get("executive_summary")
-                or first_image_data.get("summary")
-            )
-            executive_summary = self._stringify(
-                analysis.get("executive_summary") or summary_text
-            )
+            executive_summary = self._stringify(first_image_data.get("summary"))
             per_artifact = self._normalize_per_artifact_findings(first_image_data)
         else:
             executive_summary = ""
@@ -245,7 +218,7 @@ class ReportGenerator:
             "tool_version": self._resolve_tool_version(analysis, audit_entries),
             "ai_provider": self._resolve_ai_provider(multi_analysis),
             "logo_data_uri": self._resolve_logo_data_uri(),
-            # V1 single-image variables (backward compat)
+            # Single-image template variables.
             "evidence": evidence_summary,
             "hash_verification": hash_verification,
             "investigation_context": self._stringify(investigation_context, default="No investigation context provided."),
@@ -268,115 +241,6 @@ class ReportGenerator:
         report_path = report_dir / f"report_{report_timestamp}.html"
         report_path.write_text(rendered, encoding="utf-8")
         return report_path
-
-    def _convert_v1_to_multi_image(self, analysis: dict[str, Any]) -> dict[str, Any]:
-        """Convert a V1 single-image analysis result to multi-image format.
-
-        Wraps the V1 per-artifact findings and summary into a single-image
-        entry under the ``"images"`` key.
-
-        Args:
-            analysis: V1-format analysis results dict.
-
-        Returns:
-            A dict in multi-image format with a single image entry.
-        """
-        return convert_v1_to_multi_image(
-            analysis,
-            default_label=self._resolve_case_name(analysis),
-        )
-
-    @staticmethod
-    def _normalize_to_list(value: Any) -> list[dict[str, Any]]:
-        """Normalize a single dict or list of dicts to a list of dicts.
-
-        Args:
-            value: A dict or list of dicts.
-
-        Returns:
-            A list of dicts.  Returns ``[{}]`` if *value* is ``None``.
-        """
-        return normalize_to_list(value)
-
-    def _build_evidence_rows(
-        self,
-        metadata_list: list[dict[str, Any]],
-        hashes_list: list[dict[str, Any]],
-        images_data: Mapping[str, Any],
-    ) -> list[dict[str, str]]:
-        """Build a list of evidence summary rows for the multi-image template.
-
-        Each row represents one image with its label, hostname, OS, SHA-256,
-        and MD5.
-
-        Args:
-            metadata_list: List of per-image metadata dicts.
-            hashes_list: List of per-image hash dicts.
-            images_data: The ``images`` dict from analysis results.
-
-        Returns:
-            List of dicts with ``label``, ``hostname``, ``os_version``,
-            ``sha256``, ``md5``, and ``filename`` keys.
-        """
-        normalized = normalize_report_inputs(
-            {"images": self._legacy_image_mapping(metadata_list, hashes_list, images_data)},
-            metadata_list,
-            hashes_list,
-            default_label="Evidence Image",
-        )
-        return normalized.evidence_rows
-
-    def _build_hash_verification_rows(
-        self,
-        hashes_list: list[dict[str, Any]],
-        images_data: Mapping[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Build hash verification results for each image.
-
-        Args:
-            hashes_list: List of per-image hash dicts.
-            images_data: The ``images`` dict from analysis results.
-
-        Returns:
-            List of dicts with ``label``, ``passed``, ``label_text``,
-            ``detail``, and optional ``skipped`` keys.
-        """
-        normalized = normalize_report_inputs(
-            {"images": self._legacy_image_mapping([], hashes_list, images_data)},
-            [],
-            hashes_list,
-            default_label="Evidence Image",
-        )
-        return normalized.hash_rows
-
-    def _legacy_image_mapping(
-        self,
-        metadata_list: list[dict[str, Any]],
-        hashes_list: list[dict[str, Any]],
-        images_data: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        """Build image entries for legacy helper compatibility.
-
-        Args:
-            metadata_list: Legacy positional metadata records.
-            hashes_list: Legacy positional hash records.
-            images_data: Existing image analysis mapping.
-
-        Returns:
-            Image mapping with enough placeholder entries to cover all
-            supplied positional records.
-        """
-        if images_data:
-            return {
-                str(image_id): dict(image_data) if isinstance(image_data, Mapping) else {}
-                for image_id, image_data in images_data.items()
-            }
-
-        row_count = max(len(metadata_list), len(hashes_list), 1)
-        return {
-            f"legacy-{index}": {"label": f"Image {index + 1}"}
-            for index in range(row_count)
-        }
 
     def _build_image_sections(
         self,
@@ -599,7 +463,7 @@ class ReportGenerator:
         mappings and coerces them into a list with consistent keys.
 
         Args:
-            analysis: Per-image or legacy analysis mapping.
+            analysis: Per-image analysis mapping.
 
         Returns:
             List of dicts with ``artifact_name``, ``artifact_key``,

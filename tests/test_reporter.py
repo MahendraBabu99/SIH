@@ -38,6 +38,37 @@ def _create_report_generator(cases_root: Path) -> ReportGenerator:
     return ReportGenerator(templates_dir=templates_dir, cases_root=cases_root)
 
 
+SINGLE_IMAGE_ID = "img-001"
+
+
+def _single_image_analysis(
+    *,
+    case_id: str,
+    case_name: str = "Single Image Investigation",
+    summary: str = "",
+    per_artifact: object | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    """Build canonical one-image analysis results for report tests."""
+    return {
+        "case_id": case_id,
+        "case_name": case_name,
+        "images": {
+            SINGLE_IMAGE_ID: {
+                "label": "Evidence Image",
+                "summary": summary,
+                "per_artifact": [] if per_artifact is None else per_artifact,
+            }
+        },
+        **extra,
+    }
+
+
+def _image_record(**fields: object) -> dict[str, dict[str, object]]:
+    """Build a canonical one-image metadata/hash mapping."""
+    return {SINGLE_IMAGE_ID: dict(fields)}
+
+
 # ===================================================================
 # Tests for app.reporter.__init__ re-export
 # ===================================================================
@@ -73,45 +104,50 @@ class ReporterTests(unittest.TestCase):
                 "case_name": "Credential Theft Investigation",
                 "tool_version": "1.2.3",
                 "model_info": {"provider": "openai", "model": "gpt-4o"},
-                "summary": (
-                    "Executive Summary\n"
-                    "- Unauthorized tool execution was observed.\n\n"
-                    "Correlated Timeline\n"
-                    "- 2026-01-15T09:30:00Z - Suspicious binary executed.\n\n"
-                    "Recommendations\n"
-                    "- Acquire volatile memory for follow-up.\n"
-                ),
-                "per_artifact": [
-                    {
-                        "artifact_key": "runkeys",
-                        "artifact_name": "Run/RunOnce Keys",
-                        "analysis": "Confidence HIGH that persistence was configured via HKCU Run key.",
-                        "record_count": 17,
-                        "time_range_start": "2026-01-15T09:20:00Z",
-                        "time_range_end": "2026-01-15T09:40:00Z",
-                        "key_data_points": [
+                "images": {
+                    SINGLE_IMAGE_ID: {
+                        "label": "Evidence Image",
+                        "summary": (
+                            "Executive Summary\n"
+                            "- Unauthorized tool execution was observed.\n\n"
+                            "Correlated Timeline\n"
+                            "- 2026-01-15T09:30:00Z - Suspicious binary executed.\n\n"
+                            "Recommendations\n"
+                            "- Acquire volatile memory for follow-up.\n"
+                        ),
+                        "per_artifact": [
                             {
-                                "timestamp": "2026-01-15T09:31:00Z",
-                                "value": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                                "artifact_key": "runkeys",
+                                "artifact_name": "Run/RunOnce Keys",
+                                "analysis": "Confidence HIGH that persistence was configured via HKCU Run key.",
+                                "record_count": 17,
+                                "time_range_start": "2026-01-15T09:20:00Z",
+                                "time_range_end": "2026-01-15T09:40:00Z",
+                                "key_data_points": [
+                                    {
+                                        "timestamp": "2026-01-15T09:31:00Z",
+                                        "value": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                                    }
+                                ],
                             }
                         ],
                     }
-                ],
+                },
             }
-            image_metadata = {
-                "hostname": "ws-13",
-                "os_version": "Windows 11 Pro",
-                "domain": "corp.local",
-                "ips": ["10.1.1.45", "172.16.1.20"],
-            }
-            evidence_hashes = {
-                "filename": "disk-image.E01",
-                "sha256": "a" * 64,
-                "md5": "b" * 32,
-                "size_bytes": 1024,
-                "expected_sha256": "c" * 64,
-                "reverified_sha256": "c" * 64,
-            }
+            image_metadata = _image_record(
+                hostname="ws-13",
+                os_version="Windows 11 Pro",
+                domain="corp.local",
+                ips=["10.1.1.45", "172.16.1.20"],
+            )
+            evidence_hashes = _image_record(
+                filename="disk-image.E01",
+                sha256="a" * 64,
+                md5="b" * 32,
+                size_bytes=1024,
+                expected_sha256="c" * 64,
+                reverified_sha256="c" * 64,
+            )
             investigation_context = (
                 "Investigate potential credential theft and persistence "
                 "between 2026-01-15 and 2026-01-16."
@@ -174,18 +210,17 @@ class ReporterTests(unittest.TestCase):
             reporter = self._create_report_generator(cases_root)
 
             report_path = reporter.generate(
-                analysis_results={
-                    "case_id": "case-hash-fail",
-                    "case_name": "Hash Mismatch Investigation",
-                    "summary": "Executive Summary\n- Hash mismatch detected.\n",
-                    "per_artifact": [],
-                },
-                image_metadata={"hostname": "host-fail"},
-                evidence_hashes={
-                    "filename": "bad.E01",
-                    "expected_sha256": "1" * 64,
-                    "reverified_sha256": "2" * 64,
-                },
+                analysis_results=_single_image_analysis(
+                    case_id="case-hash-fail",
+                    case_name="Hash Mismatch Investigation",
+                    summary="Executive Summary\n- Hash mismatch detected.\n",
+                ),
+                image_metadata=_image_record(hostname="host-fail"),
+                evidence_hashes=_image_record(
+                    filename="bad.E01",
+                    expected_sha256="1" * 64,
+                    reverified_sha256="2" * 64,
+                ),
                 investigation_context="Confirm hash mismatch handling.",
                 audit_log_entries=[],
             )
@@ -202,10 +237,10 @@ class ReporterTests(unittest.TestCase):
             reporter = self._create_report_generator(cases_root)
 
             report_path = reporter.generate(
-                analysis_results={
-                    "case_id": "case-map",
-                    "summary": "Executive Summary\n- Mapping test.\n",
-                    "per_artifact": {
+                analysis_results=_single_image_analysis(
+                    case_id="case-map",
+                    summary="Executive Summary\n- Mapping test.\n",
+                    per_artifact={
                         "runkeys": {
                             "analysis": "Confidence LOW for persistence.",
                             "confidence": "critical",
@@ -220,9 +255,9 @@ class ReporterTests(unittest.TestCase):
                         },
                         "shimcache": "No notable activity.",
                     },
-                },
-                image_metadata={"hostname": "map-host"},
-                evidence_hashes={"hash_verified": True},
+                ),
+                image_metadata=_image_record(hostname="map-host"),
+                evidence_hashes=_image_record(hash_verified=True),
                 investigation_context="Check mapping support.",
                 audit_log_entries=[],
             )
@@ -242,15 +277,15 @@ class ReporterTests(unittest.TestCase):
             reporter = self._create_report_generator(cases_root)
 
             report_path = reporter.generate(
-                analysis_results={
-                    "case_id": "case-markdown",
-                    "summary": (
+                analysis_results=_single_image_analysis(
+                    case_id="case-markdown",
+                    summary=(
                         "Executive Summary\n"
                         "### Cross-Artifact forensic synthesis\n"
                         "1. **Host and Domain**: `DESKTOP-23PS6ES`\n"
                         "2. **Key Users/Accounts**: `alice`\n"
                     ),
-                    "per_artifact": [
+                    per_artifact=[
                         {
                             "artifact_key": "runkeys",
                             "artifact_name": "Run/RunOnce Keys",
@@ -262,9 +297,9 @@ class ReporterTests(unittest.TestCase):
                             ),
                         }
                     ],
-                },
-                image_metadata={"hostname": "md-host"},
-                evidence_hashes={"hash_verified": True},
+                ),
+                image_metadata=_image_record(hostname="md-host"),
+                evidence_hashes=_image_record(hash_verified=True),
                 investigation_context="### Scope\n- Parse baseline activity.",
                 audit_log_entries=[],
             )
@@ -295,13 +330,12 @@ class ReporterTests(unittest.TestCase):
             )
 
             report_path = reporter.generate(
-                analysis_results={
-                    "case_id": "case-full-summary",
-                    "summary": summary_text,
-                    "per_artifact": [],
-                },
-                image_metadata={"hostname": "summary-host"},
-                evidence_hashes={"hash_verified": True},
+                analysis_results=_single_image_analysis(
+                    case_id="case-full-summary",
+                    summary=summary_text,
+                ),
+                image_metadata=_image_record(hostname="summary-host"),
+                evidence_hashes=_image_record(hash_verified=True),
                 investigation_context="Validate summary rendering.",
                 audit_log_entries=[],
             )
@@ -920,14 +954,13 @@ class TestAuditDetailsRenderedReadable(unittest.TestCase):
                 },
             ]
             report_path = gen.generate(
-                analysis_results={
-                    "case_id": "audit-render-test",
-                    "case_name": "Audit Render Test",
-                    "summary": "Test summary.",
-                    "per_artifact": [],
-                },
-                image_metadata={"hostname": "host1"},
-                evidence_hashes={"filename": "test.E01", "hash_verified": True},
+                analysis_results=_single_image_analysis(
+                    case_id="audit-render-test",
+                    case_name="Audit Render Test",
+                    summary="Test summary.",
+                ),
+                image_metadata=_image_record(hostname="host1"),
+                evidence_hashes=_image_record(filename="test.E01", hash_verified=True),
                 investigation_context="Testing audit rendering.",
                 audit_log_entries=audit_entries,
             )
@@ -1600,37 +1633,35 @@ class TestGenerateEdgeCases(unittest.TestCase):
                     audit_log_entries=None,
                 )
 
-    def test_generate_uses_executive_summary_over_summary(self) -> None:
+    def test_generate_rejects_flat_executive_summary(self) -> None:
         with TemporaryDirectory() as td:
             cases_root = Path(td) / "cases"
             gen = _create_report_generator(cases_root)
-            report_path = gen.generate(
-                analysis_results={
-                    "case_id": "exec-sum",
-                    "summary": "Fallback summary.",
-                    "executive_summary": "Primary executive summary.",
-                    "per_artifact": [],
-                },
-                image_metadata={},
-                evidence_hashes={"hash_verified": True},
-                investigation_context="Test.",
-                audit_log_entries=[],
-            )
-            html = report_path.read_text(encoding="utf-8")
-            self.assertIn("Primary executive summary.", html)
+            with self.assertRaisesRegex(ValueError, "canonical 'images' mapping"):
+                gen.generate(
+                    analysis_results={
+                        "case_id": "exec-sum",
+                        "summary": "Fallback summary.",
+                        "executive_summary": "Primary executive summary.",
+                        "per_artifact": [],
+                    },
+                    image_metadata={},
+                    evidence_hashes={"hash_verified": True},
+                    investigation_context="Test.",
+                    audit_log_entries=[],
+                )
 
     def test_generate_empty_investigation_context(self) -> None:
         with TemporaryDirectory() as td:
             cases_root = Path(td) / "cases"
             gen = _create_report_generator(cases_root)
             report_path = gen.generate(
-                analysis_results={
-                    "case_id": "empty-ctx",
-                    "summary": "Summary.",
-                    "per_artifact": [],
-                },
-                image_metadata={},
-                evidence_hashes={"hash_verified": True},
+                analysis_results=_single_image_analysis(
+                    case_id="empty-ctx",
+                    summary="Summary.",
+                ),
+                image_metadata=_image_record(),
+                evidence_hashes=_image_record(hash_verified=True),
                 investigation_context="",
                 audit_log_entries=[],
             )

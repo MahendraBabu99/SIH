@@ -1,6 +1,6 @@
 """Tests for structured JSON report export in app/automation/json_export.py.
 
-Covers JSON validity, metadata fields, V1-to-multi-image normalisation,
+Covers JSON validity, metadata fields, canonical image-scoped inputs,
 evidence hashes, audit trail, disclaimer, confidence extraction, atomic
 writes, directory creation, and investigation context preservation.
 
@@ -27,22 +27,28 @@ SAMPLE_CASE_ID = "test-case-001"
 SAMPLE_CASE_NAME = "Unit Test Case"
 
 
-def _make_v1_analysis() -> dict[str, Any]:
-    """Build a V1 single-image analysis result dict.
+def _make_single_image_analysis() -> dict[str, Any]:
+    """Build a canonical single-image analysis result dict.
 
     Returns:
-        Dict with per_artifact, summary, and model_info keys.
+        Dict with one entry in the ``images`` mapping.
     """
     return {
-        "per_artifact": [
-            {
-                "artifact_key": "runkeys",
-                "artifact_name": "Run/RunOnce Keys",
-                "analysis": "Found suspicious persistence. Confidence: HIGH",
-                "model": "fake-model",
-            },
-        ],
-        "summary": "Executive summary of findings.",
+        "images": {
+            "img-1": {
+                "label": "Evidence Image",
+                "per_artifact": [
+                    {
+                        "artifact_key": "runkeys",
+                        "artifact_name": "Run/RunOnce Keys",
+                        "analysis": "Found suspicious persistence. Confidence: HIGH",
+                        "model": "fake-model",
+                    },
+                ],
+                "summary": "Executive summary of findings.",
+            }
+        },
+        "cross_image_summary": None,
         "model_info": {"provider": "fake", "model": "fake-model"},
     }
 
@@ -85,13 +91,14 @@ def _make_multi_image_analysis() -> dict[str, Any]:
     }
 
 
-def _make_metadata() -> dict[str, str]:
+def _make_metadata(image_id: str = "img-1") -> dict[str, str]:
     """Build sample image metadata.
 
     Returns:
         Dict with standard forensic metadata fields.
     """
     return {
+        "image_id": image_id,
         "hostname": "test-host",
         "os_version": "Windows 10",
         "domain": "test.local",
@@ -100,13 +107,14 @@ def _make_metadata() -> dict[str, str]:
     }
 
 
-def _make_hashes() -> dict[str, Any]:
+def _make_hashes(image_id: str = "img-1") -> dict[str, Any]:
     """Build sample evidence hash dict.
 
     Returns:
         Dict with sha256, md5, size_bytes, and verification_status keys.
     """
     return {
+        "image_id": image_id,
         "sha256": "a" * 64,
         "md5": "b" * 32,
         "size_bytes": 1024,
@@ -173,7 +181,7 @@ class TestExportJsonReport(unittest.TestCase):
         """Run export_json_report and parse the result.
 
         Args:
-            analysis: Analysis results dict (defaults to V1 format).
+            analysis: Analysis results dict (defaults to canonical one-image format).
             metadata: Image metadata (defaults to sample).
             hashes: Evidence hashes (defaults to sample).
             output_name: Filename within the temp directory.
@@ -186,7 +194,7 @@ class TestExportJsonReport(unittest.TestCase):
         result_path = export_json_report(
             case_id=kwargs.get("case_id", SAMPLE_CASE_ID),
             case_name=kwargs.get("case_name", SAMPLE_CASE_NAME),
-            analysis_results=analysis or _make_v1_analysis(),
+            analysis_results=analysis or _make_single_image_analysis(),
             image_metadata=metadata if metadata is not None else _make_metadata(),
             evidence_hashes=hashes if hashes is not None else _make_hashes(),
             investigation_context=kwargs.get("investigation_context", "Test prompt"),
@@ -225,10 +233,10 @@ class TestExportJsonReport(unittest.TestCase):
         """Multi-image analysis results are correctly structured."""
         analysis = _make_multi_image_analysis()
         metadata_list = [
-            {**_make_metadata(), "hostname": "server"},
-            {**_make_metadata(), "hostname": "workstation"},
+            {**_make_metadata("img-1"), "hostname": "server"},
+            {**_make_metadata("img-2"), "hostname": "workstation"},
         ]
-        hashes_list = [_make_hashes(), _make_hashes()]
+        hashes_list = [_make_hashes("img-1"), _make_hashes("img-2")]
 
         _, data = self._export(
             analysis=analysis,
@@ -248,19 +256,19 @@ class TestExportJsonReport(unittest.TestCase):
         analysis = _make_multi_image_analysis()
         metadata = {
             "img-2": {
-                **_make_metadata(),
+                **_make_metadata("img-2"),
                 "hostname": "workstation",
                 "evidence_file": "workstation.E01",
             },
             "img-1": {
-                **_make_metadata(),
+                **_make_metadata("img-1"),
                 "hostname": "server",
                 "evidence_file": "server.E01",
             },
         }
         hashes = {
-            "img-2": {**_make_hashes(), "sha256": "2" * 64},
-            "img-1": {**_make_hashes(), "sha256": "1" * 64},
+            "img-2": {**_make_hashes("img-2"), "sha256": "2" * 64},
+            "img-1": {**_make_hashes("img-1"), "sha256": "1" * 64},
         }
 
         _, data = self._export(
@@ -282,19 +290,17 @@ class TestExportJsonReport(unittest.TestCase):
         analysis = _make_multi_image_analysis()
         metadata = [
             {
-                **_make_metadata(),
-                "image_id": "img-2",
+                **_make_metadata("img-2"),
                 "hostname": "workstation",
             },
             {
-                **_make_metadata(),
-                "image_id": "img-1",
+                **_make_metadata("img-1"),
                 "hostname": "server",
             },
         ]
         hashes = [
-            {**_make_hashes(), "image_id": "img-2", "sha256": "2" * 64},
-            {**_make_hashes(), "image_id": "img-1", "sha256": "1" * 64},
+            {**_make_hashes("img-2"), "sha256": "2" * 64},
+            {**_make_hashes("img-1"), "sha256": "1" * 64},
         ]
 
         _, data = self._export(
@@ -314,18 +320,16 @@ class TestExportJsonReport(unittest.TestCase):
         analysis = _make_multi_image_analysis()
         metadata = [
             {
-                **_make_metadata(),
-                "image_id": "img-1",
+                **_make_metadata("img-1"),
                 "hostname": "server",
             },
             {
-                **_make_metadata(),
-                "image_id": "img-extra",
+                **_make_metadata("img-extra"),
                 "hostname": "orphan",
             },
         ]
         hashes = [
-            {**_make_hashes(), "image_id": "img-1", "sha256": "1" * 64},
+            {**_make_hashes("img-1"), "sha256": "1" * 64},
         ]
 
         _, data = self._export(
@@ -355,12 +359,12 @@ class TestExportJsonReport(unittest.TestCase):
             "Partial artifact parsing for Server Image.",
         ]
         metadata = [
-            {**_make_metadata(), "image_id": "img-1", "hostname": "server"},
-            {**_make_metadata(), "image_id": "img-2", "hostname": "workstation"},
+            {**_make_metadata("img-1"), "hostname": "server"},
+            {**_make_metadata("img-2"), "hostname": "workstation"},
         ]
         hashes = [
-            {**_make_hashes(), "image_id": "img-1", "sha256": "1" * 64},
-            {**_make_hashes(), "image_id": "img-2", "sha256": "2" * 64},
+            {**_make_hashes("img-1"), "sha256": "1" * 64},
+            {**_make_hashes("img-2"), "sha256": "2" * 64},
         ]
 
         _, data = self._export(
@@ -377,7 +381,7 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(skipped[0]["skip_reason"], "All artifact parsing failed.")
 
     def test_embedded_image_metadata_preferred(self) -> None:
-        """Analysis image metadata wins over supplied positional metadata."""
+        """Analysis image metadata wins over supplied image-scoped metadata."""
         analysis = _make_multi_image_analysis()
         analysis["images"]["img-1"]["metadata"] = {
             "hostname": "embedded-server",
@@ -388,17 +392,17 @@ class TestExportJsonReport(unittest.TestCase):
         }
         metadata = [
             {
-                **_make_metadata(),
+                **_make_metadata("img-1"),
                 "hostname": "wrong-host",
                 "evidence_file": "wrong.E01",
             },
-            {**_make_metadata(), "hostname": "workstation"},
+            {**_make_metadata("img-2"), "hostname": "workstation"},
         ]
 
         _, data = self._export(
             analysis=analysis,
             metadata=metadata,
-            hashes=[_make_hashes(), _make_hashes()],
+            hashes=[_make_hashes("img-1"), _make_hashes("img-2")],
         )
 
         evidence = {entry["image_id"]: entry for entry in data["evidence"]}
@@ -421,43 +425,51 @@ class TestExportJsonReport(unittest.TestCase):
             ["10.0.0.1", "192.168.1.10"],
         )
 
-    def test_v1_single_image_normalized(self) -> None:
-        """V1 single-image format is normalized to multi-image structure."""
-        _, data = self._export(analysis=_make_v1_analysis())
-        # Should have a "default" image entry in analysis.
-        self.assertIn("default", data["analysis"]["images"])
-        img = data["analysis"]["images"]["default"]
+    def test_single_image_canonical_export(self) -> None:
+        """Canonical one-image analysis exports through the images mapping."""
+        _, data = self._export(analysis=_make_single_image_analysis())
+        self.assertIn("img-1", data["analysis"]["images"])
+        img = data["analysis"]["images"]["img-1"]
         self.assertEqual(len(img["artifacts"]), 1)
         self.assertEqual(img["artifacts"][0]["artifact_key"], "runkeys")
 
-    def test_v1_legacy_inputs_do_not_emit_unmatched_notes(self) -> None:
-        """Single legacy metadata/hash records do not become warnings."""
-        _, data = self._export(analysis=_make_v1_analysis())
+    def test_single_image_canonical_inputs_do_not_emit_unmatched_notes(self) -> None:
+        """Matching one-image metadata/hash records do not become warnings."""
+        _, data = self._export(analysis=_make_single_image_analysis())
 
         self.assertEqual(data["processing_notes"], [])
 
-    def test_v1_single_image_export_still_includes_evidence(self) -> None:
-        """V1 single-image export remains backwards compatible."""
+    def test_flat_analysis_is_rejected(self) -> None:
+        """Top-level per_artifact/summary analysis is no longer accepted."""
+        with self.assertRaisesRegex(ValueError, "canonical 'images' mapping"):
+            self._export(
+                analysis={
+                    "per_artifact": [],
+                    "summary": "Flat summary.",
+                    "model_info": {"provider": "fake", "model": "fake-model"},
+                }
+            )
+
+    def test_single_image_export_includes_evidence(self) -> None:
+        """Canonical single-image export includes matching evidence."""
         metadata = {
-            **_make_metadata(),
-            "image_id": "img-legacy",
-            "hostname": "legacy-host",
+            **_make_metadata("img-1"),
+            "hostname": "single-host",
         }
         hashes = {
-            **_make_hashes(),
-            "image_id": "img-legacy",
+            **_make_hashes("img-1"),
             "sha256": "c" * 64,
         }
 
         _, data = self._export(
-            analysis=_make_v1_analysis(),
+            analysis=_make_single_image_analysis(),
             metadata=metadata,
             hashes=hashes,
         )
 
-        self.assertIn("default", data["analysis"]["images"])
+        self.assertIn("img-1", data["analysis"]["images"])
         self.assertEqual(len(data["evidence"]), 1)
-        self.assertEqual(data["evidence"][0]["hostname"], "legacy-host")
+        self.assertEqual(data["evidence"][0]["hostname"], "single-host")
         self.assertEqual(data["evidence"][0]["hashes"]["sha256"], "c" * 64)
 
     def test_evidence_section_includes_hashes(self) -> None:
@@ -485,41 +497,45 @@ class TestExportJsonReport(unittest.TestCase):
     def test_confidence_extraction(self) -> None:
         """Confidence levels are extracted from analysis text."""
         _, data = self._export()
-        # V1 analysis has "Confidence: HIGH" in the text.
-        img = data["analysis"]["images"]["default"]
+        img = data["analysis"]["images"]["img-1"]
         artifact = img["artifacts"][0]
         self.assertEqual(artifact["confidence"], "HIGH")
 
     def test_artifact_details_match_html_normalization(self) -> None:
         """JSON keeps the same artifact details rendered by HTML reports."""
         analysis = {
-            "per_artifact": {
-                "runkeys": {
-                    "analysis": "Persistence found. Confidence: CRITICAL",
-                    "records": 7,
-                    "time_range": {
-                        "start": "2026-01-01T00:00:00Z",
-                        "end": "2026-01-02T00:00:00Z",
+            "images": {
+                "img-1": {
+                    "label": "Evidence Image",
+                    "summary": "Summary.",
+                    "per_artifact": {
+                        "runkeys": {
+                            "analysis": "Persistence found. Confidence: CRITICAL",
+                            "records": 7,
+                            "time_range": {
+                                "start": "2026-01-01T00:00:00Z",
+                                "end": "2026-01-02T00:00:00Z",
+                            },
+                            "key_points": [
+                                {
+                                    "timestamp": "2026-01-01T01:00:00Z",
+                                    "event": r"HKCU\Run suspicious.exe",
+                                }
+                            ],
+                            "metadata": {"csv_path": "runkeys.csv"},
+                            "hash_status": "PASS",
+                            "model": "fake-model",
+                        },
+                        "shimcache": "No notable execution.",
                     },
-                    "key_points": [
-                        {
-                            "timestamp": "2026-01-01T01:00:00Z",
-                            "event": r"HKCU\Run suspicious.exe",
-                        }
-                    ],
-                    "metadata": {"csv_path": "runkeys.csv"},
-                    "hash_status": "PASS",
-                    "model": "fake-model",
-                },
-                "shimcache": "No notable execution.",
+                }
             },
-            "summary": "Summary.",
             "model_info": {"provider": "fake", "model": "fake-model"},
         }
 
         _, data = self._export(analysis=analysis)
 
-        artifacts = data["analysis"]["images"]["default"]["artifacts"]
+        artifacts = data["analysis"]["images"]["img-1"]["artifacts"]
         self.assertEqual(len(artifacts), 2)
         by_key = {artifact["artifact_key"]: artifact for artifact in artifacts}
         runkeys = by_key["runkeys"]
@@ -543,7 +559,7 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(by_key["shimcache"]["analysis_text"], "No notable execution.")
 
     def test_multi_image_accepts_per_artifact_findings_key(self) -> None:
-        """JSON normalization keeps legacy keys inside image sections."""
+        """JSON normalization keeps alternate keys inside image sections."""
         analysis = {
             "images": {
                 "img-a": {
@@ -576,7 +592,7 @@ class TestExportJsonReport(unittest.TestCase):
         export_json_report(
             case_id=SAMPLE_CASE_ID,
             case_name=SAMPLE_CASE_NAME,
-            analysis_results=_make_v1_analysis(),
+            analysis_results=_make_single_image_analysis(),
             image_metadata=_make_metadata(),
             evidence_hashes=_make_hashes(),
             investigation_context="test",
@@ -594,7 +610,7 @@ class TestExportJsonReport(unittest.TestCase):
         export_json_report(
             case_id=SAMPLE_CASE_ID,
             case_name=SAMPLE_CASE_NAME,
-            analysis_results=_make_v1_analysis(),
+            analysis_results=_make_single_image_analysis(),
             image_metadata=_make_metadata(),
             evidence_hashes=_make_hashes(),
             investigation_context="test",

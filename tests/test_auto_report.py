@@ -265,7 +265,7 @@ class GenerateCaseReportTests(unittest.TestCase):
             with self.app.app_context():
                 result = routes_evidence.generate_case_report(case_id)
             self.assertFalse(result["success"])
-            self.assertIn("not been completed", result["error"])
+            self.assertIn("canonical image-scoped format", result["error"])
         finally:
             _exit_patches(patches)
 

@@ -551,7 +551,7 @@ class TestRunAutomation(unittest.TestCase):
             FAKE_HASHES["sha256"],
             return_computed=True,
         )
-        hashes = captured["evidence_hashes"][0]
+        hashes = next(iter(captured["evidence_hashes"].values()))
         self.assertEqual(hashes["verification_status"], "PASS")
         self.assertTrue(hashes["hash_verified"])
         self.assertEqual(hashes["expected_sha256"], FAKE_HASHES["sha256"])
@@ -595,7 +595,7 @@ class TestRunAutomation(unittest.TestCase):
             [call.args[0] for call in self.mocks["verify_hash"].call_args_list],
             segments,
         )
-        hashes = captured["evidence_hashes"][0]
+        hashes = next(iter(captured["evidence_hashes"].values()))
         self.assertEqual(hashes["filename"], "evidence.E10")
         self.assertEqual(len(hashes["evidence_file_hashes"]), 10)
 
@@ -607,7 +607,7 @@ class TestRunAutomation(unittest.TestCase):
         result = run_automation(self._make_request())
 
         self.assertTrue(result.success)
-        hashes = captured["evidence_hashes"][0]
+        hashes = next(iter(captured["evidence_hashes"].values()))
         self.assertEqual(hashes["verification_status"], "FAIL")
         self.assertFalse(hashes["hash_verified"])
         self.assertEqual(hashes["expected_sha256"], FAKE_HASHES["sha256"])
@@ -627,7 +627,7 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.mocks["compute_hashes"].assert_not_called()
         self.mocks["verify_hash"].assert_not_called()
-        hashes = captured["evidence_hashes"][0]
+        hashes = next(iter(captured["evidence_hashes"].values()))
         self.assertEqual(hashes["sha256"], "N/A (skipped)")
         self.assertEqual(hashes["md5"], "N/A (skipped)")
         self.assertEqual(hashes["verification_status"], "SKIPPED")
@@ -660,7 +660,7 @@ class TestRunAutomation(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.mocks["verify_hash"].assert_not_called()
-        hashes = captured["evidence_hashes"][0]
+        hashes = next(iter(captured["evidence_hashes"].values()))
         self.assertEqual(hashes["verification_status"], "UNAVAILABLE")
         self.assertEqual(hashes["hash_verified"], "unavailable")
         self.assertEqual(hashes["reverified_sha256"], "FILE_MISSING")
@@ -1023,11 +1023,11 @@ class TestRunAutomation(unittest.TestCase):
                     metadata = report_kwargs["image_metadata"]
                     hashes = report_kwargs["evidence_hashes"]
                     self.assertEqual(
-                        [item["evidence_file"] for item in metadata],
+                        [item["evidence_file"] for item in metadata.values()],
                         [expected_name],
                     )
                     self.assertEqual(
-                        [item["sha256"] for item in hashes],
+                        [item["sha256"] for item in hashes.values()],
                         [expected_sha256],
                     )
 
