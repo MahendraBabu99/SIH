@@ -174,14 +174,10 @@ describe("mocked final browser flow", () => {
     await A.submitParse();
     const parseCalls = calls.filter(([url]) => String(url).endsWith("/parse"));
     expect(parseCalls).toHaveLength(2);
-    expect(requestBody(parseCalls[0])).toMatchObject({
-      artifacts: ["prefetch"],
-      ai_artifacts: [],
+    expect(requestBody(parseCalls[0])).toEqual({
       artifact_options: [{ artifact_key: "prefetch", mode: A.MODE_PARSE_ONLY }],
     });
-    expect(requestBody(parseCalls[1])).toMatchObject({
-      artifacts: ["runkeys"],
-      ai_artifacts: ["runkeys"],
+    expect(requestBody(parseCalls[1])).toEqual({
       artifact_options: [{ artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI }],
     });
 

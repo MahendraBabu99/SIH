@@ -550,7 +550,7 @@
     if (Array.isArray(source)) {
       source.forEach((option) => {
         if (!A.isObj(option)) return;
-        const key = String(option.artifact_key || option.key || "").trim();
+        const key = String(option.artifact_key || "").trim();
         if (!key) return;
         selectionMap.set(key, { checked: true, mode: artifactModeValue(option.mode) });
       });
@@ -708,7 +708,7 @@
       .map((option) => (A.isObj(option) ? option : null))
       .filter(Boolean)
       .map((option) => ({
-        artifact_key: String(option.artifact_key || option.key || "").trim(),
+        artifact_key: String(option.artifact_key || "").trim(),
         mode: artifactModeValue(option.mode),
       }))
       .filter((option) => option.artifact_key);

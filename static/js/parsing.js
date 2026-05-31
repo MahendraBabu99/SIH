@@ -227,7 +227,7 @@
     A.updateParseButton();
 
     try {
-      const parsePayload = { artifacts: arts, ai_artifacts: aiArtifacts, artifact_options: artifactOptions };
+      const parsePayload = { artifact_options: artifactOptions };
       if (dateRangeValidation.range) parsePayload.analysis_date_range = dateRangeValidation.range;
       A.startTimer("parse");
       await A.apiJson(
@@ -335,11 +335,7 @@
     st.imageParse[imageId] = imgState;
 
     try {
-      const payload = {
-        artifacts: arts,
-        ai_artifacts: aiArts,
-        artifact_options: sel.artifact_options,
-      };
+      const payload = { artifact_options: sel.artifact_options };
       if (dateRange) payload.analysis_date_range = dateRange;
 
       await A.apiJson(

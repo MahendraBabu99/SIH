@@ -464,9 +464,9 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
 def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Response, int]:
     """Ingest evidence for a specific image within a case.
 
-    Behaves identically to the legacy ``POST /api/cases/<case_id>/evidence``
-    endpoint, but stores files under the image-specific directory and writes
-    image metadata to ``metadata.json``.
+    Stores files under the image-specific directory and writes image metadata
+    to ``metadata.json``. Case-level single-image intake uses this same
+    image-scoped path after creating a default image slot.
 
     Args:
         case_id: UUID of the case.
@@ -650,10 +650,10 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
 
             other_images_have_results = _rebuild_case_parse_state_from_images(case_id, case)
 
-            # Set top-level evidence fields for backward compatibility
-            # with V1 code paths.  Only overwrite when this is the first
-            # (or only) image so that multi-image cases do not silently
-            # replace the first image's metadata with the latest upload.
+            # Keep the case-level evidence summary aligned for single-image
+            # views. Only overwrite when this is the first (or only) image
+            # so multi-image cases do not silently replace the first image's
+            # metadata with the latest upload.
             is_first_image = len(image_states) <= 1 or not case.get("evidence_path")
             if is_first_image:
                 case["evidence_mode"] = evidence_payload["mode"]
@@ -958,8 +958,6 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         "status": "started",
         "case_id": case_id,
         "image_id": image_id,
-        "artifacts": parse_artifacts,
-        "ai_artifacts": analysis_artifacts,
         "artifact_options": artifact_options,
     }
     if analysis_date_range is not None:

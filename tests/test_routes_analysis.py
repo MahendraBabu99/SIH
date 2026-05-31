@@ -163,7 +163,14 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
 
             # First parse succeeds.
-            resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            resp = self.client.post(
+                first_image_parse_url(case_id),
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
             self.assertEqual(resp.status_code, 202)
             case = routes_state.CASE_STATES[case_id]
             image_id = first_case_image_id(case_id)
@@ -213,7 +220,14 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             patch("app.parser.ForensicParser", FailingParser),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
         ):
-            resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            resp = self.client.post(
+                first_image_parse_url(case_id),
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
             self.assertEqual(resp.status_code, 202)
 
             # After the failed reparse, the case should be in error state.
@@ -377,7 +391,11 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
             )
             self.assertEqual(parse_resp.status_code, 202)
 

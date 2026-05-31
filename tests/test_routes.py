@@ -42,6 +42,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     FakeAnalyzer,
     FakeReportGenerator,
+    canonical_parse_payload,
     first_case_image_id,
     first_image_parse_progress_url,
     first_image_parse_url,
@@ -239,7 +240,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -290,7 +291,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -453,7 +454,7 @@ class RoutesTests(unittest.TestCase):
             case1_id = resp1.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case1_id}/evidence", json={"path": str(evidence_path)})
-            self.client.post(first_image_parse_url(case1_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case1_id), json=canonical_parse_payload("runkeys"))
             self.client.post(f"/api/cases/{case1_id}/analyze", json={"prompt": "Investigate"})
 
             self.assertEqual(routes_state.CASE_STATES[case1_id]["status"], "completed")
@@ -1057,7 +1058,7 @@ class RoutesTests(unittest.TestCase):
 
             missing_range_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["mft"]},
+                json=canonical_parse_payload("mft"),
             )
             self.assertEqual(missing_range_resp.status_code, 202)
             self.assertNotIn("analysis_date_range", missing_range_resp.get_json())
@@ -1065,7 +1066,9 @@ class RoutesTests(unittest.TestCase):
             partial_range_resp = self.client.post(
                 first_image_parse_url(case_id),
                 json={
-                    "artifacts": ["evtx"],
+                    "artifact_options": [
+                        {"artifact_key": "evtx", "mode": "parse_and_ai"},
+                    ],
                     "analysis_date_range": {"start_date": "2026-01-01"},
                 },
             )
@@ -1080,7 +1083,7 @@ class RoutesTests(unittest.TestCase):
 
             runkeys_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(runkeys_resp.status_code, 202)
 
@@ -1146,7 +1149,12 @@ class RoutesTests(unittest.TestCase):
             requested_range = {"start_date": "2026-01-01", "end_date": "2026-01-31"}
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["mft"], "analysis_date_range": requested_range},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "mft", "mode": "parse_and_ai"},
+                    ],
+                    "analysis_date_range": requested_range,
+                },
             )
             self.assertEqual(parse_resp.status_code, 202)
             self.assertEqual(parse_resp.get_json()["analysis_date_range"], requested_range)
@@ -1227,8 +1235,13 @@ class RoutesTests(unittest.TestCase):
             )
             self.assertEqual(parse_resp.status_code, 202)
             payload = parse_resp.get_json()
-            self.assertEqual(payload["artifacts"], ["runkeys", "tasks"])
-            self.assertEqual(payload["ai_artifacts"], ["runkeys"])
+            self.assertEqual(
+                payload["artifact_options"],
+                [
+                    {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    {"artifact_key": "tasks", "mode": "parse_only"},
+                ],
+            )
 
             analyze_resp = self.client.post(
                 f"/api/cases/{case_id}/analyze",
@@ -1290,7 +1303,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -1309,7 +1322,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(analyze_resp.status_code, 409)
             self.assertEqual(prompt_path.read_text(encoding="utf-8"), "existing prompt")
 
-    def test_analysis_requires_ai_enabled_artifacts(self) -> None:
+    def test_analysis_requires_parse_and_ai_selection(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "no-ai.E01"
         evidence_path.write_bytes(b"demo")
 
@@ -1428,7 +1441,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -1535,7 +1548,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -1671,7 +1684,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -1954,7 +1967,7 @@ class RoutesTests(unittest.TestCase):
     def test_parse_nonexistent_case(self) -> None:
         resp = self.client.post(
             "/api/cases/nonexistent-id/images/missing-image/parse",
-            json={"artifacts": ["runkeys"]},
+            json=canonical_parse_payload("runkeys"),
         )
         self.assertEqual(resp.status_code, 404)
 
@@ -1966,7 +1979,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(add_resp.status_code, 201)
             resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(resp.status_code, 400)
             self.assertIn("No evidence loaded", resp.get_json()["error"])
@@ -1997,9 +2010,41 @@ class RoutesTests(unittest.TestCase):
             create_resp = self.client.post("/api/cases", json={"case_name": "Empty Artifacts"})
             case_id = create_resp.get_json()["case_id"]
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
-            resp = self.client.post(first_image_parse_url(case_id), json={"artifacts": []})
+            resp = self.client.post(first_image_parse_url(case_id), json={"artifact_options": []})
             self.assertEqual(resp.status_code, 400)
             self.assertIn("at least one artifact", resp.get_json()["error"])
+
+    def test_parse_requires_canonical_artifact_options_payload(self) -> None:
+        evidence_path = Path(self.temp_dir.name) / "missing-options.E01"
+        evidence_path.write_bytes(b"demo")
+        with (
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.ForensicParser", FakeParser),
+            patch.object(
+                routes_evidence,
+                "compute_hashes",
+                return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
+            ),
+            patch(
+                "app.hasher.compute_hashes",
+                return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
+            ),
+        ):
+            create_resp = self.client.post("/api/cases", json={"case_name": "Missing Artifact Options"})
+            case_id = create_resp.get_json()["case_id"]
+            self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
+            resp = self.client.post(
+                first_image_parse_url(case_id),
+                json={"artifacts": ["runkeys"]},
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("`artifact_options` is required", resp.get_json()["error"])
 
     def test_parse_already_running_returns_409(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "already-parsing.E01"
@@ -2035,7 +2080,7 @@ class RoutesTests(unittest.TestCase):
                     routes_state.PARSE_PROGRESS[f"{case_id}::{img_id}"] = routes_state.new_progress(status="running")
             resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(resp.status_code, 409)
             self.assertIn("already running", resp.get_json()["error"])
@@ -2184,7 +2229,7 @@ class RoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -2501,7 +2546,7 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
             self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "Investigate"})
 
             # Confirm downstream state is populated before replacement.
@@ -2584,7 +2629,7 @@ class RoutesTests(unittest.TestCase):
 
             # Load A, parse, analyze.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
             self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "Check"})
 
             # Replace evidence with B.
@@ -2639,7 +2684,7 @@ class RoutesTests(unittest.TestCase):
 
             # Load A, parse, analyze.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
             self.client.post(f"/api/cases/{case_id}/analyze", json={"prompt": "Investigate"})
 
             # Replace evidence with B.
@@ -2694,14 +2739,14 @@ class RoutesTests(unittest.TestCase):
 
             # Load A and parse.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
 
             # Replace evidence with B.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_b)})
 
             # Fresh parse on new evidence should succeed.
             parse_resp = self.client.post(
-                first_image_parse_url(case_id), json={"artifacts": ["runkeys"]},
+                first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -2757,7 +2802,7 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
 
             # CSVs should be available after parsing evidence A.
             csv_resp = self.client.get(f"/api/cases/{case_id}/csvs")
@@ -2783,7 +2828,7 @@ class RoutesTests(unittest.TestCase):
 
             # Reparse evidence B.
             parse_resp = self.client.post(
-                first_image_parse_url(case_id), json={"artifacts": ["runkeys"]},
+                first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -2843,7 +2888,7 @@ class RoutesTests(unittest.TestCase):
             case_id = create_resp.get_json()["case_id"]
 
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_a)})
-            self.client.post(first_image_parse_url(case_id), json={"artifacts": ["runkeys"]})
+            self.client.post(first_image_parse_url(case_id), json=canonical_parse_payload("runkeys"))
 
             # Confirm parsed dir exists with CSVs.
             with routes_state.STATE_LOCK:

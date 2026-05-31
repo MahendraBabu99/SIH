@@ -62,21 +62,6 @@ def normalize_artifact_mode(value: Any, default_mode: str = MODE_PARSE_AND_AI) -
     return default_mode
 
 
-def _normalize_string_list(values: Any) -> list[str]:
-    """Deduplicate and normalise a list of values to non-empty strings."""
-    if not isinstance(values, list):
-        return []
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        text = str(value).strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        normalized.append(text)
-    return normalized
-
-
 def normalize_artifact_options(payload: Any) -> list[dict[str, str]]:
     """Normalise a raw artifact options payload into canonical form."""
     if not isinstance(payload, list):
@@ -84,25 +69,28 @@ def normalize_artifact_options(payload: Any) -> list[dict[str, str]]:
 
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
+    allowed_keys = {"artifact_key", "mode"}
     for item in payload:
-        artifact_key = ""
-        mode = MODE_PARSE_AND_AI
+        if not isinstance(item, dict):
+            raise ValueError("Each `artifact_options` item must be an object.")
 
-        if isinstance(item, str):
-            artifact_key = item.strip()
-        elif isinstance(item, dict):
-            artifact_key = str(item.get("artifact_key") or item.get("key") or "").strip()
-            if "mode" in item:
-                mode = normalize_artifact_mode(item.get("mode"))
-            elif "ai_enabled" in item:
-                mode = MODE_PARSE_AND_AI if bool(item.get("ai_enabled")) else MODE_PARSE_ONLY
-            else:
-                mode = normalize_artifact_mode(
-                    item.get("parse_mode"),
-                    default_mode=MODE_PARSE_AND_AI,
-                )
-        else:
-            continue
+        unknown_keys = set(item) - allowed_keys
+        if unknown_keys:
+            raise ValueError(
+                "Each `artifact_options` item may only include `artifact_key` "
+                "and `mode`."
+            )
+
+        artifact_key = str(item.get("artifact_key") or "").strip()
+        if not artifact_key:
+            raise ValueError("Each `artifact_options` item must include `artifact_key`.")
+
+        raw_mode = item.get("mode", MODE_PARSE_AND_AI)
+        mode = str(raw_mode or "").strip().lower()
+        if mode not in {MODE_PARSE_AND_AI, MODE_PARSE_ONLY}:
+            raise ValueError(
+                "`artifact_options` mode must be `parse_and_ai` or `parse_only`."
+            )
 
         if not artifact_key or artifact_key in seen:
             continue
@@ -128,50 +116,15 @@ def artifact_options_to_lists(
     return parse_artifacts, analysis_artifacts
 
 
-def _build_artifact_options_from_lists(
-    parse_artifacts: list[str],
-    analysis_artifacts: list[str],
-) -> list[dict[str, str]]:
-    """Construct canonical artifact options from separate lists."""
-    analysis_set = set(analysis_artifacts)
-    return [
-        {
-            "artifact_key": artifact_key,
-            "mode": MODE_PARSE_AND_AI if artifact_key in analysis_set else MODE_PARSE_ONLY,
-        }
-        for artifact_key in parse_artifacts
-    ]
-
-
 def extract_parse_selection_payload(
     payload: dict[str, Any],
 ) -> tuple[list[dict[str, str]], list[str], list[str]]:
     """Extract and normalise artifact selection from a parse request payload."""
-    if "artifact_options" in payload:
-        artifact_options = normalize_artifact_options(payload.get("artifact_options"))
-        parse_artifacts, analysis_artifacts = artifact_options_to_lists(artifact_options)
-        return artifact_options, parse_artifacts, analysis_artifacts
+    if "artifact_options" not in payload:
+        raise ValueError("`artifact_options` is required.")
 
-    artifacts_raw = payload.get("artifacts", [])
-    if not isinstance(artifacts_raw, list):
-        raise ValueError("`artifacts` must be a JSON array.")
-    parse_artifacts = _normalize_string_list(artifacts_raw)
-
-    if "ai_artifacts" in payload:
-        ai_raw = payload.get("ai_artifacts")
-        if not isinstance(ai_raw, list):
-            raise ValueError("`ai_artifacts` must be a JSON array.")
-        selected_set = set(parse_artifacts)
-        analysis_artifacts = [
-            key for key in _normalize_string_list(ai_raw) if key in selected_set
-        ]
-    else:
-        analysis_artifacts = list(parse_artifacts)
-
-    artifact_options = _build_artifact_options_from_lists(
-        parse_artifacts=parse_artifacts,
-        analysis_artifacts=analysis_artifacts,
-    )
+    artifact_options = normalize_artifact_options(payload.get("artifact_options"))
+    parse_artifacts, analysis_artifacts = artifact_options_to_lists(artifact_options)
     return artifact_options, parse_artifacts, analysis_artifacts
 
 
@@ -306,9 +259,11 @@ def _load_profile_file(path: Path) -> dict[str, Any] | None:
         LOGGER.warning("Skipping profile with invalid name in %s", path)
         return None
 
+    if "artifact_options" not in raw:
+        LOGGER.warning("Skipping profile without artifact options in %s", path)
+        return None
+
     options_payload = raw.get("artifact_options")
-    if options_payload is None:
-        options_payload = raw.get("selections", [])
     try:
         artifact_options = normalize_artifact_options(
             options_payload if options_payload is not None else []

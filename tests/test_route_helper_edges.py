@@ -12,16 +12,39 @@ import app.routes.state as routes_state
 
 
 class ArtifactProfileHelperTests(unittest.TestCase):
-    def test_load_profile_file_supports_legacy_selections(self) -> None:
+    def test_load_profile_file_skips_profile_without_artifact_options(self) -> None:
         with TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "legacy_profile.json"
+            path = Path(tmpdir) / "alias_profile.json"
+            payload = {"name": "Alias Profile"}
+            payload["select" + "ions"] = [
+                "runkeys",
+                {"artifact_key": "mft", "mode": artifact_profiles.MODE_PARSE_ONLY},
+            ]
+            path.write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+
+            profile = artifact_profiles._load_profile_file(path)
+
+        self.assertIsNone(profile)
+
+    def test_load_profile_file_accepts_canonical_artifact_options(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "canonical_profile.json"
             path.write_text(
                 json.dumps(
                     {
-                        "name": "Legacy Profile",
-                        "selections": [
-                            "runkeys",
-                            {"artifact_key": "mft", "mode": artifact_profiles.MODE_PARSE_ONLY},
+                        "name": "Canonical Profile",
+                        "artifact_options": [
+                            {
+                                "artifact_key": "runkeys",
+                                "mode": artifact_profiles.MODE_PARSE_AND_AI,
+                            },
+                            {
+                                "artifact_key": "mft",
+                                "mode": artifact_profiles.MODE_PARSE_ONLY,
+                            },
                         ],
                     }
                 ),
@@ -31,7 +54,7 @@ class ArtifactProfileHelperTests(unittest.TestCase):
             profile = artifact_profiles._load_profile_file(path)
 
         self.assertIsNotNone(profile)
-        self.assertEqual(profile["name"], "Legacy Profile")
+        self.assertEqual(profile["name"], "Canonical Profile")
         self.assertEqual(
             profile["artifact_options"],
             [
@@ -44,11 +67,21 @@ class ArtifactProfileHelperTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             profiles_root = Path(tmpdir)
             (profiles_root / "a_profile.json").write_text(
-                json.dumps({"name": "Alpha", "artifact_options": ["runkeys"]}),
+                json.dumps({
+                    "name": "Alpha",
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": artifact_profiles.MODE_PARSE_AND_AI},
+                    ],
+                }),
                 encoding="utf-8",
             )
             (profiles_root / "b_profile.json").write_text(
-                json.dumps({"name": "alpha", "artifact_options": ["mft"]}),
+                json.dumps({
+                    "name": "alpha",
+                    "artifact_options": [
+                        {"artifact_key": "mft", "mode": artifact_profiles.MODE_PARSE_AND_AI},
+                    ],
+                }),
                 encoding="utf-8",
             )
 

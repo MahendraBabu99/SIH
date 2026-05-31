@@ -246,7 +246,12 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
         """Start a parse (ImmediateThread runs it synchronously)."""
         resp = self.client.post(
             first_image_parse_url(case_id),
-            json={"artifacts": artifacts},
+            json={
+                "artifact_options": [
+                    {"artifact_key": artifact, "mode": "parse_and_ai"}
+                    for artifact in artifacts
+                ],
+            },
         )
         self.assertEqual(resp.status_code, 202)
         # With ImmediateThread, parsing completes synchronously before the

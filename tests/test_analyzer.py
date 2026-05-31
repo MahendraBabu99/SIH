@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from app.ai_providers import AIProviderError
 from app.analyzer.citations import timestamp_found_in_csv, timestamp_lookup_keys
+from app.analyzer.constants import DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS
 from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.utils import is_dedup_safe_identifier_column
 from app.case_logging import case_log_context, register_case_log_handler, unregister_case_log_handler
@@ -474,6 +475,19 @@ class AnalyzerTests(unittest.TestCase):
 
         self.assertIn("Stats:", filled_prompt)
         self.assertIn("Record count: 1", filled_prompt)
+
+    def test_shortened_prompt_cutoff_ignores_removed_config_alias(self) -> None:
+        """The retired statistics cutoff key is not treated as a fallback."""
+        analyzer = ForensicAnalyzer(
+            config={"analysis": {"statistics_section_cutoff_tokens": 1234}},
+            artifact_csv_paths={},
+            random_seed=7,
+        )
+
+        self.assertEqual(
+            analyzer.shortened_prompt_cutoff_tokens,
+            DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS,
+        )
 
     def test_prepare_artifact_data_uses_normalized_artifact_instruction_prompt(self) -> None:
         """Verify prepare artifact data uses normalized artifact instruction prompt."""

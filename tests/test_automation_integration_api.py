@@ -401,7 +401,7 @@ class TestApiToReportIntegration(unittest.TestCase):
             json.dumps({
                 "name": "recommended",
                 "artifact_options": [
-                    {"artifact_key": "runkeys", "parse": True, "analyze": True},
+                    {"artifact_key": "runkeys", "mode": "parse_and_ai"},
                 ],
             }),
             encoding="utf-8",

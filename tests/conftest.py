@@ -69,6 +69,19 @@ def first_image_parse_progress_url(case_id: str) -> str:
     return f"/api/cases/{case_id}/images/{image_id}/parse/progress"
 
 
+def canonical_parse_payload(
+    *artifact_keys: str,
+    mode: str = "parse_and_ai",
+) -> dict[str, list[dict[str, str]]]:
+    """Build a canonical parse request payload for tests."""
+    return {
+        "artifact_options": [
+            {"artifact_key": artifact_key, "mode": mode}
+            for artifact_key in artifact_keys
+        ]
+    }
+
+
 def _probe_symlink_support(root: Path, target_is_directory: bool = False) -> bool:
     """Return whether the current environment can create a symlink.
 

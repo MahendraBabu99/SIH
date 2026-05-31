@@ -20,6 +20,7 @@ from tests.conftest import (
     FakeParser as _BaseFakeParser,
     ImmediateThread,
     FAKE_HASHES,
+    canonical_parse_payload,
     first_case_image_id,
     first_image_parse_progress_url,
     first_image_parse_url,
@@ -301,7 +302,7 @@ class MultiImageRoutesTests(unittest.TestCase):
             # Start parsing.
             parse_resp = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
             data = parse_resp.get_json()
@@ -331,7 +332,7 @@ class MultiImageRoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -408,7 +409,7 @@ class MultiImageRoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
             data = parse_resp.get_json()
@@ -431,7 +432,7 @@ class MultiImageRoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 202)
 
@@ -473,13 +474,13 @@ class MultiImageRoutesTests(unittest.TestCase):
             # Parse for each image.
             p1 = self.client.post(
                 f"/api/cases/{case_id}/images/{img1}/parse",
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(p1.status_code, 202)
 
             p2 = self.client.post(
                 f"/api/cases/{case_id}/images/{img2}/parse",
-                json={"artifacts": ["services"]},
+                json=canonical_parse_payload("services"),
             )
             self.assertEqual(p2.status_code, 202)
 
@@ -506,7 +507,7 @@ class MultiImageRoutesTests(unittest.TestCase):
 
             parse_resp = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["runkeys"]},
+                json=canonical_parse_payload("runkeys"),
             )
             self.assertEqual(parse_resp.status_code, 400)
             self.assertIn("No evidence", parse_resp.get_json()["error"])

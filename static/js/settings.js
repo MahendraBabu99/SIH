@@ -195,7 +195,7 @@
     setNumberInput(el.setAiMaxTokens, A.num(analysis.ai_max_tokens, 128000), 128000);
     setNumberInput(
       el.setShortenedPromptCutoffTokens,
-      A.num(analysis.shortened_prompt_cutoff_tokens, A.num(analysis.statistics_section_cutoff_tokens, 64000)),
+      A.num(analysis.shortened_prompt_cutoff_tokens, 64000),
       64000
     );
     setNumberInput(el.setConnectionMaxTokens, A.num(analysis.connection_test_max_tokens, 256), 256);

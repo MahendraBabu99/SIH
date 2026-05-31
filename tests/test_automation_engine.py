@@ -2,7 +2,7 @@
 
 Covers AutomationRequest/AutomationResult dataclasses, and the run_automation
 function including: full pipeline success, folder processing, empty discovery,
-config/profile fallback, partial and total image failures, analysis failure,
+config/profile loading, partial and total image failures, analysis failure,
 progress callbacks, hash skipping, date ranges, and output directory handling.
 
 Attributes:
@@ -165,7 +165,7 @@ def _fake_profiles(root: Any) -> list[dict[str, Any]]:
             "name": "recommended",
             "builtin": True,
             "artifact_options": [
-                {"artifact_key": "runkeys", "parse": True, "analyze": True},
+                {"artifact_key": "runkeys", "mode": "parse_and_ai"},
             ],
         },
     ]
@@ -182,8 +182,18 @@ def _fake_artifact_options_to_lists(
     Returns:
         Tuple of (parse_keys, analysis_keys).
     """
-    parse = [o["artifact_key"] for o in options if o.get("parse")]
-    analyze = [o["artifact_key"] for o in options if o.get("analyze")]
+    parse: list[str] = []
+    analyze: list[str] = []
+    for option in options:
+        artifact_key = str(option.get("artifact_key") or "").strip()
+        if not artifact_key:
+            continue
+        mode = str(option.get("mode") or "parse_and_ai").strip().lower()
+        if mode not in {"parse_and_ai", "parse_only"}:
+            continue
+        parse.append(artifact_key)
+        if mode == "parse_and_ai":
+            analyze.append(artifact_key)
     return parse, analyze
 
 
@@ -268,13 +278,24 @@ class TestAutomationProfileRoots(unittest.TestCase):
         self.assertEqual(analysis, [])
         self.assertEqual(warnings, [])
 
-    def test_load_profile_falls_back_to_repository_profile_root_with_warning(self) -> None:
-        """Automation warns when using the legacy repository profile folder."""
-        with TemporaryDirectory(prefix="aift-profile-compat-") as temp_dir:
+    def test_load_profile_ignores_repository_profile_root(self) -> None:
+        """Automation only reads the profile directory beside the active config."""
+        with TemporaryDirectory(prefix="aift-profile-canonical-") as temp_dir:
             root = Path(temp_dir)
             config_path = root / "settings" / "config.yaml"
             config_path.parent.mkdir(parents=True)
             config_path.write_text("ai_provider: fake\n", encoding="utf-8")
+            settings_profile_root = config_path.parent / "profile"
+            settings_profile_root.mkdir()
+            (settings_profile_root / "recommended.json").write_text(
+                json.dumps({
+                    "name": "recommended",
+                    "artifact_options": [
+                        {"artifact_key": "mft", "mode": "parse_and_ai"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
             legacy_root = root / "profile"
             legacy_root.mkdir()
             (legacy_root / "legacy.json").write_text(
@@ -293,9 +314,13 @@ class TestAutomationProfileRoots(unittest.TestCase):
                     config_path,
                 )
 
-        self.assertEqual(parse, ["runkeys"])
-        self.assertEqual(analysis, ["runkeys"])
-        self.assertTrue(any("repository profile directory" in warning for warning in warnings))
+        self.assertNotEqual(parse, ["runkeys"])
+        self.assertTrue(parse)
+        self.assertEqual(parse, analysis)
+        self.assertEqual(
+            warnings,
+            ["Profile 'legacy' not found. Falling back to 'recommended'."],
+        )
 
     def test_load_profile_does_not_create_missing_repository_profile_root(self) -> None:
         """Legacy profile fallback does not create a repository profile folder."""

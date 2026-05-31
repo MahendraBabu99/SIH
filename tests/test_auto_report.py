@@ -190,7 +190,11 @@ def _run_full_flow(client, evidence_path: Path) -> str:
     )
     client.post(
         first_image_parse_url(case_id),
-        json={"artifacts": ["runkeys"]},
+        json={
+            "artifact_options": [
+                {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+            ],
+        },
     )
     # Drain parse SSE so the progress store is consumed.
     client.get(first_image_parse_progress_url(case_id))
@@ -257,7 +261,11 @@ class GenerateCaseReportTests(unittest.TestCase):
             )
             self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
             )
             self.client.get(first_image_parse_progress_url(case_id))
 

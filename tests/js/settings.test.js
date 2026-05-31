@@ -312,6 +312,19 @@ describe("advanced CSV row limit setting", () => {
     expect(A.el.setArtifactCsvRowLimit.value).toBe("0");
     expect(A.el.setArtifactCsvRowLimit.getAttribute("min")).toBe("0");
   });
+
+  test("shortened prompt cutoff reads only the canonical setting key", async () => {
+    global.fetch = jest.fn(() => jsonResponse({
+      ai: { provider: "openai", openai: {} },
+      analysis: { statistics_section_cutoff_tokens: 1234 },
+      evidence: {},
+      server: {},
+    }));
+
+    await A.loadSettings();
+
+    expect(A.el.setShortenedPromptCutoffTokens.value).toBe("64000");
+  });
 });
 
 // -- Help tooltips ------------------------------------------------------------

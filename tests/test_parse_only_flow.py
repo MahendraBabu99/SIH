@@ -19,7 +19,7 @@ NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
 class TestParseOnlyFrontendBehavior(unittest.TestCase):
     """Run focused Jest behavior tests for parse-only navigation guards."""
 
-    def test_parse_only_and_ai_enabled_completion_behavior(self) -> None:
+    def test_parse_only_and_parse_and_ai_completion_behavior(self) -> None:
         """Parse completion behavior is verified through the real JS modules."""
         result = subprocess.run(
             [

@@ -185,7 +185,7 @@ def _fake_profiles(root: Any) -> list[dict[str, Any]]:
             "name": "recommended",
             "builtin": True,
             "artifact_options": [
-                {"artifact_key": "runkeys", "parse": True, "analyze": True},
+                {"artifact_key": "runkeys", "mode": "parse_and_ai"},
             ],
         },
     ]
@@ -202,8 +202,18 @@ def _fake_artifact_options_to_lists(
     Returns:
         Tuple of (parse_keys, analysis_keys).
     """
-    parse = [o["artifact_key"] for o in options if o.get("parse")]
-    analyze = [o["artifact_key"] for o in options if o.get("analyze")]
+    parse: list[str] = []
+    analyze: list[str] = []
+    for option in options:
+        artifact_key = str(option.get("artifact_key") or "").strip()
+        if not artifact_key:
+            continue
+        mode = str(option.get("mode") or "parse_and_ai").strip().lower()
+        if mode not in {"parse_and_ai", "parse_only"}:
+            continue
+        parse.append(artifact_key)
+        if mode == "parse_and_ai":
+            analyze.append(artifact_key)
     return parse, analyze
 
 

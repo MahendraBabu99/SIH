@@ -272,7 +272,14 @@ class RouteParseValidationStateTests(unittest.TestCase):
         ):
             response = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["not_a_real_artifact"]},
+                json={
+                    "artifact_options": [
+                        {
+                            "artifact_key": "not_a_real_artifact",
+                            "mode": "parse_and_ai",
+                        },
+                    ],
+                },
             )
 
         self.assertEqual(response.status_code, 400)
@@ -299,7 +306,14 @@ class RouteParseValidationStateTests(unittest.TestCase):
         ):
             response = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["not_a_real_artifact"]},
+                json={
+                    "artifact_options": [
+                        {
+                            "artifact_key": "not_a_real_artifact",
+                            "mode": "parse_and_ai",
+                        },
+                    ],
+                },
             )
 
         self.assertEqual(response.status_code, 400)
@@ -329,7 +343,11 @@ class RouteParseValidationStateTests(unittest.TestCase):
         ):
             response = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["tasks"]},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "tasks", "mode": "parse_and_ai"},
+                    ],
+                },
             )
 
         self.assertEqual(response.status_code, 400)
@@ -368,7 +386,11 @@ class RouteParseValidationStateTests(unittest.TestCase):
         ):
             response = self.client.post(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
-                json={"artifacts": ["tasks"]},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "tasks", "mode": "parse_and_ai"},
+                    ],
+                },
             )
 
         self.assertEqual(response.status_code, 400)
@@ -612,7 +634,7 @@ class AutomationParseCancellationTests(unittest.TestCase):
                     {
                         "name": "recommended",
                         "artifact_options": [
-                            {"artifact_key": "runkeys", "parse": True, "analyze": True},
+                            {"artifact_key": "runkeys", "mode": "parse_and_ai"},
                         ],
                     },
                 ],

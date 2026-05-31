@@ -531,29 +531,55 @@ class ArtifactHelperTests(unittest.TestCase):
             "parse_only",
         )
 
-    def test_normalize_artifact_options_string_list(self) -> None:
-        result = artifact_profiles.normalize_artifact_options(["runkeys", "mft", "runkeys"])
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["artifact_key"], "runkeys")
-        self.assertEqual(result[0]["mode"], "parse_and_ai")
+    def test_normalize_artifact_options_rejects_string_list(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            artifact_profiles.normalize_artifact_options(["runkeys", "mft"])
+        self.assertIn("item must be an object", str(ctx.exception))
 
     def test_normalize_artifact_options_dict_list(self) -> None:
         result = artifact_profiles.normalize_artifact_options([
             {"artifact_key": "runkeys", "mode": "parse_only"},
-            {"key": "mft", "ai_enabled": False},
+            {"artifact_key": "mft", "mode": "parse_and_ai"},
         ])
         self.assertEqual(result[0]["mode"], "parse_only")
         self.assertEqual(result[1]["artifact_key"], "mft")
-        self.assertEqual(result[1]["mode"], "parse_only")
+        self.assertEqual(result[1]["mode"], "parse_and_ai")
 
     def test_normalize_artifact_options_rejects_non_list(self) -> None:
         with self.assertRaises(ValueError):
             artifact_profiles.normalize_artifact_options("not a list")
 
-    def test_normalize_artifact_options_skips_non_string_non_dict(self) -> None:
-        result = artifact_profiles.normalize_artifact_options(["runkeys", 42, None])
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["artifact_key"], "runkeys")
+    def test_normalize_artifact_options_rejects_non_dict_items(self) -> None:
+        with self.assertRaises(ValueError):
+            artifact_profiles.normalize_artifact_options([
+                {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                42,
+            ])
+
+    def test_normalize_artifact_options_defaults_missing_mode(self) -> None:
+        result = artifact_profiles.normalize_artifact_options([
+            {"artifact_key": "runkeys"},
+        ])
+        self.assertEqual(result, [{"artifact_key": "runkeys", "mode": "parse_and_ai"}])
+
+    def test_normalize_artifact_options_rejects_invalid_mode(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            artifact_profiles.normalize_artifact_options([
+                {"artifact_key": "runkeys", "mode": "scan_and_ai"},
+            ])
+        self.assertIn("mode must be", str(ctx.exception))
+
+    def test_normalize_artifact_options_rejects_option_alias_fields(self) -> None:
+        alias_payloads = [
+            [{"key": "runkeys"}],
+            [{"artifact_key": "runkeys", "ai_enabled": True}],
+            [{"artifact_key": "runkeys", "parse_mode": "parse_only"}],
+        ]
+        for payload in alias_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError) as ctx:
+                    artifact_profiles.normalize_artifact_options(payload)
+                self.assertIn("may only include", str(ctx.exception))
 
     def test_artifact_options_to_lists(self) -> None:
         options = [
@@ -577,30 +603,21 @@ class ArtifactHelperTests(unittest.TestCase):
         self.assertEqual(parse_list, ["runkeys", "mft"])
         self.assertEqual(analysis_list, ["runkeys"])
 
-    def test_extract_parse_selection_payload_legacy_format(self) -> None:
-        payload = {
-            "artifacts": ["runkeys", "mft"],
-            "ai_artifacts": ["runkeys"],
-        }
-        options, parse_list, analysis_list = artifact_profiles.extract_parse_selection_payload(payload)
-        self.assertEqual(parse_list, ["runkeys", "mft"])
-        self.assertEqual(analysis_list, ["runkeys"])
-
-    def test_extract_parse_selection_payload_legacy_no_ai_artifacts(self) -> None:
+    def test_extract_parse_selection_payload_rejects_legacy_format(self) -> None:
         payload = {"artifacts": ["runkeys", "mft"]}
-        options, parse_list, analysis_list = artifact_profiles.extract_parse_selection_payload(payload)
-        self.assertEqual(parse_list, ["runkeys", "mft"])
-        self.assertEqual(analysis_list, ["runkeys", "mft"])
+        with self.assertRaises(ValueError) as ctx:
+            artifact_profiles.extract_parse_selection_payload(payload)
+        self.assertIn("`artifact_options` is required", str(ctx.exception))
 
-    def test_extract_parse_selection_payload_invalid_artifacts(self) -> None:
-        with self.assertRaises(ValueError):
-            artifact_profiles.extract_parse_selection_payload({"artifacts": "not a list"})
+    def test_extract_parse_selection_payload_rejects_missing_artifact_options(self) -> None:
+        payload = {}
+        with self.assertRaises(ValueError) as ctx:
+            artifact_profiles.extract_parse_selection_payload(payload)
+        self.assertIn("`artifact_options` is required", str(ctx.exception))
 
-    def test_extract_parse_selection_payload_invalid_ai_artifacts(self) -> None:
+    def test_extract_parse_selection_payload_invalid_artifact_options(self) -> None:
         with self.assertRaises(ValueError):
-            artifact_profiles.extract_parse_selection_payload(
-                {"artifacts": ["runkeys"], "ai_artifacts": "not a list"}
-            )
+            artifact_profiles.extract_parse_selection_payload({"artifact_options": "not a list"})
 
     def test_validate_analysis_date_range_valid(self) -> None:
         result = artifact_profiles.validate_analysis_date_range(

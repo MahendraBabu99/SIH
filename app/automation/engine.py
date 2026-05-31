@@ -6,7 +6,6 @@ shared core used by both the REST API endpoint and the CLI tool.
 
 Attributes:
     LOGGER: Module-level logger for automation diagnostics.
-    PROFILE_DIR_NAME: Subdirectory name for artifact profiles.
     DEFAULT_PROFILE_NAME: Fallback profile when none specified.
     _PROJECT_ROOT: Resolved project root used for case and profile paths.
 """
@@ -52,7 +51,6 @@ from app.version import TOOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
-PROFILE_DIR_NAME = "profile"
 DEFAULT_PROFILE_NAME = "recommended"
 
 # Project root: app/automation/engine.py -> app/automation -> app -> root
@@ -305,7 +303,6 @@ def _load_profile(
         else _PROJECT_ROOT / "config.yaml"
     )
     profiles_root = resolve_profiles_root(active_config_path)
-    legacy_profiles_root = _PROJECT_ROOT / PROFILE_DIR_NAME
     profiles = load_profiles_from_directory(profiles_root)
 
     target_name = (profile_name or "").strip().lower() or DEFAULT_PROFILE_NAME
@@ -314,21 +311,6 @@ def _load_profile(
         if str(p.get("name", "")).strip().lower() == target_name:
             matched = p
             break
-
-    if (
-        matched is None
-        and legacy_profiles_root.resolve() != profiles_root.resolve()
-        and legacy_profiles_root.exists()
-    ):
-        legacy_profiles = load_profiles_from_directory(legacy_profiles_root)
-        for p in legacy_profiles:
-            if str(p.get("name", "")).strip().lower() == target_name:
-                matched = p
-                warnings.append(
-                    "Loaded artifact profile from the repository profile "
-                    f"directory for compatibility: {legacy_profiles_root}."
-                )
-                break
 
     if matched is None:
         warnings.append(

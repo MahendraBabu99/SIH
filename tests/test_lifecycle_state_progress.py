@@ -261,7 +261,11 @@ class LifecycleStateProgressTests(unittest.TestCase):
             with self.app.test_request_context(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
                 method="POST",
-                json={"artifacts": ["runkeys"]},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
             ):
                 parse_response, parse_status = routes_images.start_image_parse(
                     case_id, image_id,
@@ -352,7 +356,11 @@ class LifecycleStateProgressTests(unittest.TestCase):
             with self.app.test_request_context(
                 f"/api/cases/{case_id}/images/{image_id}/parse",
                 method="POST",
-                json={"artifacts": ["runkeys"]},
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
             ):
                 parse_response, parse_status = routes_images.start_image_parse(
                     case_id, image_id,

@@ -112,9 +112,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "artifact_deduplication_enabled": True,
         "artifact_ai_columns_config_path": "config/artifact_ai_columns.yaml",
     },
-    # NOTE: artifact_profiles are stored as JSON files on disk (in the profiles/
-    # directory next to config.yaml), not in this config dict.  No default key is
-    # needed here — see _resolve_profiles_root() in routes.py.
+    # NOTE: artifact profiles are stored as JSON files on disk in the profile/
+    # directory next to config.yaml, not in this config dict.  No default key is
+    # needed here; see resolve_profiles_root() in app.artifact_profiles.
 }
 
 # Ordered list of logo filenames to look for in the images/ directory.

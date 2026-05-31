@@ -435,11 +435,19 @@ def test_legacy_case_level_analyze_uses_each_image_csv_for_duplicate_artifacts(t
                 ).status_code == 200
                 assert client.post(
                     f"/api/cases/{case_id}/images/{img1}/parse",
-                    json={"artifacts": ["runkeys"]},
+                    json={
+                        "artifact_options": [
+                            {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                        ],
+                    },
                 ).status_code == 202
                 assert client.post(
                     f"/api/cases/{case_id}/images/{img2}/parse",
-                    json={"artifacts": ["runkeys"]},
+                    json={
+                        "artifact_options": [
+                            {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                        ],
+                    },
                 ).status_code == 202
 
                 response = client.post(

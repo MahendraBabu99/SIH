@@ -368,11 +368,11 @@ class ForensicAnalyzer:
             self.ai_input_safety_margin_tokens,
             self.ai_input_max_tokens,
         ) = _resolve_non_overlapping_analysis_token_budget(analysis_config)
-        legacy_shortened = read_int_setting(
-            analysis_config, "statistics_section_cutoff_tokens", DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS, minimum=1,
-        )
         self.shortened_prompt_cutoff_tokens = read_int_setting(
-            analysis_config, "shortened_prompt_cutoff_tokens", legacy_shortened, minimum=1,
+            analysis_config,
+            "shortened_prompt_cutoff_tokens",
+            DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS,
+            minimum=1,
         )
         self.chunk_csv_budget = max(1, int(self.ai_input_max_tokens * TOKEN_CHAR_RATIO * 0.6))
         self.citation_spot_check_limit = read_int_setting(
