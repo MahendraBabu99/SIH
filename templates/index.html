@@ -725,7 +725,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
             autocomplete="off"
             spellcheck="false"
           >
-          <p id="setting-csv-output-help">When empty, CSVs are saved under `cases/&lt;case_id&gt;/parsed`.</p>
+          <p id="setting-csv-output-help">When empty, parsed CSVs are written under image-scoped case folders such as `cases/&lt;case_id&gt;/images/&lt;image_id&gt;/parsed`.</p>
         </div>
       </section>
 
@@ -778,9 +778,10 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
           <div class="form-row">
             <label for="setting-artifact-csv-row-limit">
               Artifact CSV Row Limit
-              <span class="setting-help-icon" data-tooltip="Maximum rows to write per artifact CSV before AI analysis. Set to 0 for no limit.">?</span>
+              <span class="setting-help-icon" data-tooltip="0 preserves all rows; positive values intentionally cap parsed CSV output.">?</span>
             </label>
             <input id="setting-artifact-csv-row-limit" name="artifact_csv_row_limit" type="number" min="0" value="0">
+            <p id="setting-artifact-csv-row-limit-help">0 preserves all rows; positive values intentionally cap parsed CSV output.</p>
           </div>
           <div class="form-row">
             <label for="setting-intake-timeout-seconds">

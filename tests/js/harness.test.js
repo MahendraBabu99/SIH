@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { productionScripts, setupAift, setupUtilsOnly, mustGet, mustFindAll } = require("./harness");
+const jestConfig = require("../../jest.config");
 
 function frontendTestFiles() {
   const testDir = __dirname;
@@ -70,6 +71,17 @@ describe("shared frontend harness", () => {
     expect(A.setupEvidence).toBeUndefined();
   });
 
+  test("selector escaping works without native CSS.escape", () => {
+    const A = setupAift({ withoutCssEscape: true });
+    expect(global.CSS.escape).toBeUndefined();
+    expect(A.cssEscape("image.1:services")).toBe("image\\.1\\:services");
+  });
+
+  test("coverage includes the production app orchestrator", () => {
+    expect(jestConfig.collectCoverageFrom).toContain("static/**/*.js");
+    expect(jestConfig.collectCoverageFrom).not.toContain("!static/app.js");
+  });
+
   test("cleanup closes pending SSE retry timers", () => {
     const A = setupAift();
     const closed = jest.fn();
@@ -78,5 +90,15 @@ describe("shared frontend harness", () => {
     A.closeParseSse();
     expect(closed).toHaveBeenCalled();
     expect(A.st.parse.retry).toBeNull();
+  });
+
+  test("closed EventSource stubs do not deliver stale callbacks", () => {
+    setupAift();
+    const source = new EventSource("/test-stream");
+    const onMessage = jest.fn();
+    source.onmessage = onMessage;
+    source.close();
+    source.onmessage({ data: "{}" });
+    expect(onMessage).not.toHaveBeenCalled();
   });
 });

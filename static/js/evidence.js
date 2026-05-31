@@ -399,7 +399,7 @@
     let select = li.querySelector("select.artifact-mode-select");
     if (!select) {
       select = A.createArtifactModeSelect(key, artifactModeValue(preferredMode));
-      const artifactName = st.artifactNames[key] || key;
+      const artifactName = artifactLabelText(cb) || st.artifactNames[key] || key;
       select.setAttribute("aria-label", `Analysis mode for ${artifactName}`);
       li.appendChild(select);
     }
@@ -430,6 +430,41 @@
     const txt = Array.from(label.childNodes).find((n) => n.nodeType === Node.TEXT_NODE);
     if (txt) txt.textContent = ` ${text}`;
     else label.appendChild(document.createTextNode(` ${text}`));
+  }
+
+  /** Return the visible label text associated with an artifact checkbox. */
+  function artifactLabelText(cb) {
+    const label = cb && cb.closest ? cb.closest("label") : null;
+    if (!label) return "";
+    return Array.from(label.childNodes)
+      .filter((n) => n.nodeType === Node.TEXT_NODE)
+      .map((n) => String(n.textContent || "").trim())
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
+
+  /** Return normalized display identity for an artifact checkbox. */
+  function artifactDisplayIdentity(cb) {
+    const fs = cb && cb.closest ? cb.closest("fieldset.artifact-category") : null;
+    const key = String((cb && cb.dataset && cb.dataset.artifactKey) || "").trim();
+    const os = fs && fs.dataset.os ? String(fs.dataset.os).trim().toLowerCase() : "windows";
+    const category = fs ? String(fs.dataset.category || "").trim().toLowerCase() : "";
+    const label = artifactLabelText(cb) || key;
+    return { key, os, category, label };
+  }
+
+  /** Return true when a key appears in multiple static OS/category contexts. */
+  function artifactKeyHasMultipleStaticIdentities(key) {
+    const normalizedKey = String(key || "").trim();
+    if (!normalizedKey || !el.artifactsForm) return false;
+    const identities = new Set();
+    artifactBoxes().forEach((cb) => {
+      if (String(cb.dataset.artifactKey || "").trim() !== normalizedKey) return;
+      const identity = artifactDisplayIdentity(cb);
+      identities.add(`${identity.os}\n${identity.category}\n${identity.label}`);
+    });
+    return identities.size > 1;
   }
 
   /** Remove the dynamically-created "Additional" artifact category from the DOM. */
@@ -466,7 +501,7 @@
         li.classList.toggle("artifact-unavailable", !available);
         li.title = available ? "" : "Not found in this image";
       }
-      if (info && info.name) setLabelText(cb, String(info.name));
+      if (info && info.name && !artifactKeyHasMultipleStaticIdentities(key)) setLabelText(cb, String(info.name));
       const modeSelect = ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
       if (modeSelect) modeSelect.value = A.MODE_PARSE_AND_AI;
       syncArtifactModeControl(cb, modeSelect);
@@ -590,7 +625,7 @@
     if (wanted === "all") return Array.from(panelsContainer.querySelectorAll(".artifact-image-panel"));
     const activeId = A.activeArtifactTabImageId();
     if (!activeId) return [];
-    const activePanel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${CSS.escape(activeId)}"]`);
+    const activePanel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${A.cssEscape(activeId)}"]`);
     return activePanel ? [activePanel] : [];
   }
 
@@ -946,6 +981,8 @@
 
   A.updateParseButton = updateParseButton;
   A.artifactBoxesIn = artifactBoxesIn;
+  A.artifactLabelText = artifactLabelText;
+  A.artifactDisplayIdentity = artifactDisplayIdentity;
   A.selectedArtifactOptions = selectedArtifactOptions;
   A.selectedArtifactOptionsIn = selectedArtifactOptionsIn;
   A.selectedArtifacts = selectedArtifacts;

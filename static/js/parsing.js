@@ -494,7 +494,7 @@
 
       const arts = sel.artifact_options.map((o) => o.artifact_key);
       arts.forEach((k) => {
-        const { tr, tdS, tdR } = A.createParseProgressRow(k, A.artifactName(k));
+        const { tr, tdS, tdR } = A.createParseProgressRow(k, A.artifactNameForImage(sel.image_id, k));
         tbody.appendChild(tr);
         imgState.rows[k] = { tr, tdS, tdR };
         imgState.status[k] = "waiting";
@@ -542,7 +542,7 @@
   function setImageParseSectionStatus(imageId, status) {
     const container = q("parse-image-sections");
     if (!container) return;
-    const section = container.querySelector(`.parse-image-section[data-image-id="${CSS.escape(imageId)}"]`);
+    const section = container.querySelector(`.parse-image-section[data-image-id="${A.cssEscape(imageId)}"]`);
     if (!section) return;
     const statusEl = section.querySelector(".parse-image-status");
     if (statusEl) {
@@ -560,7 +560,7 @@
   function setImageParseSectionError(imageId, msg) {
     const container = q("parse-image-sections");
     if (!container) return;
-    const section = container.querySelector(`.parse-image-section[data-image-id="${CSS.escape(imageId)}"]`);
+    const section = container.querySelector(`.parse-image-section[data-image-id="${A.cssEscape(imageId)}"]`);
     if (!section) return;
     const errP = section.querySelector(".parse-image-error");
     if (errP) {
@@ -880,7 +880,7 @@
     if (t === "artifact_failed") {
       const key = String(p.artifact_key || "");
       setImageParseRow(imageId, key, "failed", A.num(p.record_count, 0), String(p.error || "Unknown parser error."));
-      setImageParseSectionError(imageId, `${A.artifactName(key)}: ${String(p.error || "Unknown parser error.")}`);
+      setImageParseSectionError(imageId, `${A.artifactNameForImage(imageId, key)}: ${String(p.error || "Unknown parser error.")}`);
       updateMultiImageParseProgress();
       return;
     }

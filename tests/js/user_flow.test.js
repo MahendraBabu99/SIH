@@ -437,4 +437,69 @@ describe("mocked final browser flow", () => {
     expect(A.st.analysis.fail).toBe(true);
     expect(A.st.step).not.toBe(5);
   });
+
+  test("mixed-OS duplicate artifact keys submit canonical per-image options", async () => {
+    const calls = [];
+    let imageIndex = 0;
+    global.fetch = jest.fn((url, init = {}) => {
+      calls.push([url, init]);
+      if (url === "/api/cases") {
+        return jsonResponse({ success: true, case_id: "case-mixed", case_name: "Mixed OS" }, 201);
+      }
+      if (url === "/api/cases/case-mixed/images") {
+        imageIndex += 1;
+        return jsonResponse({ success: true, image_id: `img-${imageIndex}`, label: imageIndex === 1 ? "Windows" : "Linux" }, 201);
+      }
+      if (url === "/api/cases/case-mixed/images/img-1/evidence") {
+        return jsonResponse({
+          success: true,
+          os_type: "windows",
+          metadata: { hostname: "WIN-01", os_version: "Windows 11" },
+          hashes: {},
+          available_artifacts: [{ key: "services", name: "Services", available: true }],
+        });
+      }
+      if (url === "/api/cases/case-mixed/images/img-2/evidence") {
+        return jsonResponse({
+          success: true,
+          os_type: "linux",
+          metadata: { hostname: "LINUX-01", os_version: "Ubuntu 24.04" },
+          hashes: {},
+          available_artifacts: [{ key: "services", name: "Systemd Services", available: true }],
+        });
+      }
+      if (url.endsWith("/parse")) return jsonResponse({ success: true });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    const firstCard = A.getImageForms()[0];
+    firstCard.querySelector(".image-label-input").value = "Windows";
+    firstCard.querySelector(".image-path-input").value = "E:\\evidence\\win.E01";
+    A.addImageForm();
+    const secondCard = A.getImageForms()[1];
+    secondCard.querySelector(".image-label-input").value = "Linux";
+    secondCard.querySelector(".image-path-input").value = "E:\\evidence\\linux.E01";
+
+    await A.submitEvidence();
+
+    expect(A.artifactLabelText(mustQuery(document, '.artifact-image-panel[data-image-id="img-1"] input[data-artifact-key="services"]'))).toBe("Services");
+    expect(A.artifactLabelText(mustQuery(document, '.artifact-image-panel[data-image-id="img-2"] input[data-artifact-key="services"]'))).toBe("Systemd Services");
+
+    selectPanelArtifact("img-1", "services", A.MODE_PARSE_ONLY);
+    selectPanelArtifact("img-2", "services", A.MODE_PARSE_AND_AI);
+    await A.submitParse();
+
+    const parseSections = Array.from(document.querySelectorAll(".parse-image-section"));
+    expect(parseSections[0].textContent).toContain("Services");
+    expect(parseSections[1].textContent).toContain("Systemd Services");
+
+    const parseCalls = calls.filter(([url]) => String(url).endsWith("/parse"));
+    expect(parseCalls).toHaveLength(2);
+    expect(requestBody(parseCalls[0])).toEqual({
+      artifact_options: [{ artifact_key: "services", mode: A.MODE_PARSE_ONLY }],
+    });
+    expect(requestBody(parseCalls[1])).toEqual({
+      artifact_options: [{ artifact_key: "services", mode: A.MODE_PARSE_AND_AI }],
+    });
+  });
 });

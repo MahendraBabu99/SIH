@@ -15,6 +15,7 @@ from .archives import (
     ArchiveExtractionLimits,
     DEFAULT_ARCHIVE_LIMITS,
     extract_archive_to_directory,
+    validate_archive_safety,
 )
 from .descriptor import EvidenceDescriptor, descriptor_for_path
 
@@ -157,6 +158,7 @@ def resolve_archive_descriptor(
     discovery contract as automation mode.
     """
     resolved_archive = Path(archive_path).resolve()
+    validate_archive_safety(resolved_archive, limits=limits)
 
     if can_open_with_dissect(resolved_archive):
         return descriptor_for_path(resolved_archive, source_mode=source_mode)

@@ -83,6 +83,38 @@ function makeWindowsLinuxImages() {
 }
 
 /**
+ * Helper: create a mixed-OS setup where both OSes expose the same artifact key.
+ *
+ * @returns {Object[]} Array of two image entries.
+ */
+function makeWindowsLinuxServiceImages() {
+  return [
+    {
+      image_id: "img-win",
+      label: "Windows PC",
+      os_type: "windows",
+      metadata: { hostname: "WIN-PC" },
+      hashes: {},
+      available_artifacts: [
+        { key: "services", name: "Services", available: true },
+        { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+      ],
+    },
+    {
+      image_id: "img-linux",
+      label: "Linux Server",
+      os_type: "linux",
+      metadata: { hostname: "SRV-01" },
+      hashes: {},
+      available_artifacts: [
+        { key: "services", name: "Systemd Services", available: true },
+        { key: "cronjobs", name: "Cron Jobs", available: true },
+      ],
+    },
+  ];
+}
+
+/**
  * Helper: create a two-Windows-image setup.
  *
  * @returns {Object[]} Array of two image entries.
@@ -581,6 +613,18 @@ describe("buildMultiImageArtifactTabs", () => {
     expect(panels[1].dataset.imageId).toBe("img-w2");
   });
 
+  test("preserves OS-specific labels for duplicate artifact keys", () => {
+    setImagesAndBuildTabs(makeWindowsLinuxServiceImages());
+
+    const winPanel = document.querySelector(".artifact-image-panel[data-image-id='img-win']");
+    const linuxPanel = document.querySelector(".artifact-image-panel[data-image-id='img-linux']");
+    const winServices = winPanel.querySelector("input[data-artifact-key='services']");
+    const linuxServices = linuxPanel.querySelector("input[data-artifact-key='services']");
+
+    expect(A.artifactLabelText(winServices)).toBe("Services");
+    expect(A.artifactLabelText(linuxServices)).toBe("Systemd Services");
+  });
+
   test("first tab and panel are active by default", () => {
     setImagesAndBuildTabs(makeTwoWindowsImages());
 
@@ -990,6 +1034,27 @@ describe("applyCurrentSelectionToAllImages", () => {
     if (cronCb) {
       expect(cronCb.checked).toBe(true);
     }
+  });
+
+  test("skips cross-OS duplicate-key artifacts when applying current selection to all", () => {
+    setImagesAndBuildTabs(makeWindowsLinuxServiceImages());
+
+    const winPanel = document.querySelector(".artifact-image-panel[data-image-id='img-win']");
+    const winServices = winPanel.querySelector("input[data-artifact-key='services']");
+    winServices.checked = true;
+    const winMode = winServices.closest("li").querySelector("select.artifact-mode-select");
+    winMode.value = A.MODE_PARSE_ONLY;
+
+    const linuxPanel = document.querySelector(".artifact-image-panel[data-image-id='img-linux']");
+    const linuxServices = linuxPanel.querySelector("input[data-artifact-key='services']");
+    const linuxMode = linuxServices.closest("li").querySelector("select.artifact-mode-select");
+    linuxServices.checked = false;
+    linuxMode.value = A.MODE_PARSE_AND_AI;
+
+    A.applyCurrentSelectionToAllImages();
+
+    expect(linuxServices.checked).toBe(false);
+    expect(linuxMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 });
 

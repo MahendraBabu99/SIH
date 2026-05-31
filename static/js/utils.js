@@ -579,6 +579,30 @@ window.AIFT = (() => {
   }
 
   /**
+   * Escape an arbitrary value for use inside a CSS selector.
+   *
+   * Uses the browser-native CSS.escape when present, with a local fallback for
+   * embedded webviews and older browsers.
+   *
+   * @param {*} value - Value to escape.
+   * @returns {string} CSS selector-safe string.
+   */
+  function cssEscape(value) {
+    const text = String(value == null ? "" : value);
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(text);
+    }
+    return text.replace(/[\0-\x1f\x7f]|^-?\d|^-$|[^\w-]/g, (ch, offset) => {
+      if (ch === "\0") return "\uFFFD";
+      const code = ch.charCodeAt(0).toString(16).toUpperCase();
+      if (/[\0-\x1f\x7f]/.test(ch) || (offset === 0 && /^-?\d/.test(text)) || (offset === 1 && text.charAt(0) === "-" && /\d/.test(ch))) {
+        return `\\${code} `;
+      }
+      return `\\${ch}`;
+    });
+  }
+
+  /**
    * Format a byte count as a human-readable string (e.g. "1.5 MB").
    *
    * @param {number} b - Byte count.
@@ -1191,7 +1215,7 @@ window.AIFT = (() => {
     // Network
     fetchWithTimeout, handleFetchError, apiJson, readErr,
     // Utilities
-    artifactName, fmtBytes, fmtNumber, safeJson, escapeHtml, val, num,
+    artifactName, cssEscape, fmtBytes, fmtNumber, safeJson, escapeHtml, val, num,
     isObj, obj, clone,
     toBackendProvider, toUiProvider, normProvider, prettyProvider,
     stripLeadingReasoningBlocks, getFilename, boolSetting, fmtElapsed,

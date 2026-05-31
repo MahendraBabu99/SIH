@@ -1384,7 +1384,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
         case_id = self._create_case()
         zip_path = Path(self.temp_dir.name) / "direct.zip"
         with ZipFile(zip_path, "w") as zf:
-            zf.writestr("../unsafe.E01", b"ignored when directly loadable")
+            zf.writestr("evidence/safe.E01", b"directly loadable archive")
 
         class FakeTargetHandle:
             def __init__(self) -> None:

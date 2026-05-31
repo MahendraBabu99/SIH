@@ -30,22 +30,56 @@ function readStatic(relPath) {
   return fs.readFileSync(path.join(STATIC, relPath), "utf-8");
 }
 
-function installBrowserStubs() {
+function installBrowserStubs(options = {}) {
   global.fetch = jest.fn(() => Promise.reject(new Error("fetch not available in tests")));
-  if (!global.CSS) global.CSS = {};
-  if (!global.CSS.escape) {
+  if (options.withoutCssEscape) {
+    global.CSS = {};
+    window.CSS = global.CSS;
+  } else if (!global.CSS) {
+    global.CSS = {};
+  }
+  if (!options.withoutCssEscape && !global.CSS.escape) {
     global.CSS.escape = (v) => String(v).replace(/([^\w-])/g, "\\$1");
   }
+  if (!window.CSS) window.CSS = global.CSS;
+  else if (!options.withoutCssEscape && global.CSS.escape && !window.CSS.escape) window.CSS.escape = global.CSS.escape;
 
   const openSources = [];
   global.EventSource = class HarnessEventSource {
     constructor(url) {
       this.url = url;
       this.readyState = 0;
+      this._onopen = null;
+      this._onmessage = null;
+      this._onerror = null;
       this.close = jest.fn(() => {
         this.readyState = 2;
       });
       openSources.push(this);
+    }
+    set onopen(handler) {
+      this._onopen = typeof handler === "function" ? handler : null;
+    }
+    get onopen() {
+      return this._onopen ? (event) => {
+        if (this.readyState !== 2) this._onopen(event);
+      } : null;
+    }
+    set onmessage(handler) {
+      this._onmessage = typeof handler === "function" ? handler : null;
+    }
+    get onmessage() {
+      return this._onmessage ? (event) => {
+        if (this.readyState !== 2) this._onmessage(event);
+      } : null;
+    }
+    set onerror(handler) {
+      this._onerror = typeof handler === "function" ? handler : null;
+    }
+    get onerror() {
+      return this._onerror ? (event) => {
+        if (this.readyState !== 2) this._onerror(event);
+      } : null;
     }
   };
   window.EventSource = global.EventSource;
@@ -86,7 +120,7 @@ function loadTemplate() {
 function setupAift(options = {}) {
   clearStaticRequireCache();
   loadTemplate();
-  const stubs = installBrowserStubs();
+  const stubs = installBrowserStubs({ withoutCssEscape: !!options.withoutCssEscape });
   const omitted = new Set(options.omitScripts || []);
   const scripts = options.scripts || productionScripts();
   for (const script of scripts) {

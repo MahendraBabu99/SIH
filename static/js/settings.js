@@ -407,8 +407,8 @@
   /** Return the default CSV output path for the active case. */
   function defaultCsvOutputForCurrentCase() {
     const caseId = A.activeCaseId();
-    if (caseId) return `cases/${caseId}/parsed`;
-    return "cases/<case_id>/parsed";
+    if (caseId) return `cases/${caseId}/images/<image_id>/parsed`;
+    return "cases/<case_id>/images/<image_id>/parsed";
   }
 
   /** Build the effective CSV output path from a configured root directory. */
@@ -418,7 +418,7 @@
     const trimmed = text.replace(/[\\/]+$/, "");
     const sep = trimmed.includes("\\") ? "\\" : "/";
     const caseToken = A.activeCaseId() || "<case_id>";
-    return `${trimmed}${sep}${caseToken}${sep}parsed`;
+    return `${trimmed}${sep}${caseToken}${sep}images${sep}<image_id>${sep}parsed`;
   }
 
   /** Update the CSV output path help text below the input field. */
@@ -428,10 +428,10 @@
     const defaultPath = defaultCsvOutputForCurrentCase();
     if (configuredPath) {
       const effectivePath = configuredCsvOutputForCurrentCase(configuredPath);
-      el.setCsvOutputHelp.textContent = `Currently using: ${effectivePath}`;
+      el.setCsvOutputHelp.textContent = `Configured root; parsed CSVs are written under image-scoped folders such as ${effectivePath}.`;
       return;
     }
-    el.setCsvOutputHelp.textContent = `Currently using: ${defaultPath}`;
+    el.setCsvOutputHelp.textContent = `When empty, parsed CSVs are written under image-scoped case folders such as ${defaultPath}.`;
   }
 
   // ── Connection test ────────────────────────────────────────────────────────

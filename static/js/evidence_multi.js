@@ -689,6 +689,10 @@
           .filter((a) => a && a.available)
           .map((a) => String(a.key)),
       );
+      const availMap = new Map();
+      (img.available_artifacts || []).forEach((a) => {
+        if (a && a.key) availMap.set(String(a.key), a);
+      });
 
       /* Create tab button. */
       const tabBtn = document.createElement("button");
@@ -740,6 +744,12 @@
               li.dataset.available = String(available);
               li.classList.toggle("artifact-unavailable", !available);
               li.title = available ? "" : "Not found in this image";
+            }
+            const descriptor = availMap.get(key);
+            if (descriptor && descriptor.name && li && String(fs.dataset.category || "") === "additional") {
+              const labelEl = cb.closest("label");
+              const txt = labelEl ? Array.from(labelEl.childNodes).find((n) => n.nodeType === Node.TEXT_NODE) : null;
+              if (txt) txt.textContent = ` ${descriptor.name}`;
             }
             /* Remove any existing mode select clones — we'll rebuild. */
             const existingSelect = li ? li.querySelector("select.artifact-mode-select") : null;
@@ -813,9 +823,27 @@
     if (!imageId) return [];
     const panelsContainer = q("artifact-image-panels");
     if (!panelsContainer) return [];
-    const panel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${CSS.escape(imageId)}"]`);
+    const panel = panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${A.cssEscape(imageId)}"]`);
     if (!panel) return [];
     return A.selectedArtifactOptionsIn(panel);
+  }
+
+  /** Return the display label for an artifact in a specific image panel. */
+  function artifactNameForImage(imageId, artifactKey) {
+    const key = String(artifactKey || "").trim();
+    if (!imageId || !key) return "";
+    const panelsContainer = q("artifact-image-panels");
+    const panel = panelsContainer
+      ? panelsContainer.querySelector(`.artifact-image-panel[data-image-id="${A.cssEscape(imageId)}"]`)
+      : null;
+    const cb = panel ? panel.querySelector(`input[type='checkbox'][data-artifact-key="${A.cssEscape(key)}"]`) : null;
+    const panelLabel = cb ? A.artifactLabelText(cb) : "";
+    if (panelLabel) return panelLabel;
+    const image = st.images.find((img) => String(img.image_id || "") === String(imageId));
+    const descriptor = image && Array.isArray(image.available_artifacts)
+      ? image.available_artifacts.find((a) => a && String(a.key || "") === key)
+      : null;
+    return descriptor && descriptor.name ? String(descriptor.name) : A.artifactName(key);
   }
 
   /**
@@ -883,12 +911,24 @@
     const panelsContainer = q("artifact-image-panels");
     if (!panelsContainer) return;
 
-    /* Build a map of artifact_key → {checked, mode} from the active panel. */
+    /* Build a list of source states keyed by display identity, not key alone. */
     const activePanel = panelsContainer.querySelector(
-      `.artifact-image-panel[data-image-id="${CSS.escape(activeId)}"]`,
+      `.artifact-image-panel[data-image-id="${A.cssEscape(activeId)}"]`,
     );
     if (!activePanel) return;
-    const selectionMap = A.artifactSelectionStateByKeyIn(activePanel);
+    const sourceStates = A.artifactBoxesIn(activePanel).map((cb) => {
+      const li = cb.closest("li");
+      const select = li ? li.querySelector("select.artifact-mode-select") : null;
+      return {
+        identity: A.artifactDisplayIdentity(cb),
+        checked: cb.checked,
+        mode: A.artifactModeValue(select ? select.value : A.MODE_PARSE_AND_AI),
+      };
+    });
+    const identityMatches = (sourceIdentity, targetIdentity) => sourceIdentity.key === targetIdentity.key
+      && sourceIdentity.os === targetIdentity.os
+      && sourceIdentity.category === targetIdentity.category
+      && sourceIdentity.label === targetIdentity.label;
 
     /* Apply to every other panel.  Only touch artifacts that exist in the
        source panel — OS-specific artifacts unique to the target are left
@@ -898,8 +938,8 @@
       A.artifactBoxesIn(panel).forEach((cb) => {
         const key = String(cb.dataset.artifactKey || "").trim();
         if (!key) return;
-        const entry = selectionMap.get(key);
-        /* Artifact not in source panel — leave target state untouched. */
+        const entry = sourceStates.find((source) => identityMatches(source.identity, A.artifactDisplayIdentity(cb)));
+        /* Artifact not in source panel with matching display identity - leave target state untouched. */
         if (!entry) return;
         const select = A.ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
         if (cb.disabled) {
@@ -927,6 +967,7 @@
   A.switchArtifactTab = switchArtifactTab;
   A.activeArtifactTabImageId = activeArtifactTabImageId;
   A.selectedArtifactOptionsForImage = selectedArtifactOptionsForImage;
+  A.artifactNameForImage = artifactNameForImage;
   A.allImageArtifactSelections = allImageArtifactSelections;
   A.isMultiImage = isMultiImage;
   A.applyPresetMultiAware = applyPresetMultiAware;

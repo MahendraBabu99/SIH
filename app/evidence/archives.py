@@ -34,6 +34,7 @@ __all__ = [
     "ArchiveExtractionLimits",
     "DEFAULT_ARCHIVE_LIMITS",
     "validate_archive_member_target",
+    "validate_archive_safety",
     "extract_archive_to_directory",
     "extract_zip_to_directory",
     "extract_tar_to_directory",
@@ -308,6 +309,110 @@ def _zip_member_is_symlink(member: Any) -> bool:
     """
     mode = (int(getattr(member, "external_attr", 0)) >> 16) & 0o170000
     return mode == stat.S_IFLNK
+
+
+def _validation_root_for_archive(archive_path: Path) -> Path:
+    """Return a synthetic extraction root for no-extract safety validation."""
+    return archive_path.resolve().parent / "__aift_archive_validation__"
+
+
+def validate_archive_safety(
+    archive_path: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+) -> None:
+    """Validate archive metadata without extracting member contents.
+
+    Directly loadable archives still need the same member-name, link, collision,
+    and metadata-size checks as fallback extraction. This helper performs that
+    safety pass while leaving the archive contents in place.
+
+    Args:
+        archive_path: ZIP, tar/tar.gz, or 7z archive to validate.
+        limits: Extraction limit values to enforce against archive metadata.
+
+    Raises:
+        ValueError: If the archive is invalid, empty, unsupported, or unsafe.
+    """
+
+    _validate_limits(limits)
+    resolved_archive = Path(archive_path).resolve()
+    validation_root = _validation_root_for_archive(resolved_archive)
+    suffix = resolved_archive.suffix.lower()
+
+    if suffix == ".zip":
+        try:
+            with ZipFile(resolved_archive, "r") as archive:
+                target_tracker = _ArchiveTargetTracker()
+                file_count = 0
+                for member in archive.infolist():
+                    if _zip_member_is_symlink(member):
+                        raise ValueError(_UNSAFE_MESSAGE)
+                    if member.is_dir():
+                        continue
+                    file_count += 1
+                    _check_member_count(file_count, limits)
+                    _check_metadata_size(int(getattr(member, "file_size", -1)), limits)
+                    relative, _target = validate_archive_member_target(
+                        validation_root,
+                        member.filename,
+                    )
+                    target_tracker.add(relative)
+                if file_count == 0:
+                    raise ValueError("Evidence ZIP is empty.")
+        except BadZipFile as error:
+            raise ValueError(f"Invalid ZIP evidence file: {resolved_archive.name}") from error
+        return
+
+    if suffix in {".tar", ".gz", ".tgz"}:
+        try:
+            with tarfile.open(resolved_archive, "r:*") as archive:
+                target_tracker = _ArchiveTargetTracker()
+                file_count = 0
+                for member in archive.getmembers():
+                    if member.isdir():
+                        continue
+                    if not member.isfile():
+                        raise ValueError(_UNSAFE_MESSAGE)
+                    file_count += 1
+                    _check_member_count(file_count, limits)
+                    _check_metadata_size(int(getattr(member, "size", -1)), limits)
+                    relative, _target = validate_archive_member_target(
+                        validation_root,
+                        member.name,
+                    )
+                    target_tracker.add(relative)
+                if file_count == 0:
+                    raise ValueError("Evidence tar archive is empty.")
+        except tarfile.TarError as error:
+            raise ValueError(f"Invalid tar evidence file: {resolved_archive.name}") from error
+        return
+
+    if suffix == ".7z":
+        try:
+            with py7zr.SevenZipFile(resolved_archive, mode="r") as archive:
+                _reject_7z_link_metadata(archive)
+                target_tracker = _ArchiveTargetTracker()
+                file_count = 0
+                for member_name, member_size in _7z_member_names(archive):
+                    file_count += 1
+                    _check_member_count(file_count, limits)
+                    _check_metadata_size(member_size, limits)
+                    relative, _target = validate_archive_member_target(
+                        validation_root,
+                        member_name,
+                    )
+                    target_tracker.add(relative)
+                if file_count == 0:
+                    raise ValueError("Evidence 7z archive is empty.")
+        except py7zr.Bad7zFile as error:
+            raise ValueError(f"Invalid 7z evidence file: {resolved_archive.name}") from error
+        return
+
+    raise ValueError(
+        f"Unsupported archive extension '{resolved_archive.suffix}': "
+        f"{resolved_archive.name}"
+    )
 
 
 def extract_zip_to_directory(

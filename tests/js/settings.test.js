@@ -142,8 +142,9 @@ describe("updateCsvOutputHelp", () => {
     const help = mustGet("setting-csv-output-help");
     input.value = "";
     A.updateCsvOutputHelp();
-    expect(help.textContent).toContain("Currently using:");
-    expect(help.textContent).toContain("parsed");
+    expect(help.textContent).toContain("image-scoped case folders");
+    expect(help.textContent).toContain("cases/<case_id>/images/<image_id>/parsed");
+    expect(help.textContent).not.toContain("cases/<case_id>/parsed");
   });
 
   test("shows configured path when custom dir is set", () => {
@@ -152,8 +153,10 @@ describe("updateCsvOutputHelp", () => {
     A.setCaseId("test-case-123");
     input.value = "/custom/output";
     A.updateCsvOutputHelp();
+    expect(help.textContent).toContain("Configured root");
     expect(help.textContent).toContain("/custom/output");
     expect(help.textContent).toContain("test-case-123");
+    expect(help.textContent).toContain("images/<image_id>/parsed");
   });
 
   test("uses <case_id> placeholder when no case is active", () => {
@@ -163,6 +166,7 @@ describe("updateCsvOutputHelp", () => {
     input.value = "/custom/output";
     A.updateCsvOutputHelp();
     expect(help.textContent).toContain("<case_id>");
+    expect(help.textContent).toContain("<image_id>");
   });
 });
 
@@ -314,6 +318,15 @@ describe("advanced CSV row limit setting", () => {
     expect(A.el.setArtifactCsvRowLimit).not.toBeNull();
     expect(A.el.setArtifactCsvRowLimit.value).toBe("0");
     expect(A.el.setArtifactCsvRowLimit.getAttribute("min")).toBe("0");
+  });
+
+  test("artifact CSV row limit help describes forensic default and explicit cap", () => {
+    const tooltip = mustQuery(document, 'label[for="setting-artifact-csv-row-limit"] .setting-help-icon');
+    const help = mustGet("setting-artifact-csv-row-limit-help");
+    expect(tooltip.dataset.tooltip).toContain("0 preserves all rows");
+    expect(tooltip.dataset.tooltip).toContain("positive values intentionally cap parsed CSV output");
+    expect(help.textContent).toContain("0 preserves all rows");
+    expect(help.textContent).toContain("positive values intentionally cap parsed CSV output");
   });
 
   test("shortened prompt cutoff reads only the canonical setting key", async () => {

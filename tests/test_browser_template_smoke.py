@@ -25,6 +25,19 @@ REQUIRED_TEMPLATE_IDS = (
 )
 """DOM IDs expected in the rendered single-page application template."""
 
+REQUIRED_SCRIPT_ORDER = (
+    "js/utils.js",
+    "js/markdown.js",
+    "js/evidence.js",
+    "js/evidence_multi.js",
+    "js/parsing.js",
+    "js/analysis.js",
+    "js/chat.js",
+    "js/settings.js",
+    "app.js",
+)
+"""Production frontend scripts in dependency order."""
+
 
 @pytest.mark.browser_flow
 def test_flask_test_mode_serves_production_index_template() -> None:
@@ -40,3 +53,8 @@ def test_flask_test_mode_serves_production_index_template() -> None:
     for element_id in REQUIRED_TEMPLATE_IDS:
         assert f'id="{element_id}"' in html
     assert "/static/js/" in html
+    script_positions = [html.index(f'src="/static/{script}"') for script in REQUIRED_SCRIPT_ORDER]
+    assert script_positions == sorted(script_positions)
+    assert "cases/&lt;case_id&gt;/parsed" not in html
+    assert "cases/&lt;case_id&gt;/images/&lt;image_id&gt;/parsed" in html
+    assert "0 preserves all rows; positive values intentionally cap parsed CSV output" in html

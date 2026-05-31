@@ -14,7 +14,7 @@
 
 "use strict";
 
-const { setupAift, mustGet, mustQuery, mustFindAll } = require("./harness");
+const { setupAift, mustGet, mustQuery, mustFindAll, cleanupAift } = require("./harness");
 
 let A;
 
@@ -658,6 +658,34 @@ describe("selectedArtifactOptionsForImage", () => {
   test("returns empty array for null/empty imageId", () => {
     expect(A.selectedArtifactOptionsForImage("")).toEqual([]);
     expect(A.selectedArtifactOptionsForImage(null)).toEqual([]);
+  });
+});
+
+describe("browser selector fallback", () => {
+  test("per-image parse status lookup works without native CSS.escape", () => {
+    cleanupAift();
+    A = setupAift({ withoutCssEscape: true });
+    A.setCaseId("case-css-fallback");
+    const owner = A.newRunOwner("case-css-fallback", "parse");
+    A.st.parse.owner = owner;
+    A.st.images = [
+      { image_id: "img.1:win", label: "Image 1", available_artifacts: [{ key: "evtx", available: true }] },
+      { image_id: "img.2:linux", label: "Image 2", available_artifacts: [{ key: "evtx", available: true }] },
+    ];
+    A.st.imageParse = {
+      "img.1:win": { owner, status: { evtx: "waiting" }, rows: {} },
+      "img.2:linux": { owner, status: { evtx: "waiting" }, rows: {} },
+    };
+    mustGet("parse-image-sections").innerHTML = `
+      <div class="parse-image-section" data-image-id="img.2:linux">
+        <span class="parse-image-status">Starting...</span>
+        <p class="parse-image-error" hidden></p>
+      </div>
+    `;
+    A._onImageParseEvent("img.2:linux", { type: "parse_started", sequence: 1 }, owner);
+
+    const section = mustQuery(document, '.parse-image-section[data-image-id="img.2:linux"]');
+    expect(section.querySelector(".parse-image-status").textContent).toBe("Parsing...");
   });
 });
 

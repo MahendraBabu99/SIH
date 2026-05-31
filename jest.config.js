@@ -3,7 +3,6 @@ module.exports = {
   testMatch: ["**/tests/js/**/*.test.js"],
   collectCoverageFrom: [
     "static/**/*.js",
-    "!static/app.js",
   ],
   coverageThreshold: {
     global: {
