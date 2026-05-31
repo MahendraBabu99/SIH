@@ -169,6 +169,8 @@ class TestMCPServerFactory(unittest.TestCase):
                 "app.parser",
                 "app.analyzer",
                 "dissect",
+                "anthropic",
+                "openai",
             )
 
             class ImportBlocker(importlib.abc.MetaPathFinder):
@@ -375,30 +377,19 @@ class TestMCPTools(unittest.TestCase):
             ) as resolve_profiles_root,
             patch.object(
                 mcp_server,
-                "load_profiles_from_directory",
+                "compose_profile_summaries",
                 return_value=[
-                    {
-                        "name": "recommended",
-                        "builtin": True,
-                        "artifact_options": [{"artifact_key": "evtx"}],
-                    },
-                    {
-                        "name": "fast",
-                        "builtin": False,
-                        "artifact_options": [
-                            {"artifact_key": "prefetch"},
-                            {"artifact_key": "shimcache"},
-                        ],
-                    },
+                    {"name": "recommended", "builtin": True, "artifact_count": 1},
+                    {"name": "fast", "builtin": False, "artifact_count": 2},
                 ],
-            ) as load_profiles,
+            ) as compose_summaries,
         ):
             server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
             result = _tool(server, "aift_list_profiles")("acme-analysis-settings.yml")
 
         self.assertTrue(result["success"])
         resolve_profiles_root.assert_called_once_with(config_path)
-        load_profiles.assert_called_once()
+        compose_summaries.assert_called_once_with(Path("E:/AIFT-Public2/AIFT/profile"))
         self.assertEqual(
             result["profiles"],
             [
@@ -420,32 +411,75 @@ class TestMCPTools(unittest.TestCase):
             with (
                 patch.dict(sys.modules, _fake_mcp_modules()),
                 patch.object(mcp_server, "_PROJECT_ROOT", root),
-                patch.object(
-                    mcp_server,
-                    "resolve_profiles_root",
-                    return_value=profiles_root,
-                ) as resolve_profiles_root,
-                patch.object(
-                    mcp_server,
-                    "load_profiles_from_directory",
-                    return_value=[
-                        {
-                            "name": "tenant-a",
-                            "builtin": False,
-                            "artifact_options": [{"artifact_key": "runkeys"}],
-                        },
-                    ],
-                ) as load_profiles,
-            ):
+            patch.object(
+                mcp_server,
+                "resolve_profiles_root",
+                return_value=profiles_root,
+            ) as resolve_profiles_root,
+            patch.object(
+                mcp_server,
+                "compose_profile_summaries",
+                return_value=[
+                    {"name": "tenant-a", "builtin": False, "artifact_count": 1},
+                ],
+            ) as compose_summaries,
+        ):
                 server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
                 result = _tool(server, "aift_list_profiles")(str(config_path))
 
         self.assertTrue(result["success"])
         resolve_profiles_root.assert_called_once_with(config_path.resolve())
-        load_profiles.assert_called_once_with(profiles_root)
+        compose_summaries.assert_called_once_with(profiles_root)
         self.assertEqual(
             result["profiles"],
             [{"name": "tenant-a", "builtin": False, "artifact_count": 1}],
+        )
+
+    def test_list_profiles_does_not_merge_project_profile_fallback(self) -> None:
+        """MCP profile listing only uses the resolved canonical profile root."""
+        with TemporaryDirectory(prefix="aift-mcp-profile-single-root-") as temp_dir:
+            root = Path(temp_dir)
+            resolved_root = root / "resolved-profile-root"
+            project_root = root / "project"
+            fallback_root = project_root / "profile"
+            fallback_root.mkdir(parents=True)
+            (fallback_root / "fallback.json").write_text(
+                json.dumps({
+                    "name": "fallback",
+                    "artifact_options": [{"artifact_key": "mft"}],
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.dict(sys.modules, _fake_mcp_modules()),
+                patch.object(mcp_server, "_PROJECT_ROOT", project_root),
+                patch.object(
+                    mcp_server,
+                    "_profile_config_path",
+                    return_value=root / "config.yaml",
+                ),
+                patch.object(
+                    mcp_server,
+                    "resolve_profiles_root",
+                    return_value=resolved_root,
+                ),
+                patch.object(
+                    mcp_server,
+                    "compose_profile_summaries",
+                    return_value=[
+                        {"name": "canonical", "builtin": False, "artifact_count": 1},
+                    ],
+                ) as compose_summaries,
+            ):
+                server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+                result = _tool(server, "aift_list_profiles")(None)
+
+        self.assertTrue(result["success"])
+        compose_summaries.assert_called_once_with(resolved_root)
+        self.assertEqual(
+            result["profiles"],
+            [{"name": "canonical", "builtin": False, "artifact_count": 1}],
         )
 
     def test_discover_evidence_serializes_descriptor_fields(self) -> None:

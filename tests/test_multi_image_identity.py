@@ -1,4 +1,4 @@
-"""Regression tests for non-lossy multi-image CSV and analysis identity."""
+﻿"""Regression tests for non-lossy multi-image CSV and analysis identity."""
 
 from __future__ import annotations
 
@@ -408,7 +408,7 @@ def _patch_route_context(cases_root: Path, report_path: Path) -> ExitStack:
     for module in (routes_tasks, routes_evidence):
         stack.enter_context(patch.object(module, "ForensicParser", FakeParser))
     stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)))
-    stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
+    stack.enter_context(patch("app.parser.core.ForensicParser", FakeParser))
     stack.enter_context(patch("app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
     stack.enter_context(patch.object(routes_images.threading, "Thread", ImmediateThread))
     stack.enter_context(patch.object(routes_tasks, "ForensicAnalyzer", RecordingMultiImageAnalyzer))

@@ -21,7 +21,6 @@ from app.ai_providers import (
     KimiProvider,
     LocalProvider,
     OpenAIProvider,
-    _extract_openai_text,
     create_provider,
 )
 from app.ai_providers.base import (
@@ -32,8 +31,9 @@ from app.ai_providers.base import (
     _RATE_LIMIT_STATE,
 )
 from app.ai_providers.utils import (
-    upload_and_request_via_responses_api,
+    _extract_openai_text,
     _inline_attachment_data_into_prompt,
+    upload_and_request_via_responses_api,
 )
 
 

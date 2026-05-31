@@ -389,7 +389,7 @@ def open_dissect_target(
         A ``(metadata, available_artifacts, os_type)`` tuple.  *metadata*
         contains ``hostname``, ``os_version``, and ``domain``.
     """
-    from ..parser import ForensicParser
+    from ..parser.core import ForensicParser
 
     try:
         with ForensicParser(

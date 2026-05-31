@@ -45,10 +45,6 @@ from ..utils.artifact_profiles import (
     sanitize_prompt,
     validate_analysis_date_range,
     write_profile_file,
-    _ensure_recommended_profile,
-    _load_profile_file,
-    _recommended_artifact_options,
-    _recommended_profile_payload,
 )
 from ..parser.registry import (
     LINUX_ARTIFACT_REGISTRY,

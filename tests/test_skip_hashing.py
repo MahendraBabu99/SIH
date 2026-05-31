@@ -1,4 +1,4 @@
-"""Tests for the skip-hashing option during evidence intake.
+﻿"""Tests for the skip-hashing option during evidence intake.
 
 Verifies that:
 - Evidence intake respects the ``skip_hashing`` flag for both path and
@@ -58,7 +58,7 @@ def _standard_patches(cases_root: Path):
         stack.enter_context(patch.object(mod, "CASES_ROOT", cases_root))
     for mod in (routes_tasks, routes_evidence):
         stack.enter_context(patch.object(mod, "ForensicParser", FakeParser))
-    stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
+    stack.enter_context(patch("app.parser.core.ForensicParser", FakeParser))
     stack.enter_context(patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator))
     stack.enter_context(patch.object(
         routes_evidence, "compute_hashes",

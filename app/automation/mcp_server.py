@@ -63,11 +63,11 @@ class MissingMCPDependencyError(RuntimeError):
     """Raised when optional MCP dependencies are not installed."""
 
 
-def load_profiles_from_directory(profiles_root: Path) -> list[dict[str, Any]]:
-    """Lazy proxy for artifact profile loading."""
-    from app.utils.artifact_profiles import load_profiles_from_directory as _load
+def compose_profile_summaries(profiles_root: Path) -> list[dict[str, Any]]:
+    """Lazy proxy for lightweight artifact profile summaries."""
+    from app.utils.artifact_profiles import compose_profile_summaries as _summaries
 
-    return _load(profiles_root)
+    return _summaries(profiles_root)
 
 
 def resolve_profiles_root(config_path: str | Path) -> Path:
@@ -478,33 +478,10 @@ def _load_profiles_payload(config_path: str | None = None) -> dict[str, Any]:
             _optional_text(config_path, "config_path")
         )
         profiles_root = resolve_profiles_root(active_config_path)
-        profiles = load_profiles_from_directory(profiles_root)
-
-        legacy_profiles_root = _PROJECT_ROOT / "profile"
-        if (
-            legacy_profiles_root.exists()
-            and legacy_profiles_root.resolve() != profiles_root.resolve()
-        ):
-            seen = {
-                str(profile.get("name", "")).strip().lower()
-                for profile in profiles
-            }
-            for profile in load_profiles_from_directory(legacy_profiles_root):
-                name = str(profile.get("name", "")).strip().lower()
-                if not name or name in seen:
-                    continue
-                seen.add(name)
-                profiles.append(profile)
+        profiles = compose_profile_summaries(profiles_root)
 
         return _ok({
-            "profiles": [
-                {
-                    "name": str(profile.get("name", "")).strip(),
-                    "builtin": bool(profile.get("builtin", False)),
-                    "artifact_count": len(profile.get("artifact_options", [])),
-                }
-                for profile in profiles
-            ],
+            "profiles": profiles,
         })
     except (OSError, ValueError) as exc:
         return _error(

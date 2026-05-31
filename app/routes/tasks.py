@@ -30,7 +30,7 @@ from typing import Any, Callable
 from ..analyzer.cancellation import AnalysisCancelledError
 from ..analyzer.core import ForensicAnalyzer
 from ..logging.case_logging import case_log_context
-from ..parser import ForensicParser
+from ..parser.core import ForensicParser
 from ..parser.core import ParserCancelledError
 from ..reporter.normalization import normalize_per_artifact_findings
 from .state import (

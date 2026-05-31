@@ -29,7 +29,7 @@ from ..utils.hasher import (
     verify_hash,
     verify_hashes_for_report,
 )
-from ..parser import ForensicParser
+from ..parser.core import ForensicParser
 from ..reporter.generator import ReportGenerator
 
 from .state import (

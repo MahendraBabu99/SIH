@@ -173,6 +173,79 @@ class TestHeadlessNoFlask(unittest.TestCase):
         self.assertIn("Available artifact profiles", proc.stdout)
         self.assertIn("profile-load-ok", proc.stdout)
 
+    def test_profile_helpers_and_cli_list_do_not_load_heavy_dependencies(self) -> None:
+        """Profile listing stays clear of Flask, parser core, Dissect, and SDKs."""
+        repo_root = Path(__file__).resolve().parents[1]
+        code = textwrap.dedent(
+            """
+            import importlib.abc
+            import sys
+
+            BLOCKED_ROOTS = (
+                "flask",
+                "app.routes",
+                "app.parser.core",
+                "dissect",
+                "anthropic",
+                "openai",
+            )
+
+            class ImportBlocker(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if any(
+                        fullname == root or fullname.startswith(f"{root}.")
+                        for root in BLOCKED_ROOTS
+                    ):
+                        raise ImportError(f"blocked import: {fullname}")
+                    return None
+
+            def assert_blocked_not_loaded():
+                loaded = [
+                    name for name in sys.modules
+                    if any(
+                        name == root or name.startswith(f"{root}.")
+                        for root in BLOCKED_ROOTS
+                    )
+                ]
+                if loaded:
+                    raise AssertionError(f"Blocked modules loaded: {loaded!r}")
+
+            sys.meta_path.insert(0, ImportBlocker())
+
+            import app.utils.artifact_profiles as artifact_profiles
+            root = artifact_profiles.resolve_profiles_root("config/config.yaml")
+            summaries = artifact_profiles.compose_profile_summaries(root)
+            if not summaries:
+                raise AssertionError("expected at least the recommended profile")
+
+            import aift_cli
+            sys.argv = ["aift_cli.py", "--list-profiles"]
+            try:
+                aift_cli.main()
+            except SystemExit as exc:
+                if exc.code != 0:
+                    raise AssertionError(f"CLI --list-profiles exited {exc.code!r}")
+
+            assert_blocked_not_loaded()
+            print("profile-list-light-ok")
+            """
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(repo_root)
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=repo_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+
+        output = f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+        self.assertEqual(proc.returncode, 0, output)
+        self.assertIn("profile-list-light-ok", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

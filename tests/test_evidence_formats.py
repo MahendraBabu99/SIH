@@ -1,4 +1,4 @@
-"""Tests for evidence format support.
+﻿"""Tests for evidence format support.
 
 Covers:
 - Dissect container module importability (verifies format libraries are installed)
@@ -99,7 +99,7 @@ def _assert_archive_descriptor(
 class TestDissectModulesImportable(unittest.TestCase):
     """Verify that Dissect container/loader modules are importable.
 
-    This doesn't need real evidence — it just confirms the installed dissect
+    This doesn't need real evidence â€” it just confirms the installed dissect
     package includes support for each format we advertise.
     """
 
@@ -1005,7 +1005,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
@@ -1095,7 +1095,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
@@ -1129,7 +1129,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
@@ -1160,7 +1160,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
@@ -1183,7 +1183,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
@@ -1212,7 +1212,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
@@ -1361,7 +1361,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
@@ -1399,7 +1399,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch("app.automation.discovery.Target.open", return_value=target_handle) as open_mock,
@@ -1465,7 +1465,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch(
@@ -1545,7 +1545,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
@@ -1604,7 +1604,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
             patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
@@ -1648,7 +1648,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
             patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
@@ -1688,7 +1688,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
@@ -1731,7 +1731,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
             patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
@@ -1770,7 +1770,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
             patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
@@ -1805,7 +1805,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES) as mock_hash,
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES) as mock_hash_shared,
         ):
@@ -1836,7 +1836,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
@@ -1873,7 +1873,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
@@ -1943,7 +1943,7 @@ class TestEvidenceIntegrityTamperDetection(unittest.TestCase):
             patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
             patch.object(routes_images, "CASES_ROOT", self.cases_root),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
@@ -2067,7 +2067,7 @@ class TestExtractionDirNoStaleFiles(unittest.TestCase):
 
     def test_repeated_zip_extraction_no_cross_contamination(self) -> None:
         """Full round-trip: extract ZIP A, then extract ZIP B into the same
-        destination — files from A must not appear after B's extraction."""
+        destination â€” files from A must not appear after B's extraction."""
         dest = self.root / "extracted"
 
         # First ZIP with file_a.e01

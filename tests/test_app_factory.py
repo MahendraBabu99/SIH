@@ -11,8 +11,8 @@ from app import create_app
 class AppFactoryTests(unittest.TestCase):
     def _create_app(self, config: dict[str, object]) -> object:
         with (
-            patch("app.load_config", return_value=config),
-            patch("app.register_routes", autospec=True),
+            patch("app.utils.config.load_config", return_value=config),
+            patch("app.routes.register_routes", autospec=True),
         ):
             return create_app("config.yaml")
 

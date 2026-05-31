@@ -293,7 +293,9 @@ class TestApiToReportIntegration(unittest.TestCase):
     @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_api_download_html_report(self, mock_run: MagicMock) -> None:
         """Download HTML report via API after run completes."""
-        html_path = Path(self.temp_dir.name) / "report.html"
+        cases_root = Path(self.temp_dir.name) / "cases"
+        html_path = cases_root / "case-dl" / "reports" / "report.html"
+        html_path.parent.mkdir(parents=True)
         html_path.write_text("<html>full report</html>", encoding="utf-8")
 
         mock_run.return_value = AutomationResult(
@@ -305,12 +307,13 @@ class TestApiToReportIntegration(unittest.TestCase):
             duration_seconds=1.0,
         )
 
-        resp = self._post_json(
-            "/api/automation/run",
-            {"evidence_path": "/fake/ev.E01", "prompt": "test"},
-        )
-        run_id = resp.get_json()["run_id"]
-        dl_resp = self.client.get(f"/api/automation/run/{run_id}/report/html")
+        with patch.object(self.automation_mod, "CASES_ROOT", cases_root):
+            resp = self._post_json(
+                "/api/automation/run",
+                {"evidence_path": "/fake/ev.E01", "prompt": "test"},
+            )
+            run_id = resp.get_json()["run_id"]
+            dl_resp = self.client.get(f"/api/automation/run/{run_id}/report/html")
         self.assertEqual(dl_resp.status_code, 200)
         self.assertIn(b"full report", dl_resp.data)
 
@@ -318,7 +321,9 @@ class TestApiToReportIntegration(unittest.TestCase):
     @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_api_download_json_report(self, mock_run: MagicMock) -> None:
         """Download JSON report via API after run completes."""
-        json_path = Path(self.temp_dir.name) / "report.json"
+        cases_root = Path(self.temp_dir.name) / "cases"
+        json_path = cases_root / "case-jdl" / "reports" / "report.json"
+        json_path.parent.mkdir(parents=True)
         json_path.write_text('{"test": true}', encoding="utf-8")
 
         mock_run.return_value = AutomationResult(
@@ -330,12 +335,13 @@ class TestApiToReportIntegration(unittest.TestCase):
             duration_seconds=1.0,
         )
 
-        resp = self._post_json(
-            "/api/automation/run",
-            {"evidence_path": "/fake/ev.E01", "prompt": "test"},
-        )
-        run_id = resp.get_json()["run_id"]
-        dl_resp = self.client.get(f"/api/automation/run/{run_id}/report/json")
+        with patch.object(self.automation_mod, "CASES_ROOT", cases_root):
+            resp = self._post_json(
+                "/api/automation/run",
+                {"evidence_path": "/fake/ev.E01", "prompt": "test"},
+            )
+            run_id = resp.get_json()["run_id"]
+            dl_resp = self.client.get(f"/api/automation/run/{run_id}/report/json")
         self.assertEqual(dl_resp.status_code, 200)
         self.assertIn(b'"test"', dl_resp.data)
 
@@ -415,6 +421,7 @@ class TestApiToReportIntegration(unittest.TestCase):
         with (
             patch("app.automation.engine._PROJECT_ROOT", workspace),
             patch("app.utils.artifact_profiles.PROJECT_ROOT", workspace),
+            patch.object(self.automation_mod, "CASES_ROOT", workspace / "cases"),
         ):
             start_resp = self._post_json(
                 "/api/automation/run",
@@ -478,8 +485,9 @@ class TestApiToReportIntegration(unittest.TestCase):
         self.assertEqual(hash_entries[0]["details"]["size_bytes"], len(b"route-level evidence bytes"))
         self.assertEqual(hash_entries[0]["details"]["evidence_file_hashes"][0]["filename"], "evidence.E01")
 
-        html_download = self.client.get(f"/api/automation/run/{run_id}/report/html")
-        json_download = self.client.get(f"/api/automation/run/{run_id}/report/json")
+        with patch.object(self.automation_mod, "CASES_ROOT", workspace / "cases"):
+            html_download = self.client.get(f"/api/automation/run/{run_id}/report/html")
+            json_download = self.client.get(f"/api/automation/run/{run_id}/report/json")
         self.assertEqual(html_download.status_code, 200)
         self.assertEqual(json_download.status_code, 200)
         self.assertIn(b"Suspicious Run key persistence", html_download.data)

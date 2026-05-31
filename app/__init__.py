@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import secrets
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from runtime_compat import assert_supported_python_version
 
@@ -28,30 +28,10 @@ if TYPE_CHECKING:
 
 __all__ = [
     "create_app",
-    "load_config",
-    "register_routes",
 ]
 
 CSRF_HEADER = "X-CSRF-Token"
 CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-
-
-def load_config(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """Load AIFT config via the real config module.
-
-    Kept as an app-level binding so existing tests and callers can patch
-    ``app.load_config`` without forcing route/Flask imports at package import.
-    """
-    from .utils.config import load_config as _load_config
-
-    return _load_config(*args, **kwargs)
-
-
-def register_routes(app: Flask) -> None:
-    """Register Flask routes lazily to keep ``import app`` Flask-free."""
-    from .routes import register_routes as _register_routes
-
-    _register_routes(app)
 
 
 def _default_config_path() -> Path:
@@ -84,6 +64,7 @@ def create_app(
         A fully configured :class:`~flask.Flask` application instance.
     """
     from flask import Flask
+    from .utils.config import load_config
 
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     aift_config = config if config is not None else load_config(config_path)
@@ -109,6 +90,8 @@ def create_app(
     app.config["CSRF_TOKEN"] = secrets.token_hex(32)
 
     _register_csrf_protection(app)
+    from .routes import register_routes
+
     register_routes(app)
 
     return app

@@ -77,10 +77,10 @@ _ANALYSIS_UNAVAILABLE_TEXT = "Analysis unavailable; recorded as a data gap."
 _SUMMARY_UNAVAILABLE_TEXT = "Summary unavailable; recorded as a data gap."
 
 try:
-    from ..parser import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
+    from ..parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
 except Exception as error:
     LOGGER.warning(
-        "Failed to import artifact registries from app.parser: %s. "
+        "Failed to import artifact registries from app.parser.registry: %s. "
         "Artifact metadata lookups will be unavailable.",
         error,
     )

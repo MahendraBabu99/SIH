@@ -7,15 +7,16 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
-from app.parser import (
+from dissect.target.exceptions import UnsupportedPluginError
+
+from app.parser.core import (
     EVTX_MAX_RECORDS_PER_FILE,
-    MAX_RECORDS_PER_ARTIFACT,
-    WINDOWS_ARTIFACT_REGISTRY,
     ForensicParser,
-    UnsupportedPluginError,
+    MAX_RECORDS_PER_ARTIFACT,
 )
 from app.parser.registry import (
     LINUX_ARTIFACT_REGISTRY,
+    WINDOWS_ARTIFACT_REGISTRY,
     get_artifact_registry,
     _artifact_prompt_name_candidates,
     _load_artifact_guidance_prompt,

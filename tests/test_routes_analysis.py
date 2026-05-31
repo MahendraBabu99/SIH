@@ -1,4 +1,4 @@
-"""Tests for route analysis edge cases and regression tests.
+﻿"""Tests for route analysis edge cases and regression tests.
 
 Covers TestParseRerunClearsStaleState, TestRunAnalysisUnavailableProvider,
 and TestAnalysisRerunClearsStaleResults extracted from the main test_routes module.
@@ -138,7 +138,7 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
@@ -217,7 +217,7 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FailingParser),
             patch.object(routes_tasks, "ForensicParser", FailingParser),
             patch.object(routes_evidence, "ForensicParser", FailingParser),
-            patch("app.parser.ForensicParser", FailingParser),
+            patch("app.parser.core.ForensicParser", FailingParser),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
         ):
             resp = self.client.post(
@@ -367,7 +367,7 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FailOnSecondAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FailOnSecondAnalyzer),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -513,7 +513,7 @@ class TestStreamSSECursorResetOnRestart(unittest.TestCase):
                 if frame.startswith("data:"):
                     old_events.append(frame)
                 elif frame.strip() == ": keep-alive":
-                    # Cursor has caught up — break to simulate ongoing
+                    # Cursor has caught up â€” break to simulate ongoing
                     # connection.
                     break
 

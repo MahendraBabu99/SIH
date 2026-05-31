@@ -17,8 +17,6 @@ from unittest.mock import MagicMock, patch, call
 from app.ai_providers import (
     AIProvider,
     AIProviderError,
-    _extract_anthropic_text,
-    _extract_openai_text,
 )
 from app.ai_providers.base import (
     DEFAULT_MAX_TOKENS,
@@ -27,8 +25,10 @@ from app.ai_providers.utils import (
     StreamedResponseChunk,
     _clean_streamed_answer_text,
     _coerce_openai_text,
+    _extract_anthropic_text,
     _extract_anthropic_stream_text,
     _extract_openai_delta_text,
+    _extract_openai_text,
     _extract_openai_responses_text,
     _extract_openai_stream_chunk_delta,
     _inline_attachment_data_into_prompt,

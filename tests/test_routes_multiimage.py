@@ -1,4 +1,4 @@
-"""Tests for image route endpoints.
+﻿"""Tests for image route endpoints.
 
 Validates image management endpoints plus single-image workflows that use
 the same image-scoped parsing API as multi-image cases.
@@ -82,7 +82,7 @@ class MultiImageRoutesTests(unittest.TestCase):
         # Patch ForensicParser (images.py uses deferred import from evidence).
         for mod in (routes_tasks, routes_evidence):
             stack.enter_context(patch.object(mod, "ForensicParser", FakeParser))
-        stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
+        stack.enter_context(patch("app.parser.core.ForensicParser", FakeParser))
         # Patch compute_hashes (images.py uses deferred import from evidence).
         stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)))
         stack.enter_context(patch("app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))

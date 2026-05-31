@@ -12,13 +12,13 @@ from unittest.mock import MagicMock, patch, call
 from app.ai_providers import (
     AIProviderError,
     OpenAIProvider,
-    _extract_openai_text,
 )
 from app.ai_providers.base import (
     DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
     RATE_LIMIT_MAX_RETRIES,
 )
+from app.ai_providers.utils import _extract_openai_text
 
 
 def _make_openai_response(text: str) -> SimpleNamespace:

@@ -1,4 +1,4 @@
-"""Unit tests for the shared evidence-handling utilities module.
+﻿"""Unit tests for the shared evidence-handling utilities module.
 
 Validates :func:`~app.routes.evidence_utils.compute_evidence_hashes`,
 :func:`~app.routes.evidence_utils.should_skip_hashing`, and
@@ -190,7 +190,7 @@ class TestShouldSkipHashing(unittest.TestCase):
 class TestOpenDissectTarget(unittest.TestCase):
     """Tests for ``open_dissect_target``."""
 
-    @patch("app.parser.ForensicParser")
+    @patch("app.parser.core.ForensicParser")
     def test_success_returns_metadata(self, mock_parser_cls: MagicMock) -> None:
         """Successful open returns metadata, artifacts, and os_type."""
         mock_parser = MagicMock()
@@ -218,7 +218,7 @@ class TestOpenDissectTarget(unittest.TestCase):
         self.assertEqual(os_type, "windows")
         self.assertEqual(len(artifacts), 1)
 
-    @patch("app.parser.ForensicParser")
+    @patch("app.parser.core.ForensicParser")
     def test_failure_returns_degraded_defaults(self, mock_parser_cls: MagicMock) -> None:
         """When ForensicParser raises, degraded defaults are returned."""
         mock_parser_cls.side_effect = RuntimeError("Cannot open evidence")

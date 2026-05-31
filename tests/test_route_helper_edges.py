@@ -103,12 +103,9 @@ class ArtifactProfileHelperTests(unittest.TestCase):
         self.assertTrue(keys.isdisjoint(artifact_profiles.RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS))
         self.assertEqual(len(keys), len(options))
 
-    def test_route_private_profile_loader_is_canonical_alias(self) -> None:
-        self.assertIs(routes_artifacts._load_profile_file, artifact_profiles._load_profile_file)
-        self.assertIs(
-            routes_artifacts._recommended_artifact_options,
-            artifact_profiles._recommended_artifact_options,
-        )
+    def test_route_module_does_not_re_export_private_profile_helpers(self) -> None:
+        self.assertFalse(hasattr(routes_artifacts, "_load_profile_file"))
+        self.assertFalse(hasattr(routes_artifacts, "_recommended_artifact_options"))
 
 
 class AuditConfigChangeTests(unittest.TestCase):

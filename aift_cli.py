@@ -340,7 +340,7 @@ def _list_profiles(config_path: str | Path | None = None) -> None:
     Raises:
         SystemExit: Always exits with code 0 after printing.
     """
-    from app.utils.artifact_profiles import load_profiles_from_directory, resolve_profiles_root
+    from app.utils.artifact_profiles import compose_profile_summaries, resolve_profiles_root
 
     resolved_config_path = (
         Path(config_path).expanduser().resolve()
@@ -348,24 +348,7 @@ def _list_profiles(config_path: str | Path | None = None) -> None:
         else _PROJECT_ROOT / _DEFAULT_CONFIG_RELATIVE_PATH
     )
     profiles_root = resolve_profiles_root(resolved_config_path)
-    profiles = load_profiles_from_directory(profiles_root)
-    legacy_profiles_root = _PROJECT_ROOT / "profile"
-    if legacy_profiles_root.resolve() != profiles_root.resolve() and legacy_profiles_root.exists():
-        seen = {str(profile.get("name", "")).strip().lower() for profile in profiles}
-        legacy_profiles = []
-        for profile in load_profiles_from_directory(legacy_profiles_root):
-            name = str(profile.get("name", "")).strip().lower()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            legacy_profiles.append(profile)
-        if legacy_profiles:
-            print(
-                "WARNING: Including profiles from the repository profile "
-                f"directory for compatibility: {legacy_profiles_root}",
-                file=sys.stderr,
-            )
-            profiles.extend(legacy_profiles)
+    profiles = compose_profile_summaries(profiles_root)
 
     if not profiles:
         print("No artifact profiles found.")
@@ -375,7 +358,7 @@ def _list_profiles(config_path: str | Path | None = None) -> None:
     for profile in profiles:
         name = profile.get("name", "unknown")
         builtin = profile.get("builtin", False)
-        artifact_count = len(profile.get("artifact_options", []))
+        artifact_count = profile.get("artifact_count", 0)
         tag = " (built-in)" if builtin else ""
         print(f"  {name}{tag} — {artifact_count} artifacts")
 

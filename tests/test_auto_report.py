@@ -1,4 +1,4 @@
-"""Unit tests for automatic report generation after analysis.
+﻿"""Unit tests for automatic report generation after analysis.
 
 Tests cover:
 - ``generate_case_report()`` as a standalone function.
@@ -127,7 +127,7 @@ def _common_patches(cases_root: Path):
         patch.object(routes_tasks, "ForensicParser", FakeParser),
         patch.object(routes_tasks, "ForensicParser", FakeParser),
         patch.object(routes_evidence, "ForensicParser", FakeParser),
-        patch("app.parser.ForensicParser", FakeParser),
+        patch("app.parser.core.ForensicParser", FakeParser),
         patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
         patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
         patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
@@ -168,11 +168,11 @@ def _exit_patches(patches: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helper: run upload → parse → analyze flow
+# Helper: run upload â†’ parse â†’ analyze flow
 # ---------------------------------------------------------------------------
 
 def _run_full_flow(client, evidence_path: Path) -> str:
-    """Run the full upload → parse → analyze flow and return the case_id.
+    """Run the full upload â†’ parse â†’ analyze flow and return the case_id.
 
     Args:
         client: Flask test client.
@@ -252,7 +252,7 @@ class GenerateCaseReportTests(unittest.TestCase):
             evidence_path = Path(self.temp_dir.name) / "sample.E01"
             evidence_path.write_bytes(b"demo")
 
-            # Create case, upload evidence, parse — but skip analysis.
+            # Create case, upload evidence, parse â€” but skip analysis.
             create_resp = self.client.post("/api/cases", json={"case_name": "No Analysis"})
             case_id = create_resp.get_json()["case_id"]
             self.client.post(
@@ -533,7 +533,7 @@ class DownloadReportServesExistingTests(unittest.TestCase):
             existing_reports = list(reports_dir.glob("report_*.html"))
             self.assertEqual(len(existing_reports), 1)
 
-            # Now download — it should serve the existing file.
+            # Now download â€” it should serve the existing file.
             report_resp = self.client.get(f"/api/cases/{case_id}/report")
             self.assertEqual(report_resp.status_code, 200)
             self.assertEqual(report_resp.mimetype, "text/html")

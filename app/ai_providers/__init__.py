@@ -23,24 +23,9 @@ from __future__ import annotations
 from .base import (
     AIProvider,
     AIProviderError,
-    DEFAULT_CLAUDE_MODEL,
-    DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_KIMI_BASE_URL,
     DEFAULT_KIMI_FILE_UPLOAD_PURPOSE,
     DEFAULT_KIMI_MODEL,
-    DEFAULT_LOCAL_BASE_URL,
-    DEFAULT_LOCAL_MODEL,
-    DEFAULT_LOCAL_REQUEST_TIMEOUT_SECONDS,
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_OPENAI_MODEL,
-    RATE_LIMIT_MAX_RETRIES,
-    RateLimitState,
-    _extract_retry_after_seconds,
-    _is_context_length_error,
-    _normalize_api_key_value,
-    _normalize_openai_compatible_base_url,
-    _resolve_api_key,
-    _resolve_api_key_candidates,
 )
 from .claude_provider import ClaudeProvider
 from .factory import create_provider
@@ -49,10 +34,6 @@ from .local_provider import LocalProvider
 from .openai_provider import OpenAIProvider
 from .utils import (
     StreamedResponseChunk,
-    _extract_anthropic_text,
-    _extract_openai_text,
-    normalize_attachment_input as _normalize_attachment_input,
-    normalize_attachment_inputs as _normalize_attachment_inputs,
     stream_chunk_answer_text,
     stream_chunk_reasoning_text,
 )

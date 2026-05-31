@@ -34,6 +34,7 @@ __all__ = [
     "sanitize_prompt",
     "resolve_profiles_root",
     "compose_profile_response",
+    "compose_profile_summaries",
     "load_profiles_from_directory",
     "load_profile_from_file",
     "normalize_profile_name",
@@ -384,6 +385,18 @@ def compose_profile_response(profiles_root: Path) -> list[dict[str, Any]]:
             "name": str(profile.get("name", "")).strip(),
             "builtin": bool(profile.get("builtin", False)),
             "artifact_options": list(profile.get("artifact_options", [])),
+        }
+        for profile in load_profiles_from_directory(profiles_root)
+    ]
+
+
+def compose_profile_summaries(profiles_root: Path) -> list[dict[str, Any]]:
+    """Build a lightweight name/builtin/artifact-count profile list."""
+    return [
+        {
+            "name": str(profile.get("name", "")).strip(),
+            "builtin": bool(profile.get("builtin", False)),
+            "artifact_count": len(profile.get("artifact_options", [])),
         }
         for profile in load_profiles_from_directory(profiles_root)
     ]

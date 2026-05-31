@@ -24,6 +24,7 @@ from aift_cli import (
     _build_parser,
     _format_duration,
     _make_progress_callback,
+    _list_profiles,
     _print_summary,
     _resolve_prompt,
     main,
@@ -263,6 +264,69 @@ class TestCLIVersionAndProfiles(unittest.TestCase):
             with self.assertRaises(SystemExit) as ctx:
                 main()
             self.assertEqual(ctx.exception.code, EXIT_SUCCESS)
+
+    def test_list_profiles_uses_canonical_profile_summary_helper_once(self) -> None:
+        """CLI profile listing should not append legacy profile roots."""
+        resolved_root = Path("E:/AIFT-Public2/AIFT/profile")
+        stdout = io.StringIO()
+        with (
+            patch(
+                "app.utils.artifact_profiles.resolve_profiles_root",
+                return_value=resolved_root,
+            ) as resolve_profiles_root,
+            patch(
+                "app.utils.artifact_profiles.compose_profile_summaries",
+                return_value=[
+                    {"name": "recommended", "builtin": True, "artifact_count": 1},
+                ],
+            ) as compose_summaries,
+            patch("sys.stdout", stdout),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                _list_profiles("tenant-settings.yml")
+
+        self.assertEqual(ctx.exception.code, EXIT_SUCCESS)
+        resolve_profiles_root.assert_called_once()
+        compose_summaries.assert_called_once_with(resolved_root)
+        self.assertIn("recommended", stdout.getvalue())
+
+    def test_list_profiles_does_not_merge_project_profile_fallback(self) -> None:
+        """A custom config path must not create a second profile source."""
+        with TemporaryDirectory(prefix="aift-cli-profile-single-root-") as temp_dir:
+            root = Path(temp_dir)
+            resolved_root = root / "resolved-profile-root"
+            fallback_root = root / "profile"
+            fallback_root.mkdir()
+            (fallback_root / "fallback.json").write_text(
+                '{"name":"fallback","artifact_options":[{"artifact_key":"mft"}]}',
+                encoding="utf-8",
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch("aift_cli._PROJECT_ROOT", root),
+                patch(
+                    "app.utils.artifact_profiles.resolve_profiles_root",
+                    return_value=resolved_root,
+                ),
+                patch(
+                    "app.utils.artifact_profiles.compose_profile_summaries",
+                    return_value=[
+                        {"name": "canonical", "builtin": False, "artifact_count": 1},
+                    ],
+                ) as compose_summaries,
+                patch("sys.stdout", stdout),
+                patch("sys.stderr", stderr),
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    _list_profiles(root / "settings" / "config.yaml")
+
+        self.assertEqual(ctx.exception.code, EXIT_SUCCESS)
+        compose_summaries.assert_called_once_with(resolved_root)
+        self.assertIn("canonical", stdout.getvalue())
+        self.assertNotIn("fallback", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
 
 
 class TestCLIExecution(unittest.TestCase):

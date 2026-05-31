@@ -1,12 +1,12 @@
-"""Tests for data cleanup when re-parsing a case.
+﻿"""Tests for data cleanup when re-parsing a case.
 
 Verifies that starting a new parse run removes stale parsed data from both
 disk and in-memory state, covering:
 
-* ``cleanup_parsed_data`` — removes default and external CSV directories.
-* ``clear_analysis_outputs`` — removes analysis/chat artifacts.
-* ``start_parse`` integration — clears in-memory state and on-disk data.
-* Safety guards — refuses to delete filesystem roots or short paths.
+* ``cleanup_parsed_data`` â€” removes default and external CSV directories.
+* ``clear_analysis_outputs`` â€” removes analysis/chat artifacts.
+* ``start_parse`` integration â€” clears in-memory state and on-disk data.
+* Safety guards â€” refuses to delete filesystem roots or short paths.
 
 Attributes:
     HASH_STUBS: Reusable patch targets for evidence hash helpers.
@@ -44,7 +44,7 @@ LOGGER = logging.getLogger(__name__)
 HASH_RETURN = dict(FAKE_HASHES)
 
 
-# ── Fakes ───────────────────────────────────────────────────────────────────
+# â”€â”€ Fakes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class FakeParser(_BaseFakeParser):
@@ -63,7 +63,7 @@ class FakeParser(_BaseFakeParser):
         ]
 
 
-# ── Unit tests: cleanup_parsed_data ─────────────────────────────────────────
+# â”€â”€ Unit tests: cleanup_parsed_data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class PurgeStaleDataTests(unittest.TestCase):
@@ -142,7 +142,7 @@ class PurgeStaleDataTests(unittest.TestCase):
         self.assertFalse((self.case_dir / "parsed").exists())
 
 
-# ── Unit tests: clear_analysis_outputs ──────────────────────────────────────
+# â”€â”€ Unit tests: clear_analysis_outputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class PurgeDownstreamFilesTests(unittest.TestCase):
@@ -206,7 +206,7 @@ class PurgeDownstreamFilesTests(unittest.TestCase):
         )
 
 
-# ── Integration: re-parse clears old data ───────────────────────────────────
+# â”€â”€ Integration: re-parse clears old data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class ReparseCleanupIntegrationTests(unittest.TestCase):
@@ -242,7 +242,7 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),

@@ -1,4 +1,4 @@
-"""Route-level tests for case, evidence, parsing, analysis, and report APIs.
+﻿"""Route-level tests for case, evidence, parsing, analysis, and report APIs.
 
 Attributes:
     No module-level constants are defined.
@@ -24,7 +24,7 @@ from app import create_app
 from app.ai_providers import AIProviderError
 from app.chat.manager import ChatManager
 from app.logging.case_logging import case_log_context, unregister_all_case_log_handlers
-from app.parser import WINDOWS_ARTIFACT_REGISTRY
+from app.parser.registry import WINDOWS_ARTIFACT_REGISTRY
 from app.utils.version import TOOL_VERSION
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
@@ -196,7 +196,7 @@ class RoutesTests(unittest.TestCase):
         # ForensicParser
         for mod in (routes_tasks, routes_evidence):
             stack.enter_context(patch.object(mod, "ForensicParser", parser_cls))
-        stack.enter_context(patch("app.parser.ForensicParser", parser_cls))
+        stack.enter_context(patch("app.parser.core.ForensicParser", parser_cls))
         # ForensicAnalyzer
         if analyzer_cls is not None:
             stack.enter_context(patch.object(routes_tasks, "ForensicAnalyzer", analyzer_cls))
@@ -494,7 +494,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", CapturingParser),
             patch.object(routes_tasks, "ForensicParser", CapturingParser),
             patch.object(routes_evidence, "ForensicParser", CapturingParser),
-            patch("app.parser.ForensicParser", CapturingParser),
+            patch("app.parser.core.ForensicParser", CapturingParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={
@@ -594,7 +594,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", LinuxParser),
             patch.object(routes_tasks, "ForensicParser", LinuxParser),
             patch.object(routes_evidence, "ForensicParser", LinuxParser),
-            patch("app.parser.ForensicParser", LinuxParser),
+            patch("app.parser.core.ForensicParser", LinuxParser),
             patch.object(
                 routes_evidence,
                 "compute_hashes",
@@ -619,7 +619,7 @@ class RoutesTests(unittest.TestCase):
             self.assertNotIn("os_warning", payload)
 
             # Returned artifact keys should come from the Linux registry.
-            from app.parser import LINUX_ARTIFACT_REGISTRY
+            from app.parser.registry import LINUX_ARTIFACT_REGISTRY
             returned_keys = {
                 str(a["key"]) for a in payload.get("available_artifacts", [])
             }
@@ -645,7 +645,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", UnknownOsParser),
             patch.object(routes_tasks, "ForensicParser", UnknownOsParser),
             patch.object(routes_evidence, "ForensicParser", UnknownOsParser),
-            patch("app.parser.ForensicParser", UnknownOsParser),
+            patch("app.parser.core.ForensicParser", UnknownOsParser),
             patch.object(
                 routes_evidence,
                 "compute_hashes",
@@ -865,7 +865,7 @@ class RoutesTests(unittest.TestCase):
 
         # The recommended profile now includes both Windows and Linux
         # artifacts (minus the excluded set), so profiles work for any OS.
-        from app.parser import LINUX_ARTIFACT_REGISTRY
+        from app.parser.registry import LINUX_ARTIFACT_REGISTRY
         expected_keys: list[str] = []
         seen: set[str] = set()
         for registry in (WINDOWS_ARTIFACT_REGISTRY, LINUX_ARTIFACT_REGISTRY):
@@ -983,7 +983,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={
@@ -1038,7 +1038,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={
@@ -1128,7 +1128,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={
@@ -1204,7 +1204,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
@@ -1291,7 +1291,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
             patch.object(
                 routes_evidence, "compute_hashes",
@@ -1363,7 +1363,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
             patch.object(
                 routes_evidence, "compute_hashes",
@@ -1427,7 +1427,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -1525,7 +1525,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -1658,7 +1658,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={
@@ -1741,7 +1741,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
             patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
             patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator),
@@ -2053,7 +2053,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence,
                 "compute_hashes",
@@ -2081,7 +2081,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence,
                 "compute_hashes",
@@ -2115,7 +2115,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence,
                 "compute_hashes",
@@ -2254,7 +2254,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(
                 routes_evidence, "compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
@@ -2290,7 +2290,7 @@ class RoutesTests(unittest.TestCase):
             )
             self.assertEqual(parse_resp.status_code, 202)
 
-            # Attempt report without analysis — must be rejected.
+            # Attempt report without analysis â€” must be rejected.
             report_resp = self.client.get(f"/api/cases/{case_id}/report")
             self.assertEqual(report_resp.status_code, 400)
             body = report_resp.get_json()
@@ -2426,7 +2426,7 @@ class RoutesTests(unittest.TestCase):
         self.assertIn("JSON object", resp.get_json()["error"])
 
     # ------------------------------------------------------------------
-    # JSON body type validation (non-object payloads → 400)
+    # JSON body type validation (non-object payloads â†’ 400)
     # ------------------------------------------------------------------
 
     def test_create_case_rejects_json_array(self) -> None:
@@ -2556,7 +2556,7 @@ class RoutesTests(unittest.TestCase):
                 routes_state.CASE_STATES[case_id]["evidence_path"] = ""
             resp = self.client.get(f"/api/cases/{case_id}/report")
             # Missing integrity data now degrades gracefully instead of
-            # blocking report generation — the request still fails because
+            # blocking report generation â€” the request still fails because
             # analysis has not been completed, not because of hash data.
             self.assertEqual(resp.status_code, 400)
 
@@ -2725,7 +2725,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
@@ -2809,7 +2809,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
@@ -2841,7 +2841,7 @@ class RoutesTests(unittest.TestCase):
             # Replace evidence with B.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_b)})
 
-            # Analysis should be rejected — no parse results from new evidence.
+            # Analysis should be rejected â€” no parse results from new evidence.
             analyze_resp = self.client.post(
                 f"/api/cases/{case_id}/analyze", json={"prompt": "Check again"},
             )
@@ -2864,7 +2864,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
@@ -2896,7 +2896,7 @@ class RoutesTests(unittest.TestCase):
             # Replace evidence with B.
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_b)})
 
-            # Chat should be rejected — no analysis results from new evidence.
+            # Chat should be rejected â€” no analysis results from new evidence.
             chat_resp = self.client.post(
                 f"/api/cases/{case_id}/chat", json={"message": "What happened?"},
             )
@@ -2919,7 +2919,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
@@ -2982,7 +2982,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
@@ -3060,7 +3060,7 @@ class RoutesTests(unittest.TestCase):
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicParser", FakeParser),
             patch.object(routes_evidence, "ForensicParser", FakeParser),
-            patch("app.parser.ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(routes_tasks, "ForensicAnalyzer", FakeAnalyzer),
             patch.object(
