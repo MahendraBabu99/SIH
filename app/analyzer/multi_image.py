@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import inspect
 import threading
+from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
@@ -448,6 +449,7 @@ def run_multi_image_analysis(
     with _ANALYZER_LOCK:
         saved_os_type = analyzer.os_type
         saved_csv_paths = dict(analyzer.artifact_csv_paths)
+        saved_prep_metadata = deepcopy(getattr(analyzer, "_analysis_prep_metadata", {}))
         saved_date_range = analyzer.analysis_date_range
         saved_scope_id = getattr(analyzer, "_analysis_scope_id", None)
 
@@ -547,6 +549,8 @@ def run_multi_image_analysis(
             # loop succeeded or raised.
             analyzer.os_type = saved_os_type
             analyzer.artifact_csv_paths = saved_csv_paths
+            if hasattr(analyzer, "_analysis_prep_metadata"):
+                analyzer._analysis_prep_metadata = saved_prep_metadata
             analyzer.analysis_date_range = saved_date_range
             if saved_scope_id is None:
                 if hasattr(analyzer, "_analysis_scope_id"):

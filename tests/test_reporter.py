@@ -190,6 +190,44 @@ class ReporterTests(unittest.TestCase):
             )
             self.assertIn("©Flip Forensics", html)
 
+    def test_generate_renders_analyzer_style_artifact_metadata(self) -> None:
+        """HTML report uses canonical analyzer record/time fields."""
+        with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = self._create_report_generator(cases_root)
+
+            report_path = reporter.generate(
+                analysis_results=_single_image_analysis(
+                    case_id="case-analyzer-meta",
+                    summary="Analyzer summary.",
+                    per_artifact=[
+                        {
+                            "artifact_key": "custom",
+                            "artifact_name": "Custom Artifact",
+                            "analysis": "Analyzer result.",
+                            "record_count": 1,
+                            "source_record_count": 3,
+                            "analysis_record_count": 1,
+                            "time_range_start": "2026-01-15T12:00:00",
+                            "time_range_end": "2026-01-15T12:00:00",
+                            "source_csv": "parsed/custom.csv",
+                            "analysis_csv": "parsed_deduplicated/custom.csv",
+                            "analysis_columns": ["ts", "name", "command"],
+                            "metadata": {"date_filtered_count": 1},
+                        }
+                    ],
+                ),
+                image_metadata=_image_record(hostname="host1"),
+                evidence_hashes=_image_record(sha256="a" * 64, md5="b" * 32),
+                investigation_context="Investigate analyzer metadata.",
+                audit_log_entries=[],
+            )
+            html = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("Custom Artifact", html)
+        self.assertIn(">1</span>", html)
+        self.assertIn("2026-01-15T12:00:00", html)
+
     def test_generate_marks_hash_verification_fail_on_mismatch(self) -> None:
         with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
             cases_root = Path(temp_dir) / "cases"

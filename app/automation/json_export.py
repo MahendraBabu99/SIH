@@ -79,7 +79,7 @@ def _build_artifact_entry(finding: dict[str, Any]) -> dict[str, Any]:
         confidence = finding.get("confidence_label") or _resolve_confidence(text)
     if confidence == "UNSPECIFIED":
         confidence = None
-    return {
+    entry = {
         "artifact_key": finding.get("artifact_key", ""),
         "artifact_name": finding.get("artifact_name", ""),
         "analysis_text": text,
@@ -94,6 +94,29 @@ def _build_artifact_entry(finding: dict[str, Any]) -> dict[str, Any]:
         "metadata": dict(finding.get("metadata") or {}),
         "hash_status": finding.get("hash_status", ""),
     }
+    for key in (
+        "source_record_count",
+        "analysis_record_count",
+        "source_time_range_start",
+        "source_time_range_end",
+        "analysis_time_range_start",
+        "analysis_time_range_end",
+        "source_csv",
+        "analysis_csv",
+        "analysis_columns",
+        "date_filtered_count",
+        "rows_before_date_filter",
+        "rows_after_date_filter",
+        "deduplicated_records",
+        "dedup_annotated_rows",
+        "dedup_variant_columns",
+        "projection_applied",
+        "deduplication_enabled",
+        "analysis_transformed",
+    ):
+        if key in finding:
+            entry[key] = finding.get(key)
+    return entry
 
 
 def export_json_report(

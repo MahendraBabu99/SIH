@@ -14,6 +14,7 @@ import csv
 import io
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
@@ -48,6 +49,7 @@ from .utils import (
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
+    "ArtifactPrepResult",
     "prepare_artifact_data",
     "write_analysis_input_csv",
     "resolve_analysis_input_output_dir",
@@ -60,6 +62,16 @@ __all__ = [
     "build_full_data_csv",
     "_filter_by_date_range",
 ]
+
+
+@dataclass(frozen=True)
+class ArtifactPrepResult:
+    """Analysis-ready prompt and canonical parser/data-prep metadata."""
+
+    prompt_text: str
+    analysis_csv_path: Path
+    analysis_columns: list[str]
+    metadata: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +520,7 @@ def prepare_artifact_data(
     date_range: tuple[str, str] | None = None,
     host_metadata: Mapping[str, Any] | None = None,
     analysis_scope_id: str | None = None,
-) -> tuple[str, Path, list[str]]:
+) -> ArtifactPrepResult:
     """Prepare one artifact CSV as an analysis-ready prompt.
 
     Reads the full artifact CSV, applies column projection,
@@ -545,7 +557,9 @@ def prepare_artifact_data(
             analysis-input CSV output.
 
     Returns:
-        A 3-tuple of ``(prompt_text, analysis_csv_path, analysis_columns)``.
+        An :class:`ArtifactPrepResult` containing the rendered prompt,
+        analysis-input CSV path, AI-visible columns, and canonical
+        parser/data-prep metadata for downstream reports and exports.
     """
     prompt_budget_tokens = ai_input_max_tokens if ai_input_max_tokens is not None else ai_max_tokens
     include_statistics = prompt_budget_tokens >= shortened_prompt_cutoff_tokens
@@ -562,6 +576,8 @@ def prepare_artifact_data(
             row = normalize_csv_row(raw_row, columns=columns)
             row["_row_ref"] = str(source_row_count)
             rows.append(row)
+
+    source_min_time, source_max_time = time_range_for_rows(rows)
 
     # Date filtering must run against the source schema.  Projection can
     # intentionally omit timestamp columns from the AI-visible CSV, but that
@@ -685,6 +701,11 @@ def prepare_artifact_data(
     )
 
     meta = host_metadata if isinstance(host_metadata, Mapping) else {}
+    analysis_time_range_start = format_datetime(min_time)
+    analysis_time_range_end = format_datetime(max_time)
+    source_time_range_start = format_datetime(source_min_time)
+    source_time_range_end = format_datetime(source_max_time)
+
     replacements = {
         "priority_directives": priority_directives,
         "investigation_context": wrap_prompt_section(
@@ -700,8 +721,8 @@ def prepare_artifact_data(
         "artifact_name": artifact_metadata.get("name", artifact_key),
         "artifact_description": artifact_metadata.get("description", "No artifact description available."),
         "total_records": str(len(analysis_rows)),
-        "time_range_start": format_datetime(min_time),
-        "time_range_end": format_datetime(max_time),
+        "time_range_start": analysis_time_range_start,
+        "time_range_end": analysis_time_range_end,
         "statistics": statistics,
         "analysis_instructions": wrap_prompt_section(
             "artifact_guidance",
@@ -729,7 +750,40 @@ def prepare_artifact_data(
     if final_context_reminder:
         filled = f"{filled.rstrip()}\n\n{final_context_reminder}\n"
 
-    return append_analysis_prompt_footer(filled), analysis_csv_path, analysis_columns
+    metadata: dict[str, Any] = {
+        "source_record_count": len(rows),
+        "analysis_record_count": len(analysis_rows),
+        "record_count": len(analysis_rows),
+        "source_time_range_start": source_time_range_start,
+        "source_time_range_end": source_time_range_end,
+        "analysis_time_range_start": analysis_time_range_start,
+        "analysis_time_range_end": analysis_time_range_end,
+        "time_range_start": analysis_time_range_start,
+        "time_range_end": analysis_time_range_end,
+        "source_csv": str(csv_path),
+        "analysis_csv": str(analysis_csv_path),
+        "analysis_columns": list(analysis_columns),
+        "date_filtered_count": date_filtered_count,
+        "rows_before_date_filter": pre_filter_count,
+        "rows_after_date_filter": len(filtered_rows),
+        "deduplicated_records": deduplicated_records,
+        "dedup_annotated_rows": dedup_annotated_rows,
+        "dedup_variant_columns": list(dedup_variant_columns),
+        "projection_applied": projection_applied,
+        "deduplication_enabled": artifact_deduplication_enabled,
+        "analysis_transformed": transformed_for_analysis,
+    }
+    if analysis_scope_id:
+        metadata["analysis_scope_id"] = analysis_scope_id
+    if dedup_write_error:
+        metadata["analysis_csv_write_error"] = dedup_write_error
+
+    return ArtifactPrepResult(
+        prompt_text=append_analysis_prompt_footer(filled),
+        analysis_csv_path=analysis_csv_path,
+        analysis_columns=list(analysis_columns),
+        metadata=metadata,
+    )
 
 
 def _resolve_analysis_instructions(

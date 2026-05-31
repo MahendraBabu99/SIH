@@ -120,6 +120,46 @@ class TestSingleImageAnalysis:
         assert isinstance(img_data["summary"], str)
         assert img_data["summary"] != ""
 
+    def test_single_image_preserves_canonical_artifact_metadata(self, tmp_path: Path) -> None:
+        """Multi-image pipeline keeps analyzer metadata in image per_artifact."""
+        analyzer = _build_analyzer(tmp_path, responses=[
+            "artifact-analysis-1",
+            "single-image-summary",
+        ])
+        analyzer.artifact_deduplication_enabled = False
+        parsed_dir = tmp_path / "images" / "img1" / "parsed"
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+        source_csv = _write_artifact_csv(parsed_dir, "runkeys", [
+            {"ts": "2026-01-15T10:00:00Z", "event": "first"},
+            {"ts": "2026-01-16T10:00:00Z", "event": "second"},
+        ])
+        image = {
+            "image_id": "img1",
+            "label": "Workstation-PC01",
+            "metadata": {"hostname": "pc01", "os_version": "Windows 11"},
+            "artifact_keys": ["runkeys"],
+            "parsed_dir": str(parsed_dir),
+        }
+
+        result = analyzer.run_multi_image_analysis(
+            images=[image],
+            investigation_context="Test investigation",
+        )
+
+        artifact = result["images"]["img1"]["per_artifact"][0]
+        assert artifact["record_count"] == 2
+        assert artifact["source_record_count"] == 2
+        assert artifact["analysis_record_count"] == 2
+        assert artifact["time_range_start"] == "2026-01-15T10:00:00"
+        assert artifact["time_range_end"] == "2026-01-16T10:00:00"
+        assert artifact["source_csv"] == str(source_csv)
+        analysis_csv = Path(artifact["analysis_csv"])
+        assert analysis_csv.parent.name == "parsed_deduplicated"
+        assert analysis_csv.name == "img1__runkeys.csv"
+        assert analysis_csv.exists()
+        assert artifact["analysis_columns"]
+        assert artifact["metadata"]["source_csv"] == str(source_csv)
+
     def test_single_image_skips_phase3(self, tmp_path: Path) -> None:
         """Phase 3 is not invoked for single-image cases."""
         provider = FakeProvider(responses=[

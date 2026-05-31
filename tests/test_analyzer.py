@@ -909,6 +909,78 @@ class AnalyzerTests(unittest.TestCase):
         self.assertNotIn("old.exe", prompt)
         self.assertIn("Start=2026-01-15T12:00:00", prompt)
 
+    def test_analyze_artifact_attaches_canonical_prep_metadata(self) -> None:
+        """Analyzer result preserves parser/data-prep facts for reports."""
+        with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_template(prompts_dir)
+
+            projection_path = temp_path / "artifact_ai_columns.yaml"
+            projection_path.write_text(
+                "artifact_ai_columns:\n"
+                "  custom:\n"
+                "    - ts\n"
+                "    - name\n"
+                "    - command\n",
+                encoding="utf-8",
+            )
+            csv_path = temp_path / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["ts", "record_id", "name", "command"])
+                writer.writeheader()
+                writer.writerow({
+                    "ts": "2026-01-15T12:00:00+00:00",
+                    "record_id": "1",
+                    "name": "RunA",
+                    "command": "tool.exe",
+                })
+                writer.writerow({
+                    "ts": "2026-01-16T12:00:00+00:00",
+                    "record_id": "2",
+                    "name": "RunA",
+                    "command": "tool.exe",
+                })
+                writer.writerow({
+                    "ts": "2025-11-30T12:00:00+00:00",
+                    "record_id": "3",
+                    "name": "OldRun",
+                    "command": "old.exe",
+                })
+
+            provider = FakeProvider(responses=["artifact-analysis"])
+            with patch("app.analyzer.core.create_provider", return_value=provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=temp_dir,
+                    config={
+                        "ai": {"provider": "local"},
+                        "analysis": {
+                            "artifact_ai_columns_config_path": str(projection_path),
+                        },
+                    },
+                    audit_logger=FakeAuditLogger(),
+                    artifact_csv_paths={"custom": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                analyzer.analysis_date_range = ("2026-01-01", "2026-01-31")
+                result = analyzer.analyze_artifact("custom", "Focus on January 2026.")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["record_count"], 1)
+        self.assertEqual(result["source_record_count"], 3)
+        self.assertEqual(result["analysis_record_count"], 1)
+        self.assertEqual(result["date_filtered_count"], 1)
+        self.assertEqual(result["deduplicated_records"], 1)
+        self.assertTrue(result["projection_applied"])
+        self.assertEqual(result["source_csv"], str(csv_path))
+        self.assertEqual(result["analysis_csv"], str(temp_path / "parsed_deduplicated" / "custom.csv"))
+        self.assertEqual(result["analysis_columns"], ["ts", "name", "command", "_dedup_comment"])
+        self.assertEqual(result["metadata"]["rows_before_date_filter"], 3)
+        self.assertEqual(result["metadata"]["rows_after_date_filter"], 2)
+        self.assertEqual(result["metadata"]["source_time_range_start"], "2025-11-30T12:00:00")
+        self.assertEqual(result["time_range_start"], "2026-01-15T12:00:00")
+        self.assertEqual(result["time_range_end"], "2026-01-15T12:00:00")
+
     def test_init_loads_prompt_templates_and_creates_provider(self) -> None:
         """Verify init loads prompt templates and creates provider."""
         with TemporaryDirectory(prefix="aift-analyzer-test-") as temp_dir:

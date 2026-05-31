@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..logging.audit import _utc_now_iso8601_ms
+from ..reporter.normalization import normalize_per_artifact_findings
 from ..utils import stringify as _stringify
 from .csv_retrieval import (
     contains_heuristic_term as _contains_heuristic_term,
@@ -743,15 +744,8 @@ class ChatManager:
                     label = _stringify(img_data.get("label"), default=image_id)
                     img_summary = _stringify(img_data.get("summary"), default="No summary.")
 
-                    raw = img_data.get("per_artifact")
-                    items = self._normalize_findings_items(raw)
-                    findings_tuples = self._extract_findings_tuples(items)
-                    if findings_tuples:
-                        artifact_lines = "\n".join(
-                            f"- {name}: {text}" for name, text in findings_tuples
-                        )
-                    else:
-                        artifact_lines = "- No per-artifact findings available."
+                    normalized_findings = normalize_per_artifact_findings(img_data)
+                    artifact_lines = self._format_normalized_artifact_lines(normalized_findings)
 
                     sections.append(
                         f"=== Image: {label} ===\n"
@@ -807,13 +801,11 @@ class ChatManager:
             if len(images_data) == 1:
                 _image_id, img_data = next(iter(images_data.items()))
                 if isinstance(img_data, Mapping):
-                    items = self._normalize_findings_items(img_data.get("per_artifact"))
-                    findings = self._extract_findings_tuples(items)
-                    if findings:
-                        return "\n".join(
-                            f"- {artifact_name}: {analysis_text}"
-                            for artifact_name, analysis_text in findings
-                        )
+                    artifact_lines = self._format_normalized_artifact_lines(
+                        normalize_per_artifact_findings(img_data)
+                    )
+                    if artifact_lines != "- No per-artifact findings available.":
+                        return artifact_lines
                 return "- No per-artifact findings available."
             return self._format_multi_image_findings(images_data)
 
@@ -821,16 +813,12 @@ class ChatManager:
         if raw_findings is None:
             raw_findings = analysis_results.get("per_artifact_findings")
 
-        items = self._normalize_findings_items(raw_findings)
-        findings = self._extract_findings_tuples(items)
-
-        if not findings:
-            return "- No per-artifact findings available."
-
-        return "\n".join(
-            f"- {artifact_name}: {analysis_text}"
-            for artifact_name, analysis_text in findings
+        artifact_lines = self._format_normalized_artifact_lines(
+            normalize_per_artifact_findings({"per_artifact": raw_findings})
         )
+        if artifact_lines == "- No per-artifact findings available.":
+            artifact_lines = self._format_legacy_artifact_lines(raw_findings)
+        return artifact_lines
 
     def _format_multi_image_findings(self, images_data: Mapping[str, Any]) -> str:
         """Format per-artifact findings from a multi-image analysis result.
@@ -851,19 +839,64 @@ class ChatManager:
             if not isinstance(img_data, Mapping):
                 continue
             label = _stringify(img_data.get("label"), default=image_id)
-            raw = img_data.get("per_artifact")
-            items = self._normalize_findings_items(raw)
-            findings = self._extract_findings_tuples(items)
+            artifact_lines = self._format_normalized_artifact_lines(
+                normalize_per_artifact_findings(img_data)
+            )
 
             all_findings.append(f"=== Image: {label} ===")
-            if findings:
-                all_findings.extend(
-                    f"- {name}: {text}" for name, text in findings
-                )
-            else:
+            if artifact_lines == "- No per-artifact findings available.":
                 all_findings.append("- No per-artifact findings available.")
+            else:
+                all_findings.extend(artifact_lines.splitlines())
 
         return "\n".join(all_findings) if all_findings else "- No per-artifact findings available."
+
+    @staticmethod
+    def _format_normalized_artifact_lines(findings: list[dict[str, Any]]) -> str:
+        """Format shared normalized artifact details for chat context."""
+        if not findings:
+            return "- No per-artifact findings available."
+
+        lines: list[str] = []
+        for finding in findings:
+            artifact_name = _stringify(
+                finding.get("artifact_name") or finding.get("artifact_key"),
+                default="Unknown Artifact",
+            )
+            analysis_text = _stringify(
+                finding.get("analysis_text") or finding.get("analysis"),
+            )
+            details: list[str] = []
+            record_count = _stringify(finding.get("record_count"))
+            if record_count and record_count != "N/A":
+                details.append(f"records={record_count}")
+            start = _stringify(finding.get("time_range_start"))
+            end = _stringify(finding.get("time_range_end"))
+            if start and start != "N/A":
+                details.append(f"time_start={start}")
+            if end and end != "N/A":
+                details.append(f"time_end={end}")
+            source_csv = _stringify(finding.get("source_csv"))
+            analysis_csv = _stringify(finding.get("analysis_csv"))
+            if source_csv:
+                details.append(f"source_csv={source_csv}")
+            if analysis_csv and analysis_csv != source_csv:
+                details.append(f"analysis_csv={analysis_csv}")
+            metadata_suffix = f" ({'; '.join(details)})" if details else ""
+            lines.append(f"- {artifact_name}{metadata_suffix}: {analysis_text}")
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_legacy_artifact_lines(cls, raw_findings: Any) -> str:
+        """Format non-canonical chat-only fallback findings."""
+        items = cls._normalize_findings_items(raw_findings)
+        findings = cls._extract_findings_tuples(items)
+        if not findings:
+            return "- No per-artifact findings available."
+        return "\n".join(
+            f"- {artifact_name}: {analysis_text}"
+            for artifact_name, analysis_text in findings
+        )
 
     @staticmethod
     def _normalize_findings_items(raw_findings: Any) -> list[Any]:

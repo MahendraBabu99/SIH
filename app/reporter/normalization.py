@@ -1025,9 +1025,13 @@ def normalize_per_artifact_findings(
             finding.get("analysis")
             or finding.get("analysis_text")
             or finding.get("findings")
+            or finding.get("finding")
+            or finding.get("summary")
             or finding.get("text"),
-            default="No findings were provided.",
+            default="",
         )
+        if not analysis_text:
+            continue
         confidence_label, confidence_class = resolve_confidence(
             stringify(finding.get("confidence") or finding.get("confidence_label")),
             analysis_text,
@@ -1052,6 +1056,8 @@ def normalize_per_artifact_findings(
         record_count = stringify(
             finding.get("record_count")
             if finding.get("record_count") is not None
+            else finding.get("analysis_record_count")
+            if finding.get("analysis_record_count") is not None
             else finding.get("records")
             if finding.get("records") is not None
             else finding.get("row_count")
@@ -1092,6 +1098,30 @@ def normalize_per_artifact_findings(
             "metadata": dict(metadata),
             "hash_status": hash_status,
         }
+        for key in (
+            "source_record_count",
+            "analysis_record_count",
+            "source_time_range_start",
+            "source_time_range_end",
+            "analysis_time_range_start",
+            "analysis_time_range_end",
+            "source_csv",
+            "analysis_csv",
+            "analysis_columns",
+            "date_filtered_count",
+            "rows_before_date_filter",
+            "rows_after_date_filter",
+            "deduplicated_records",
+            "dedup_annotated_rows",
+            "dedup_variant_columns",
+            "projection_applied",
+            "deduplication_enabled",
+            "analysis_transformed",
+        ):
+            if key in finding:
+                normalized[key] = finding.get(key)
+            elif key in metadata:
+                normalized[key] = metadata.get(key)
         if "model" in finding:
             normalized["model"] = finding.get("model", "")
         findings.append(normalized)

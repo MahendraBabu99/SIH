@@ -23,6 +23,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+from copy import deepcopy
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Callable, Iterable, Mapping
@@ -42,7 +43,7 @@ from .constants import (
     UnavailableProvider,
 )
 from .data_prep import (
-    build_artifact_csv_attachment, build_full_data_csv, compute_statistics,
+    ArtifactPrepResult, build_artifact_csv_attachment, build_full_data_csv, compute_statistics,
     deduplicate_rows_for_analysis, prepare_artifact_data,
 )
 from .multi_image import run_multi_image_analysis
@@ -322,6 +323,7 @@ class ForensicAnalyzer:
                 self.artifact_csv_paths[key] = Path(str(csv_path))
         # Not thread-safe: ForensicAnalyzer instances must not be shared across concurrent analysis threads.
         self._analysis_input_csv_paths: dict[str, Path] = {}
+        self._analysis_prep_metadata: dict[str, dict[str, Any]] = {}
         self.analysis_date_range: tuple[str, str] | None = None
         self.prompts_dir = Path(prompts_dir) if prompts_dir is not None else PROJECT_ROOT / "prompts"
         self.os_type = normalize_os_type(os_type)
@@ -1257,6 +1259,73 @@ class ForensicAnalyzer:
         self._analysis_input_csv_paths[artifact_key] = csv_path
         self._analysis_input_csv_paths[normalized] = csv_path
 
+    def _set_analysis_prep_metadata(
+        self,
+        artifact_key: str,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        """Store canonical data-prep metadata for an artifact."""
+        scope_id = self._current_analysis_scope_id()
+        normalized = normalize_artifact_key(artifact_key)
+        metadata_copy = deepcopy(dict(metadata))
+        if scope_id:
+            scoped_key = f"{scope_id}::{artifact_key}"
+            scoped_normalized = f"{scope_id}::{normalized}"
+            scoped_stem = build_scoped_artifact_stem(scope_id, artifact_key)
+            self._analysis_prep_metadata[scoped_key] = deepcopy(metadata_copy)
+            self._analysis_prep_metadata[scoped_normalized] = deepcopy(metadata_copy)
+            self._analysis_prep_metadata[scoped_stem] = deepcopy(metadata_copy)
+            return
+        self._analysis_prep_metadata[artifact_key] = deepcopy(metadata_copy)
+        self._analysis_prep_metadata[normalized] = deepcopy(metadata_copy)
+
+    def _resolve_analysis_prep_metadata(self, artifact_key: str) -> dict[str, Any]:
+        """Retrieve canonical data-prep metadata for an artifact."""
+        scope_id = self._current_analysis_scope_id()
+        normalized = normalize_artifact_key(artifact_key)
+        if scope_id:
+            for key in (
+                f"{scope_id}::{artifact_key}",
+                f"{scope_id}::{normalized}",
+                build_scoped_artifact_stem(scope_id, artifact_key),
+            ):
+                mapped = self._analysis_prep_metadata.get(key)
+                if mapped is not None:
+                    return deepcopy(mapped)
+
+        for key in (artifact_key, normalized):
+            mapped = self._analysis_prep_metadata.get(key)
+            if mapped is not None:
+                return deepcopy(mapped)
+        return {}
+
+    @staticmethod
+    def _attach_prep_metadata(
+        result: dict[str, Any],
+        prep_metadata: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Copy canonical parser/data-prep facts onto a result dict."""
+        if not prep_metadata:
+            return result
+
+        metadata = deepcopy(dict(prep_metadata))
+        result["record_count"] = metadata.get("record_count", metadata.get("analysis_record_count"))
+        result["time_range_start"] = metadata.get("time_range_start")
+        result["time_range_end"] = metadata.get("time_range_end")
+        result["source_csv"] = metadata.get("source_csv")
+        result["analysis_csv"] = metadata.get("analysis_csv")
+        result["analysis_columns"] = list(metadata.get("analysis_columns") or [])
+        result["source_record_count"] = metadata.get("source_record_count")
+        result["analysis_record_count"] = metadata.get("analysis_record_count")
+        result["date_filtered_count"] = metadata.get("date_filtered_count")
+        result["deduplicated_records"] = metadata.get("deduplicated_records")
+        result["projection_applied"] = bool(metadata.get("projection_applied"))
+        existing_metadata = result.get("metadata")
+        if not isinstance(existing_metadata, Mapping):
+            existing_metadata = {}
+        result["metadata"] = {**deepcopy(dict(existing_metadata)), **metadata}
+        return result
+
     def _resolve_analysis_input_csv_path(self, artifact_key: str, fallback: Path) -> Path:
         """Retrieve the analysis-input CSV path, with fallback.
 
@@ -1425,7 +1494,7 @@ class ForensicAnalyzer:
         resolved_csv_path = csv_path if csv_path is not None else self._resolve_artifact_csv_path(artifact_key)
         artifact_metadata = self._resolve_artifact_metadata(artifact_key)
 
-        prompt_text, analysis_csv_path, _ = prepare_artifact_data(
+        prep_result: ArtifactPrepResult = prepare_artifact_data(
             artifact_key=artifact_key,
             investigation_context=investigation_context,
             csv_path=resolved_csv_path,
@@ -1444,8 +1513,15 @@ class ForensicAnalyzer:
             host_metadata=getattr(self, "_host_metadata", None),
             analysis_scope_id=self._current_analysis_scope_id() or None,
         )
-        self._set_analysis_input_csv_path(artifact_key=artifact_key, csv_path=analysis_csv_path)
-        return prompt_text
+        self._set_analysis_input_csv_path(
+            artifact_key=artifact_key,
+            csv_path=prep_result.analysis_csv_path,
+        )
+        self._set_analysis_prep_metadata(
+            artifact_key=artifact_key,
+            metadata=prep_result.metadata,
+        )
+        return prep_result.prompt_text
 
     def analyze_artifact(
         self,
@@ -1480,6 +1556,7 @@ class ForensicAnalyzer:
         })
 
         start_time = perf_counter()
+        prep_metadata: dict[str, Any] = {}
         try:
             raise_if_cancelled(cancel_check)
             all_csv_paths = self._resolve_all_artifact_csv_paths(artifact_key)
@@ -1490,6 +1567,7 @@ class ForensicAnalyzer:
             artifact_prompt = self._prepare_artifact_data(
                 artifact_key=artifact_key, investigation_context=investigation_context, csv_path=csv_path,
             )
+            prep_metadata = self._resolve_analysis_prep_metadata(artifact_key)
             analysis_csv_path = self._resolve_analysis_input_csv_path(artifact_key=artifact_key, fallback=csv_path)
             attachments = [
                 build_artifact_csv_attachment(
@@ -1587,6 +1665,7 @@ class ForensicAnalyzer:
                     "analysis": analysis_text, "model": model,
                     "status": "success", "error": None, "analysis_available": True,
                 }
+                self._attach_prep_metadata(result, prep_metadata)
                 if citation_warnings:
                     result["citation_warnings"] = citation_warnings
                 return result
@@ -1705,6 +1784,7 @@ class ForensicAnalyzer:
             "status": status, "error": error_text,
             "analysis_available": analysis_available,
         }
+        self._attach_prep_metadata(result, prep_metadata)
         if citation_warnings:
             result["citation_warnings"] = citation_warnings
         return result
@@ -1825,6 +1905,7 @@ class ForensicAnalyzer:
             raise AIProviderError(self.ai_provider._error_message)
 
         self._analysis_input_csv_paths.clear()
+        self._analysis_prep_metadata.clear()
         self._register_artifact_paths_from_metadata(metadata)
         self._host_metadata: Mapping[str, Any] | None = metadata
         per_artifact_results: list[dict[str, Any]] = []
@@ -1902,6 +1983,7 @@ class ForensicAnalyzer:
             raise AIProviderError(self.ai_provider._error_message)
 
         self._analysis_input_csv_paths.clear()
+        self._analysis_prep_metadata.clear()
         return run_multi_image_analysis(
             analyzer=self,
             images=images,

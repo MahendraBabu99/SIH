@@ -558,6 +558,58 @@ class TestExportJsonReport(unittest.TestCase):
         self.assertEqual(runkeys["hash_status"], "PASS")
         self.assertEqual(by_key["shimcache"]["analysis_text"], "No notable execution.")
 
+    def test_analyzer_style_canonical_metadata_exported(self) -> None:
+        """JSON exports parser/data-prep fields from analyzer results."""
+        analysis = {
+            "images": {
+                "img-1": {
+                    "label": "Evidence Image",
+                    "summary": "Summary.",
+                    "per_artifact": [
+                        {
+                            "artifact_key": "custom",
+                            "artifact_name": "Custom Artifact",
+                            "analysis": "Analyzer result.",
+                            "model": "fake-model",
+                            "record_count": 1,
+                            "source_record_count": 3,
+                            "analysis_record_count": 1,
+                            "time_range_start": "2026-01-15T12:00:00",
+                            "time_range_end": "2026-01-15T12:00:00",
+                            "source_time_range_start": "2025-11-30T12:00:00",
+                            "source_time_range_end": "2026-01-16T12:00:00",
+                            "source_csv": "parsed/custom.csv",
+                            "analysis_csv": "parsed_deduplicated/custom.csv",
+                            "analysis_columns": ["ts", "name", "command", "_dedup_comment"],
+                            "date_filtered_count": 1,
+                            "rows_before_date_filter": 3,
+                            "rows_after_date_filter": 2,
+                            "deduplicated_records": 1,
+                            "projection_applied": True,
+                            "metadata": {
+                                "source_csv": "parsed/custom.csv",
+                                "analysis_csv": "parsed_deduplicated/custom.csv",
+                            },
+                        }
+                    ],
+                }
+            },
+            "model_info": {"provider": "fake", "model": "fake-model"},
+        }
+
+        _, data = self._export(analysis=analysis)
+
+        artifact = data["analysis"]["images"]["img-1"]["artifacts"][0]
+        self.assertEqual(artifact["record_count"], "1")
+        self.assertEqual(artifact["source_record_count"], 3)
+        self.assertEqual(artifact["analysis_record_count"], 1)
+        self.assertEqual(artifact["source_csv"], "parsed/custom.csv")
+        self.assertEqual(artifact["analysis_csv"], "parsed_deduplicated/custom.csv")
+        self.assertEqual(artifact["analysis_columns"], ["ts", "name", "command", "_dedup_comment"])
+        self.assertEqual(artifact["date_filtered_count"], 1)
+        self.assertEqual(artifact["deduplicated_records"], 1)
+        self.assertTrue(artifact["projection_applied"])
+
     def test_multi_image_accepts_per_artifact_findings_key(self) -> None:
         """JSON normalization keeps alternate keys inside image sections."""
         analysis = {
