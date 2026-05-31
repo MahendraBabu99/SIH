@@ -271,7 +271,7 @@ class OpenAICompatibleChatMixin:
             self._set_csv_attachment_supported(True)
             return text
         except Exception as error:
-            if _is_attachment_unsupported_error(error):
+            if _is_attachment_unsupported_error(error, allow_bare_404=True):
                 self._set_csv_attachment_supported(False)
                 logger.info(
                     "%s endpoint does not support file attachments via /files + /responses; "

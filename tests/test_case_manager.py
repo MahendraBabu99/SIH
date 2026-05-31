@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`app.case_manager`."""
+"""Unit tests for :mod:`app.logging.case_manager`."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from app.case_manager import CaseManager
+from app.logging.case_manager import CaseManager
 
 
 class TestCaseManagerCreateCase(unittest.TestCase):

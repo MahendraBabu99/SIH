@@ -43,8 +43,8 @@ from flask import (
 )
 
 from ..ai_providers import AIProviderError, create_provider
-from ..audit import AuditLogger
-from ..case_logging import (
+from ..logging.audit import AuditLogger
+from ..logging.case_logging import (
     case_log_context,
     pop_case_log_context,
     push_case_log_context,

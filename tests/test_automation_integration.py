@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.audit import AuditLogger as RealAuditLogger
+from app.logging.audit import AuditLogger as RealAuditLogger
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.automation.json_export import DISCLAIMER_TEXT
 from tests.conftest import (

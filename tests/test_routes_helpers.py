@@ -20,7 +20,7 @@ import yaml
 
 from app import create_app
 import app.artifact_profiles as artifact_profiles
-from app.case_logging import unregister_all_case_log_handlers
+from app.logging.case_logging import unregister_all_case_log_handlers
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat

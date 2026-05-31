@@ -31,7 +31,7 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..audit import _utc_now_iso8601_ms
+from ..logging.audit import _utc_now_iso8601_ms
 from ..utils import stringify as _stringify
 from .csv_retrieval import (
     contains_heuristic_term as _contains_heuristic_term,

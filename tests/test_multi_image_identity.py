@@ -15,7 +15,7 @@ from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.utils import build_scoped_artifact_stem
 from app.chat.manager import ChatManager
 from app.routes.evidence import rebuild_case_parse_artifacts
-from app.case_logging import unregister_all_case_log_handlers
+from app.logging.case_logging import unregister_all_case_log_handlers
 from tests.conftest import FakeParser, FakeProvider, ImmediateThread, FAKE_HASHES
 
 import app.routes.evidence as routes_evidence

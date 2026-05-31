@@ -1,4 +1,4 @@
-"""Tests for app.case_logging module.
+"""Tests for app.logging.case_logging module.
 
 Covers the per-case logging handler, filter, context management, and
 handler registration/unregistration lifecycle.
@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 import unittest
 
-from app.case_logging import (
+from app.logging.case_logging import (
     CASE_LOG_FILENAME,
     CASE_LOG_FORMAT,
     CASE_LOGS_DIRNAME,

@@ -23,7 +23,7 @@ from app.analyzer.citations import timestamp_found_in_csv, timestamp_lookup_keys
 from app.analyzer.constants import DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS
 from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.utils import is_dedup_safe_identifier_column
-from app.case_logging import case_log_context, register_case_log_handler, unregister_case_log_handler
+from app.logging.case_logging import case_log_context, register_case_log_handler, unregister_case_log_handler
 from conftest import FakeAuditLogger, FakeProvider
 
 

@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 import unittest
 
-from app.audit import (
+from app.logging.audit import (
     ACTION_TYPES,
     AuditLogger,
     DEFAULT_TOOL_VERSION,
@@ -181,7 +181,7 @@ class UtcNowIso8601MsTests(unittest.TestCase):
         fractional = before_z.split(".")[-1]
         self.assertEqual(len(fractional), 3)
 
-    @patch("app.audit.datetime")
+    @patch("app.logging.audit.datetime")
     def test_uses_utc(self, mock_datetime: object) -> None:
         fixed = datetime(2026, 6, 15, 10, 30, 0, 123000, tzinfo=timezone.utc)
         mock_datetime.now.return_value = fixed
@@ -195,13 +195,13 @@ class UtcNowIso8601MsTests(unittest.TestCase):
 class ResolveDissectVersionTests(unittest.TestCase):
     """Tests for the _resolve_dissect_version helper."""
 
-    @patch("app.audit.metadata.version", return_value="3.14.0")
+    @patch("app.logging.audit.metadata.version", return_value="3.14.0")
     def test_returns_dissect_version_when_available(self, mock_version: object) -> None:
         result = _resolve_dissect_version()
         self.assertEqual(result, "3.14.0")
         mock_version.assert_called_once_with("dissect")
 
-    @patch("app.audit.metadata.version")
+    @patch("app.logging.audit.metadata.version")
     def test_falls_back_to_dissect_target(self, mock_version: object) -> None:
         from importlib.metadata import PackageNotFoundError
 
@@ -214,7 +214,7 @@ class ResolveDissectVersionTests(unittest.TestCase):
         result = _resolve_dissect_version()
         self.assertEqual(result, "2.0.0")
 
-    @patch("app.audit.metadata.version")
+    @patch("app.logging.audit.metadata.version")
     def test_returns_unknown_when_no_package_found(self, mock_version: object) -> None:
         from importlib.metadata import PackageNotFoundError
 
@@ -285,7 +285,7 @@ class AuditLoggerInitTests(unittest.TestCase):
             logger = AuditLogger(temp_dir, dissect_version="1.2.3")
             self.assertEqual(logger.dissect_version, "1.2.3")
 
-    @patch("app.audit._resolve_dissect_version", return_value="auto-detected")
+    @patch("app.logging.audit._resolve_dissect_version", return_value="auto-detected")
     def test_auto_detects_dissect_version_when_none(self, mock_resolve: object) -> None:
         with TemporaryDirectory(prefix="aift-audit-test-") as temp_dir:
             logger = AuditLogger(temp_dir)

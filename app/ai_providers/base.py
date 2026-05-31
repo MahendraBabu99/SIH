@@ -830,11 +830,18 @@ def _is_context_length_error(error: Exception) -> bool:
     return False
 
 
-def _is_attachment_unsupported_error(error: Exception) -> bool:
+def _is_attachment_unsupported_error(
+    error: Exception,
+    *,
+    allow_bare_404: bool = False,
+) -> bool:
     """Detect API errors that indicate attachment/file APIs are unsupported.
 
     Args:
         error: The API exception to inspect.
+        allow_bare_404: Treat a bare HTTP 404 as attachment-unsupported.
+            Use only from code paths that are already attempting attachment
+            delivery, since generic 404s can also mean a missing model.
 
     Returns:
         ``True`` if the error indicates file-attachment APIs are unavailable.
@@ -883,10 +890,10 @@ def _is_attachment_unsupported_error(error: Exception) -> bool:
 
     message = " ".join(part for part in message_parts if part)
 
-    # This predicate is only used while an attachment/file request is already
-    # in progress. Many local OpenAI-compatible servers return a bare 404 for
-    # missing /files or /responses routes, without naming those routes.
-    if 404 in status_codes or re.search(r"\b404\b", message):
+    # Some local OpenAI-compatible servers return a bare 404 for missing
+    # /files or /responses routes, without naming those routes. Keep this
+    # opt-in so generic "model not found" errors stay non-attachment errors.
+    if allow_bare_404 and (404 in status_codes or re.search(r"\b404\b", message)):
         return True
 
     explicit_attachment_markers = (

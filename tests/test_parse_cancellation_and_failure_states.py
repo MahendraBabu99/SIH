@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app import create_app
-from app.audit import ACTION_TYPES
+from app.logging.audit import ACTION_TYPES
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.parser.core import ForensicParser, ParserCancelledError
 import app.routes.images as routes_images

@@ -68,7 +68,7 @@ class ForensicParser:
     Attributes:
         evidence_path: Path to the source evidence file.
         case_dir: Root directory for this forensic case.
-        audit_logger: :class:`~app.audit.AuditLogger` for recording actions.
+        audit_logger: :class:`~app.logging.audit.AuditLogger` for recording actions.
         parsed_dir: Directory where output CSV files are written.
         target: The open Dissect ``Target`` handle.
     """

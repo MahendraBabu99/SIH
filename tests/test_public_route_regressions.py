@@ -17,7 +17,7 @@ from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 from app import create_app
-from app.audit import AuditLogger
+from app.logging.audit import AuditLogger
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state

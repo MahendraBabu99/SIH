@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app import create_app
-from app.case_logging import unregister_all_case_log_handlers
+from app.logging.case_logging import unregister_all_case_log_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks

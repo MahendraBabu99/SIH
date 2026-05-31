@@ -22,7 +22,7 @@ import pytest
 
 from app import create_app
 from app.ai_providers import AIProviderError
-from app.case_logging import case_log_context, unregister_all_case_log_handlers
+from app.logging.case_logging import case_log_context, unregister_all_case_log_handlers
 from app.parser import WINDOWS_ARTIFACT_REGISTRY
 from app.version import TOOL_VERSION
 import app.routes.artifacts as routes_artifacts

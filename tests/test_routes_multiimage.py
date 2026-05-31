@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 from zipfile import ZipFile
 
 from app import create_app
-from app.case_logging import unregister_all_case_log_handlers
+from app.logging.case_logging import unregister_all_case_log_handlers
 from tests.conftest import (
     FakeParser as _BaseFakeParser,
     ImmediateThread,

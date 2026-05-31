@@ -26,10 +26,10 @@ from typing import Any
 
 from app.analyzer.cancellation import AnalysisCancelledError
 from app.analyzer.core import ForensicAnalyzer
-from app.audit import AuditLogger
+from app.logging.audit import AuditLogger
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
-from app.case_manager import CaseManager
+from app.logging.case_manager import CaseManager
 from app.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
 from app.hasher import (
@@ -750,7 +750,7 @@ def run_automation(
     2. Load configuration from *config_path* (fallback to default).
     3. Load artifact profile (fallback to ``"recommended"``).
     4. Discover evidence files (folder scanning if directory given).
-    5. Create a case via :class:`~app.case_manager.CaseManager`.
+    5. Create a case via :class:`~app.logging.case_manager.CaseManager`.
     6. For each evidence file: open Dissect target, extract metadata,
        compute hashes, intersect artifacts with profile, parse to CSV.
     7. Run AI analysis across all images.

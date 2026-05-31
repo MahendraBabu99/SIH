@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 from ..analyzer.cancellation import AnalysisCancelledError
 from ..analyzer.core import ForensicAnalyzer
-from ..case_logging import case_log_context
+from ..logging.case_logging import case_log_context
 from ..parser import ForensicParser
 from ..parser.core import ParserCancelledError
 from .state import (
@@ -732,7 +732,7 @@ def run_multi_image_analysis_task(
         # Resolve parsed directory.
         parsed_dir = str(img_state.get("csv_output_dir", "")).strip()
         if not parsed_dir:
-            from ..case_manager import CaseManager
+            from ..logging.case_manager import CaseManager
             from .state import CASES_ROOT
             cm = CaseManager(CASES_ROOT)
             try:

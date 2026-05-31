@@ -3,7 +3,7 @@
 Provides endpoints for adding images to a case, listing images, and
 image-specific evidence intake and parsing.  These routes delegate to the
 existing evidence and parsing logic but operate on per-image directories
-managed by :class:`~app.case_manager.CaseManager`.
+managed by :class:`~app.logging.case_manager.CaseManager`.
 
 Attributes:
     LOGGER: Module-level logger for image route diagnostics.
@@ -23,7 +23,7 @@ from typing import Any
 
 from flask import Blueprint, Response, current_app, request
 
-from ..case_manager import CaseManager
+from ..logging.case_manager import CaseManager
 from ..evidence.descriptor import descriptor_to_payload
 from .evidence_upload import resolve_evidence_payload
 from .evidence_utils import (
@@ -63,7 +63,7 @@ def get_case_manager() -> CaseManager:
     """Return a CaseManager instance bound to the global cases directory.
 
     Returns:
-        A :class:`~app.case_manager.CaseManager` instance.
+        A :class:`~app.logging.case_manager.CaseManager` instance.
     """
     return CaseManager(CASES_ROOT)
 

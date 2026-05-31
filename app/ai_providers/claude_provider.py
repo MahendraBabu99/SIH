@@ -330,7 +330,7 @@ class ClaudeProvider(AIProvider):
                 self._csv_attachment_supported = True
             return text
         except Exception as error:
-            if _is_attachment_unsupported_error(error):
+            if _is_attachment_unsupported_error(error, allow_bare_404=True):
                 with self._attachment_lock:
                     self._csv_attachment_supported = False
                 logger.info(
