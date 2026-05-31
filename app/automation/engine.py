@@ -75,6 +75,9 @@ class AutomationRequest:
         skip_hashing: If True, skip SHA-256/MD5 evidence hash computation.
         date_range: Optional ``(start_date, end_date)`` tuple for filtering
             analysis to a specific time window.
+        upload_staging_path: Optional pre-case REST multipart upload staging
+            directory. When set, the engine commits the staged upload tree into
+            the case-owned evidence directory before discovery.
     """
 
     evidence_path: str | Path
@@ -85,6 +88,7 @@ class AutomationRequest:
     case_name: str | None = None
     skip_hashing: bool = False
     date_range: tuple[str, str] | None = None
+    upload_staging_path: str | Path | None = None
 
 
 @dataclass
@@ -564,6 +568,102 @@ def _coerce_evidence_descriptor(value: Any) -> EvidenceDescriptor:
     return descriptor_for_path(Path(value), source_mode="path")
 
 
+def _commit_uploaded_evidence_to_case(
+    *,
+    evidence_path: Path,
+    upload_staging_path: str | Path,
+    case_evidence_dir: Path,
+) -> Path:
+    """Move a pre-case REST upload tree into the case evidence directory.
+
+    Args:
+        evidence_path: Staged evidence path originally selected for discovery.
+        upload_staging_path: Root directory containing the staged upload files.
+        case_evidence_dir: Case-owned evidence directory.
+
+    Returns:
+        Case-owned path corresponding to ``evidence_path``.
+
+    Raises:
+        FileNotFoundError: If the staged root or selected evidence is missing.
+        ValueError: If the selected evidence is outside the staged root.
+        FileExistsError: If the case upload destination already exists.
+        OSError: If the move fails.
+    """
+    staging_root = Path(upload_staging_path).resolve()
+    staged_evidence = Path(evidence_path).resolve()
+
+    if not staging_root.exists():
+        raise FileNotFoundError(
+            f"Upload staging directory does not exist: {staging_root}"
+        )
+    if not staged_evidence.exists():
+        raise FileNotFoundError(
+            f"Staged upload evidence path does not exist: {staged_evidence}"
+        )
+    if not staging_root.is_dir():
+        raise ValueError(f"Upload staging path must be a directory: {staging_root}")
+    if staged_evidence != staging_root and not staged_evidence.is_relative_to(
+        staging_root
+    ):
+        raise ValueError(
+            f"Staged upload evidence path is outside staging directory: "
+            f"{staged_evidence}"
+        )
+
+    case_evidence_dir.mkdir(parents=True, exist_ok=True)
+    committed_root = (case_evidence_dir / "uploaded").resolve()
+    if committed_root.exists():
+        raise FileExistsError(
+            f"Case upload evidence destination already exists: {committed_root}"
+        )
+
+    relative_evidence = (
+        Path(".")
+        if staged_evidence == staging_root
+        else staged_evidence.relative_to(staging_root)
+    )
+    shutil.move(str(staging_root), str(committed_root))
+
+    committed_evidence = (
+        committed_root
+        if relative_evidence == Path(".")
+        else committed_root / relative_evidence
+    ).resolve()
+    if not committed_evidence.exists():
+        raise FileNotFoundError(
+            f"Committed upload evidence path does not exist: {committed_evidence}"
+        )
+    return committed_evidence
+
+
+def _cleanup_uncommitted_upload_staging(upload_staging_path: str | Path | None) -> None:
+    """Remove an uncommitted REST upload staging directory.
+
+    The guard keeps this cleanup constrained to the REST pre-case upload
+    staging area, so ordinary path-mode evidence is never removed.
+    """
+    if upload_staging_path is None:
+        return
+    try:
+        target = Path(upload_staging_path).resolve()
+    except Exception:
+        LOGGER.debug(
+            "Unable to resolve uncommitted upload staging path: %r",
+            upload_staging_path,
+        )
+        return
+
+    if target.parent.name != "_automation_uploads":
+        LOGGER.warning(
+            "Refusing to clean upload staging path outside _automation_uploads: %s",
+            target,
+        )
+        return
+    if target.is_dir():
+        shutil.rmtree(target, ignore_errors=True)
+
+
 def _hash_evidence_descriptor(
     descriptor: EvidenceDescriptor,
     *,
@@ -813,6 +913,7 @@ def run_automation(
         else None
     )
     audit_logger: AuditLogger | None = None
+    upload_committed = False
 
     def _stop_if_cancelled() -> AutomationResult | None:
         """Return a cancelled result when the shared probe is set.
@@ -822,6 +923,8 @@ def run_automation(
             continue.
         """
         if safe_cancel_check is not None and safe_cancel_check():
+            if not upload_committed:
+                _cleanup_uncommitted_upload_staging(request.upload_staging_path)
             return _cancelled_result(result, start_time, audit_logger)
         return None
 
@@ -833,6 +936,7 @@ def run_automation(
     try:
         evidence_path = validate_evidence_path(request.evidence_path)
     except (FileNotFoundError, ValueError) as exc:
+        _cleanup_uncommitted_upload_staging(request.upload_staging_path)
         result.errors.append(str(exc))
         result.duration_seconds = time.monotonic() - start_time
         return result
@@ -845,6 +949,7 @@ def run_automation(
     if requested_output_dir is not None:
         output_dir, output_dir_error = _prepare_output_dir(requested_output_dir)
         if output_dir_error is not None:
+            _cleanup_uncommitted_upload_staging(request.upload_staging_path)
             result.errors.append(output_dir_error)
             result.duration_seconds = time.monotonic() - start_time
             return result
@@ -883,15 +988,18 @@ def run_automation(
         analysis_artifacts,
     )
     if profile_errors:
+        _cleanup_uncommitted_upload_staging(request.upload_staging_path)
         result.errors.extend(profile_errors)
         result.duration_seconds = time.monotonic() - start_time
         return result
 
     if not parse_artifacts:
+        _cleanup_uncommitted_upload_staging(request.upload_staging_path)
         result.errors.append("No artifacts to parse after profile resolution.")
         result.duration_seconds = time.monotonic() - start_time
         return result
     if not analysis_artifacts:
+        _cleanup_uncommitted_upload_staging(request.upload_staging_path)
         result.errors.append(
             "No analyzable AI artifacts selected after profile resolution. "
             "Choose a profile with at least one artifact marked for analysis."
@@ -915,6 +1023,22 @@ def run_automation(
     discovery_workspace = case_dir / "evidence"
     discovery_workspace.mkdir(parents=True, exist_ok=True)
 
+    discovery_source_mode = "path"
+    if request.upload_staging_path is not None:
+        try:
+            evidence_path = _commit_uploaded_evidence_to_case(
+                evidence_path=evidence_path,
+                upload_staging_path=request.upload_staging_path,
+                case_evidence_dir=discovery_workspace,
+            )
+            upload_committed = True
+            discovery_source_mode = "upload"
+        except (OSError, ValueError) as exc:
+            _cleanup_uncommitted_upload_staging(request.upload_staging_path)
+            result.errors.append(f"Upload evidence commit failed: {exc}")
+            result.duration_seconds = time.monotonic() - start_time
+            return result
+
     if output_dir is None:
         output_dir, output_dir_error = _prepare_output_dir(case_dir / "reports")
         if output_dir_error is not None:
@@ -929,6 +1053,7 @@ def run_automation(
         discovered_evidence = discover_evidence(
             evidence_path,
             workspace_dir=discovery_workspace,
+            source_mode=discovery_source_mode,
         )
     except (FileNotFoundError, ValueError) as exc:
         result.errors.append(f"Evidence discovery failed: {exc}")

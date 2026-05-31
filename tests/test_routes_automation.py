@@ -525,6 +525,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertEqual(evidence_path.name, "uploaded.E01")
         self.assertTrue(evidence_path.is_relative_to(upload_root.resolve()))
         self.assertEqual(evidence_path.read_bytes(), b"evidence")
+        self.assertEqual(Path(req.upload_staging_path), evidence_path.parent)
         self.assertEqual(req.prompt, "Investigate upload")
         self.assertTrue(req.skip_hashing)
 
@@ -565,6 +566,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
             (evidence_path / "KAPE/Windows/System32/config/SOFTWARE").is_file()
         )
         self.assertTrue((evidence_path / "KAPE/C/$MFT").is_file())
+        self.assertEqual(Path(req.upload_staging_path), evidence_path)
         self.assertFalse(req.skip_hashing)
 
     @patch("app.routes.automation.run_automation")
@@ -600,6 +602,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertEqual((evidence_path / "Evidence/Suspect.E01").read_bytes(), b"seg1")
         self.assertEqual((evidence_path / "Evidence/Suspect.E02").read_bytes(), b"seg2")
         self.assertEqual((evidence_path / "Evidence/Suspect.E03").read_bytes(), b"seg3")
+        self.assertEqual(Path(req.upload_staging_path), evidence_path)
         self.assertTrue(req.skip_hashing)
 
     @patch("app.routes.automation.run_automation")
@@ -867,6 +870,39 @@ class TestCancelRun(AutomationRoutesTestBase):
         # Verify state updated.
         run = automation_mod.AUTOMATION_RUNS["run-cancel"]
         self.assertEqual(run["status"], "cancelled")
+        self.assertTrue(cancel_event.is_set())
+
+    def test_cancel_running_run_cleans_upload_staging(self) -> None:
+        """Cancellation acknowledgement removes pre-case upload staging."""
+        cancel_event = threading.Event()
+        upload_root = Path(self.temp_dir.name) / "cases"
+        upload_dir = upload_root / "_automation_uploads" / "run-cancel-upload"
+        upload_dir.mkdir(parents=True)
+        (upload_dir / "uploaded.E01").write_bytes(b"staged")
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            with automation_mod.RUNS_LOCK:
+                automation_mod.AUTOMATION_RUNS["run-cancel-upload"] = {
+                    "run_id": "run-cancel-upload",
+                    "case_id": "",
+                    "status": "running",
+                    "phase": "parsing",
+                    "message": "busy",
+                    "percentage": 50.0,
+                    "started_at": "2026-04-15T10:00:00Z",
+                    "evidence_path": str(upload_dir),
+                    "cancel_event": cancel_event,
+                    "_upload_dir": str(upload_dir),
+                    "_started_mono": time.monotonic(),
+                }
+
+            resp = self._post_json(
+                "/api/automation/run/run-cancel-upload/cancel",
+                {},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(upload_dir.exists())
         self.assertTrue(cancel_event.is_set())
 
     def test_cancel_completed_run_returns_409(self) -> None:

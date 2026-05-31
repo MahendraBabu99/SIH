@@ -422,6 +422,7 @@ def start_run() -> tuple[Response, int]:
         case_name=params["case_name"],
         skip_hashing=params["skip_hashing"],
         date_range=params["date_range"],
+        upload_staging_path=upload_dir,
     )
 
     try:
@@ -480,12 +481,18 @@ def cancel_run(run_id: str) -> tuple[Response, int]:
         JSON success message, 404 if not found, or 409 if not running.
     """
     _sync_run_manager_ttl()
+    upload_dir: Any = None
+    with RUNS_LOCK:
+        run = AUTOMATION_RUNS.get(run_id)
+        if run is not None:
+            upload_dir = run.get("_upload_dir")
     payload = ROUTE_RUN_MANAGER.cancel_run(run_id)
     if not payload.get("success"):
         return error_response(
             str(payload.get("error", "Unable to cancel run.")),
             int(payload.get("status_code", 400)),
         )
+    _cleanup_upload_dir(upload_dir)
     return success_response({"message": payload["message"]})
 
 

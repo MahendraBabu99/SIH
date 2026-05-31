@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import unittest
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -482,6 +484,105 @@ class TestApiToReportIntegration(unittest.TestCase):
         self.assertEqual(json_download.status_code, 200)
         self.assertIn(b"Suspicious Run key persistence", html_download.data)
         self.assertEqual(json.loads(json_download.data)["report_metadata"]["case_id"], case_id)
+
+    @patch("app.automation.engine.ForensicAnalyzer", _RouteLevelAnalyzer)
+    @patch("app.automation.engine.ForensicParser", _RouteLevelParser)
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_archive_upload_is_case_owned_before_pipeline(self) -> None:
+        """REST multipart archive uploads commit into the case before discovery."""
+        workspace = Path(self.temp_dir.name) / "multipart-route-pipeline"
+        workspace.mkdir()
+        config_path = workspace / "case-settings.yml"
+        config_path.write_text(
+            "ai:\n"
+            "  provider: local\n"
+            "  local:\n"
+            "    api_key: not-needed\n"
+            "    model: route-model\n"
+            "analysis:\n"
+            "  ai_max_tokens: 4096\n",
+            encoding="utf-8",
+        )
+        profile_dir = workspace / "profile"
+        profile_dir.mkdir()
+        (profile_dir / "recommended.json").write_text(
+            json.dumps({
+                "name": "recommended",
+                "artifact_options": [
+                    {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+        archive_buffer = BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as archive:
+            archive.writestr("Disk.E01", b"uploaded archive evidence bytes")
+        archive_buffer.seek(0)
+
+        cases_root = workspace / "cases"
+        output_dir = workspace / "reports-out"
+        with (
+            patch("app.automation.engine._PROJECT_ROOT", workspace),
+            patch("app.utils.artifact_profiles.PROJECT_ROOT", workspace),
+            patch.object(self.automation_mod, "CASES_ROOT", cases_root),
+            patch(
+                "app.evidence.archive_resolver.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
+            patch(
+                "app.automation.discovery.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
+        ):
+            start_resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": (archive_buffer, "evidence.zip"),
+                    "prompt": "Investigate uploaded archive",
+                    "config_path": str(config_path),
+                    "output_dir": str(output_dir),
+                    "case_name": "Multipart Upload Case",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(start_resp.status_code, 202)
+        run_id = start_resp.get_json()["run_id"]
+        status = self.client.get(f"/api/automation/run/{run_id}/status").get_json()
+        self.assertEqual(status["status"], "completed")
+
+        case_dir = cases_root / status["case_id"]
+        case_evidence_dir = case_dir / "evidence"
+        uploaded_archive = case_evidence_dir / "uploaded" / "evidence.zip"
+        self.assertTrue(uploaded_archive.is_file())
+        self.assertFalse((cases_root / "_automation_uploads" / run_id).exists())
+
+        extracted_targets = list(case_evidence_dir.glob("extracted_*/Disk.E01"))
+        self.assertEqual(len(extracted_targets), 1)
+
+        audit_entries = [
+            json.loads(line)
+            for line in (case_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        intake = [
+            entry for entry in audit_entries
+            if entry["action"] == "evidence_intake"
+        ][0]["details"]
+        self.assertEqual(intake["source_mode"], "upload")
+        self.assertEqual(Path(intake["file"]).resolve(), uploaded_archive.resolve())
+        self.assertEqual(
+            Path(intake["evidence_file_hashes"][0]["path"]).resolve(),
+            uploaded_archive.resolve(),
+        )
+        self.assertEqual(
+            Path(intake["dissect_path"]).resolve(),
+            extracted_targets[0].resolve(),
+        )
+        self.assertTrue(Path(intake["dissect_path"]).is_relative_to(case_evidence_dir))
+        self.assertNotIn("_automation_uploads", Path(intake["file"]).parts)
+        self.assertNotIn("_automation_uploads", Path(intake["dissect_path"]).parts)
 
 
 # ---------------------------------------------------------------------------

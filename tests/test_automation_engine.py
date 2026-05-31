@@ -212,6 +212,7 @@ class TestAutomationRequest(unittest.TestCase):
         self.assertIsNone(req.case_name)
         self.assertFalse(req.skip_hashing)
         self.assertIsNone(req.date_range)
+        self.assertIsNone(req.upload_staging_path)
 
     def test_all_fields(self) -> None:
         """All fields can be set explicitly."""
@@ -1535,6 +1536,60 @@ class TestRunAutomation(unittest.TestCase):
         """Result includes the created case_id."""
         result = run_automation(self._make_request())
         self.assertEqual(result.case_id, "case-001")
+
+    def test_upload_staging_committed_to_case_before_discovery(self) -> None:
+        """REST upload staging is moved into the case evidence directory first."""
+        staging_root = self.cases_dir / "_automation_uploads" / "run-upload"
+        staged_file = staging_root / "Evidence" / "Suspect.E01"
+        staged_file.parent.mkdir(parents=True)
+        staged_file.write_bytes(b"uploaded evidence bytes")
+        self.mocks["validate_evidence_path"].return_value = staged_file
+
+        captured: dict[str, Any] = {}
+
+        def _discover(
+            source_path: str | Path,
+            *,
+            workspace_dir: str | Path | None = None,
+            source_mode: str = "path",
+        ) -> list[Any]:
+            captured["source_path"] = Path(source_path)
+            captured["workspace_dir"] = Path(workspace_dir) if workspace_dir else None
+            captured["source_mode"] = source_mode
+            return [descriptor_for_path(source_path, source_mode=source_mode)]
+
+        self.mocks["discover_evidence"].side_effect = _discover
+
+        result = run_automation(
+            self._make_request(
+                evidence_path=str(staged_file),
+                upload_staging_path=staging_root,
+            )
+        )
+
+        committed_file = (
+            self.cases_dir
+            / "case-001"
+            / "evidence"
+            / "uploaded"
+            / "Evidence"
+            / "Suspect.E01"
+        ).resolve()
+        self.assertTrue(result.success)
+        self.assertFalse(staging_root.exists())
+        self.assertTrue(committed_file.is_file())
+        self.assertEqual(committed_file.read_bytes(), b"uploaded evidence bytes")
+        self.assertEqual(captured["source_path"].resolve(), committed_file)
+        self.assertEqual(
+            captured["workspace_dir"],
+            (self.cases_dir / "case-001" / "evidence").resolve(),
+        )
+        self.assertEqual(captured["source_mode"], "upload")
+        self.assertEqual(result.evidence_files, [committed_file])
+        self.assertEqual(
+            Path(self.mocks["compute_hashes"].call_args.args[0]).resolve(),
+            committed_file,
+        )
 
     def test_duration_tracked(self) -> None:
         """Result includes non-zero duration_seconds."""

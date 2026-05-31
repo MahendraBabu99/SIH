@@ -44,6 +44,7 @@ class _DiscoveryContext:
 
     source_root: Path | None = None
     workspace_root: Path | None = None
+    source_mode: str = "path"
     extraction_count: int = 0
     visited_directories: set[Path] = field(default_factory=set)
 
@@ -141,7 +142,11 @@ def _can_open_with_dissect(path: Path) -> bool:
     return can_open_with_dissect(path)
 
 
-def _deduplicate_segments(paths: list[Path]) -> list[EvidenceDescriptor]:
+def _deduplicate_segments(
+    paths: list[Path],
+    *,
+    source_mode: str,
+) -> list[EvidenceDescriptor]:
     """Return descriptors for files, deduplicating split-image segments."""
     groups: dict[tuple[str, str], list[Path]] = {}
     non_segments: list[Path] = []
@@ -156,14 +161,14 @@ def _deduplicate_segments(paths: list[Path]) -> list[EvidenceDescriptor]:
         groups.setdefault((kind, base), []).append(path)
 
     descriptors: list[EvidenceDescriptor] = [
-        descriptor_for_path(path, source_mode="path") for path in non_segments
+        descriptor_for_path(path, source_mode=source_mode) for path in non_segments
     ]
     for group in groups.values():
         ordered_group = validate_segment_group_paths(group)
         descriptors.append(
             descriptor_for_path(
                 ordered_group[0],
-                source_mode="path",
+                source_mode=source_mode,
                 files_to_hash=ordered_group,
                 primary_dissect_path=ordered_group[0],
             )
@@ -204,18 +209,18 @@ def _discover_file(
             return [
                 descriptor_for_path(
                     path,
-                    source_mode="path",
+                    source_mode=context.source_mode,
                     files_to_hash=segment_paths,
                     primary_dissect_path=segment_paths[0],
                 )
             ]
-        return [descriptor_for_path(path, source_mode="path")]
+        return [descriptor_for_path(path, source_mode=context.source_mode)]
 
     return [
         resolve_archive_descriptor(
             path,
             lambda: context.next_extraction_dir(path),
-            source_mode="path",
+            source_mode=context.source_mode,
         )
     ]
 
@@ -231,7 +236,7 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
     context.visited_directories.add(directory)
 
     if _can_open_with_dissect(directory):
-        return [descriptor_for_path(directory, source_mode="path")]
+        return [descriptor_for_path(directory, source_mode=context.source_mode)]
 
     file_candidates: list[Path] = []
     recursive_candidates: list[Path] = []
@@ -259,7 +264,10 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
             else:
                 file_candidates.append(child_path)
 
-    result = _deduplicate_segments(file_candidates)
+    result = _deduplicate_segments(
+        file_candidates,
+        source_mode=context.source_mode,
+    )
     for child_path in recursive_candidates:
         result.extend(_discover_path(child_path, context, strict_extension=False))
 
@@ -288,6 +296,7 @@ def discover_evidence(
     source_path: str | Path,
     *,
     workspace_dir: str | Path | None = None,
+    source_mode: str = "path",
 ) -> list[EvidenceDescriptor]:
     """Discover all forensic evidence targets at the given path.
 
@@ -300,6 +309,7 @@ def discover_evidence(
         workspace_dir: Optional root directory for archive fallback extraction.
             Automation passes the case evidence directory here so extracted
             files become stable case-owned evidence targets.
+        source_mode: Evidence provenance label for returned descriptors.
 
     Returns:
         Sorted list of unique evidence descriptors, each pointing to a viable
@@ -318,7 +328,11 @@ def discover_evidence(
     workspace_root = (
         Path(workspace_dir).resolve() if workspace_dir is not None else None
     )
-    context = _DiscoveryContext(source_root=resolved, workspace_root=workspace_root)
+    context = _DiscoveryContext(
+        source_root=resolved,
+        workspace_root=workspace_root,
+        source_mode=source_mode,
+    )
     result = _discover_path(resolved, context, strict_extension=True)
     result = sorted(set(result), key=lambda item: str(item.dissect_path))
 
