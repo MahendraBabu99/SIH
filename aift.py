@@ -22,7 +22,7 @@ from runtime_compat import UnsupportedPythonVersionError, assert_supported_pytho
 def main() -> None:
     """Load configuration, create the Flask app, and start the development server.
 
-    Reads server host and port from ``config.yaml``, creates the Flask
+    Reads server host and port from ``config/config.yaml``, creates the Flask
     application via the application factory, schedules a browser launch
     after a 1-second delay, and starts the Flask development server with
     the reloader and debug mode disabled.

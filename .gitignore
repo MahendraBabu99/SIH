@@ -51,6 +51,7 @@ local_tests/**/__pycache__/
 Thumbs.db
 
 config.yaml
+config.yml
 
 # pdoc build output
 _site/

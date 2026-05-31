@@ -2278,8 +2278,14 @@ class AppFactoryPathResolutionTests(unittest.TestCase):
         """A relative custom config_path must be resolved to an absolute path."""
         from app import create_app
 
-        app = create_app("relative/config.yaml")
-        stored = app.config["AIFT_CONFIG_PATH"]
+        previous_cwd = Path.cwd()
+        with TemporaryDirectory(prefix="aift-relative-config-test-") as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                app = create_app("relative/config.yaml")
+                stored = app.config["AIFT_CONFIG_PATH"]
+            finally:
+                os.chdir(previous_cwd)
         self.assertTrue(
             Path(stored).is_absolute(),
             f"AIFT_CONFIG_PATH should be absolute, got: {stored}",

@@ -79,7 +79,7 @@ class OpenAIProvider(OpenAICompatibleChatMixin, AIProvider):
         if not normalized_api_key:
             raise AIProviderError(
                 "OpenAI API key is not configured. "
-                "Set `ai.openai.api_key` in config.yaml or the OPENAI_API_KEY environment variable."
+                "Set `ai.openai.api_key` in config/config.yaml or the OPENAI_API_KEY environment variable."
             )
 
         self._openai = openai

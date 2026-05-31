@@ -1,7 +1,7 @@
 """AI provider factory for creating provider instances from configuration.
 
 This module contains the ``create_provider`` function that reads the
-application ``config.yaml`` and constructs the appropriate provider
+application ``config/config.yaml`` and constructs the appropriate provider
 class based on the configured provider name.
 
 """

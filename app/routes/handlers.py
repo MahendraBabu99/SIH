@@ -328,7 +328,7 @@ def update_settings() -> Response | tuple[Response, int]:
     if not isinstance(payload, dict):
         return error_response("Settings payload must be a JSON object.", 400)
 
-    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config.yaml")))
+    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config/config.yaml")))
 
     with _SETTINGS_LOCK:
         current_config = load_config(config_path, use_env_overrides=False)

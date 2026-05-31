@@ -4,8 +4,8 @@ Manages the application's layered configuration system:
 
 1. **Hardcoded defaults** -- ``DEFAULT_CONFIG`` provides sensible values for
    every setting so the application runs out of the box.
-2. **YAML file** -- User overrides in ``config.yaml`` are deep-merged on top
-   of the defaults.
+2. **YAML file** -- User overrides in ``config/config.yaml`` are deep-merged
+   on top of the defaults.
 3. **Environment variables** -- API keys from ``ANTHROPIC_API_KEY``,
    ``OPENAI_API_KEY``, and ``MOONSHOT_API_KEY`` / ``KIMI_API_KEY`` take
    highest precedence.
@@ -38,6 +38,7 @@ __all__ = [
     "validate_config",
     "ConfigurationError",
     "PROJECT_ROOT",
+    "DEFAULT_CONFIG_RELATIVE_PATH",
     "DEFAULT_CONFIG",
     "KNOWN_AI_PROVIDERS",
     "LOGO_FILE_CANDIDATES",
@@ -62,6 +63,7 @@ class ConfigurationError(Exception):
 KNOWN_AI_PROVIDERS = ("claude", "openai", "kimi", "local")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG_RELATIVE_PATH = Path("config") / "config.yaml"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "ai": {
@@ -154,6 +156,11 @@ def _deep_merge_inplace(base: dict[str, Any], override: dict[str, Any]) -> dict[
 def get_default_config() -> dict[str, Any]:
     """Return a deep copy of :data:`DEFAULT_CONFIG` safe for mutation."""
     return deepcopy(DEFAULT_CONFIG)
+
+
+def _default_config_path() -> Path:
+    """Return the repository default configuration file path."""
+    return PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
 
 
 def _ensure_nested_dict(
@@ -337,7 +344,7 @@ def load_config(path: str | Path | None = None, use_env_overrides: bool = True) 
 
     Args:
         path: Explicit path to a YAML configuration file.  Defaults to
-            ``<PROJECT_ROOT>/config.yaml``.
+            ``<PROJECT_ROOT>/config/config.yaml``.
         use_env_overrides: When *True* (default), API keys from environment
             variables take precedence over file values.
 
@@ -347,7 +354,7 @@ def load_config(path: str | Path | None = None, use_env_overrides: bool = True) 
     Raises:
         ConfigurationError: If the YAML file contains a non-dictionary root value.
     """
-    config_path = Path(path) if path is not None else PROJECT_ROOT / "config.yaml"
+    config_path = Path(path) if path is not None else _default_config_path()
     config = get_default_config()
 
     if config_path.exists():
@@ -390,9 +397,9 @@ def save_config(config: dict[str, Any], path: str | Path | None = None) -> None:
     Args:
         config: The configuration dictionary to serialise.
         path: Destination file path.  Defaults to
-            ``<PROJECT_ROOT>/config.yaml``.
+            ``<PROJECT_ROOT>/config/config.yaml``.
     """
-    config_path = Path(path) if path is not None else PROJECT_ROOT / "config.yaml"
+    config_path = Path(path) if path is not None else _default_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_path = config_path.with_suffix(".yaml.tmp")

@@ -70,7 +70,7 @@ Python 3.14+ is currently unsupported due to upstream `dissect.target` compatibi
 python aift.py
 ```
 
-The app starts and opens your browser to `http://localhost:5000`. On first run, a default `config.yaml` is created automatically.
+The app starts and opens your browser to `http://localhost:5000`. On first run, a default `config/config.yaml` is created automatically.
 
 ### 3. Configure your AI provider
 

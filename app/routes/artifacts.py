@@ -259,7 +259,7 @@ def list_artifact_profiles() -> Response:
     Returns:
         JSON response with the ``profiles`` list.
     """
-    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config.yaml")))
+    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config/config.yaml")))
     profiles_root = resolve_profiles_root(config_path)
     return success_response({"profiles": compose_profile_response(profiles_root)})
 
@@ -287,7 +287,7 @@ def save_artifact_profile() -> Response | tuple[Response, int]:
     if not artifact_options:
         return error_response("Profile must include at least one artifact option.", 400)
 
-    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config.yaml")))
+    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config/config.yaml")))
     profiles_root = resolve_profiles_root(config_path)
 
     try:

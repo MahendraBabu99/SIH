@@ -89,7 +89,7 @@ class ClaudeProvider(AIProvider):
         if not normalized_api_key:
             raise AIProviderError(
                 "Claude API key is not configured. "
-                "Set `ai.claude.api_key` in config.yaml or the ANTHROPIC_API_KEY environment variable."
+                "Set `ai.claude.api_key` in config/config.yaml or the ANTHROPIC_API_KEY environment variable."
             )
 
         self._anthropic = anthropic

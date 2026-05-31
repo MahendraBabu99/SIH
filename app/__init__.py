@@ -1,8 +1,8 @@
 """Flask application factory for AIFT.
 
 Provides the :func:`create_app` factory function that initialises the Flask
-application, loads configuration from ``config.yaml``, sets the upload size
-limit, registers all HTTP route blueprints, and configures CSRF protection.
+application, loads configuration from ``config/config.yaml``, sets the upload
+size limit, registers all HTTP route blueprints, and configures CSRF protection.
 
 A Python version guard runs at import time so that downstream code can
 assume a supported interpreter.
@@ -54,11 +54,11 @@ def register_routes(app: Flask) -> None:
     _register_routes(app)
 
 
-def _project_root() -> Path:
-    """Return the project root without importing config at module import time."""
-    from .config import PROJECT_ROOT
+def _default_config_path() -> Path:
+    """Return the default config path without importing config eagerly."""
+    from .config import DEFAULT_CONFIG_RELATIVE_PATH, PROJECT_ROOT
 
-    return PROJECT_ROOT
+    return PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
 
 
 def create_app(
@@ -74,11 +74,11 @@ def create_app(
 
     Args:
         config_path: Optional path to a YAML configuration file.  When
-            *None*, the default ``config.yaml`` in the project root is used.
+            *None*, the default ``config/config.yaml`` in the project root is used.
             Ignored when *config* is provided.
         config: Optional pre-loaded configuration dictionary.  When
             provided, :func:`~app.config.load_config` is **not** called,
-            avoiding redundant parsing and validation of ``config.yaml``.
+            avoiding redundant parsing and validation of the YAML config file.
 
     Returns:
         A fully configured :class:`~flask.Flask` application instance.
@@ -91,7 +91,7 @@ def create_app(
     resolved_config_path = (
         str(Path(config_path).resolve())
         if config_path is not None
-        else str(_project_root() / "config.yaml")
+        else str(_default_config_path())
     )
     app.config["AIFT_CONFIG"] = aift_config
     app.config["AIFT_CONFIG_PATH"] = resolved_config_path

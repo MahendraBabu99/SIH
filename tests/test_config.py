@@ -10,6 +10,7 @@ import yaml
 
 from app.config import (
     ConfigurationError,
+    DEFAULT_CONFIG_RELATIVE_PATH,
     DEFAULT_CONFIG,
     KNOWN_AI_PROVIDERS,
     LOGO_FILE_CANDIDATES,
@@ -149,7 +150,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
         relative to PROJECT_ROOT regardless of the current working directory."""
         with TemporaryDirectory(prefix="aift-cwd-test-") as fake_cwd:
             with patch("os.getcwd", return_value=fake_cwd):
-                expected = PROJECT_ROOT / "config.yaml"
+                expected = PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
                 # Call load_config with no arguments; it should NOT create
                 # config.yaml in the fake CWD.
                 load_config()
@@ -161,7 +162,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
                 # It should have used the project-root path.
                 self.assertTrue(
                     expected.exists(),
-                    "config.yaml should exist at PROJECT_ROOT after load_config()",
+                    "config/config.yaml should exist under PROJECT_ROOT after load_config()",
                 )
 
     def test_save_config_default_path_uses_project_root(self) -> None:
@@ -171,7 +172,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
             with patch("app.config.PROJECT_ROOT", fake_root):
                 config = {"ai": {"provider": "test-sentinel"}}
                 save_config(config)
-                expected = fake_root / "config.yaml"
+                expected = fake_root / DEFAULT_CONFIG_RELATIVE_PATH
                 self.assertTrue(expected.exists())
                 reloaded = yaml.safe_load(
                     expected.read_text(encoding="utf-8")

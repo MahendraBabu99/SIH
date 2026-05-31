@@ -86,7 +86,7 @@ class KimiProvider(OpenAICompatibleChatMixin, AIProvider):
         if not normalized_api_key:
             raise AIProviderError(
                 "Kimi API key is not configured. "
-                "Set `ai.kimi.api_key` in config.yaml or the MOONSHOT_API_KEY environment variable."
+                "Set `ai.kimi.api_key` in config/config.yaml or the MOONSHOT_API_KEY environment variable."
             )
 
         self._openai = openai

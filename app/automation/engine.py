@@ -30,7 +30,7 @@ from app.audit import AuditLogger
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.case_manager import CaseManager
-from app.config import load_config
+from app.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
 from app.evidence_descriptor import EvidenceDescriptor, descriptor_for_path
 from app.hasher import (
     apply_hash_verification_result,
@@ -259,7 +259,7 @@ def _effective_profile_config_path(config_path: str | Path | None) -> Path:
         resolved = Path(config_path).resolve()
         if resolved.is_file():
             return resolved
-    return _PROJECT_ROOT / "config.yaml"
+    return _PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
 
 
 def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
@@ -300,7 +300,7 @@ def _load_profile(
     active_config_path = (
         Path(config_path).resolve()
         if config_path is not None
-        else _PROJECT_ROOT / "config.yaml"
+        else _PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
     )
     profiles_root = resolve_profiles_root(active_config_path)
     profiles = load_profiles_from_directory(profiles_root)
