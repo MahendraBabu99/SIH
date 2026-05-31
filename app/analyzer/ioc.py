@@ -212,8 +212,8 @@ def format_ioc_targets(
             compatibility.
 
     Returns:
-        A multi-line string with one bullet per IOC category (up to
-        20 values each), or a message indicating no IOCs were found.
+        A multi-line string with one bullet per IOC category, preserving
+        every extracted value, or a message indicating no IOCs were found.
     """
     ioc_map = ioc_targets if ioc_targets is not None else extract_ioc_targets(investigation_context)
     if not ioc_map:
@@ -221,9 +221,7 @@ def format_ioc_targets(
 
     lines = []
     for category, values in ioc_map.items():
-        limited = values[:20]
-        suffix = "" if len(values) <= 20 else " ... [truncated]"
-        lines.append(f"- {category}: {', '.join(limited)}{suffix}")
+        lines.append(f"- {category}: {', '.join(values)}")
     return "\n".join(lines)
 
 

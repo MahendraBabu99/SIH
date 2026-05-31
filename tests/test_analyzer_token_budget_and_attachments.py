@@ -32,6 +32,7 @@ class AttachmentCapableProvider:
         """
         self.response = response
         self.attachment_calls: list[dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
     def analyze_with_attachments(
         self,
@@ -56,6 +57,22 @@ class AttachmentCapableProvider:
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "attachments": list(attachments or []),
+                "max_tokens": max_tokens,
+            }
+        )
+        return self.response
+
+    def analyze(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Record a normal prompt call and return the canned response."""
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
                 "max_tokens": max_tokens,
             }
         )
@@ -163,16 +180,22 @@ class AnalyzerTokenBudgetAndAttachmentTests(unittest.TestCase):
                     prompts_dir=prompts_dir,
                 )
                 result = analyzer.analyze_artifact("custom", "Review all rows.")
+                call = provider.attachment_calls[0]
+                attachment_path = Path(call["attachments"][0]["path"])
+                with attachment_path.open("r", newline="", encoding="utf-8") as handle:
+                    attachment_rows = list(csv.reader(handle))
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(provider.attachment_calls), 1)
-        call = provider.attachment_calls[0]
         self.assertEqual(len(call["attachments"]), 1)
         self.assertIn("provided as file attachment", call["user_prompt"])
         self.assertNotIn("row_ref,ts,name,detail", call["user_prompt"])
         self.assertNotIn("Entry1", call["user_prompt"])
         self.assertNotIn("```", call["user_prompt"])
         self.assertIn("## Final Analysis Rules", call["user_prompt"])
+        self.assertEqual(attachment_rows[0], ["row_ref", "ts", "name", "detail"])
+        self.assertEqual(attachment_rows[1][0], "1")
+        self.assertIn("Entry1", attachment_rows[1])
 
     def test_inline_fallback_skips_attachment_data_already_in_prompt(self) -> None:
         """Fallback inlining does not append a CSV body that is already inline."""
@@ -192,14 +215,14 @@ class AnalyzerTokenBudgetAndAttachmentTests(unittest.TestCase):
         self.assertEqual(inlined_prompt.count("EntryA"), 1)
         self.assertNotIn("--- BEGIN ATTACHMENT: evidence.csv ---", inlined_prompt)
 
-    def test_attachment_prompt_budget_avoids_unnecessary_chunking(self) -> None:
-        """Chunking uses the smaller attachment prompt when file delivery is available."""
+    def test_attachment_prompt_budget_avoids_chunking_when_fallback_also_fits(self) -> None:
+        """Attachment mode avoids chunking only when upload and fallback fit."""
         with TemporaryDirectory(prefix="aift-token-budget-test-") as temp_dir:
             temp_path = Path(temp_dir)
             prompts_dir = temp_path / "prompts"
             self._write_prompt_templates(prompts_dir)
             csv_path = temp_path / "custom.csv"
-            self._write_csv(csv_path, row_count=120, payload_size=80)
+            self._write_csv(csv_path, row_count=3, payload_size=12)
 
             provider = AttachmentCapableProvider()
             with patch("app.analyzer.core.create_provider", return_value=provider):
@@ -222,8 +245,116 @@ class AnalyzerTokenBudgetAndAttachmentTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(provider.attachment_calls), 1)
         self.assertIn("provided as file attachment", provider.attachment_calls[0]["user_prompt"])
-        self.assertNotIn("Entry120", provider.attachment_calls[0]["user_prompt"])
+        self.assertNotIn("Entry3", provider.attachment_calls[0]["user_prompt"])
         self.assertNotIn("```", provider.attachment_calls[0]["user_prompt"])
+
+    def test_unknown_attachment_support_budgets_inlined_fallback_before_provider_call(self) -> None:
+        """First-call attachment mode chunks when fallback inlining would exceed budget."""
+        with TemporaryDirectory(prefix="aift-token-budget-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_templates(prompts_dir)
+            csv_path = temp_path / "custom.csv"
+            self._write_csv(csv_path, row_count=120, payload_size=80)
+
+            provider = AttachmentCapableProvider(response="chunk-analysis")
+            with patch("app.analyzer.core.create_provider", return_value=provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=temp_dir,
+                    config={
+                        "ai": {"provider": "local"},
+                        "analysis": {
+                            "ai_max_tokens": 1400,
+                            "ai_response_max_tokens": 100,
+                            "ai_input_safety_margin_tokens": 0,
+                            "artifact_deduplication_enabled": False,
+                        },
+                    },
+                    artifact_csv_paths={"custom": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                result = analyzer.analyze_artifact("custom", "Review all rows.")
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(provider.attachment_calls, [])
+        self.assertGreater(len(provider.calls), 1)
+        self.assertIn("row_ref,ts,name,detail", provider.calls[0]["user_prompt"])
+
+    def test_chunk_merge_warning_survives_failed_fallback_merge(self) -> None:
+        """A recorded merge-fallback warning remains on failed artifact results."""
+
+        class FailingFallbackProvider(AttachmentCapableProvider):
+            def analyze(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
+                self.calls.append(
+                    {
+                        "system_prompt": system_prompt,
+                        "user_prompt": user_prompt,
+                        "max_tokens": max_tokens,
+                    }
+                )
+                if "[... truncated ...]" in user_prompt:
+                    raise RuntimeError("fallback merge failed")
+                return "merged " + ("x" * 1000)
+
+        with TemporaryDirectory(prefix="aift-token-budget-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_templates(prompts_dir)
+            csv_path = temp_path / "custom.csv"
+            self._write_csv(csv_path, row_count=120, payload_size=80)
+
+            provider = FailingFallbackProvider()
+            with patch("app.analyzer.core.create_provider", return_value=provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=temp_dir,
+                    config={
+                        "ai": {"provider": "local"},
+                        "analysis": {
+                            "ai_max_tokens": 1400,
+                            "ai_response_max_tokens": 100,
+                            "ai_input_safety_margin_tokens": 0,
+                            "artifact_deduplication_enabled": False,
+                            "max_merge_rounds": 1,
+                        },
+                    },
+                    artifact_csv_paths={"custom": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                result = analyzer.analyze_artifact("custom", "Review all rows.")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["processing_warnings"][0]["category"], "chunk_merge_truncated")
+        self.assertTrue(result["processing_warnings"][0]["text_truncated"])
+
+    def test_source_row_ref_header_is_preserved_without_duplicate_citation_column(self) -> None:
+        """Generated analysis CSV has one authoritative row_ref column."""
+        with TemporaryDirectory(prefix="aift-token-budget-test-") as temp_dir:
+            temp_path = Path(temp_dir)
+            prompts_dir = temp_path / "prompts"
+            self._write_prompt_templates(prompts_dir)
+            csv_path = temp_path / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["row_ref", "ts", "name"])
+                writer.writeheader()
+                writer.writerow({"row_ref": "source-a", "ts": "2026-01-15T12:00:00Z", "name": "EntryA"})
+
+            provider = AttachmentCapableProvider()
+            with patch("app.analyzer.core.create_provider", return_value=provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=temp_dir,
+                    config={"ai": {"provider": "local"}, "analysis": {"artifact_deduplication_enabled": False}},
+                    artifact_csv_paths={"custom": csv_path},
+                    prompts_dir=prompts_dir,
+                )
+                result = analyzer.analyze_artifact("custom", "Review all rows.")
+                attachment_path = Path(provider.attachment_calls[0]["attachments"][0]["path"])
+                with attachment_path.open("r", newline="", encoding="utf-8") as handle:
+                    attachment_rows = list(csv.reader(handle))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(attachment_rows[0], ["row_ref", "source_row_ref", "ts", "name"])
+        self.assertEqual(attachment_rows[1][0], "1")
+        self.assertEqual(attachment_rows[1][1], "source-a")
 
     def test_template_selection_uses_reserved_input_budget(self) -> None:
         """Data preparation selects compact prompts from the reserved input budget."""

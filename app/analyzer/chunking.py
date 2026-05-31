@@ -411,6 +411,8 @@ def analyze_artifact_chunked(
     prompt_filename_stem: str | None = None,
     progress_callback: Any | None = None,
     cancel_check: Any | None = None,
+    warning_collector: list[dict[str, Any]] | None = None,
+    chunk_reason: str = "prompt_budget",
 ) -> str:
     """Analyze an artifact in multiple chunks when data exceeds context budget.
 
@@ -440,6 +442,10 @@ def analyze_artifact_chunked(
             saved chunk and merge prompts.
         progress_callback: Optional callback for streaming progress.
         cancel_check: Optional callable or event-like cancellation probe.
+        warning_collector: Optional list that receives structured processing
+            warnings produced during chunk merge fallback.
+        chunk_reason: Stable reason explaining why chunked analysis was
+            selected.
 
     Returns:
         The merged analysis text from all chunks.
@@ -519,6 +525,7 @@ def analyze_artifact_chunked(
                 "artifact_key": artifact_key,
                 "total_chunks": total_chunks,
                 "csv_budget_per_chunk": csv_budget,
+                "chunk_reason": chunk_reason,
             },
         )
 
@@ -589,6 +596,8 @@ def analyze_artifact_chunked(
         prompt_filename_stem=prompt_filename_stem,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
+        warning_collector=warning_collector,
+        audit_log_fn=audit_log_fn,
     )
     LOGGER.info(
         "Chunked analysis for %s complete: %d chunks merged.",
@@ -662,6 +671,8 @@ def _hierarchical_merge_findings(
     prompt_filename_stem: str | None = None,
     progress_callback: Any | None = None,
     cancel_check: Any | None = None,
+    warning_collector: list[dict[str, Any]] | None = None,
+    audit_log_fn: Any = None,
 ) -> str:
     """Merge chunk findings hierarchically until one result remains.
 
@@ -681,6 +692,9 @@ def _hierarchical_merge_findings(
         save_case_prompt_fn: Optional callable for saving prompts.
         progress_callback: Optional callback for streaming progress.
         cancel_check: Optional callable or event-like cancellation probe.
+        warning_collector: Optional list that receives structured processing
+            warnings produced during chunk merge fallback.
+        audit_log_fn: Optional callable ``(action, details)`` for audit.
 
     Returns:
         A single merged analysis text.
@@ -725,17 +739,51 @@ def _hierarchical_merge_findings(
                 )
                 raise_if_cancelled(cancel_check)
             total_chars = sum(len(f) for f in current_findings)
+            text_truncated = False
             if total_chars > findings_budget:
                 per_finding_budget = max(200, findings_budget // len(current_findings))
                 capped = []
                 for f in current_findings:
                     if len(f) > per_finding_budget:
                         capped.append(f[:per_finding_budget] + "\n[... truncated ...]")
+                        text_truncated = True
                     else:
                         capped.append(f)
                 concatenated = "\n\n".join(capped)
             else:
                 concatenated = "\n\n".join(current_findings)
+
+            warning = {
+                "category": "chunk_merge_truncated",
+                "severity": "warning",
+                "artifact_key": artifact_key,
+                "artifact_name": artifact_name,
+                "message": (
+                    f"Chunk merge for {artifact_name} reached the configured "
+                    f"{max_merge_rounds}-round limit with {len(current_findings)} "
+                    "remaining finding batches; intermediate findings were "
+                    + ("truncated to fit the merge budget." if text_truncated else "merged through fallback concatenation.")
+                ),
+                "remaining_batch_count": len(current_findings),
+                "findings_budget": findings_budget,
+                "max_merge_rounds": max_merge_rounds,
+                "merge_rounds_completed": max_merge_rounds,
+                "text_truncated": text_truncated,
+            }
+            if warning_collector is not None:
+                warning_collector.append(warning)
+            if audit_log_fn is not None:
+                audit_log_fn(
+                    "chunked_analysis_merge_fallback",
+                    {
+                        "artifact_key": artifact_key,
+                        "artifact_name": artifact_name,
+                        "remaining_batch_count": len(current_findings),
+                        "findings_budget": findings_budget,
+                        "max_merge_rounds": max_merge_rounds,
+                        "text_truncated": text_truncated,
+                    },
+                )
 
             merge_prompt = _build_merge_prompt(
                 findings_text=concatenated,

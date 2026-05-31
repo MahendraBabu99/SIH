@@ -1557,6 +1557,7 @@ class ForensicAnalyzer:
 
         start_time = perf_counter()
         prep_metadata: dict[str, Any] = {}
+        processing_warnings: list[dict[str, Any]] = []
         try:
             raise_if_cancelled(cancel_check)
             all_csv_paths = self._resolve_all_artifact_csv_paths(artifact_key)
@@ -1602,10 +1603,7 @@ class ForensicAnalyzer:
 
             prompt_tokens_estimate = self._estimate_tokens(provider_prompt) + self._estimate_tokens(self.system_prompt)
             inlined_attachment_tokens_estimate = None
-            if attachments_for_provider and (
-                not bool(getattr(self.ai_provider, "attach_csv_as_file", False))
-                or getattr(self.ai_provider, "_csv_attachment_supported", None) is False
-            ):
+            if attachments_for_provider:
                 inlined_attachment_tokens_estimate = self._estimate_inlined_attachment_prompt_tokens(
                     provider_prompt,
                     attachments_for_provider,
@@ -1650,6 +1648,8 @@ class ForensicAnalyzer:
                     prompt_filename_stem=safe_key,
                     progress_callback=progress_callback,
                     cancel_check=cancel_check,
+                    warning_collector=processing_warnings,
+                    chunk_reason=budget_reason.replace(" ", "_"),
                 )
                 duration_seconds = perf_counter() - start_time
                 self._audit_log("analysis_completed", {
@@ -1657,6 +1657,7 @@ class ForensicAnalyzer:
                     "token_count": self._estimate_tokens(analysis_text),
                     "duration_seconds": round(duration_seconds, 6),
                     "status": "success", "chunked": True,
+                    "processing_warnings": processing_warnings,
                 })
                 citation_warnings = self._validate_citations(artifact_key, analysis_text)
                 result: dict[str, Any] = {
@@ -1666,6 +1667,8 @@ class ForensicAnalyzer:
                     "status": "success", "error": None, "analysis_available": True,
                 }
                 self._attach_prep_metadata(result, prep_metadata)
+                if processing_warnings:
+                    result["processing_warnings"] = processing_warnings
                 if citation_warnings:
                     result["citation_warnings"] = citation_warnings
                 return result
@@ -1769,6 +1772,7 @@ class ForensicAnalyzer:
                 "artifact_key": artifact_key, "artifact_name": artifact_name,
                 "token_count": 0, "duration_seconds": round(duration_seconds, 6),
                 "status": "failed", "error": str(error),
+                "processing_warnings": processing_warnings,
             })
 
         citation_warnings = self._validate_citations(
@@ -1785,6 +1789,8 @@ class ForensicAnalyzer:
             "analysis_available": analysis_available,
         }
         self._attach_prep_metadata(result, prep_metadata)
+        if processing_warnings:
+            result["processing_warnings"] = processing_warnings
         if citation_warnings:
             result["citation_warnings"] = citation_warnings
         return result

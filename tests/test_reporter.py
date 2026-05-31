@@ -269,6 +269,46 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(html.count('class="artifact-card"'), 1)
         self.assertNotIn("provider secret", html)
 
+    def test_artifact_processing_warnings_render_as_processing_notes(self) -> None:
+        """Chunk merge warnings are report notes, not extra findings."""
+        with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = self._create_report_generator(cases_root)
+
+            report_path = reporter.generate(
+                analysis_results=_single_image_analysis(
+                    case_id="case-chunk-warning",
+                    summary="Executive summary.",
+                    per_artifact=[
+                        {
+                            "artifact_key": "evtx",
+                            "artifact_name": "Event Logs",
+                            "analysis": "Successful finding. Confidence: HIGH",
+                            "status": "success",
+                            "analysis_available": True,
+                            "processing_warnings": [
+                                {
+                                    "category": "chunk_merge_truncated",
+                                    "message": "Chunk merge for Event Logs truncated intermediate findings.",
+                                    "remaining_batch_count": 3,
+                                    "text_truncated": True,
+                                }
+                            ],
+                        },
+                    ],
+                ),
+                image_metadata=_image_record(hostname="host1"),
+                evidence_hashes=_image_record(sha256="a" * 64, md5="b" * 32),
+                investigation_context="Investigate chunk warnings.",
+                audit_log_entries=[],
+            )
+            html = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("Processing Notes", html)
+        self.assertIn("Chunk merge for Event Logs truncated intermediate findings.", html)
+        self.assertIn("Event Logs", html)
+        self.assertEqual(html.count('class="artifact-card"'), 1)
+
     def test_generate_marks_hash_verification_fail_on_mismatch(self) -> None:
         with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
             cases_root = Path(temp_dir) / "cases"

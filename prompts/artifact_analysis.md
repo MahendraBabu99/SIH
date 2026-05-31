@@ -1,9 +1,15 @@
 # Artifact Analysis
 
+## Priority Directives
+{{priority_directives}}
+
 ## Investigation Context (Analyst-Provided)
 Use this context to focus the analysis.
 
 {{investigation_context}}
+
+## IOC Targets
+{{ioc_targets}}
 
 ## Host
 {{hostname}} | Domain: {{domain}} | IP(s): {{ips}}

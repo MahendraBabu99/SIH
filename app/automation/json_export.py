@@ -101,6 +101,13 @@ def _build_artifact_entry(finding: dict[str, Any]) -> dict[str, Any]:
             entry["citation_warnings"] = list(citation_warnings)
         else:
             entry["citation_warnings"] = [citation_warnings]
+    for warning_key in ("processing_warnings", "data_gaps"):
+        if warning_key in finding:
+            warning_values = finding.get(warning_key) or []
+            if isinstance(warning_values, list):
+                entry[warning_key] = list(warning_values)
+            else:
+                entry[warning_key] = [warning_values]
     for key in (
         "source_record_count",
         "analysis_record_count",

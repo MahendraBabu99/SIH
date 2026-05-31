@@ -383,9 +383,10 @@ def build_full_data_csv(
 
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer)
-    writer.writerow(["row_ref", *columns])
+    visible_columns = [column for column in columns if column != "row_ref"]
+    writer.writerow(["row_ref", *visible_columns])
     for row in rows:
-        writer.writerow([row.get("_row_ref", ""), *[row.get(column, "") for column in columns]])
+        writer.writerow([row.get("_row_ref", ""), *[row.get(column, "") for column in visible_columns]])
 
     full_csv = buffer.getvalue().strip()
     if not full_csv:
@@ -432,6 +433,41 @@ def _analysis_input_filename(source_csv_path: Path, analysis_scope_id: str | Non
     return f"{build_scoped_artifact_stem(analysis_scope_id, source_csv_path.stem)}{suffix}"
 
 
+def _unique_column_name(candidate: str, used_columns: set[str]) -> str:
+    """Return a column name that does not collide with existing names."""
+    if candidate not in used_columns:
+        used_columns.add(candidate)
+        return candidate
+    index = 2
+    while f"{candidate}_{index}" in used_columns:
+        index += 1
+    unique = f"{candidate}_{index}"
+    used_columns.add(unique)
+    return unique
+
+
+def _analysis_visible_columns(source_columns: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Rename source ``row_ref`` columns away from the citation column.
+
+    The AI-visible CSV always reserves ``row_ref`` as the authoritative
+    generated citation column. If parsed evidence already has a ``row_ref``
+    field, preserve it under ``source_row_ref`` (or a suffixed variant).
+    """
+    visible_columns: list[str] = []
+    column_renames: dict[str, str] = {}
+    used_columns: set[str] = set()
+    for column in source_columns:
+        clean_column = stringify_value(column)
+        if clean_column.strip().lower() == "row_ref":
+            visible = _unique_column_name("source_row_ref", used_columns)
+        else:
+            visible = _unique_column_name(clean_column, used_columns)
+        visible_columns.append(visible)
+        if visible != clean_column:
+            column_renames[clean_column] = visible
+    return visible_columns, column_renames
+
+
 def write_analysis_input_csv(
     source_csv_path: Path,
     rows: list[dict[str, str]],
@@ -459,18 +495,15 @@ def write_analysis_input_csv(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / _analysis_input_filename(source_csv_path, analysis_scope_id)
 
-    write_columns = list(columns)
-    include_row_ref = "_row_ref" not in write_columns and any("_row_ref" in r for r in rows)
-    if include_row_ref:
-        write_columns = ["row_ref", *write_columns]
+    write_columns = [column for column in columns if column != "row_ref"]
+    write_columns = ["row_ref", *write_columns]
 
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=write_columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            out: dict[str, str] = {column: row.get(column, "") for column in columns}
-            if include_row_ref:
-                out["row_ref"] = row.get("_row_ref", "")
+            out: dict[str, str] = {column: row.get(column, "") for column in columns if column != "row_ref"}
+            out["row_ref"] = row.get("_row_ref", "")
             writer.writerow(out)
 
     return output_path
@@ -570,10 +603,15 @@ def prepare_artifact_data(
 
     with csv_path.open("r", newline="", encoding="utf-8-sig", errors="replace") as handle:
         reader = csv.DictReader(handle)
-        columns = [str(c) for c in (reader.fieldnames or []) if c not in (None, "")]
+        raw_columns = [str(c) for c in (reader.fieldnames or []) if c not in (None, "")]
+        columns, column_renames = _analysis_visible_columns(raw_columns)
 
         for source_row_count, raw_row in enumerate(reader, start=1):
-            row = normalize_csv_row(raw_row, columns=columns)
+            normalized_raw = normalize_csv_row(raw_row, columns=raw_columns)
+            row = {
+                column_renames.get(column, column): stringify_value(normalized_raw.get(column, ""))
+                for column in raw_columns
+            }
             row["_row_ref"] = str(source_row_count)
             rows.append(row)
 
@@ -595,7 +633,6 @@ def prepare_artifact_data(
     dedup_annotated_rows = 0
     dedup_variant_columns: list[str] = []
     analysis_csv_path = csv_path
-    dedup_write_error = ""
 
     if artifact_deduplication_enabled:
         analysis_rows, analysis_columns, deduplicated_records, dedup_annotated_rows, dedup_variant_columns = (
@@ -614,18 +651,13 @@ def prepare_artifact_data(
         or artifact_deduplication_enabled
         or date_filtered_count
     )
-    if transformed_for_analysis:
-        try:
-            analysis_csv_path = write_analysis_input_csv(
-                source_csv_path=csv_path,
-                rows=analysis_rows,
-                columns=analysis_columns,
-                case_dir=case_dir,
-                analysis_scope_id=analysis_scope_id,
-            )
-        except OSError as error:
-            analysis_csv_path = csv_path
-            dedup_write_error = str(error)
+    analysis_csv_path = write_analysis_input_csv(
+        source_csv_path=csv_path,
+        rows=analysis_rows,
+        columns=analysis_columns,
+        case_dir=case_dir,
+        analysis_scope_id=analysis_scope_id,
+    )
 
     if date_filtered_count and audit_log_fn is not None:
         feed_details: dict[str, Any] = {
@@ -636,8 +668,6 @@ def prepare_artifact_data(
             "rows_removed_by_date_filter": date_filtered_count,
             "rows_after_date_filter": len(filtered_rows),
         }
-        if dedup_write_error:
-            feed_details["write_error"] = dedup_write_error
         audit_log_fn("artifact_data_feeding", feed_details)
 
     if projection_applied and audit_log_fn is not None:
@@ -645,8 +675,6 @@ def prepare_artifact_data(
             "artifact_key": artifact_key, "source_csv": str(csv_path),
             "analysis_csv": str(analysis_csv_path), "projection_columns": list(analysis_columns),
         }
-        if dedup_write_error and not artifact_deduplication_enabled:
-            projection_details["write_error"] = dedup_write_error
         audit_log_fn("artifact_ai_projection", projection_details)
 
     if artifact_deduplication_enabled and audit_log_fn is not None:
@@ -655,8 +683,6 @@ def prepare_artifact_data(
             "analysis_csv": str(analysis_csv_path), "removed_records": deduplicated_records,
             "annotated_rows": dedup_annotated_rows, "variant_columns": list(dedup_variant_columns),
         }
-        if dedup_write_error:
-            dedup_audit_details["write_error"] = dedup_write_error
         audit_log_fn("artifact_deduplicated", dedup_audit_details)
 
     statistics = ""
@@ -775,8 +801,6 @@ def prepare_artifact_data(
     }
     if analysis_scope_id:
         metadata["analysis_scope_id"] = analysis_scope_id
-    if dedup_write_error:
-        metadata["analysis_csv_write_error"] = dedup_write_error
 
     return ArtifactPrepResult(
         prompt_text=append_analysis_prompt_footer(filled),

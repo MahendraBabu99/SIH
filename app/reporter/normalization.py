@@ -448,6 +448,68 @@ def append_unavailable_artifact_notes(
         )
 
 
+def append_artifact_processing_warning_notes(
+    image_data: Mapping[str, Any],
+    notes: list[dict[str, str]],
+    warnings: list[str],
+    *,
+    image_id: str,
+    image_label: str,
+) -> None:
+    """Append processing notes from artifact-level warning/data-gap fields."""
+    raw_findings = image_data.get("per_artifact")
+    if raw_findings is None:
+        raw_findings = image_data.get("per_artifact_findings")
+
+    for index, finding in enumerate(coerce_per_artifact_iterable(raw_findings), start=1):
+        if not isinstance(finding, Mapping):
+            continue
+        artifact_key, artifact_name = _artifact_identity(
+            finding,
+            fallback_index=index,
+        )
+        for field_name, default_category in (
+            ("processing_warnings", "artifact_processing_warning"),
+            ("data_gaps", "artifact_data_gap"),
+        ):
+            for raw_warning in _iter_warning_values(finding.get(field_name)):
+                if isinstance(raw_warning, Mapping):
+                    message = _normalize_warning_message(raw_warning)
+                    category = stringify(raw_warning.get("category"), default=default_category)
+                    severity = stringify(raw_warning.get("severity"), default="warning")
+                    extra_fields = {
+                        "artifact_key": artifact_key,
+                        "artifact_name": artifact_name,
+                    }
+                    for key in (
+                        "remaining_batch_count",
+                        "findings_budget",
+                        "max_merge_rounds",
+                        "merge_rounds_completed",
+                        "text_truncated",
+                    ):
+                        if key in raw_warning:
+                            extra_fields[key] = stringify(raw_warning.get(key))
+                else:
+                    message = stringify(raw_warning)
+                    category = default_category
+                    severity = "warning"
+                    extra_fields = {
+                        "artifact_key": artifact_key,
+                        "artifact_name": artifact_name,
+                    }
+                append_processing_note(
+                    notes,
+                    warnings,
+                    category=category,
+                    severity=severity,
+                    image_id=image_id,
+                    image_label=image_label,
+                    message=message,
+                    **extra_fields,
+                )
+
+
 def image_analysis_unavailable(image_data: Mapping[str, Any]) -> bool:
     """Return whether an image has no usable analysis payload."""
     status = stringify(
@@ -791,6 +853,13 @@ def normalize_report_inputs(
 
         if not bool(entry["skipped"]):
             append_unavailable_artifact_notes(
+                image_data,
+                processing_notes,
+                warnings,
+                image_id=image_id,
+                image_label=label,
+            )
+            append_artifact_processing_warning_notes(
                 image_data,
                 processing_notes,
                 warnings,
@@ -1258,6 +1327,15 @@ def normalize_per_artifact_findings(
             normalized["citation_warnings"] = list(citation_warnings)
         elif citation_warnings:
             normalized["citation_warnings"] = [citation_warnings]
+        for warning_key in ("processing_warnings", "data_gaps"):
+            warning_values = finding.get(warning_key)
+            if isinstance(warning_values, Sequence) and not isinstance(
+                warning_values,
+                (str, bytes, bytearray),
+            ):
+                normalized[warning_key] = list(warning_values)
+            elif warning_values:
+                normalized[warning_key] = [warning_values]
         for key in (
             "source_record_count",
             "analysis_record_count",

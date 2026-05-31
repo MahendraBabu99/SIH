@@ -583,6 +583,45 @@ class TestAnalyzeArtifactChunked(unittest.TestCase):
                 row_marker,
             )
 
+    def test_merge_round_fallback_records_structured_truncation_warning(self) -> None:
+        """Merge fallback truncation is deterministic metadata, not model-dependent."""
+        from app.analyzer.chunking import _hierarchical_merge_findings
+
+        chunk_findings = [
+            f"### Chunk {index}\n" + ("finding " * 30)
+            for index in range(1, 7)
+        ]
+        provider = FakeProvider(responses=[("merged " + "x" * 900)] * 3 + ["final merged"])
+        warnings: list[dict[str, object]] = []
+        audit_events: list[tuple[str, dict[str, object]]] = []
+
+        result = _hierarchical_merge_findings(
+            chunk_findings=chunk_findings,
+            artifact_key="evtx",
+            artifact_name="Event Logs",
+            investigation_context="Review IOC 10.0.0.9.",
+            model="model",
+            system_prompt="system",
+            ai_response_max_tokens=1000,
+            chunk_csv_budget=1222,
+            chunk_merge_prompt_template="{{per_chunk_findings}}",
+            max_merge_rounds=1,
+            call_ai_with_retry_fn=lambda fn: fn(),
+            ai_provider=provider,
+            warning_collector=warnings,
+            audit_log_fn=lambda action, details: audit_events.append((action, details)),
+        )
+
+        self.assertEqual(result, "final merged")
+        self.assertEqual(len(warnings), 1)
+        warning = warnings[0]
+        self.assertEqual(warning["category"], "chunk_merge_truncated")
+        self.assertEqual(warning["artifact_key"], "evtx")
+        self.assertEqual(warning["remaining_batch_count"], 3)
+        self.assertTrue(warning["text_truncated"])
+        self.assertIn("merge budget", warning["message"])
+        self.assertEqual(audit_events[-1][0], "chunked_analysis_merge_fallback")
+
 
 class TestPromptSectionRendering(unittest.TestCase):
     """Tests for neutral section labeling in rendered prompts."""
@@ -611,6 +650,51 @@ class TestPromptSectionRendering(unittest.TestCase):
         self.assertIn("PowerShell launched encoded command", prompt)
         self.assertIn("Final Analysis Rules", prompt)
         self.assertTrue(prompt.rstrip().endswith("mark unsupported claims as data gaps."))
+
+    def test_shipped_artifact_templates_include_priority_and_complete_ioc_sections(self) -> None:
+        """Real shipped templates render required priority and IOC target blocks."""
+        with TemporaryDirectory(prefix="aift-prompt-sections-") as tmp_dir:
+            csv_path = Path(tmp_dir) / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["ts", "message"])
+                writer.writerow(["2026-01-15T12:00:00Z", "Connection to 10.0.0.9"])
+            context = "Investigate 10.0.0.9 and bad.example.com on this host."
+            analyzer = ForensicAnalyzer(
+                config={"analysis": {"artifact_deduplication_enabled": False}},
+                artifact_csv_paths={"custom": csv_path},
+            )
+            prompt = analyzer._prepare_artifact_data("custom", context)
+
+        self.assertIn("## Priority Directives", prompt)
+        self.assertIn("## IOC Targets", prompt)
+        self.assertIn("10.0.0.9", prompt)
+        self.assertIn("bad.example.com", prompt)
+        self.assertIn("For each IOC", prompt)
+        self.assertIn("row_ref,ts,message", prompt)
+        self.assertIn("## Final Context Reminder", prompt)
+
+    def test_main_ioc_section_is_complete_when_final_reminder_is_truncated(self) -> None:
+        """Complete IOC targets are rendered before the tail reminder."""
+        with TemporaryDirectory(prefix="aift-prompt-sections-") as tmp_dir:
+            csv_path = Path(tmp_dir) / "custom.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["ts", "message"])
+                writer.writerow(["2026-01-15T12:00:00Z", "No event"])
+            domains = [f"indicator-{index}.example.com" for index in range(1, 80)]
+            context = "Investigate " + " ".join(domains)
+            analyzer = ForensicAnalyzer(
+                config={"analysis": {"artifact_deduplication_enabled": False}},
+                artifact_csv_paths={"custom": csv_path},
+            )
+            prompt = analyzer._prepare_artifact_data("custom", context)
+
+        main_ioc_section = prompt.split("## IOC Targets", 1)[1].split("## Host", 1)[0]
+        final_reminder = prompt.split("## Final Context Reminder", 1)[1]
+        self.assertIn(domains[-1], main_ioc_section)
+        self.assertIn(domains[0], final_reminder)
+        self.assertNotIn(domains[-1], final_reminder)
 
 
 ###############################################################################

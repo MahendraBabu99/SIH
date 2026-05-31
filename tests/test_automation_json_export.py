@@ -424,6 +424,31 @@ class TestExportJsonReport(unittest.TestCase):
         skipped = [entry for entry in data["evidence"] if entry["image_id"] == "img-3"]
         self.assertEqual(skipped[0]["skip_reason"], "All artifact parsing failed.")
 
+    def test_artifact_processing_warnings_are_reported_as_processing_notes(self) -> None:
+        """Artifact chunk warnings survive JSON as notes, not findings."""
+        analysis = _make_single_image_analysis()
+        analysis["images"]["img-1"]["per_artifact"][0]["processing_warnings"] = [
+            {
+                "category": "chunk_merge_truncated",
+                "severity": "warning",
+                "message": "Chunk merge for Run/RunOnce Keys truncated intermediate findings.",
+                "remaining_batch_count": 3,
+                "findings_budget": 700,
+                "max_merge_rounds": 1,
+                "text_truncated": True,
+            }
+        ]
+
+        _, data = self._export(analysis=analysis)
+
+        notes = data["processing_notes"]
+        chunk_notes = [note for note in notes if note["category"] == "chunk_merge_truncated"]
+        self.assertEqual(len(chunk_notes), 1)
+        self.assertEqual(chunk_notes[0]["artifact_key"], "runkeys")
+        self.assertIn("truncated intermediate findings", chunk_notes[0]["message"])
+        artifact = data["analysis"]["images"]["img-1"]["artifacts"][0]
+        self.assertEqual(artifact["processing_warnings"][0]["category"], "chunk_merge_truncated")
+
     def test_embedded_image_metadata_preferred(self) -> None:
         """Analysis image metadata wins over supplied image-scoped metadata."""
         analysis = _make_multi_image_analysis()
