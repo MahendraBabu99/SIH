@@ -1297,6 +1297,24 @@ class TestAIFTMCPEntryPoint(unittest.TestCase):
         self.assertIn("streamable-http", stderr_text)
         self.assertIn("unsupported by default", stderr_text)
 
+    def test_help_subprocess_exits_zero_and_keeps_stdout_clean(self) -> None:
+        """The real help command should be cheap and protocol-clean."""
+        repo_root = Path(__file__).resolve().parents[1]
+
+        proc = subprocess.run(
+            [sys.executable, str(repo_root / "aift_mcp.py"), "--help"],
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+        self.assertIn("usage: ", proc.stderr)
+        self.assertIn("streamable-http", proc.stderr)
+
     def test_logging_goes_to_stderr_only(self) -> None:
         """Configured Python logging must not write to stdout."""
         with (

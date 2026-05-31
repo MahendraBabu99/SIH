@@ -10,9 +10,13 @@ Attributes:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app import create_app
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_TEMPLATE_IDS = (
     "wizard",
@@ -58,3 +62,30 @@ def test_flask_test_mode_serves_production_index_template() -> None:
     assert "cases/&lt;case_id&gt;/parsed" not in html
     assert "cases/&lt;case_id&gt;/images/&lt;image_id&gt;/parsed" in html
     assert "0 preserves all rows; positive values intentionally cap parsed CSV output" in html
+
+
+def test_public_docs_do_not_reference_retired_paths_or_migration_claims() -> None:
+    """Catch stale public docs for retired implementation paths and flat layouts."""
+    docs = [PROJECT_ROOT / "README.md"]
+    wiki_dir = PROJECT_ROOT / "wiki"
+    if wiki_dir.exists():
+        docs.extend(sorted(wiki_dir.glob("*.md")))
+
+    forbidden_snippets = (
+        "app/hasher.py",
+        "app/case_manager.py",
+        "app/evidence_segments.py",
+        "legacy cases",
+        "automatically detects legacy",
+        "can migrate",
+        "Migration moves",
+    )
+
+    hits: list[str] = []
+    for doc in docs:
+        text = doc.read_text(encoding="utf-8", errors="replace")
+        for snippet in forbidden_snippets:
+            if snippet in text:
+                hits.append(f"{doc.relative_to(PROJECT_ROOT)}: {snippet}")
+
+    assert hits == []

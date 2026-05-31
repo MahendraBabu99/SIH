@@ -11,7 +11,46 @@ permissions:
 
 jobs:
   python:
-    name: Python Tests
+    name: Python Tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12', '3.13']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run public pytest suite
+        run: python -m pytest -q
+
+      - name: Run Python coverage gate
+        if: matrix.python-version == '3.12'
+        # Current-floor gate; raise --cov-fail-under as public coverage grows.
+        run: >
+          python -m pytest
+          --cov=app
+          --cov=aift
+          --cov=aift_cli
+          --cov=aift_mcp
+          --cov=runtime_compat
+          --cov-report=term-missing
+          --cov-fail-under=60
+          -q
+
+  mcp-smoke:
+    name: MCP Smoke
     runs-on: ubuntu-latest
 
     steps:
@@ -23,25 +62,21 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install core and optional MCP dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install -r requirements-mcp.txt
 
-      - name: Run public pytest suite
-        run: python -m pytest -q
+      - name: Check MCP entry point help
+        run: python aift_mcp.py --help
 
-      - name: Run Python coverage gate
-        # Current-floor gate; raise --cov-fail-under as public coverage grows.
+      - name: Run real MCP stdio smoke test
         run: >
           python -m pytest
-          --cov=app
-          --cov=aift
-          --cov=aift_cli
-          --cov=runtime_compat
-          --cov-report=term-missing
-          --cov-fail-under=60
+          tests/test_mcp_server.py::TestMCPProtocolSmoke::test_stdio_client_can_initialize_list_and_call_safe_tools
           -q
+          -rs
 
   javascript:
     name: JavaScript Tests

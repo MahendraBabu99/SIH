@@ -6,7 +6,12 @@ on:
     paths:
       - 'app/**'
       - 'aift.py'
+      - 'aift_cli.py'
+      - 'aift_mcp.py'
       - 'runtime_compat.py'
+      - 'requirements-mcp.txt'
+      - 'SPECs/reference/case-directory-layout.txt'
+      - 'SPECs/reference/mcp-server-examples.md'
       - 'example_reports/**'
   workflow_dispatch:
 
@@ -39,7 +44,7 @@ jobs:
         run: pip install pdoc
 
       - name: Build documentation
-        run: pdoc app aift runtime_compat -o _site/docs --docformat google
+        run: pdoc app aift aift_cli aift_mcp runtime_compat -o _site/docs --docformat google
 
       - name: Copy example reports
         run: cp -r example_reports _site/example_reports
