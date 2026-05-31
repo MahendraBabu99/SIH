@@ -104,6 +104,19 @@ After analysis completes, click **Show Chat** on the Results page to ask follow-
 
 ---
 
+## Optional MCP Server
+
+AIFT includes an optional local Model Context Protocol (MCP) server for MCP-capable AI clients. It wraps the same headless automation engine used by the CLI and REST API, while keeping the normal web app unchanged.
+
+```bash
+pip install -r requirements-mcp.txt
+python aift_mcp.py
+```
+
+The default transport is stdio. Local Streamable HTTP is also available for integrations that need it. See the full wiki guide: **[MCP Server](https://github.com/FlipForensics/AIFT/wiki/MCP-Server)**.
+
+---
+
 ## AI Providers
 
 AIFT supports four AI backends and can be run completely isolated. All configuration is done through the in-app settings page.
