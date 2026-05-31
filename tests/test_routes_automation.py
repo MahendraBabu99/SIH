@@ -330,6 +330,63 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertIn("status_url", body)
         self.assertIn(body["run_id"], body["status_url"])
 
+    def test_start_delegates_lifecycle_to_shared_manager(self) -> None:
+        """The route validates input, then starts the shared run manager."""
+        manager_payload = {
+            "success": True,
+            "run_id": "manager-run-001",
+            "case_id": "",
+            "status": "started",
+            "status_url": "/api/automation/run/manager-run-001/status",
+            "message": "Automation run started",
+        }
+        with patch.object(
+            automation_mod.ROUTE_RUN_MANAGER,
+            "start_run",
+            return_value=manager_payload,
+        ) as mock_start:
+            resp = self._post_json(
+                "/api/automation/run",
+                {
+                    "evidence_path": "  /fake/path.E01  ",
+                    "prompt": "  Investigate this  ",
+                    "skip_hashing": True,
+                },
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.get_json()["run_id"], "manager-run-001")
+        automation_request = mock_start.call_args.args[0]
+        self.assertEqual(automation_request.evidence_path, "/fake/path.E01")
+        self.assertEqual(automation_request.prompt, "Investigate this")
+        self.assertTrue(automation_request.skip_hashing)
+        self.assertIn("run_id", mock_start.call_args.kwargs)
+        self.assertEqual(mock_start.call_args.kwargs["metadata"], {"_upload_dir": ""})
+
+    def test_start_applies_configured_run_retention_ttl(self) -> None:
+        """The route syncs the configured TTL before delegating to the manager."""
+        self.app.config["AIFT_CONFIG"]["automation"]["run_retention_seconds"] = 172800
+        manager_payload = {
+            "success": True,
+            "run_id": "manager-run-ttl",
+            "case_id": "",
+            "status": "started",
+            "status_url": "/api/automation/run/manager-run-ttl/status",
+            "message": "Automation run started",
+        }
+        with patch.object(
+            automation_mod.ROUTE_RUN_MANAGER,
+            "start_run",
+            return_value=manager_payload,
+        ):
+            resp = self._post_json(
+                "/api/automation/run",
+                {"evidence_path": "/fake/path.E01", "prompt": "test"},
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(automation_mod.ROUTE_RUN_MANAGER.ttl_seconds, 172800)
+
     @patch("app.routes.automation.run_automation")
     @patch("app.routes.automation.threading.Thread", ImmediateThread)
     def test_run_registered_in_state(self, mock_run: MagicMock) -> None:
@@ -1022,6 +1079,38 @@ class TestRunCleanup(AutomationRoutesTestBase):
 
         self.assertNotIn("old-run", automation_mod.AUTOMATION_RUNS)
         self.assertIn("new-run", automation_mod.AUTOMATION_RUNS)
+
+    def test_expired_runs_use_configured_retention_ttl(self) -> None:
+        """REST cleanup uses automation.run_retention_seconds from app config."""
+        self.app.config["AIFT_CONFIG"]["automation"]["run_retention_seconds"] = 120
+        now = time.monotonic()
+        with automation_mod.RUNS_LOCK:
+            automation_mod.AUTOMATION_RUNS["configured-old-run"] = {
+                "run_id": "configured-old-run",
+                "status": "completed",
+                "phase": "done",
+                "message": "",
+                "started_at": "",
+                "evidence_path": "/fake",
+                "_finished_mono": now - 130,
+                "_started_mono": now - 130,
+            }
+            automation_mod.AUTOMATION_RUNS["configured-new-run"] = {
+                "run_id": "configured-new-run",
+                "status": "completed",
+                "phase": "done",
+                "message": "",
+                "started_at": "",
+                "evidence_path": "/fake",
+                "_finished_mono": now - 90,
+                "_started_mono": now - 90,
+            }
+
+        with self.app.app_context():
+            automation_mod._cleanup_expired_runs()
+
+        self.assertNotIn("configured-old-run", automation_mod.AUTOMATION_RUNS)
+        self.assertIn("configured-new-run", automation_mod.AUTOMATION_RUNS)
 
     def test_running_runs_not_evicted(self) -> None:
         """Running runs are never evicted regardless of age."""

@@ -942,6 +942,33 @@ class RoutesTests(unittest.TestCase):
         self.assertEqual(persisted.get("ai", {}).get("local", {}).get("attach_csv_as_file"), False)
         self.assertEqual(persisted.get("ai", {}).get("local", {}).get("request_timeout_seconds"), 5400)
 
+    def test_settings_update_persists_automation_run_retention(self) -> None:
+        with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
+            update_resp = self.client.post(
+                "/api/settings",
+                json={"automation": {"run_retention_seconds": 172800}},
+            )
+            self.assertEqual(update_resp.status_code, 200)
+            self.assertEqual(
+                update_resp.get_json()["automation"]["run_retention_seconds"],
+                172800,
+            )
+
+        persisted = yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}
+        self.assertEqual(
+            persisted.get("automation", {}).get("run_retention_seconds"),
+            172800,
+        )
+
+    def test_settings_update_rejects_invalid_automation_run_retention(self) -> None:
+        response = self.client.post(
+            "/api/settings",
+            json={"automation": {"run_retention_seconds": 0}},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("automation.run_retention_seconds", response.get_json()["error"])
+
     def test_evidence_path_strips_quotes(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "quoted.E01"
         evidence_path.write_bytes(b"demo")

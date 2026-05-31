@@ -38,6 +38,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.get("evidence", {}).get("large_file_threshold_mb"), 0)
             self.assertEqual(config.get("evidence", {}).get("csv_output_dir"), "")
             self.assertEqual(
+                config.get("automation", {}).get("run_retention_seconds"),
+                86400,
+            )
+            self.assertEqual(
                 config.get("ai", {}).get("local", {}).get("request_timeout_seconds"),
                 3600,
             )
@@ -54,6 +58,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(persisted.get("ai", {}).get("provider"), "claude")
             self.assertEqual(persisted.get("server", {}).get("port"), 5000)
             self.assertEqual(persisted.get("evidence", {}).get("large_file_threshold_mb"), 0)
+            self.assertEqual(
+                persisted.get("automation", {}).get("run_retention_seconds"),
+                86400,
+            )
             self.assertEqual(
                 persisted.get("ai", {}).get("local", {}).get("request_timeout_seconds"),
                 3600,
@@ -358,7 +366,7 @@ class GetDefaultConfigTests(unittest.TestCase):
 
     def test_contains_all_expected_top_level_keys(self) -> None:
         config = get_default_config()
-        for key in ("ai", "server", "evidence", "analysis"):
+        for key in ("ai", "server", "evidence", "automation", "analysis"):
             self.assertIn(key, config)
 
     def test_all_providers_present(self) -> None:
@@ -586,6 +594,39 @@ class ValidateConfigTests(unittest.TestCase):
         errors = validate_config(config)
         self.assertTrue(any("analysis.artifact_csv_row_limit" in e for e in errors))
 
+    # --- automation section ---
+
+    def test_automation_run_retention_default_is_valid(self) -> None:
+        config = self._valid_config()
+        errors = validate_config(config)
+        retention_errors = [e for e in errors if "automation.run_retention_seconds" in e]
+        self.assertEqual(retention_errors, [])
+
+    def test_automation_run_retention_custom_positive_is_valid(self) -> None:
+        config = self._valid_config()
+        config["automation"]["run_retention_seconds"] = 172800
+        errors = validate_config(config)
+        retention_errors = [e for e in errors if "automation.run_retention_seconds" in e]
+        self.assertEqual(retention_errors, [])
+
+    def test_automation_run_retention_too_low(self) -> None:
+        config = self._valid_config()
+        config["automation"]["run_retention_seconds"] = 59
+        errors = validate_config(config)
+        self.assertTrue(any("automation.run_retention_seconds" in e for e in errors))
+
+    def test_automation_run_retention_not_an_int(self) -> None:
+        config = self._valid_config()
+        config["automation"]["run_retention_seconds"] = "86400"
+        errors = validate_config(config)
+        self.assertTrue(any("automation.run_retention_seconds" in e for e in errors))
+
+    def test_automation_run_retention_bool_rejected(self) -> None:
+        config = self._valid_config()
+        config["automation"]["run_retention_seconds"] = True
+        errors = validate_config(config)
+        self.assertTrue(any("automation.run_retention_seconds" in e for e in errors))
+
     # --- evidence section ---
 
     def test_large_file_threshold_zero_is_valid(self) -> None:
@@ -650,6 +691,12 @@ class ValidateConfigTests(unittest.TestCase):
         # .get("evidence", {}) returns empty dict, so threshold is None.
         errors = validate_config(config)
         self.assertTrue(any("evidence.large_file_threshold_mb" in e for e in errors))
+
+    def test_missing_automation_section(self) -> None:
+        config = self._valid_config()
+        del config["automation"]
+        errors = validate_config(config)
+        self.assertTrue(any("automation.run_retention_seconds" in e for e in errors))
 
 
 class ConstantsTests(unittest.TestCase):

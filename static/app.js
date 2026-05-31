@@ -154,6 +154,7 @@
     el.setCitationSpotCheckLimit = q("setting-citation-spot-check-limit");
     el.setArtifactCsvRowLimit = q("setting-artifact-csv-row-limit");
     el.setIntakeTimeoutSeconds = q("setting-intake-timeout-seconds");
+    el.setAutomationRunRetentionSeconds = q("setting-automation-run-retention-seconds");
     el.setLocalRequestTimeoutSeconds = q("setting-local-request-timeout-seconds");
     el.setMaxMergeRounds = q("setting-max-merge-rounds");
     el.setArtifactDeduplicationEnabled = q("setting-artifact-deduplication-enabled");

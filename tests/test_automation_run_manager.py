@@ -97,6 +97,27 @@ class TestAutomationRunManager(unittest.TestCase):
         self.assertIn(payload["run_id"], payload["status_url"])
         self.assertEqual(RecordingImmediateThread.daemon_values, [True])
 
+    def test_start_run_accepts_caller_run_id_and_metadata(self) -> None:
+        """Routes can supply a pre-staged run ID and private metadata."""
+        manager = AutomationRunManager(
+            run_automation_func=lambda *args, **kwargs: _successful_result(),
+            thread_factory=ImmediateThread,
+        )
+
+        payload = manager.start_run(
+            _request(),
+            run_id="route-run-001",
+            metadata={"_upload_dir": "staged-upload"},
+        )
+
+        self.assertEqual(payload["run_id"], "route-run-001")
+        self.assertIn("route-run-001", payload["status_url"])
+        with manager.lock:
+            self.assertEqual(
+                manager._runs["route-run-001"]["_upload_dir"],
+                "staged-upload",
+            )
+
     def test_successful_run_updates_status_and_report_paths(self) -> None:
         """A successful fake run produces completed status and output paths."""
         manager = AutomationRunManager(
@@ -249,6 +270,27 @@ class TestAutomationRunManager(unittest.TestCase):
 
         self.assertIsNone(manager.get_status(run_id))
         self.assertEqual(manager.list_runs()["runs"], [])
+
+    def test_cleanup_invokes_eviction_callback(self) -> None:
+        """Eviction callbacks receive removed run state for route cleanup."""
+        evicted_upload_dirs: list[str] = []
+        manager = AutomationRunManager(
+            run_automation_func=lambda *args, **kwargs: _successful_result(),
+            ttl_seconds=0.01,
+            thread_factory=ImmediateThread,
+            eviction_callback=lambda run: evicted_upload_dirs.append(
+                str(run.get("_upload_dir", ""))
+            ),
+        )
+
+        manager.start_run(
+            _request(),
+            metadata={"_upload_dir": "staged-upload"},
+        )
+        time.sleep(0.03)
+        manager.cleanup_expired_runs()
+
+        self.assertEqual(evicted_upload_dirs, ["staged-upload"])
 
     def test_cancel_rejects_completed_and_unknown_runs(self) -> None:
         """Cancel returns REST-like errors for unknown or inactive runs."""

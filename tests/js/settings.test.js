@@ -252,6 +252,7 @@ describe("test connection button", () => {
     const savedPayload = {
       ai: { provider: "openai", openai: { model: "gpt-test", api_key: "sk-test" } },
       analysis: { ai_max_tokens: 64000, artifact_csv_row_limit: 250 },
+      automation: { run_retention_seconds: 172800 },
       evidence: { csv_output_dir: "E:\\cases\\csv", compute_hashes: true },
       server: { port: 5050 },
     };
@@ -262,6 +263,7 @@ describe("test connection button", () => {
     mustGet("setting-model").value = "gpt-test";
     mustGet("setting-ai-max-tokens").value = "64000";
     mustGet("setting-artifact-csv-row-limit").value = "250";
+    mustGet("setting-automation-run-retention-seconds").value = "172800";
     mustGet("setting-csv-output-dir").value = "E:\\cases\\csv";
     mustGet("settings-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flushPromises();
@@ -271,6 +273,7 @@ describe("test connection button", () => {
     expect(body.ai.provider).toBe("openai");
     expect(body.ai.openai).toMatchObject({ api_key: "sk-test", model: "gpt-test" });
     expect(body.analysis).toMatchObject({ ai_max_tokens: 64000, artifact_csv_row_limit: 250 });
+    expect(body.automation.run_retention_seconds).toBe(172800);
     expect(body.evidence.csv_output_dir).toBe("E:\\cases\\csv");
     expect(A.el.settingsMsg.textContent).toContain("Settings saved");
   });
@@ -324,6 +327,14 @@ describe("advanced CSV row limit setting", () => {
     await A.loadSettings();
 
     expect(A.el.setShortenedPromptCutoffTokens.value).toBe("64000");
+  });
+});
+
+describe("advanced automation retention setting", () => {
+  test("automation retention input is available and defaults to 24 hours", () => {
+    expect(A.el.setAutomationRunRetentionSeconds).not.toBeNull();
+    expect(A.el.setAutomationRunRetentionSeconds.value).toBe("86400");
+    expect(A.el.setAutomationRunRetentionSeconds.getAttribute("min")).toBe("60");
   });
 });
 

@@ -22,10 +22,11 @@ LOGGER = logging.getLogger(__name__)
 
 RunAutomationFunc = Callable[..., AutomationResult]
 ThreadFactory = Callable[..., threading.Thread]
+EvictionCallback = Callable[[dict[str, Any]], None]
 
 ACTIVE_STATUSES = frozenset({"started", "running"})
 FINISHED_STATUSES = frozenset({"completed", "failed", "cancelled"})
-DEFAULT_RUN_TTL_SECONDS = 3600
+DEFAULT_RUN_TTL_SECONDS = 86400
 
 
 def _now_iso() -> str:
@@ -78,6 +79,7 @@ class AutomationRunManager:
         ttl_seconds: float = DEFAULT_RUN_TTL_SECONDS,
         thread_factory: ThreadFactory = threading.Thread,
         status_url_template: str = "/api/automation/run/{run_id}/status",
+        eviction_callback: EvictionCallback | None = None,
     ) -> None:
         """Initialise an automation run manager.
 
@@ -86,13 +88,28 @@ class AutomationRunManager:
             ttl_seconds: Retention period for finished in-memory run state.
             thread_factory: Thread constructor, injectable for tests.
             status_url_template: Template used in the start payload.
+            eviction_callback: Optional callback invoked with each evicted
+                internal run state after it is removed from memory.
         """
         self._run_automation = run_automation_func
         self._ttl_seconds = ttl_seconds
         self._thread_factory = thread_factory
         self._status_url_template = status_url_template
+        self._eviction_callback = eviction_callback
         self._runs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
+
+    @property
+    def ttl_seconds(self) -> float:
+        """Return the retention period for finished in-memory run state."""
+        return self._ttl_seconds
+
+    @ttl_seconds.setter
+    def ttl_seconds(self, value: float) -> None:
+        """Update the retention period for finished in-memory run state."""
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"ttl_seconds must be a positive number, got {value!r}")
+        self._ttl_seconds = float(value)
 
     @property
     def lock(self) -> threading.RLock:
@@ -102,6 +119,7 @@ class AutomationRunManager:
     def cleanup_expired_runs(self) -> None:
         """Evict completed, failed, and cancelled runs older than the TTL."""
         now = time.monotonic()
+        evicted: list[dict[str, Any]] = []
         with self._lock:
             expired = [
                 run_id
@@ -110,20 +128,39 @@ class AutomationRunManager:
                 and (now - run.get("_finished_mono", now)) > self._ttl_seconds
             ]
             for run_id in expired:
-                self._runs.pop(run_id, None)
+                run = self._runs.pop(run_id, None)
+                if run is not None:
+                    evicted.append(run)
 
-    def start_run(self, automation_request: AutomationRequest) -> dict[str, Any]:
+        if self._eviction_callback is None:
+            return
+        for run in evicted:
+            try:
+                self._eviction_callback(run)
+            except Exception:
+                LOGGER.debug("Run eviction callback raised; ignoring.", exc_info=True)
+
+    def start_run(
+        self,
+        automation_request: AutomationRequest,
+        *,
+        run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Start an automation run in a daemon thread.
 
         Args:
             automation_request: Populated engine request.
+            run_id: Optional caller-provided UUID string. When omitted, the
+                manager generates one.
+            metadata: Optional private state fields to merge into the run.
 
         Returns:
             JSON-compatible payload mirroring ``POST /api/automation/run``.
         """
         self.cleanup_expired_runs()
 
-        run_id = str(uuid4())
+        run_id = str(run_id or uuid4())
         cancel_event = threading.Event()
         started_at = _now_iso()
         run_state: dict[str, Any] = {
@@ -142,8 +179,12 @@ class AutomationRunManager:
             "cancel_event": cancel_event,
             "_started_mono": time.monotonic(),
         }
+        if metadata:
+            run_state.update(metadata)
 
         with self._lock:
+            if run_id in self._runs:
+                raise ValueError(f"Run already exists: {run_id}")
             self._runs[run_id] = run_state
 
         thread = self._thread_factory(
@@ -403,4 +444,3 @@ class AutomationRunManager:
 
 
 DEFAULT_RUN_MANAGER = AutomationRunManager()
-

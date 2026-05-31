@@ -203,6 +203,11 @@
     setNumberInput(el.setArtifactCsvRowLimit, A.num(analysis.artifact_csv_row_limit, 0), 0);
     setNumberInput(el.setIntakeTimeoutSeconds, A.num(A.obj(s.evidence).intake_timeout_seconds, 7200), 7200);
     setNumberInput(
+      el.setAutomationRunRetentionSeconds,
+      A.num(A.obj(s.automation).run_retention_seconds, 86400),
+      86400
+    );
+    setNumberInput(
       el.setLocalRequestTimeoutSeconds,
       A.num(A.obj(A.obj(s.ai).local).request_timeout_seconds, 3600),
       3600
@@ -274,6 +279,7 @@
     if (!A.isObj(base.ai.local)) base.ai.local = {};
     if (!A.isObj(base.server)) base.server = {};
     if (!A.isObj(base.evidence)) base.evidence = {};
+    if (!A.isObj(base.automation)) base.automation = {};
     if (!A.isObj(base.analysis)) base.analysis = {};
 
     const provider = A.toBackendProvider(el.setProvider ? el.setProvider.value : "openai");
@@ -301,6 +307,7 @@
     if (typeof gb === "number" && Number.isFinite(gb) && gb >= 0) base.evidence.large_file_threshold_mb = Math.round(gb * 1024);
     if (el.setCsvOutputDir) base.evidence.csv_output_dir = A.val(el.setCsvOutputDir);
     base.evidence.intake_timeout_seconds = readIntInput(el.setIntakeTimeoutSeconds, 7200, 60);
+    base.automation.run_retention_seconds = readIntInput(el.setAutomationRunRetentionSeconds, 86400, 60);
     if (el.setComputeHashes) base.evidence.compute_hashes = !!el.setComputeHashes.checked;
 
     base.analysis.ai_max_tokens = readIntInput(el.setAiMaxTokens, 128000, 1);

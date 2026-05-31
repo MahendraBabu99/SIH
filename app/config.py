@@ -102,6 +102,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "csv_output_dir": "",
         "intake_timeout_seconds": 7200,
     },
+    "automation": {
+        "run_retention_seconds": 86400,
+    },
     "analysis": {
         "ai_max_tokens": 128000,
         "shortened_prompt_cutoff_tokens": 64000,
@@ -295,6 +298,22 @@ def validate_config(config: dict[str, Any]) -> list[str]:
             errors.append(
                 "analysis.artifact_csv_row_limit: must be a non-negative integer "
                 f"(0 = unlimited), got {artifact_csv_row_limit!r}"
+            )
+
+    # --- automation section ---
+    automation = config.get("automation", {})
+    if not isinstance(automation, dict):
+        errors.append("automation: expected a mapping")
+    else:
+        run_retention_seconds = automation.get("run_retention_seconds")
+        if (
+            not isinstance(run_retention_seconds, int)
+            or isinstance(run_retention_seconds, bool)
+            or run_retention_seconds < 60
+        ):
+            errors.append(
+                "automation.run_retention_seconds: must be an integer of at least "
+                f"60 seconds, got {run_retention_seconds!r}"
             )
 
     # --- evidence section ---

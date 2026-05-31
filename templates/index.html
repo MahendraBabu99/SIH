@@ -790,6 +790,19 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
             <input id="setting-intake-timeout-seconds" name="intake_timeout_seconds" type="number" min="60" value="7200">
           </div>
           <div class="form-row">
+            <label for="setting-automation-run-retention-seconds">
+              Automation Run Retention (seconds)
+              <span class="setting-help-icon" data-tooltip="How long completed, failed, and cancelled REST automation runs stay available for status checks and report downloads. Default: 86400 (24 hours).">?</span>
+            </label>
+            <input
+              id="setting-automation-run-retention-seconds"
+              name="automation_run_retention_seconds"
+              type="number"
+              min="60"
+              value="86400"
+            >
+          </div>
+          <div class="form-row">
             <label for="setting-size-threshold">
               Evidence Size Threshold (GB)
               <span class="setting-help-icon" data-tooltip="Maximum upload size in gigabytes. Set to 0 for no limit (recommended for large forensic images).">?</span>
