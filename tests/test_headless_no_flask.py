@@ -74,7 +74,7 @@ class TestHeadlessNoFlask(unittest.TestCase):
         self.assertIn("engine-import-ok", proc.stdout)
 
     def test_cli_list_profiles_and_engine_profile_load_without_flask(self) -> None:
-        """Profile listing/loading should use app.artifact_profiles, not routes."""
+        """Profile listing/loading should use app.utils.artifact_profiles, not routes."""
         repo_root = Path(__file__).resolve().parents[1]
         code = textwrap.dedent(
             """

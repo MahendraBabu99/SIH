@@ -245,7 +245,7 @@ def _resolve_date_range(
         )
         raise SystemExit(EXIT_FAILURE)
 
-    from app.artifact_profiles import validate_analysis_date_range
+    from app.utils.artifact_profiles import validate_analysis_date_range
 
     try:
         validated = validate_analysis_date_range(
@@ -334,7 +334,7 @@ def _list_profiles(config_path: str | Path | None = None) -> None:
     Raises:
         SystemExit: Always exits with code 0 after printing.
     """
-    from app.artifact_profiles import load_profiles_from_directory, resolve_profiles_root
+    from app.utils.artifact_profiles import load_profiles_from_directory, resolve_profiles_root
 
     resolved_config_path = (
         Path(config_path).expanduser().resolve()
@@ -383,7 +383,7 @@ def _show_version() -> None:
     Raises:
         SystemExit: Always exits with code 0 after printing.
     """
-    from app.version import TOOL_VERSION
+    from app.utils.version import TOOL_VERSION
 
     print(f"AIFT v{TOOL_VERSION}")
     raise SystemExit(EXIT_SUCCESS)

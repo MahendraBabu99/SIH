@@ -30,9 +30,9 @@ from app.logging.audit import AuditLogger
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.logging.case_manager import CaseManager
-from app.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
+from app.utils.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
-from app.hasher import (
+from app.utils.hasher import (
     apply_hash_verification_result,
     compute_hashes,
     summarize_hash_verification_results,
@@ -42,12 +42,12 @@ from app.hasher import (
 from app.parser.core import ForensicParser, ParserCancelledError
 from app.parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
 from app.reporter.generator import ReportGenerator
-from app.artifact_profiles import (
+from app.utils.artifact_profiles import (
     artifact_options_to_lists,
     load_profiles_from_directory,
     resolve_profiles_root,
 )
-from app.version import TOOL_VERSION
+from app.utils.version import TOOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
 

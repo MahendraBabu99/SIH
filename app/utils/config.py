@@ -62,7 +62,7 @@ class ConfigurationError(Exception):
 
 KNOWN_AI_PROVIDERS = ("claude", "openai", "kimi", "local")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_RELATIVE_PATH = Path("config") / "config.yaml"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -119,7 +119,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     # NOTE: artifact profiles are stored as JSON files on disk in the profile/
     # directory next to config.yaml, not in this config dict.  No default key is
-    # needed here; see resolve_profiles_root() in app.artifact_profiles.
+    # needed here; see resolve_profiles_root() in app.utils.artifact_profiles.
 }
 
 # Ordered list of logo filenames to look for in the images/ directory.

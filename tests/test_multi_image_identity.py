@@ -388,7 +388,7 @@ def _patch_route_context(cases_root: Path, report_path: Path) -> ExitStack:
         stack.enter_context(patch.object(module, "ForensicParser", FakeParser))
     stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)))
     stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
-    stack.enter_context(patch("app.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
+    stack.enter_context(patch("app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
     stack.enter_context(patch.object(routes_images.threading, "Thread", ImmediateThread))
     stack.enter_context(patch.object(routes_tasks, "ForensicAnalyzer", RecordingMultiImageAnalyzer))
     stack.enter_context(

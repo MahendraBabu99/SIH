@@ -152,7 +152,7 @@ class TestParseRerunClearsStaleState(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -374,7 +374,7 @@ class TestAnalysisRerunClearsStaleResults(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=hash_rv),
             patch.object(routes_evidence, "compute_hashes", return_value=hash_rv),
             patch.object(routes_evidence, "compute_hashes", return_value=hash_rv),
-            patch("app.hasher.compute_hashes", return_value=hash_rv),
+            patch("app.utils.hasher.compute_hashes", return_value=hash_rv),
         ):
             # Create case, load evidence, parse.
             create_resp = self.client.post(

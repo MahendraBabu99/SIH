@@ -12,10 +12,20 @@ Attributes:
     export_json_report: Structured JSON report writer.
 """
 
-from app.automation.engine import AutomationRequest, AutomationResult, run_automation
-from app.automation.discovery import discover_evidence, validate_evidence_path
-from app.automation.json_export import export_json_report
-from app.evidence.descriptor import EvidenceDescriptor
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_EXPORTS = {
+    "AutomationRequest": ("app.automation.engine", "AutomationRequest"),
+    "AutomationResult": ("app.automation.engine", "AutomationResult"),
+    "run_automation": ("app.automation.engine", "run_automation"),
+    "discover_evidence": ("app.automation.discovery", "discover_evidence"),
+    "validate_evidence_path": ("app.automation.discovery", "validate_evidence_path"),
+    "export_json_report": ("app.automation.json_export", "export_json_report"),
+    "EvidenceDescriptor": ("app.evidence.descriptor", "EvidenceDescriptor"),
+}
 
 __all__ = [
     "AutomationRequest",
@@ -26,3 +36,20 @@ __all__ = [
     "export_json_report",
     "EvidenceDescriptor",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Load automation package exports only when they are requested."""
+    try:
+        module_name, attribute_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    value = getattr(import_module(module_name), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Return module attributes including lazy public exports."""
+    return sorted(set(globals()) | set(__all__))

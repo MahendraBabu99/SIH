@@ -65,7 +65,7 @@ def _standard_patches(cases_root: Path):
         return_value={"sha256": FAKE_SHA256, "md5": FAKE_MD5, "size_bytes": 4},
     ))
     stack.enter_context(patch(
-        "app.hasher.compute_hashes",
+        "app.utils.hasher.compute_hashes",
         return_value={"sha256": FAKE_SHA256, "md5": FAKE_MD5, "size_bytes": 4},
     ))
     stack.enter_context(patch.object(

@@ -39,7 +39,7 @@ from flask import (
 )
 from werkzeug.datastructures import FileStorage
 
-from app.artifact_profiles import validate_analysis_date_range
+from app.utils.artifact_profiles import validate_analysis_date_range
 from app.automation.engine import AutomationRequest, run_automation
 from app.automation.run_manager import (
     DEFAULT_RUN_TTL_SECONDS,

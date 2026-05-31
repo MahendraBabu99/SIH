@@ -23,7 +23,7 @@ from .constants import PROJECT_ROOT
 from .ioc import build_priority_directives, extract_ioc_targets, format_ioc_targets
 from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
 from .utils import coerce_projection_columns, normalize_artifact_key
-from ..os_utils import normalize_os_type
+from ..utils.os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
 

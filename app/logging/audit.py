@@ -34,7 +34,7 @@ import threading
 from typing import Any
 from uuid import uuid4
 
-from ..version import TOOL_VERSION
+from ..utils.version import TOOL_VERSION
 
 __all__ = ["AuditLogger"]
 

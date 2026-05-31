@@ -84,7 +84,7 @@ class MultiImageRoutesTests(unittest.TestCase):
         stack.enter_context(patch("app.parser.ForensicParser", FakeParser))
         # Patch compute_hashes (images.py uses deferred import from evidence).
         stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)))
-        stack.enter_context(patch("app.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
+        stack.enter_context(patch("app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)))
         # Patch threading.
         stack.enter_context(patch.object(routes_images.threading, "Thread", ImmediateThread))
         return stack

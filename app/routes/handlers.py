@@ -50,9 +50,9 @@ from ..logging.case_logging import (
     push_case_log_context,
     register_case_log_handler,
 )
-from ..config import load_config, save_config, validate_config
+from ..utils.config import load_config, save_config, validate_config
 from ..evidence.constants import evidence_ui_metadata
-from ..version import TOOL_VERSION
+from ..utils.version import TOOL_VERSION
 
 from .state import (
     CASES_ROOT,

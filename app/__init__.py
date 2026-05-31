@@ -42,7 +42,7 @@ def load_config(*args: Any, **kwargs: Any) -> dict[str, Any]:
     Kept as an app-level binding so existing tests and callers can patch
     ``app.load_config`` without forcing route/Flask imports at package import.
     """
-    from .config import load_config as _load_config
+    from .utils.config import load_config as _load_config
 
     return _load_config(*args, **kwargs)
 
@@ -56,7 +56,7 @@ def register_routes(app: Flask) -> None:
 
 def _default_config_path() -> Path:
     """Return the default config path without importing config eagerly."""
-    from .config import DEFAULT_CONFIG_RELATIVE_PATH, PROJECT_ROOT
+    from .utils.config import DEFAULT_CONFIG_RELATIVE_PATH, PROJECT_ROOT
 
     return PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
 
@@ -77,7 +77,7 @@ def create_app(
             *None*, the default ``config/config.yaml`` in the project root is used.
             Ignored when *config* is provided.
         config: Optional pre-loaded configuration dictionary.  When
-            provided, :func:`~app.config.load_config` is **not** called,
+            provided, :func:`~app.utils.config.load_config` is **not** called,
             avoiding redundant parsing and validation of the YAML config file.
 
     Returns:

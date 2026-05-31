@@ -18,7 +18,7 @@ Markdown rendering and confidence highlighting are delegated to
 
 Attributes:
     DEFAULT_CASE_NAME: Fallback case name when none is provided.
-    DEFAULT_TOOL_VERSION: AIFT version from :mod:`app.version`.
+    DEFAULT_TOOL_VERSION: AIFT version from :mod:`app.utils.version`.
     DEFAULT_AI_PROVIDER: Placeholder string when the provider is unknown.
     SAFE_CASE_ID_PATTERN: Regex for sanitising case IDs.
 """
@@ -36,9 +36,9 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from ..config import LOGO_FILE_CANDIDATES
+from ..utils.config import LOGO_FILE_CANDIDATES
 from ..utils import stringify as _stringify_impl
-from ..version import TOOL_VERSION
+from ..utils.version import TOOL_VERSION
 from .markdown import format_block, format_markdown_block
 from .normalization import (
     build_evidence_summary,

@@ -477,7 +477,7 @@ class TestResolveToolVersion(unittest.TestCase):
         self.assertEqual(result, "1.1.0")  # last entry wins
 
     def test_default_version_when_none_found(self) -> None:
-        from app.version import TOOL_VERSION
+        from app.utils.version import TOOL_VERSION
 
         result = self.gen._resolve_tool_version({}, [])
         self.assertEqual(result, TOOL_VERSION)

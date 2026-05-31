@@ -2256,7 +2256,7 @@ class AppFactoryPathResolutionTests(unittest.TestCase):
     def test_create_app_stores_absolute_config_path(self) -> None:
         """Verify create app stores absolute config path."""
         from app import create_app
-        from app.config import PROJECT_ROOT
+        from app.utils.config import PROJECT_ROOT
 
         app = create_app()
         stored_path = app.config.get("AIFT_CONFIG_PATH", "")

@@ -25,7 +25,7 @@ from app.reporter.normalization import (
     normalize_per_artifact_findings,
     stringify,
 )
-from app.version import TOOL_VERSION
+from app.utils.version import TOOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
 

@@ -19,7 +19,7 @@ from zipfile import ZipFile
 import yaml
 
 from app import create_app
-import app.artifact_profiles as artifact_profiles
+import app.utils.artifact_profiles as artifact_profiles
 from app.logging.case_logging import unregister_all_case_log_handlers
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
@@ -518,7 +518,7 @@ class EvidenceHelperTests(unittest.TestCase):
 
 
 class ArtifactHelperTests(unittest.TestCase):
-    """Tests for canonical helper functions in app.artifact_profiles."""
+    """Tests for canonical helper functions in app.utils.artifact_profiles."""
 
     def test_normalize_artifact_mode_defaults(self) -> None:
         self.assertEqual(artifact_profiles.normalize_artifact_mode("parse_and_ai"), "parse_and_ai")
@@ -719,7 +719,7 @@ class ArtifactHelperTests(unittest.TestCase):
 
 
 class ArtifactRouteProfileFacadeTests(unittest.TestCase):
-    """Route profile helpers should stay aligned with app.artifact_profiles."""
+    """Route profile helpers should stay aligned with app.utils.artifact_profiles."""
 
     def test_routes_artifacts_uses_canonical_profile_helpers(self) -> None:
         helper_names = [

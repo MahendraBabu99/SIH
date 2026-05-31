@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.version import TOOL_VERSION
+from app.utils.version import TOOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ MCP_DISCLAIMER_STANCE = (
     "not independently verified evidence."
 )
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config" / "config.yaml"
 _DEFAULT_DISCOVERY_ROOT = _PROJECT_ROOT / "cases" / "_mcp_discovery"
 _DEFAULT_CASES_ROOT = _PROJECT_ROOT / "cases"
@@ -65,21 +65,21 @@ class MissingMCPDependencyError(RuntimeError):
 
 def load_profiles_from_directory(profiles_root: Path) -> list[dict[str, Any]]:
     """Lazy proxy for artifact profile loading."""
-    from app.artifact_profiles import load_profiles_from_directory as _load
+    from app.utils.artifact_profiles import load_profiles_from_directory as _load
 
     return _load(profiles_root)
 
 
 def resolve_profiles_root(config_path: str | Path) -> Path:
     """Lazy proxy for profile root resolution."""
-    from app.artifact_profiles import resolve_profiles_root as _resolve
+    from app.utils.artifact_profiles import resolve_profiles_root as _resolve
 
     return _resolve(config_path)
 
 
 def validate_analysis_date_range(payload: Any) -> dict[str, str] | None:
     """Lazy proxy for shared date-range validation."""
-    from app.artifact_profiles import validate_analysis_date_range as _validate
+    from app.utils.artifact_profiles import validate_analysis_date_range as _validate
 
     return _validate(payload)
 

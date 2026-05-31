@@ -52,7 +52,7 @@ class TestMainHappyPath(unittest.TestCase):
             patch.object(aift, "assert_supported_python_version"),
             patch.dict("sys.modules", {
                 "app": MagicMock(create_app=mock_create_app),
-                "app.config": MagicMock(load_config=mock_load_config),
+                "app.utils.config": MagicMock(load_config=mock_load_config),
             }),
             patch.object(aift.threading, "Timer", mock_timer_class),
         ):
@@ -115,7 +115,7 @@ class TestMainHappyPath(unittest.TestCase):
             patch.object(aift, "assert_supported_python_version"),
             patch.dict("sys.modules", {
                 "app": MagicMock(create_app=mock_create_app),
-                "app.config": MagicMock(load_config=mock_load_config),
+                "app.utils.config": MagicMock(load_config=mock_load_config),
             }),
             patch.object(aift.threading, "Timer", mock_timer_class),
         ):
@@ -178,7 +178,7 @@ class TestOpenBrowserCallback(unittest.TestCase):
             patch.object(aift, "assert_supported_python_version"),
             patch.dict("sys.modules", {
                 "app": MagicMock(create_app=MagicMock(return_value=mock_app)),
-                "app.config": MagicMock(load_config=MagicMock(return_value=config)),
+                "app.utils.config": MagicMock(load_config=MagicMock(return_value=config)),
             }),
             patch.object(aift.threading, "Timer", mock_timer_class),
         ):
@@ -283,7 +283,7 @@ class TestMainCallsAssertVersion(unittest.TestCase):
             patch.object(aift, "assert_supported_python_version", side_effect=track_assert),
             patch.dict("sys.modules", {
                 "app": MagicMock(create_app=track_create_app),
-                "app.config": MagicMock(load_config=MagicMock(return_value={})),
+                "app.utils.config": MagicMock(load_config=MagicMock(return_value={})),
             }),
             patch.object(aift.threading, "Timer", MagicMock()),
         ):
@@ -298,7 +298,7 @@ class TestMainInvalidConfig(unittest.TestCase):
 
     def test_main_exits_with_code_1_on_invalid_config(self) -> None:
         """A bad config.yaml should produce SystemExit(1) with a clear message."""
-        from app.config import ConfigurationError
+        from app.utils.config import ConfigurationError
 
         config_error = ConfigurationError(["server.port: must be an integer between 1 and 65535, got 'bad'"])
 
@@ -306,7 +306,7 @@ class TestMainInvalidConfig(unittest.TestCase):
             patch.object(aift, "assert_supported_python_version"),
             patch.dict("sys.modules", {
                 "app": MagicMock(create_app=MagicMock()),
-                "app.config": MagicMock(
+                "app.utils.config": MagicMock(
                     load_config=MagicMock(side_effect=config_error),
                     ConfigurationError=ConfigurationError,
                 ),
@@ -333,7 +333,7 @@ class TestDebugDisabled(unittest.TestCase):
             patch.object(aift, "assert_supported_python_version"),
             patch.dict("sys.modules", {
                 "app": MagicMock(create_app=MagicMock(return_value=mock_app)),
-                "app.config": MagicMock(load_config=MagicMock(return_value={})),
+                "app.utils.config": MagicMock(load_config=MagicMock(return_value={})),
             }),
             patch.object(aift.threading, "Timer", MagicMock()),
         ):

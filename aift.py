@@ -34,7 +34,7 @@ def main() -> None:
     assert_supported_python_version()
 
     from app import create_app
-    from app.config import ConfigurationError, load_config
+    from app.utils.config import ConfigurationError, load_config
 
     try:
         config = load_config()

@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 import unittest
 
-from app.hasher import (
+from app.utils.hasher import (
     CHUNK_SIZE,
     _compute_digests,
     compute_hashes,

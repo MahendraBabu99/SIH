@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
+from ..parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
 
 __all__ = [
     "MODE_PARSE_AND_AI",

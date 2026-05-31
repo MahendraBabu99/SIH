@@ -24,7 +24,7 @@ from app import create_app
 from app.ai_providers import AIProviderError
 from app.logging.case_logging import case_log_context, unregister_all_case_log_handlers
 from app.parser import WINDOWS_ARTIFACT_REGISTRY
-from app.version import TOOL_VERSION
+from app.utils.version import TOOL_VERSION
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat
@@ -204,7 +204,7 @@ class RoutesTests(unittest.TestCase):
             stack.enter_context(patch.object(routes_evidence, "ReportGenerator", report_cls))
         # compute_hashes
         stack.enter_context(patch.object(routes_evidence, "compute_hashes", return_value=dict(hash_rv)))
-        stack.enter_context(patch("app.hasher.compute_hashes", return_value=dict(hash_rv)))
+        stack.enter_context(patch("app.utils.hasher.compute_hashes", return_value=dict(hash_rv)))
         # verify_hash
         if verify_rv is not None:
             stack.enter_context(patch.object(routes_evidence, "verify_hash", return_value=verify_rv))
@@ -520,7 +520,7 @@ class RoutesTests(unittest.TestCase):
                 },
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -600,7 +600,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 12},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 12},
             ),
         ):
@@ -651,7 +651,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 12},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 12},
             ),
         ):
@@ -1064,7 +1064,7 @@ class RoutesTests(unittest.TestCase):
                 },
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -1154,7 +1154,7 @@ class RoutesTests(unittest.TestCase):
                 },
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -1232,7 +1232,7 @@ class RoutesTests(unittest.TestCase):
                 },
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -1684,7 +1684,7 @@ class RoutesTests(unittest.TestCase):
                 },
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={
                     "sha256": "a" * 64,
                     "md5": "b" * 32,
@@ -1758,7 +1758,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
@@ -2030,7 +2030,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
         ):
@@ -2058,7 +2058,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
         ):
@@ -2092,7 +2092,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
         ):
@@ -2238,7 +2238,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -2562,7 +2562,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 6},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 6},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -2646,7 +2646,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "c" * 64, "md5": "d" * 32, "size_bytes": 3},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "c" * 64, "md5": "d" * 32, "size_bytes": 3},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -2701,7 +2701,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "e" * 64, "md5": "f" * 32, "size_bytes": 3},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "e" * 64, "md5": "f" * 32, "size_bytes": 3},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -2756,7 +2756,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -2819,7 +2819,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),
@@ -2897,7 +2897,7 @@ class RoutesTests(unittest.TestCase):
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3},
             ),
             patch(
-                "app.hasher.compute_hashes",
+                "app.utils.hasher.compute_hashes",
                 return_value={"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3},
             ),
             patch.object(routes_images.threading, "Thread", ImmediateThread),

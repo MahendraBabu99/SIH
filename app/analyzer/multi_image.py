@@ -45,7 +45,7 @@ from .utils import (
     sanitize_filename,
     stable_identity_hash,
 )
-from ..os_utils import normalize_os_type
+from ..utils.os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
 

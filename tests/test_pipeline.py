@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from app.analyzer.core import ForensicAnalyzer
 from app.logging.audit import AuditLogger
-from app.hasher import compute_hashes, verify_hash
+from app.utils.hasher import compute_hashes, verify_hash
 from app.parser import ForensicParser
 from app.reporter.generator import ReportGenerator
 

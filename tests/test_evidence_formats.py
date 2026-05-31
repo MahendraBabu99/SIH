@@ -961,7 +961,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1051,7 +1051,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1081,7 +1081,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1108,7 +1108,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1131,7 +1131,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1160,7 +1160,7 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1303,7 +1303,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1334,7 +1334,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch(
                 "app.automation.discovery.Target.open",
                 side_effect=RuntimeError("not directly loadable"),
@@ -1413,7 +1413,7 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)) as mock_verify,
         ):
@@ -1472,7 +1472,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
-            patch("app.hasher.compute_hashes", side_effect=_fake_compute),
+            patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1516,7 +1516,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
-            patch("app.hasher.compute_hashes", side_effect=_fake_compute),
+            patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1556,7 +1556,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)) as mock_verify,
         ):
@@ -1599,7 +1599,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
-            patch("app.hasher.compute_hashes", side_effect=_fake_compute),
+            patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1638,7 +1638,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", side_effect=_fake_compute),
-            patch("app.hasher.compute_hashes", side_effect=_fake_compute),
+            patch("app.utils.hasher.compute_hashes", side_effect=_fake_compute),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1673,7 +1673,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES) as mock_hash,
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES) as mock_hash_shared,
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES) as mock_hash_shared,
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1704,7 +1704,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
         ):
             resp = self.client.post(
                 f"/api/cases/{case_id}/evidence",
@@ -1741,7 +1741,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)) as mock_verify,
         ):
@@ -1811,7 +1811,7 @@ class TestEvidenceIntegrityTamperDetection(unittest.TestCase):
             patch.object(routes_evidence, "ForensicParser", FakeParser),
             patch("app.parser.ForensicParser", FakeParser),
             patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
-            patch("app.hasher.compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
             patch.object(routes_evidence, "ReportGenerator", _FakeRG),
             # Simulate tamper: verify_hash returns mismatch.
             patch.object(routes_evidence, "verify_hash", return_value=(False, "c" * 64)),

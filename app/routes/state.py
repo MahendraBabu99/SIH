@@ -44,9 +44,9 @@ from typing import Any
 
 from flask import Response, jsonify, stream_with_context
 
-from ..artifact_profiles import MODE_PARSE_AND_AI, MODE_PARSE_ONLY
+from ..utils.artifact_profiles import MODE_PARSE_AND_AI, MODE_PARSE_ONLY
 from ..logging.case_logging import unregister_case_log_handler
-from ..config import LOGO_FILE_CANDIDATES
+from ..utils.config import LOGO_FILE_CANDIDATES
 from ..evidence.constants import DISSECT_EVIDENCE_EXTENSIONS
 
 __all__ = [

@@ -234,7 +234,7 @@ def compute_evidence_hashes(
         return hashes, []
 
     if files_to_hash:
-        from ..hasher import compute_hashes as _compute_hashes
+        from ..utils.hasher import compute_hashes as _compute_hashes
 
         file_hashes: list[dict[str, Any]] = []
         for fpath in files_to_hash:

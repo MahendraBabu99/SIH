@@ -3,7 +3,7 @@
 This module handles:
 
 * Flask route handlers for parse cancellation and profile CRUD.
-* Imports for artifact/profile helpers owned by :mod:`app.artifact_profiles`.
+* Imports for artifact/profile helpers owned by :mod:`app.utils.artifact_profiles`.
 
 Attributes:
     PROFILE_NAME_RE: Regex for validating artifact profile names.
@@ -24,7 +24,7 @@ from typing import Any
 
 from flask import Blueprint, Response, current_app, request
 
-from ..artifact_profiles import (
+from ..utils.artifact_profiles import (
     BUILTIN_RECOMMENDED_PROFILE,
     MODE_PARSE_AND_AI,
     MODE_PARSE_ONLY,

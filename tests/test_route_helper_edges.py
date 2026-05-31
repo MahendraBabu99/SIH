@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
-import app.artifact_profiles as artifact_profiles
+import app.utils.artifact_profiles as artifact_profiles
 import app.routes.artifacts as routes_artifacts
 import app.routes.state as routes_state
 

@@ -23,7 +23,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from flask import Blueprint, Response, make_response, send_file
 
 from ..automation.json_export import export_json_report
-from ..hasher import (
+from ..utils.hasher import (
     compute_hashes,
     summarize_hash_verification_results,
     verify_hash,

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..os_utils import normalize_os_type
+from ..utils.os_utils import normalize_os_type
 
 __all__ = [
     "LINUX_ARTIFACT_REGISTRY",
@@ -706,7 +706,7 @@ _apply_artifact_guidance_from_prompts(LINUX_ARTIFACT_REGISTRY, _LINUX_PROMPTS_DI
 def get_artifact_registry(os_type: str) -> dict[str, dict[str, str]]:
     """Return the artifact registry appropriate for the given OS type.
 
-    Uses :func:`~app.os_utils.normalize_os_type` for consistent
+    Uses :func:`~app.utils.os_utils.normalize_os_type` for consistent
     normalisation across the codebase.
 
     Args:

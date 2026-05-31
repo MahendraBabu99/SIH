@@ -60,7 +60,7 @@ from .utils import (
     read_bool_setting, read_int_setting, read_path_setting,
     sanitize_filename, stringify_value,
 )
-from ..os_utils import normalize_os_type
+from ..utils.os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
 _MIN_ANALYSIS_INPUT_TOKENS = 1

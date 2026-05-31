@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import yaml
 
-from app.config import (
+from app.utils.config import (
     ConfigurationError,
     DEFAULT_CONFIG_RELATIVE_PATH,
     DEFAULT_CONFIG,
@@ -143,7 +143,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
 
     def test_project_root_points_to_aift_directory(self) -> None:
         self.assertTrue((PROJECT_ROOT / "aift.py").exists())
-        self.assertTrue((PROJECT_ROOT / "app" / "config.py").exists())
+        self.assertTrue((PROJECT_ROOT / "app" / "utils" / "config.py").exists())
 
     def test_load_config_default_path_uses_project_root(self) -> None:
         """When no path argument is given, the config file should be resolved
@@ -169,7 +169,7 @@ class ConfigPathResolutionTests(unittest.TestCase):
         """save_config() with no explicit path writes next to the project root."""
         with TemporaryDirectory(prefix="aift-save-cfg-") as tmp_dir:
             fake_root = Path(tmp_dir)
-            with patch("app.config.PROJECT_ROOT", fake_root):
+            with patch("app.utils.config.PROJECT_ROOT", fake_root):
                 config = {"ai": {"provider": "test-sentinel"}}
                 save_config(config)
                 expected = fake_root / DEFAULT_CONFIG_RELATIVE_PATH

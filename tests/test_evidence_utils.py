@@ -56,7 +56,7 @@ class TestComputeEvidenceHashes(unittest.TestCase):
         self.assertEqual(hashes["filename"], "evidence_dir")
         self.assertEqual(file_hashes, [])
 
-    @patch("app.hasher.compute_hashes")
+    @patch("app.utils.hasher.compute_hashes")
     def test_single_file_hashes(self, mock_compute: MagicMock) -> None:
         """Single file returns its hash directly (not wrapped in summary)."""
         mock_compute.return_value = {
@@ -76,7 +76,7 @@ class TestComputeEvidenceHashes(unittest.TestCase):
         self.assertEqual(len(file_hashes), 1)
         self.assertEqual(file_hashes[0]["path"], "/path/to/file.E01")
 
-    @patch("app.hasher.compute_hashes")
+    @patch("app.utils.hasher.compute_hashes")
     def test_multiple_files_summary(self, mock_compute: MagicMock) -> None:
         """Multiple files produce a summary with combined size."""
         mock_compute.side_effect = [

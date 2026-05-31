@@ -222,7 +222,7 @@ class ReparseCleanupIntegrationTests(unittest.TestCase):
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
             patch.object(routes_evidence, "compute_hashes", return_value=HASH_RETURN),
-            patch("app.hasher.compute_hashes", return_value=HASH_RETURN),
+            patch("app.utils.hasher.compute_hashes", return_value=HASH_RETURN),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
             patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),

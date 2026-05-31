@@ -145,7 +145,7 @@ def _build_and_run_server(
         raise MCPStartupError(f"Unsupported MCP transport: {transport}")
 
     try:
-        from app.mcp_server import MissingMCPDependencyError, build_mcp_server
+        from app.automation.mcp_server import MissingMCPDependencyError, build_mcp_server
     except ImportError as exc:
         if _is_missing_mcp_import(exc):
             raise MCPStartupError(_MCP_INSTALL_MESSAGE) from exc

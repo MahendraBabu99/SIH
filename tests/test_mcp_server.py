@@ -19,7 +19,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import aift_mcp
-from app import mcp_server
+from app.automation import mcp_server
 from app.evidence.descriptor import EvidenceDescriptor
 
 
@@ -75,7 +75,7 @@ def _fake_mcp_modules() -> dict[str, types.ModuleType]:
 
 
 class TestMCPServerFactory(unittest.TestCase):
-    """Tests for ``app.mcp_server.build_mcp_server``."""
+    """Tests for ``app.automation.mcp_server.build_mcp_server``."""
 
     def test_build_mcp_server_registers_expected_tools(self) -> None:
         """The factory should register the initial MCP tool surface."""
@@ -162,7 +162,10 @@ class TestMCPServerFactory(unittest.TestCase):
 
             BLOCKED_ROOTS = (
                 "flask",
-                "app.automation",
+                "app.automation.engine",
+                "app.automation.discovery",
+                "app.automation.json_export",
+                "app.automation.run_manager",
                 "app.parser",
                 "app.analyzer",
                 "dissect",
@@ -211,7 +214,7 @@ class TestMCPServerFactory(unittest.TestCase):
             })
             sys.meta_path.insert(0, ImportBlocker())
 
-            from app.mcp_server import build_mcp_server
+            from app.automation.mcp_server import build_mcp_server
 
             server = build_mcp_server()
             if len(server.tools) != 8:
