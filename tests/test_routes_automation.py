@@ -438,7 +438,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
                 "prompt": "  Investigate this  ",
                 "output_dir": "  /tmp/aift-out  ",
                 "profile_name": "  full  ",
-                "config_path": "  /tmp/config.yaml  ",
+                "config_path": "  /tmp/acme-analysis-settings.yml  ",
                 "case_name": "  Case 001  ",
             },
         )
@@ -449,7 +449,7 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertEqual(req.prompt, "Investigate this")
         self.assertEqual(req.output_dir, "/tmp/aift-out")
         self.assertEqual(req.profile_name, "full")
-        self.assertEqual(req.config_path, "/tmp/config.yaml")
+        self.assertEqual(req.config_path, "/tmp/acme-analysis-settings.yml")
         self.assertEqual(req.case_name, "Case 001")
 
     @patch("app.routes.automation.run_automation")

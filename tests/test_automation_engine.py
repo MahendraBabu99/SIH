@@ -254,7 +254,7 @@ class TestAutomationProfileRoots(unittest.TestCase):
         """Automation loads profiles from the active config sibling folder."""
         with TemporaryDirectory(prefix="aift-profile-root-") as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "settings" / "config.yaml"
+            config_path = root / "settings" / "case-settings.yml"
             profile_root = config_path.parent / "profile"
             profile_root.mkdir(parents=True)
             config_path.write_text("ai_provider: fake\n", encoding="utf-8")

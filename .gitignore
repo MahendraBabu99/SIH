@@ -52,6 +52,9 @@ Thumbs.db
 
 config.yaml
 config.yml
+config/*.yaml
+config/*.yml
+!config/artifact_ai_columns.yaml
 
 # pdoc build output
 _site/

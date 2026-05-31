@@ -345,9 +345,19 @@ def _prompt(server: FakeFastMCP, name: str):
 class TestMCPTools(unittest.TestCase):
     """Focused MCP tool tests with fake dependencies."""
 
+    def test_profile_config_path_accepts_custom_config_filename(self) -> None:
+        """MCP profile resolution accepts YAML config files with arbitrary names."""
+        with TemporaryDirectory(prefix="aift-mcp-config-name-") as temp_dir:
+            config_path = Path(temp_dir) / "acme-analysis-settings.yml"
+            config_path.write_text("ai:\n  provider: local\n", encoding="utf-8")
+
+            resolved = mcp_server._profile_config_path(str(config_path))
+
+        self.assertEqual(resolved, config_path.resolve())
+
     def test_list_profiles_uses_profile_helpers(self) -> None:
         """Profile listing returns stable name/builtin/count entries."""
-        config_path = Path("E:/AIFT-Public2/AIFT/config.yaml")
+        config_path = Path("E:/AIFT-Public2/AIFT/acme-analysis-settings.yml")
         with (
             patch.dict(sys.modules, _fake_mcp_modules()),
             patch.object(mcp_server, "_profile_config_path", return_value=config_path),
@@ -377,7 +387,7 @@ class TestMCPTools(unittest.TestCase):
             ) as load_profiles,
         ):
             server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
-            result = _tool(server, "aift_list_profiles")("config.yaml")
+            result = _tool(server, "aift_list_profiles")("acme-analysis-settings.yml")
 
         self.assertTrue(result["success"])
         resolve_profiles_root.assert_called_once_with(config_path)
@@ -391,6 +401,45 @@ class TestMCPTools(unittest.TestCase):
         )
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["warnings"], [])
+
+    def test_list_profiles_accepts_custom_config_filename(self) -> None:
+        """MCP list-profiles accepts existing config files with custom names."""
+        with TemporaryDirectory(prefix="aift-mcp-profile-config-") as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "tenant-a-settings.yml"
+            config_path.write_text("ai:\n  provider: local\n", encoding="utf-8")
+            profiles_root = root / "profile"
+
+            with (
+                patch.dict(sys.modules, _fake_mcp_modules()),
+                patch.object(mcp_server, "_PROJECT_ROOT", root),
+                patch.object(
+                    mcp_server,
+                    "resolve_profiles_root",
+                    return_value=profiles_root,
+                ) as resolve_profiles_root,
+                patch.object(
+                    mcp_server,
+                    "load_profiles_from_directory",
+                    return_value=[
+                        {
+                            "name": "tenant-a",
+                            "builtin": False,
+                            "artifact_options": [{"artifact_key": "runkeys"}],
+                        },
+                    ],
+                ) as load_profiles,
+            ):
+                server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+                result = _tool(server, "aift_list_profiles")(str(config_path))
+
+        self.assertTrue(result["success"])
+        resolve_profiles_root.assert_called_once_with(config_path.resolve())
+        load_profiles.assert_called_once_with(profiles_root)
+        self.assertEqual(
+            result["profiles"],
+            [{"name": "tenant-a", "builtin": False, "artifact_count": 1}],
+        )
 
     def test_discover_evidence_serializes_descriptor_fields(self) -> None:
         """Evidence discovery returns descriptor fields matching MCP examples."""
@@ -468,7 +517,7 @@ class TestMCPTools(unittest.TestCase):
                 prompt="Investigate lateral movement.",
                 output_dir="D:/Cases/acme/reports",
                 profile_name="recommended",
-                config_path="E:/AIFT-Public2/AIFT/config.yaml",
+                config_path="E:/AIFT-Public2/AIFT/acme-analysis-settings.yml",
                 case_name="ACME",
                 skip_hashing=True,
                 date_range={
@@ -486,6 +535,10 @@ class TestMCPTools(unittest.TestCase):
         self.assertEqual(request.prompt, "Investigate lateral movement.")
         self.assertEqual(request.output_dir, "D:/Cases/acme/reports")
         self.assertEqual(request.profile_name, "recommended")
+        self.assertEqual(
+            request.config_path,
+            "E:/AIFT-Public2/AIFT/acme-analysis-settings.yml",
+        )
         self.assertEqual(request.case_name, "ACME")
         self.assertTrue(request.skip_hashing)
         self.assertEqual(request.date_range, ("2026-04-01", "2026-04-05"))

@@ -68,7 +68,7 @@ class AutomationRequest:
             If omitted, defaults to the created case's ``reports`` directory.
         profile_name: Artifact profile name.  Falls back to ``"recommended"``
             if None, empty, or not found.
-        config_path: Path to config.yaml.  Falls back to default if None
+        config_path: Path to a YAML config file. Falls back to default if None
             or not found.
         case_name: Optional human-readable case name for the report header.
         skip_hashing: If True, skip SHA-256/MD5 evidence hash computation.
@@ -220,7 +220,7 @@ def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], l
     """Load configuration, falling back to defaults on failure.
 
     Args:
-        config_path: Path to config.yaml, or None for default.
+        config_path: Path to a YAML config file, or None for default.
 
     Returns:
         Tuple of ``(config_dict, warning_strings)``.

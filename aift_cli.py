@@ -88,7 +88,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="CONFIG",
         default=None,
         help=(
-            "Path to config.yaml. Defaults to config/config.yaml "
+            "Path to a YAML config file. Defaults to config/config.yaml "
             "in the AIFT installation directory."
         ),
     )

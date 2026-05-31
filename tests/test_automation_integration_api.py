@@ -384,7 +384,7 @@ class TestApiToReportIntegration(unittest.TestCase):
         """Route-level automation writes real case, report, JSON, and audit files."""
         workspace = Path(self.temp_dir.name) / "real-route-pipeline"
         workspace.mkdir()
-        config_path = workspace / "config.yaml"
+        config_path = workspace / "case-settings.yml"
         config_path.write_text(
             "ai:\n"
             "  provider: local\n"

@@ -215,7 +215,7 @@ def resolve_profiles_root(config_path: str | Path) -> Path:
     """Resolve the directory where artifact profiles are stored.
 
     Args:
-        config_path: Path to the active ``config.yaml``.
+        config_path: Path to the active YAML config file.
 
     Returns:
         The sibling ``profile`` directory used by the GUI for artifact
