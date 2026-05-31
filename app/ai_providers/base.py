@@ -840,22 +840,54 @@ def _is_attachment_unsupported_error(error: Exception) -> bool:
         ``True`` if the error indicates file-attachment APIs are unavailable.
     """
     message_parts: list[str] = [str(error).lower()]
+    status_codes: set[int] = set()
     for attribute_name in ("code", "param", "type"):
         value = getattr(error, attribute_name, None)
         if isinstance(value, str):
             message_parts.append(value.lower())
+    for attribute_name in ("status_code", "status", "http_status"):
+        value = getattr(error, attribute_name, None)
+        if isinstance(value, int):
+            status_codes.add(value)
+        elif isinstance(value, str) and value.isdigit():
+            status_codes.add(int(value))
 
     body = getattr(error, "body", None)
     if isinstance(body, dict):
         message_parts.append(str(body).lower())
+        for key in ("status", "status_code", "http_status"):
+            value = body.get(key)
+            if isinstance(value, int):
+                status_codes.add(value)
+            elif isinstance(value, str) and value.isdigit():
+                status_codes.add(int(value))
         error_payload = body.get("error", body)
         if isinstance(error_payload, Mapping):
             for key in ("message", "code", "param", "type"):
                 value = error_payload.get(key)
                 if isinstance(value, str):
                     message_parts.append(value.lower())
+            for key in ("status", "status_code", "http_status"):
+                value = error_payload.get(key)
+                if isinstance(value, int):
+                    status_codes.add(value)
+                elif isinstance(value, str) and value.isdigit():
+                    status_codes.add(int(value))
+
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        status_codes.add(response_status)
+    elif isinstance(response_status, str) and response_status.isdigit():
+        status_codes.add(int(response_status))
 
     message = " ".join(part for part in message_parts if part)
+
+    # This predicate is only used while an attachment/file request is already
+    # in progress. Many local OpenAI-compatible servers return a bare 404 for
+    # missing /files or /responses routes, without naming those routes.
+    if 404 in status_codes or re.search(r"\b404\b", message):
+        return True
 
     explicit_attachment_markers = (
         "file not found",
