@@ -3,8 +3,8 @@
 Verifies that starting a new parse run removes stale parsed data from both
 disk and in-memory state, covering:
 
-* ``_purge_stale_parsed_data`` — removes default and external CSV directories.
-* ``_purge_stale_downstream_case_files`` — removes analysis/chat artifacts.
+* ``cleanup_parsed_data`` — removes default and external CSV directories.
+* ``clear_analysis_outputs`` — removes analysis/chat artifacts.
 * ``start_parse`` integration — clears in-memory state and on-disk data.
 * Safety guards — refuses to delete filesystem roots or short paths.
 
@@ -29,10 +29,10 @@ from tests.conftest import (
     first_case_image_id,
     first_image_parse_url,
 )
-import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat
 import app.routes.evidence as routes_evidence
+import app.routes.evidence_utils as evidence_utils
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.tasks as routes_tasks
@@ -63,11 +63,11 @@ class FakeParser(_BaseFakeParser):
         ]
 
 
-# ── Unit tests: _purge_stale_parsed_data ────────────────────────────────────
+# ── Unit tests: cleanup_parsed_data ─────────────────────────────────────────
 
 
 class PurgeStaleDataTests(unittest.TestCase):
-    """Unit tests for ``_purge_stale_parsed_data``."""
+    """Unit tests for ``cleanup_parsed_data``."""
 
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory(prefix="aift-purge-test-")
@@ -90,12 +90,12 @@ class PurgeStaleDataTests(unittest.TestCase):
         parsed = self._make_parsed_dir()
         self.assertTrue(parsed.is_dir())
 
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, "")
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "")
         self.assertFalse(parsed.exists())
 
     def test_noop_when_parsed_dir_missing(self) -> None:
         """No error when the parsed directory does not exist."""
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, "")
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "")
 
     def test_removes_external_csv_directory(self) -> None:
         """An external CSV output dir should also be removed."""
@@ -103,26 +103,26 @@ class PurgeStaleDataTests(unittest.TestCase):
         ext_dir.mkdir(parents=True)
         (ext_dir / "runkeys.csv").write_text("data\n", encoding="utf-8")
 
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, str(ext_dir))
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, str(ext_dir))
         self.assertFalse(ext_dir.exists())
 
     def test_skips_external_if_same_as_default(self) -> None:
         """Don't attempt double-delete if external dir == default parsed dir."""
         parsed = self._make_parsed_dir()
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, str(parsed))
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, str(parsed))
         # Should have been cleaned by the default-dir logic, no error.
         self.assertFalse(parsed.exists())
 
     def test_skips_nonexistent_external_dir(self) -> None:
         """No error if the external dir doesn't exist on disk."""
-        routes_artifacts._purge_stale_parsed_data(
-            self.case_dir, "/nonexistent/path/to/parsed"
+        evidence_utils.cleanup_parsed_data(
+            self.case_dir, {}, "/nonexistent/path/to/parsed"
         )
 
     def test_skips_empty_prev_csv_output_dir(self) -> None:
         """Empty string for prev_csv_output_dir is a no-op for external cleanup."""
         self._make_parsed_dir()
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, "")
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "")
         # Default dir still cleaned
         self.assertFalse((self.case_dir / "parsed").exists())
 
@@ -130,23 +130,23 @@ class PurgeStaleDataTests(unittest.TestCase):
         """Safety: refuse to delete a filesystem root path."""
         self._make_parsed_dir()
         # Passing "/" as external dir should be refused
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, "/")
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "/")
         # Default parsed dir should still be cleaned
         self.assertFalse((self.case_dir / "parsed").exists())
 
     def test_refuses_short_path(self) -> None:
         """Safety: refuse to delete paths with <= 2 components."""
         self._make_parsed_dir()
-        routes_artifacts._purge_stale_parsed_data(self.case_dir, "/tmp")
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "/tmp")
         # Default parsed dir cleaned; /tmp not deleted
         self.assertFalse((self.case_dir / "parsed").exists())
 
 
-# ── Unit tests: _purge_stale_downstream_case_files ──────────────────────────
+# ── Unit tests: clear_analysis_outputs ──────────────────────────────────────
 
 
 class PurgeDownstreamFilesTests(unittest.TestCase):
-    """Unit tests for ``_purge_stale_downstream_case_files``."""
+    """Unit tests for ``clear_analysis_outputs``."""
 
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory(prefix="aift-downstream-test-")
@@ -160,26 +160,50 @@ class PurgeDownstreamFilesTests(unittest.TestCase):
         """analysis_results.json should be deleted."""
         p = self.case_dir / "analysis_results.json"
         p.write_text("{}", encoding="utf-8")
-        routes_artifacts._purge_stale_downstream_case_files(self.case_dir)
+        evidence_utils.clear_analysis_outputs(
+            self.case_dir,
+            remove_prompt=True,
+            remove_chat_history=True,
+            remove_reports=True,
+            remove_analysis_results=True,
+        )
         self.assertFalse(p.exists())
 
     def test_removes_prompt_txt(self) -> None:
         """prompt.txt should be deleted."""
         p = self.case_dir / "prompt.txt"
         p.write_text("test", encoding="utf-8")
-        routes_artifacts._purge_stale_downstream_case_files(self.case_dir)
+        evidence_utils.clear_analysis_outputs(
+            self.case_dir,
+            remove_prompt=True,
+            remove_chat_history=True,
+            remove_reports=True,
+            remove_analysis_results=True,
+        )
         self.assertFalse(p.exists())
 
     def test_removes_chat_history(self) -> None:
         """chat_history.jsonl should be deleted."""
         p = self.case_dir / "chat_history.jsonl"
         p.write_text("{}\n", encoding="utf-8")
-        routes_artifacts._purge_stale_downstream_case_files(self.case_dir)
+        evidence_utils.clear_analysis_outputs(
+            self.case_dir,
+            remove_prompt=True,
+            remove_chat_history=True,
+            remove_reports=True,
+            remove_analysis_results=True,
+        )
         self.assertFalse(p.exists())
 
     def test_noop_when_files_missing(self) -> None:
         """No error when none of the downstream files exist."""
-        routes_artifacts._purge_stale_downstream_case_files(self.case_dir)
+        evidence_utils.clear_analysis_outputs(
+            self.case_dir,
+            remove_prompt=True,
+            remove_chat_history=True,
+            remove_reports=True,
+            remove_analysis_results=True,
+        )
 
 
 # ── Integration: re-parse clears old data ───────────────────────────────────

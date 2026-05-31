@@ -139,6 +139,151 @@ def _purge_case_downstream_files(case_dir: Path) -> None:
     )
 
 
+def _path_inside(path: Path, root: Path) -> bool:
+    """Return whether *path* resolves under *root*."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _rewrite_staged_path_value(value: Any, staging_root: Path, active_root: Path) -> Any:
+    """Rewrite staged evidence paths to their active evidence location."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    try:
+        path = Path(value)
+        relative = path.resolve().relative_to(staging_root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return value
+    return str(active_root / relative)
+
+
+def _rewrite_staged_evidence_payload(
+    payload: dict[str, Any],
+    staging_root: Path,
+    active_root: Path,
+) -> dict[str, Any]:
+    """Return an evidence payload whose staged paths point at active evidence."""
+    rewritten: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, str):
+            rewritten[key] = _rewrite_staged_path_value(value, staging_root, active_root)
+        elif isinstance(value, list):
+            rewritten[key] = [
+                _rewrite_staged_path_value(item, staging_root, active_root)
+                for item in value
+            ]
+        else:
+            rewritten[key] = value
+    return rewritten
+
+
+def _rewrite_file_hash_paths(
+    file_hashes: list[dict[str, Any]],
+    staging_root: Path,
+    active_root: Path,
+) -> list[dict[str, Any]]:
+    """Return file hash records with staged paths rewritten after commit."""
+    rewritten: list[dict[str, Any]] = []
+    for record in file_hashes:
+        updated = dict(record)
+        updated["path"] = _rewrite_staged_path_value(
+            updated.get("path"),
+            staging_root,
+            active_root,
+        )
+        rewritten.append(updated)
+    return rewritten
+
+
+def _rewrite_hash_summary_paths(
+    hashes: dict[str, Any],
+    staging_root: Path,
+    active_root: Path,
+) -> dict[str, Any]:
+    """Return summary hash metadata with staged paths rewritten after commit."""
+    rewritten = dict(hashes)
+    for key in ("_source_path", "path"):
+        if key in rewritten:
+            rewritten[key] = _rewrite_staged_path_value(
+                rewritten.get(key),
+                staging_root,
+                active_root,
+            )
+    return rewritten
+
+
+def _commit_staged_evidence(staged_evidence_dir: Path, active_evidence_dir: Path) -> Path | None:
+    """Swap staged evidence into the active image evidence directory.
+
+    Returns:
+        Backup directory containing the previous active evidence directory.
+        The caller must remove it after all follow-up commit work succeeds.
+    """
+    active_evidence_dir.parent.mkdir(parents=True, exist_ok=True)
+    backup_dir: Path | None = None
+    if active_evidence_dir.exists():
+        backup_dir = active_evidence_dir.with_name(
+            f".evidence_backup_{uuid.uuid4().hex[:12]}"
+        )
+        shutil.move(str(active_evidence_dir), str(backup_dir))
+    try:
+        shutil.move(str(staged_evidence_dir), str(active_evidence_dir))
+    except Exception:
+        if backup_dir is not None and backup_dir.exists() and not active_evidence_dir.exists():
+            shutil.move(str(backup_dir), str(active_evidence_dir))
+        raise
+    return backup_dir
+
+
+def _restore_evidence_backup(active_evidence_dir: Path, backup_dir: Path | None) -> None:
+    """Best-effort restore of an evidence directory backup after commit failure."""
+    if active_evidence_dir.exists():
+        shutil.rmtree(active_evidence_dir, ignore_errors=True)
+    if backup_dir is not None and backup_dir.exists():
+        shutil.move(str(backup_dir), str(active_evidence_dir))
+
+
+def _cleanup_replacement_staging(staging_dir: Path, image_dir: Path) -> None:
+    """Remove replacement staging if it is still under the image directory."""
+    if not staging_dir.exists() or not _path_inside(staging_dir, image_dir):
+        return
+    shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+def _invalidate_replacement_parse_state_after_cleanup(
+    case_id: str,
+    case: dict[str, Any],
+    image_id: str,
+) -> None:
+    """Drop parse/analysis state after replacement cleanup may have mutated disk."""
+    with STATE_LOCK:
+        image_states = case.setdefault("image_states", {})
+        img_state = image_states.get(image_id)
+        if isinstance(img_state, dict):
+            img_state.pop("parse_results", None)
+            img_state.pop("artifact_csv_paths", None)
+            img_state.pop("analysis_artifacts", None)
+            img_state.pop("artifact_options", None)
+            img_state["csv_output_dir"] = ""
+
+        image_csv_paths = case.get("image_artifact_csv_paths")
+        if isinstance(image_csv_paths, dict):
+            image_csv_paths.pop(image_id, None)
+
+        other_images_have_results = _rebuild_case_parse_state_from_images(case_id, case)
+
+        img_progress_key = _progress_key(case_id, image_id)
+        PARSE_PROGRESS.pop(img_progress_key, None)
+        ANALYSIS_PROGRESS.pop(img_progress_key, None)
+        CHAT_PROGRESS.pop(img_progress_key, None)
+        ANALYSIS_PROGRESS.pop(case_id, None)
+        CHAT_PROGRESS.pop(case_id, None)
+        if not other_images_have_results:
+            PARSE_PROGRESS.pop(case_id, None)
+
+
 def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) -> bool:
     """Refresh image-scoped parse state from remaining per-image state.
 
@@ -515,6 +660,8 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
     case_snapshot: dict[str, Any] = {}
     progress_snapshots: list[tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]] = []
     replacement_committed = False
+    replacement_cleanup_started = False
+    replacement_cleanup_completed = False
     with STATE_LOCK:
         if active_operations_for_case(case_id):
             return error_response(
@@ -544,8 +691,19 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         marker_state["status"] = "replacing"
         image_states[image_id] = marker_state
 
-    # Use the image-specific evidence directory.
+    # Stage uploads/extractions outside the active evidence directory so
+    # failed replacement attempts cannot be consumed by current case state.
     evidence_dir = image_dir / "evidence"
+    staging_dir = image_dir / ".replacement_staging" / uuid.uuid4().hex
+    staging_evidence_dir = staging_dir / "evidence"
+    metadata_path = image_dir / "metadata.json"
+    metadata_existed = metadata_path.exists()
+    metadata_snapshot: str | None = None
+    if metadata_existed:
+        try:
+            metadata_snapshot = metadata_path.read_text(encoding="utf-8")
+        except OSError:
+            metadata_snapshot = None
 
     def restore_replacement_state() -> None:
         """Restore in-memory case state captured before evidence replacement."""
@@ -565,11 +723,11 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 store.update(snapshot)
 
     try:
-        evidence_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir.mkdir(parents=True, exist_ok=True)
 
-        # Temporarily point the case_dir to the image_dir so
-        # resolve_evidence_payload writes to the correct location.
-        evidence_payload = _resolve_evidence_for_image(image_dir)
+        # Resolve into staging first. The active evidence directory is
+        # swapped only after stale parsed/downstream cleanup succeeds.
+        evidence_payload = _resolve_evidence_for_image(staging_dir)
         source_path = Path(evidence_payload["source_path"])
         dissect_path = Path(evidence_payload["dissect_path"])
 
@@ -601,120 +759,23 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             dissect_path, case_dir, audit_logger, case_id,
         )
 
-        audit_logger.log(
-            "evidence_intake",
-            {
-                "filename": source_path.name,
-                "image_id": image_id,
-                "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
-                "source_path": evidence_payload["source_path"],
-                "stored_path": evidence_payload["stored_path"],
-                "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
-                "dissect_path": str(dissect_path),
-                "evidence_descriptor": descriptor_details,
-                "sha256": hashes["sha256"],
-                "md5": hashes["md5"],
-                "file_size_bytes": hashes["size_bytes"],
-                "evidence_file_hashes": [
-                    {"path": h["path"], "sha256": h["sha256"], "md5": h["md5"], "size_bytes": h["size_bytes"]}
-                    for h in file_hashes
-                ],
-            },
-        )
-        audit_logger.log(
-            "image_opened",
-            {
-                "image_id": image_id,
-                "hostname": metadata.get("hostname", "Unknown"),
-                "os_version": metadata.get("os_version", "Unknown"),
-                "os_type": detected_os_type,
-                "domain": metadata.get("domain", "Unknown"),
-                "available_artifacts": [
-                    str(item.get("key"))
-                    for item in available_artifacts
-                    if item.get("available")
-                ],
-            },
-        )
-
-        # Update image metadata.json on disk.
-        _update_image_metadata(image_dir, metadata, hashes, detected_os_type)
-
-        # Store in case state under the image.
         with STATE_LOCK:
             image_states = case.setdefault("image_states", {})
 
-            # Capture previous per-image state before updating so we can
-            # remove stale parsed output after the state mutation.
             prev_img_state = image_states.get(image_id, {})
             prev_csv_output_dir = str(prev_img_state.get("csv_output_dir", "")).strip()
-
-            # Update the image state without parse-derived fields. Evidence
-            # replacement invalidates this image's parsed CSVs and all
-            # downstream analysis/chat/report state.
-            new_img_state: dict[str, Any] = {
-                "evidence_path": str(dissect_path),
-                "evidence_hashes": hashes,
-                "evidence_file_hashes": [
-                    {"path": h["path"], "sha256": h["sha256"], "md5": h["md5"], "size_bytes": h["size_bytes"]}
-                    for h in file_hashes
-                ],
-                "image_metadata": metadata,
-                "os_type": detected_os_type,
-                "available_artifacts": available_artifacts,
-                "source_path": evidence_payload["source_path"],
-                "stored_path": evidence_payload["stored_path"],
-                "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
-                "evidence_descriptor": descriptor_details,
-                "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
-                "extracted_from": evidence_payload.get("extracted_from", ""),
-                "extraction_root": evidence_payload.get("extraction_root", ""),
-                "status": "replacing",
-            }
-            image_states[image_id] = new_img_state
-
-            other_images_have_results = _rebuild_case_parse_state_from_images(case_id, case)
-
-            # Keep the case-level evidence summary aligned for single-image
-            # views. Only overwrite when this is the first (or only) image
-            # so multi-image cases do not silently replace the first image's
-            # metadata with the latest upload.
-            is_first_image = len(image_states) <= 1 or not case.get("evidence_path")
-            if is_first_image:
-                case["evidence_mode"] = evidence_payload["mode"]
-                case["source_mode"] = evidence_payload.get("source_mode", evidence_payload["mode"])
-                case["source_path"] = evidence_payload["source_path"]
-                case["stored_path"] = evidence_payload["stored_path"]
-                case["uploaded_files"] = list(evidence_payload.get("uploaded_files", []))
-                case["evidence_descriptor"] = descriptor_details
-                case["extracted_from"] = evidence_payload.get("extracted_from", "")
-                case["extraction_root"] = evidence_payload.get("extraction_root", "")
-                case["evidence_path"] = str(dissect_path)
-                case["evidence_hashes"] = hashes
-                case["evidence_file_hashes"] = [
-                    {"path": h["path"], "sha256": h["sha256"], "md5": h["md5"], "size_bytes": h["size_bytes"]}
-                    for h in file_hashes
-                ]
-                case["image_metadata"] = metadata
-                case["os_type"] = detected_os_type
-                case["available_artifacts"] = available_artifacts
-
-            # Clear per-image progress keys so stale SSE streams are not
-            # reused.  Only clear the case-level keys when this is the
-            # sole image (no other images have results).
-            img_progress_key = _progress_key(case_id, image_id)
-            PARSE_PROGRESS.pop(img_progress_key, None)
-            ANALYSIS_PROGRESS.pop(img_progress_key, None)
-            CHAT_PROGRESS.pop(img_progress_key, None)
-            ANALYSIS_PROGRESS.pop(case_id, None)
-            CHAT_PROGRESS.pop(case_id, None)
+            image_csv_paths = case.get("image_artifact_csv_paths", {})
+            other_images_have_results = any(
+                other_image_id != image_id and isinstance(csv_map, dict) and bool(csv_map)
+                for other_image_id, csv_map in image_csv_paths.items()
+            )
             if not other_images_have_results:
-                PARSE_PROGRESS.pop(case_id, None)
-
-            # Capture the flag while still under the lock so that the
-            # disk cleanup below uses a consistent snapshot.  This
-            # prevents a TOCTOU race where another thread adds parse
-            # results between the lock release and the cleanup check.
+                other_images_have_results = any(
+                    other_image_id != image_id
+                    and isinstance(other_state, dict)
+                    and bool(other_state.get("artifact_csv_paths"))
+                    for other_image_id, other_state in image_states.items()
+                )
             should_clean_case_level = not other_images_have_results
 
         # Remove stale on-disk artifacts so disk fallbacks cannot
@@ -730,6 +791,7 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         single_image_states: dict[str, dict[str, Any]] = {
             image_id: {"dir": str(image_dir)},
         }
+        replacement_cleanup_started = True
         cleanup_parsed_data(
             case_dir=case_dir_path,
             image_states=single_image_states,
@@ -742,12 +804,157 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         _purge_case_downstream_files(case_dir_path)
         if prev_csv_output_dir:
             invalidate_header_cache(prev_csv_output_dir)
+        replacement_cleanup_completed = True
+
+        backup_dir: Path | None = None
+        try:
+            staging_evidence_dir.mkdir(parents=True, exist_ok=True)
+            backup_dir = _commit_staged_evidence(staging_evidence_dir, evidence_dir)
+            active_payload = _rewrite_staged_evidence_payload(
+                evidence_payload,
+                staging_evidence_dir,
+                evidence_dir,
+            )
+            active_file_hashes = _rewrite_file_hash_paths(
+                file_hashes,
+                staging_evidence_dir,
+                evidence_dir,
+            )
+            active_hashes = _rewrite_hash_summary_paths(
+                hashes,
+                staging_evidence_dir,
+                evidence_dir,
+            )
+            active_dissect_path = Path(active_payload["dissect_path"])
+            active_source_path = Path(active_payload["source_path"])
+            descriptor_details = {
+                key: active_payload[key]
+                for key in (
+                    "dissect_path",
+                    "source_path",
+                    "label",
+                    "source_mode",
+                    "files_to_hash",
+                    "extracted_from",
+                    "extraction_root",
+                )
+                if key in active_payload
+            }
+
+            _update_image_metadata(image_dir, metadata, active_hashes, detected_os_type)
+
+            audit_logger.log(
+                "evidence_intake",
+                {
+                    "filename": active_source_path.name,
+                    "image_id": image_id,
+                    "source_mode": active_payload.get("source_mode", active_payload["mode"]),
+                    "source_path": active_payload["source_path"],
+                    "stored_path": active_payload["stored_path"],
+                    "uploaded_files": list(active_payload.get("uploaded_files", [])),
+                    "dissect_path": str(active_dissect_path),
+                    "evidence_descriptor": descriptor_details,
+                    "sha256": active_hashes["sha256"],
+                    "md5": active_hashes["md5"],
+                    "file_size_bytes": active_hashes["size_bytes"],
+                    "evidence_file_hashes": [
+                        {
+                            "path": h["path"],
+                            "sha256": h["sha256"],
+                            "md5": h["md5"],
+                            "size_bytes": h["size_bytes"],
+                        }
+                        for h in active_file_hashes
+                    ],
+                },
+            )
+            audit_logger.log(
+                "image_opened",
+                {
+                    "image_id": image_id,
+                    "hostname": metadata.get("hostname", "Unknown"),
+                    "os_version": metadata.get("os_version", "Unknown"),
+                    "os_type": detected_os_type,
+                    "domain": metadata.get("domain", "Unknown"),
+                    "available_artifacts": [
+                        str(item.get("key"))
+                        for item in available_artifacts
+                        if item.get("available")
+                    ],
+                },
+            )
+        except Exception:
+            _restore_evidence_backup(evidence_dir, backup_dir)
+            if metadata_existed and metadata_snapshot is not None:
+                metadata_path.write_text(metadata_snapshot, encoding="utf-8")
+            elif not metadata_existed:
+                metadata_path.unlink(missing_ok=True)
+            raise
+        finally:
+            if backup_dir is not None and backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
 
         with STATE_LOCK:
             image_states = case.setdefault("image_states", {})
-            current_img_state = image_states.get(image_id)
-            if isinstance(current_img_state, dict):
-                current_img_state.pop("status", None)
+            image_states[image_id] = {
+                "evidence_path": str(active_dissect_path),
+                "evidence_hashes": active_hashes,
+                "evidence_file_hashes": [
+                    {
+                        "path": h["path"],
+                        "sha256": h["sha256"],
+                        "md5": h["md5"],
+                        "size_bytes": h["size_bytes"],
+                    }
+                    for h in active_file_hashes
+                ],
+                "image_metadata": metadata,
+                "os_type": detected_os_type,
+                "available_artifacts": available_artifacts,
+                "source_path": active_payload["source_path"],
+                "stored_path": active_payload["stored_path"],
+                "uploaded_files": list(active_payload.get("uploaded_files", [])),
+                "evidence_descriptor": descriptor_details,
+                "source_mode": active_payload.get("source_mode", active_payload["mode"]),
+                "extracted_from": active_payload.get("extracted_from", ""),
+                "extraction_root": active_payload.get("extraction_root", ""),
+            }
+
+            other_images_have_results = _rebuild_case_parse_state_from_images(case_id, case)
+
+            is_first_image = len(image_states) <= 1 or not case.get("evidence_path")
+            if is_first_image:
+                case["evidence_mode"] = active_payload["mode"]
+                case["source_mode"] = active_payload.get("source_mode", active_payload["mode"])
+                case["source_path"] = active_payload["source_path"]
+                case["stored_path"] = active_payload["stored_path"]
+                case["uploaded_files"] = list(active_payload.get("uploaded_files", []))
+                case["evidence_descriptor"] = descriptor_details
+                case["extracted_from"] = active_payload.get("extracted_from", "")
+                case["extraction_root"] = active_payload.get("extraction_root", "")
+                case["evidence_path"] = str(active_dissect_path)
+                case["evidence_hashes"] = active_hashes
+                case["evidence_file_hashes"] = [
+                    {
+                        "path": h["path"],
+                        "sha256": h["sha256"],
+                        "md5": h["md5"],
+                        "size_bytes": h["size_bytes"],
+                    }
+                    for h in active_file_hashes
+                ]
+                case["image_metadata"] = metadata
+                case["os_type"] = detected_os_type
+                case["available_artifacts"] = available_artifacts
+
+            img_progress_key = _progress_key(case_id, image_id)
+            PARSE_PROGRESS.pop(img_progress_key, None)
+            ANALYSIS_PROGRESS.pop(img_progress_key, None)
+            CHAT_PROGRESS.pop(img_progress_key, None)
+            ANALYSIS_PROGRESS.pop(case_id, None)
+            CHAT_PROGRESS.pop(case_id, None)
+            if not other_images_have_results:
+                PARSE_PROGRESS.pop(case_id, None)
 
         os_warning = ""
         if detected_os_type == "unknown":
@@ -760,12 +967,12 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         response_data: dict[str, Any] = {
             "case_id": case_id,
             "image_id": image_id,
-            "source_mode": evidence_payload.get("source_mode", evidence_payload["mode"]),
-            "source_path": evidence_payload["source_path"],
-            "evidence_path": str(dissect_path),
-            "uploaded_files": list(evidence_payload.get("uploaded_files", [])),
+            "source_mode": active_payload.get("source_mode", active_payload["mode"]),
+            "source_path": active_payload["source_path"],
+            "evidence_path": str(active_dissect_path),
+            "uploaded_files": list(active_payload.get("uploaded_files", [])),
             "evidence_descriptor": descriptor_details,
-            "hashes": hashes,
+            "hashes": active_hashes,
             "metadata": metadata,
             "os_type": detected_os_type,
             "available_artifacts": available_artifacts,
@@ -774,20 +981,88 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             response_data["os_warning"] = os_warning
 
         replacement_committed = True
+        _cleanup_replacement_staging(staging_dir, image_dir)
         return success_response(response_data)
     except (ValueError, FileNotFoundError) as error:
         if not replacement_committed:
             restore_replacement_state()
-        return error_response(str(error), 400)
-    except Exception:
+            if replacement_cleanup_started:
+                _invalidate_replacement_parse_state_after_cleanup(case_id, case, image_id)
+            audit_logger.log(
+                "evidence_replacement_failed",
+                {
+                    "image_id": image_id,
+                    "stage": (
+                        "after_cleanup_started"
+                        if replacement_cleanup_started
+                        else "before_commit"
+                    ),
+                    "retained_partial_evidence": False,
+                    "parsed_outputs_invalidated": replacement_cleanup_started,
+                    "cleanup_completed": replacement_cleanup_completed,
+                    "stale_outputs_may_remain_on_disk": (
+                        replacement_cleanup_started
+                        and not replacement_cleanup_completed
+                    ),
+                    "error": str(error),
+                },
+            )
+            _cleanup_replacement_staging(staging_dir, image_dir)
+        message = str(error)
+        if replacement_cleanup_started:
+            message = (
+                f"{message} Previous evidence was restored, but parsed and "
+                "analysis outputs were invalidated because replacement cleanup "
+                "had already started."
+            )
+            if not replacement_cleanup_completed:
+                message = (
+                    f"{message} Some stale output files may remain on disk, "
+                    "but current case state will not use them."
+                )
+        return error_response(message, 400)
+    except Exception as error:
         LOGGER.exception("Evidence intake failed for case %s image %s", case_id, image_id)
         if not replacement_committed:
             restore_replacement_state()
-        return error_response(
+            if replacement_cleanup_started:
+                _invalidate_replacement_parse_state_after_cleanup(case_id, case, image_id)
+            audit_logger.log(
+                "evidence_replacement_failed",
+                {
+                    "image_id": image_id,
+                    "stage": (
+                        "after_cleanup_started"
+                        if replacement_cleanup_started
+                        else "before_commit"
+                    ),
+                    "retained_partial_evidence": False,
+                    "parsed_outputs_invalidated": replacement_cleanup_started,
+                    "cleanup_completed": replacement_cleanup_completed,
+                    "stale_outputs_may_remain_on_disk": (
+                        replacement_cleanup_started
+                        and not replacement_cleanup_completed
+                    ),
+                    "error": str(error),
+                },
+            )
+            _cleanup_replacement_staging(staging_dir, image_dir)
+        message = (
             "Evidence intake failed due to an unexpected error. "
-            "Confirm the evidence file is supported and try again.",
-            500,
+            "Confirm the evidence file is supported and try again."
         )
+        if replacement_cleanup_started:
+            message = (
+                f"{message} Previous evidence was restored, but parsed and "
+                "analysis outputs were invalidated because replacement cleanup "
+                "had already started."
+            )
+            if not replacement_cleanup_completed:
+                message = (
+                    f"{message} Some stale output files may remain on disk, "
+                    "but current case state will not use them."
+                )
+        return error_response(message, 500)
 
 
 # ---------------------------------------------------------------------------
@@ -922,19 +1197,6 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         case_dir = Path(case["case_dir"])
 
     try:
-        from .evidence_utils import cleanup_parsed_data
-
-        single_image_states: dict[str, dict[str, Any]] = {
-            image_id: {"dir": str(image_dir)},
-        }
-        cleanup_parsed_data(
-            case_dir=case_dir,
-            image_states=single_image_states,
-            prev_csv_output_dir=prev_csv_output_dir,
-            clean_default_parsed=False,
-        )
-        _purge_case_downstream_files(case_dir)
-
         started_event = {
             "type": "parse_started",
             "image_id": image_id,
@@ -943,20 +1205,60 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
             "artifact_options": artifact_options,
             "total_artifacts": len(parse_artifacts),
         }
-        emit_progress(PARSE_PROGRESS, progress_key, started_event)
-        emit_progress(PARSE_PROGRESS, case_id, started_event)
-
         config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
 
         from .tasks import run_task_with_case_log_context
 
-        threading.Thread(
-            target=run_task_with_case_log_context,
-            args=(
+        def parse_startup_and_run() -> None:
+            """Clean stale parse outputs after thread start, then parse."""
+            try:
+                from .evidence_utils import cleanup_parsed_data
+
+                cleanup_parsed_data(
+                    case_dir=case_dir,
+                    image_states={image_id: {"dir": str(image_dir)}},
+                    prev_csv_output_dir=prev_csv_output_dir,
+                    clean_default_parsed=False,
+                )
+                _purge_case_downstream_files(case_dir)
+                emit_progress(PARSE_PROGRESS, progress_key, started_event)
+                emit_progress(PARSE_PROGRESS, case_id, started_event)
+            except Exception as startup_error:
+                LOGGER.exception(
+                    "Failed image parse startup cleanup for case %s image %s",
+                    case_id,
+                    image_id,
+                )
+                audit = case.get("audit")
+                if audit is not None:
+                    audit.log(
+                        "parse_startup_failed",
+                        {
+                            "image_id": image_id,
+                            "stage": "startup_cleanup",
+                            "error": str(startup_error),
+                        },
+                    )
+                _finish_image_parse_progress(
+                    case_id,
+                    image_id,
+                    "failed",
+                    {
+                        "type": "parse_failed",
+                        "error": "Failed to prepare parsing workspace.",
+                    },
+                    str(startup_error),
+                )
+                return
+
+            run_task_with_case_log_context(
                 case_id, _run_image_parse,
                 case_id, image_id, parse_artifacts, analysis_artifacts,
                 artifact_options, config_snapshot, str(evidence_path), str(parsed_dir),
-            ),
+            )
+
+        threading.Thread(
+            target=parse_startup_and_run,
             daemon=True,
         ).start()
     except Exception:

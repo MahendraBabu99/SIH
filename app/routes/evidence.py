@@ -454,34 +454,6 @@ def read_audit_entries(case_dir: Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Cleanup helpers
-# ---------------------------------------------------------------------------
-
-
-def _cleanup_parsed_output(case_dir: Path, prev_csv_output_dir: str) -> None:
-    """Remove stale parsed CSV output from a previous parse run.
-
-    Delegates to :func:`~app.routes.evidence_utils.cleanup_parsed_data`.
-
-    .. deprecated::
-        Use :func:`~app.routes.evidence_utils.cleanup_parsed_data` directly.
-
-    Args:
-        case_dir: Path to the case's root directory.
-        prev_csv_output_dir: The ``csv_output_dir`` value stored from the
-            previous parse run (may be empty).
-    """
-    from .evidence_utils import cleanup_parsed_data
-
-    cleanup_parsed_data(
-        case_dir=case_dir,
-        image_states={},
-        prev_csv_output_dir=prev_csv_output_dir,
-        clean_default_parsed=False,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
 

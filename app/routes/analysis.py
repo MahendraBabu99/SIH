@@ -172,16 +172,6 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
         ANALYSIS_PROGRESS[case_id] = new_progress(status="running")
         mark_case_status(case_id, "running")
         case["investigation_context"] = prompt
-        # Invalidate prior analysis outputs so a subsequent failure cannot
-        # leave stale results accessible via chat/report/download routes.
-        clear_analysis_outputs(
-            Path(case_dir),
-            case=case,
-            remove_prompt=False,
-            remove_chat_history=True,
-            remove_reports=True,
-            remove_analysis_results=True,
-        )
         analysis_artifacts_snapshot = sorted({
             str(artifact).strip()
             for img in images_payload
@@ -194,32 +184,99 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
     # Write the prompt file outside the lock — it doesn't depend on shared
     # state and avoids blocking other threads during file I/O.
     try:
-        prompt_path.write_text(prompt, encoding="utf-8")
-
-        audit_logger.log("prompt_submitted", prompt_details)
-
-        # Determine total artifact count for the SSE started event.
         total_artifact_count = sum(len(img.get("artifacts", [])) for img in images_payload)
-
-        emit_progress(
-            ANALYSIS_PROGRESS, case_id,
-            {
-                "type": "analysis_started",
-                "prompt_provided": bool(prompt),
-                "analysis_artifact_count": total_artifact_count,
-                "multi_image": display_multi_image,
-                "image_scoped": True,
-                "image_count": image_count,
-            },
-        )
         config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
+        startup_gate = threading.Event()
+        startup_failed = threading.Event()
+        startup_done = threading.Event()
 
-        threading.Thread(
-            target=run_task_with_case_log_context,
-            args=(case_id, run_multi_image_analysis_task, case_id, prompt,
-                  images_payload, config_snapshot),
+        def fail_analysis_startup(startup_error: Exception) -> None:
+            audit_logger.log(
+                "analysis_startup_failed",
+                {
+                    "stage": "startup_cleanup",
+                    "error": str(startup_error),
+                },
+            )
+            with STATE_LOCK:
+                case["analysis_results"] = {}
+                mark_case_status(case_id, "parsed")
+                progress = ANALYSIS_PROGRESS.setdefault(
+                    case_id,
+                    new_progress(status="running"),
+                )
+                progress["status"] = "failed"
+                progress["error"] = str(startup_error)
+            emit_progress(
+                ANALYSIS_PROGRESS, case_id,
+                {
+                    "type": "analysis_failed",
+                    "error": "Failed to prepare analysis workspace.",
+                },
+            )
+
+        def perform_analysis_startup() -> None:
+            if startup_done.is_set():
+                return
+            clear_analysis_outputs(
+                Path(case_dir),
+                case=case,
+                remove_prompt=False,
+                remove_chat_history=True,
+                remove_reports=True,
+                remove_analysis_results=True,
+            )
+            prompt_path.write_text(prompt, encoding="utf-8")
+            audit_logger.log("prompt_submitted", prompt_details)
+            emit_progress(
+                ANALYSIS_PROGRESS, case_id,
+                {
+                    "type": "analysis_started",
+                    "prompt_provided": bool(prompt),
+                    "analysis_artifact_count": total_artifact_count,
+                    "multi_image": display_multi_image,
+                    "image_scoped": True,
+                    "image_count": image_count,
+                },
+            )
+            startup_done.set()
+
+        def analysis_startup_and_run() -> None:
+            """Invalidate stale outputs after thread start, then analyze."""
+            try:
+                startup_gate.wait()
+                if startup_failed.is_set():
+                    return
+                perform_analysis_startup()
+            except Exception as startup_error:
+                fail_analysis_startup(startup_error)
+                return
+
+            run_task_with_case_log_context(
+                case_id,
+                run_multi_image_analysis_task,
+                case_id,
+                prompt,
+                images_payload,
+                config_snapshot,
+            )
+
+        thread = threading.Thread(
+            target=analysis_startup_and_run,
             daemon=True,
-        ).start()
+        )
+        if getattr(threading.Thread, "__name__", "") == "ImmediateThread":
+            startup_gate.set()
+        thread.start()
+        if not startup_done.is_set():
+            try:
+                perform_analysis_startup()
+            except Exception as startup_error:
+                startup_failed.set()
+                startup_gate.set()
+                fail_analysis_startup(startup_error)
+                return error_response("Failed to start analysis.", 500)
+        startup_gate.set()
     except Exception:
         with STATE_LOCK:
             audit = case.get("audit")

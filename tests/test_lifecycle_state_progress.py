@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
@@ -382,11 +381,15 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotEqual(image_state.get("status"), "replacing")
         self.assertEqual(image_state["evidence_path"], str(new_source))
 
-    def test_failed_replacement_restores_case_and_progress_state(self) -> None:
-        """Failed evidence replacement restores prior case and progress state."""
+    def test_failed_replacement_after_cleanup_invalidates_parse_state(self) -> None:
+        """Failed replacement after cleanup starts does not reuse stale parsed state."""
         case_id = "replace-rollback"
         image_id = "img-001"
         case_dir = self._install_case(case_id, image_id)
+        image_dir = case_dir / "images" / image_id
+        metadata_path = image_dir / "metadata.json"
+        original_metadata = '{"label":"Image","hostname":"old-host"}\n'
+        metadata_path.write_text(original_metadata, encoding="utf-8")
         parsed_dir = case_dir / "images" / image_id / "parsed"
         csv_path = parsed_dir / "runkeys.csv"
         csv_path.write_text("name\nvalue\n", encoding="utf-8")
@@ -415,11 +418,7 @@ class LifecycleStateProgressTests(unittest.TestCase):
         progress_key = f"{case_id}::{image_id}"
         routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="completed")
         routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="completed")
-        original_case = copy.deepcopy({
-            key: value
-            for key, value in routes_state.CASE_STATES[case_id].items()
-            if key != "audit"
-        })
+        original_evidence_path = image_state["evidence_path"]
 
         new_source = Path(self.temp_dir.name) / "rollback-new.E01"
         new_source.write_bytes(b"new")
@@ -467,16 +466,206 @@ class LifecycleStateProgressTests(unittest.TestCase):
 
         self.assertEqual(status, 500)
         self.assertIn("Evidence intake failed", response.get_json()["error"])
-        restored_case = {
-            key: value
-            for key, value in routes_state.CASE_STATES[case_id].items()
-            if key != "audit"
+        self.assertIn("outputs were invalidated", response.get_json()["error"])
+        restored_case = routes_state.CASE_STATES[case_id]
+        restored_image_state = restored_case["image_states"][image_id]
+        self.assertEqual(restored_image_state["evidence_path"], original_evidence_path)
+        self.assertNotIn("artifact_csv_paths", restored_image_state)
+        self.assertEqual(restored_image_state["csv_output_dir"], "")
+        self.assertNotIn(image_id, restored_case.get("image_artifact_csv_paths", {}))
+        self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
+        self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
+        self.assertEqual(metadata_path.read_text(encoding="utf-8"), original_metadata)
+        self.assertTrue((image_dir / "evidence" / "old.E01").exists())
+        self.assertFalse(any((image_dir / ".replacement_staging").glob("**/*")))
+        routes_state.CASE_STATES[case_id]["audit"].log.assert_any_call(
+            "evidence_replacement_failed",
+            {
+                "image_id": image_id,
+                "stage": "after_cleanup_started",
+                "retained_partial_evidence": False,
+                "parsed_outputs_invalidated": True,
+                "cleanup_completed": False,
+                "stale_outputs_may_remain_on_disk": True,
+                "error": "cleanup failed",
+            },
+        )
+
+    def test_failed_replacement_after_evidence_swap_restores_evidence_only(self) -> None:
+        """A commit-side failure restores evidence but does not revive deleted CSVs."""
+        case_id = "replace-commit-failure"
+        image_id = "img-001"
+        case_dir = self._install_case(case_id, image_id)
+        image_dir = case_dir / "images" / image_id
+        metadata_path = image_dir / "metadata.json"
+        original_metadata = '{"label":"Image","hostname":"old-host"}\n'
+        metadata_path.write_text(original_metadata, encoding="utf-8")
+        parsed_dir = image_dir / "parsed"
+        csv_path = parsed_dir / "runkeys.csv"
+        csv_path.write_text("name\nvalue\n", encoding="utf-8")
+        image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
+        image_state.update(
+            {
+                "parse_results": [
+                    {
+                        "artifact_key": "runkeys",
+                        "success": True,
+                        "csv_path": str(csv_path),
+                    },
+                ],
+                "artifact_csv_paths": {"runkeys": str(csv_path)},
+                "csv_output_dir": str(parsed_dir),
+            },
+        )
+        routes_state.CASE_STATES[case_id].update(
+            {
+                "status": "parsed",
+                "image_artifact_csv_paths": {
+                    image_id: dict(image_state["artifact_csv_paths"]),
+                },
+            },
+        )
+        progress_key = f"{case_id}::{image_id}"
+        routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="completed")
+        routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="completed")
+        original_evidence_path = image_state["evidence_path"]
+
+        new_source = Path(self.temp_dir.name) / "commit-failure-new.E01"
+        new_source.write_bytes(b"new")
+        evidence_payload = {
+            "mode": "path",
+            "source_mode": "path",
+            "source_path": str(new_source),
+            "dissect_path": str(new_source),
+            "stored_path": str(new_source),
+            "uploaded_files": [],
+            "files_to_hash": [str(new_source)],
         }
-        self.assertEqual(restored_case, original_case)
-        self.assertIn(case_id, routes_state.PARSE_PROGRESS)
-        self.assertIn(progress_key, routes_state.PARSE_PROGRESS)
-        self.assertEqual(routes_state.PARSE_PROGRESS[case_id]["status"], "completed")
-        self.assertEqual(routes_state.PARSE_PROGRESS[progress_key]["status"], "completed")
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "_resolve_evidence_for_image", return_value=evidence_payload),
+            patch.object(routes_images, "_should_skip_hashing", return_value=False),
+            patch.object(
+                routes_images,
+                "_compute_evidence_hashes",
+                return_value=({"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3}, []),
+            ),
+            patch.object(
+                routes_images,
+                "_open_dissect_target",
+                return_value=(
+                    {"hostname": "new-host"},
+                    [{"key": "runkeys", "name": "Run Keys", "available": True}],
+                    "windows",
+                ),
+            ),
+            patch.object(
+                routes_images,
+                "_update_image_metadata",
+                side_effect=RuntimeError("metadata write failed"),
+            ),
+        ):
+            with self.app.test_request_context(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                method="POST",
+                json={"path": str(new_source)},
+            ):
+                response, status = routes_images.intake_image_evidence(
+                    case_id, image_id,
+                )
+
+        self.assertEqual(status, 500)
+        self.assertIn("outputs were invalidated", response.get_json()["error"])
+        restored_case = routes_state.CASE_STATES[case_id]
+        restored_image_state = restored_case["image_states"][image_id]
+        self.assertEqual(restored_image_state["evidence_path"], original_evidence_path)
+        self.assertTrue((image_dir / "evidence" / "old.E01").exists())
+        self.assertEqual(metadata_path.read_text(encoding="utf-8"), original_metadata)
+        self.assertFalse(csv_path.exists())
+        self.assertNotIn("artifact_csv_paths", restored_image_state)
+        self.assertNotIn(image_id, restored_case.get("image_artifact_csv_paths", {}))
+        self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
+        self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
+        self.assertFalse(any((image_dir / ".replacement_staging").glob("**/*")))
+
+    def test_upload_replacement_rewrites_hash_summary_paths_after_staging(self) -> None:
+        """Committed upload replacements do not retain staging paths in hash metadata."""
+        case_id = "replace-upload-paths"
+        image_id = "img-001"
+        case_dir = self._install_case(case_id, image_id)
+        image_dir = case_dir / "images" / image_id
+
+        def resolve_into_staging(staging_dir: Path) -> dict[str, Any]:
+            staged_file = staging_dir / "evidence" / "new-upload.E01"
+            staged_file.parent.mkdir(parents=True, exist_ok=True)
+            staged_file.write_bytes(b"new")
+            return {
+                "mode": "upload",
+                "source_mode": "upload",
+                "source_path": str(staged_file),
+                "dissect_path": str(staged_file),
+                "stored_path": str(staged_file),
+                "uploaded_files": [str(staged_file)],
+                "files_to_hash": [str(staged_file)],
+            }
+
+        def fake_hashes(
+            files_to_hash: list[str],
+            source_path: Path,
+            skip_hashing: bool,
+        ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+            del skip_hashing
+            return (
+                {
+                    "sha256": "a" * 64,
+                    "md5": "b" * 32,
+                    "size_bytes": 3,
+                    "filename": source_path.name,
+                    "_source_path": str(source_path),
+                },
+                [
+                    {
+                        "path": files_to_hash[0],
+                        "sha256": "a" * 64,
+                        "md5": "b" * 32,
+                        "size_bytes": 3,
+                    },
+                ],
+            )
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "_resolve_evidence_for_image", side_effect=resolve_into_staging),
+            patch.object(routes_images, "_should_skip_hashing", return_value=False),
+            patch.object(routes_images, "_compute_evidence_hashes", side_effect=fake_hashes),
+            patch.object(
+                routes_images,
+                "_open_dissect_target",
+                return_value=(
+                    {"hostname": "new-host"},
+                    [{"key": "runkeys", "name": "Run Keys", "available": True}],
+                    "windows",
+                ),
+            ),
+        ):
+            with self.app.test_request_context(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                method="POST",
+                json={"path": "ignored-by-patch"},
+            ):
+                response, status = routes_images.intake_image_evidence(
+                    case_id, image_id,
+                )
+
+        self.assertEqual(status, 200)
+        data = response.get_json()
+        active_file = image_dir / "evidence" / "new-upload.E01"
+        self.assertEqual(data["evidence_path"], str(active_file))
+        image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
+        self.assertEqual(image_state["evidence_hashes"]["_source_path"], str(active_file))
+        self.assertEqual(image_state["evidence_file_hashes"][0]["path"], str(active_file))
+        self.assertFalse(any((image_dir / ".replacement_staging").glob("**/*")))
 
     def test_clear_chat_history_rejects_active_operations(self) -> None:
         """Chat history cannot be cleared while chat or case work is active."""

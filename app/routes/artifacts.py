@@ -179,46 +179,6 @@ def validate_requested_parse_artifacts(
             )
 
 
-def _purge_stale_parsed_data(case_dir: Path, prev_csv_output_dir: str) -> None:
-    """Remove parsed CSV data from disk before a new parse run.
-
-    Delegates to :func:`~app.routes.evidence_utils.cleanup_parsed_data`.
-
-    .. deprecated::
-        Use :func:`~app.routes.evidence_utils.cleanup_parsed_data` directly.
-
-    Args:
-        case_dir: Path to the case directory.
-        prev_csv_output_dir: The ``csv_output_dir`` stored from the previous
-            parse run.  May be empty if no prior run exists.
-    """
-    from .evidence_utils import cleanup_parsed_data
-
-    cleanup_parsed_data(
-        case_dir=case_dir,
-        image_states={},
-        prev_csv_output_dir=prev_csv_output_dir,
-        clean_default_parsed=True,
-    )
-
-
-def _purge_stale_downstream_case_files(case_dir: Path) -> None:
-    """Remove stale analysis/chat artifacts before a new parse run.
-
-    Args:
-        case_dir: Path to the case directory.
-    """
-    from .evidence_utils import clear_analysis_outputs
-
-    clear_analysis_outputs(
-        case_dir,
-        remove_prompt=True,
-        remove_chat_history=True,
-        remove_reports=True,
-        remove_analysis_results=True,
-    )
-
-
 @artifact_bp.post("/api/cases/<case_id>/parse/cancel")
 def cancel_parse(case_id: str) -> tuple[Response, int]:
     """Cancel a running parse operation for a case.
