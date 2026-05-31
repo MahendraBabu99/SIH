@@ -948,12 +948,16 @@ def build_mcp_server(
     run_manager: Any | None = None,
     *,
     cases_root: str | Path | None = None,
+    transport_host: str | None = None,
+    transport_port: int | None = None,
 ) -> Any:
     """Create the optional AIFT FastMCP server without creating Flask.
 
     Args:
         run_manager: Optional automation manager override for tests.
         cases_root: Optional AIFT cases root override for tests.
+        transport_host: Optional host for HTTP-based MCP transports.
+        transport_port: Optional port for HTTP-based MCP transports.
 
     Returns:
         A configured ``mcp.server.fastmcp.FastMCP`` instance.
@@ -966,16 +970,22 @@ def build_mcp_server(
     except ImportError as exc:
         raise MissingMCPDependencyError(MCP_INSTALL_MESSAGE) from exc
 
-    mcp = FastMCP(
-        name="aift",
-        instructions=(
+    fastmcp_kwargs: dict[str, Any] = {
+        "name": "aift",
+        "instructions": (
             "AIFT local MCP adapter for forensic triage workflows. "
             "Tools can discover evidence, start asynchronous automation runs, "
             "poll status, cancel runs, return generated report paths, and "
             "render optional analyst prompt templates."
         ),
-        json_response=True,
-    )
+        "json_response": True,
+    }
+    if transport_host is not None:
+        fastmcp_kwargs["host"] = transport_host
+    if transport_port is not None:
+        fastmcp_kwargs["port"] = transport_port
+
+    mcp = FastMCP(**fastmcp_kwargs)
     manager = run_manager or _DefaultRunManagerProxy()
     active_cases_root = (
         Path(cases_root).expanduser().resolve()
