@@ -27,6 +27,7 @@ class FakeFastMCP:
         self.kwargs = kwargs
         self.registered_tools: list[tuple[dict[str, object], object]] = []
         self.registered_resources: list[tuple[dict[str, object], object]] = []
+        self.registered_prompts: list[tuple[dict[str, object], object]] = []
         self.run_calls: list[str] = []
 
     def tool(self, **kwargs: object):
@@ -39,6 +40,13 @@ class FakeFastMCP:
     def resource(self, uri: str, **kwargs: object):
         def decorator(func: object) -> object:
             self.registered_resources.append(({"uri": uri, **kwargs}, func))
+            return func
+
+        return decorator
+
+    def prompt(self, **kwargs: object):
+        def decorator(func: object) -> object:
+            self.registered_prompts.append((kwargs, func))
             return func
 
         return decorator
@@ -83,6 +91,13 @@ class TestMCPServerFactory(unittest.TestCase):
             ],
             mcp_server.MCP_RESOURCE_URIS,
         )
+        self.assertEqual(
+            [
+                prompt_kwargs["name"]
+                for prompt_kwargs, _func in server.registered_prompts
+            ],
+            mcp_server.MCP_PROMPT_NAMES,
+        )
 
         tool_kwargs, tool_func = server.registered_tools[0]
         self.assertEqual(tool_kwargs["name"], "aift_server_info")
@@ -96,6 +111,10 @@ class TestMCPServerFactory(unittest.TestCase):
         self.assertEqual(
             payload["capabilities"]["resources"],
             mcp_server.MCP_RESOURCE_URIS,
+        )
+        self.assertEqual(
+            payload["capabilities"]["prompts"],
+            mcp_server.MCP_PROMPT_NAMES,
         )
         self.assertTrue(payload["capabilities"]["automation_tools_enabled"])
         self.assertNotIn("api_key", repr(payload).lower())
@@ -146,6 +165,7 @@ class TestMCPServerFactory(unittest.TestCase):
                 def __init__(self, *args, **kwargs):
                     self.tools = []
                     self.resources = []
+                    self.prompts = []
                 def tool(self, **kwargs):
                     def decorator(func):
                         self.tools.append((kwargs, func))
@@ -154,6 +174,11 @@ class TestMCPServerFactory(unittest.TestCase):
                 def resource(self, uri, **kwargs):
                     def decorator(func):
                         self.resources.append(({"uri": uri, **kwargs}, func))
+                        return func
+                    return decorator
+                def prompt(self, **kwargs):
+                    def decorator(func):
+                        self.prompts.append((kwargs, func))
                         return func
                     return decorator
 
@@ -179,6 +204,8 @@ class TestMCPServerFactory(unittest.TestCase):
                 raise AssertionError(
                     f"unexpected resource count: {len(server.resources)}"
                 )
+            if len(server.prompts) != 2:
+                raise AssertionError(f"unexpected prompt count: {len(server.prompts)}")
             loaded = [
                 name for name in sys.modules
                 if any(
@@ -289,6 +316,14 @@ def _resource(server: FakeFastMCP, uri: str):
         if kwargs["uri"] == uri:
             return func
     raise AssertionError(f"resource not registered: {uri}")
+
+
+def _prompt(server: FakeFastMCP, name: str):
+    """Return a registered fake prompt function by name."""
+    for kwargs, func in server.registered_prompts:
+        if kwargs["name"] == name:
+            return func
+    raise AssertionError(f"prompt not registered: {name}")
 
 
 class TestMCPTools(unittest.TestCase):
@@ -531,6 +566,105 @@ class TestMCPTools(unittest.TestCase):
         self.assertFalse(paths["success"])
         self.assertIsNone(paths["html_report_path"])
         self.assertNotIn("Traceback", repr(paths))
+
+
+class TestMCPPrompts(unittest.TestCase):
+    """Focused MCP prompt tests with fake prompt decorators."""
+
+    def test_triage_prompt_renders_dates_iocs_systems_and_scope(self) -> None:
+        """Triage prompt rendering should preserve analyst context fields."""
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+
+        text = _prompt(server, "aift_triage_prompt")(
+            incident_name="ACME IR April 2026",
+            date_start="2026-04-01",
+            date_end="2026-04-05",
+            suspected_activity=(
+                "Unauthorized remote access and possible lateral movement."
+            ),
+            known_iocs=["PsExec", "10.10.25.44", "svc-backup"],
+            systems=["WIN-WS01", "WIN-DC01"],
+            usernames=["alice", "svc-backup"],
+            hostnames=["WIN-WS01"],
+        )
+
+        self.assertIn("Incident: ACME IR April 2026.", text)
+        self.assertIn("Focus window: 2026-04-01 through 2026-04-05.", text)
+        self.assertIn(
+            "Suspected activity: Unauthorized remote access and possible "
+            "lateral movement.",
+            text,
+        )
+        self.assertNotIn("movement..", text)
+        self.assertIn("Known IOCs and entities: PsExec, 10.10.25.44, svc-backup.", text)
+        self.assertIn("Systems in scope: WIN-WS01, WIN-DC01.", text)
+        self.assertIn("Usernames of interest: alice, svc-backup.", text)
+        self.assertIn("Hostnames of interest: WIN-WS01.", text)
+        self.assertIn("evidence-backed findings", text)
+        self.assertIn("qualified forensic examiner review", text)
+        self.assertIn("not independently verified evidence", text)
+
+    def test_triage_prompt_handles_missing_optional_fields(self) -> None:
+        """Missing triage fields should render a concise usable prompt."""
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+
+        text = _prompt(server, "aift_triage_prompt")(
+            date_start="2026-04-01",
+            known_iocs=None,
+            systems=[],
+        )
+
+        self.assertIn("Focus window: starting 2026-04-01.", text)
+        self.assertIn("Prioritize evidence-backed findings", text)
+        self.assertIn("qualified forensic examiner review", text)
+        self.assertNotIn("None", text)
+        self.assertNotIn("Known IOCs", text)
+        self.assertNotIn("Systems in scope", text)
+
+    def test_report_review_prompt_renders_report_paths_resource_uri(self) -> None:
+        """Report review prompt should point at paths and MCP resource URIs."""
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+
+        text = _prompt(server, "aift_report_review_prompt")(
+            report_path="D:/Cases/ACME-IR/reports/AIFT_report.json",
+            resource_uri="aift://runs/run-1/report/json",
+            case_name="case-1",
+            incident_name="ACME IR April 2026",
+            review_focus="Timeline and lateral movement gaps",
+        )
+
+        self.assertIn("Review the generated AIFT JSON report", text)
+        self.assertIn("Case: case-1.", text)
+        self.assertIn("Incident: ACME IR April 2026.", text)
+        self.assertIn(
+            "Report path: D:/Cases/ACME-IR/reports/AIFT_report.json.",
+            text,
+        )
+        self.assertIn("MCP resource URI: aift://runs/run-1/report/json.", text)
+        self.assertIn("Review focus: Timeline and lateral movement gaps.", text)
+        self.assertIn("timeline consistency", text)
+        self.assertIn("evidence gaps", text)
+        self.assertIn("follow-up actions", text)
+        self.assertIn("not independently verified evidence", text)
+
+    def test_report_review_prompt_handles_missing_optional_fields(self) -> None:
+        """Report review prompt should not require optional metadata fields."""
+        with patch.dict(sys.modules, _fake_mcp_modules()):
+            server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+
+        text = _prompt(server, "aift_report_review_prompt")(
+            resource_uri="aift://runs/run-1/report/json"
+        )
+
+        self.assertIn("MCP resource URI: aift://runs/run-1/report/json.", text)
+        self.assertIn("low-confidence findings", text)
+        self.assertIn("qualified forensic examiner review", text)
+        self.assertNotIn("None", text)
+        self.assertNotIn("Report path:", text)
+        self.assertNotIn("Case:", text)
 
 
 class TestMCPResources(unittest.TestCase):

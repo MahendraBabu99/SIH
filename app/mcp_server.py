@@ -41,7 +41,17 @@ MCP_RESOURCE_URIS = [
     "aift://cases/{case_id}/audit",
 ]
 
+MCP_PROMPT_NAMES = [
+    "aift_triage_prompt",
+    "aift_report_review_prompt",
+]
+
 MCP_RESOURCE_MAX_BYTES = 200_000
+
+MCP_DISCLAIMER_STANCE = (
+    "AI-assisted findings require qualified forensic examiner review and are "
+    "not independently verified evidence."
+)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
@@ -164,7 +174,7 @@ def _aift_server_info_payload() -> dict[str, Any]:
             "tools": list(MCP_TOOL_NAMES),
             "resources": list(MCP_RESOURCE_URIS),
             "resource_templates": list(MCP_RESOURCE_URIS),
-            "prompts": [],
+            "prompts": list(MCP_PROMPT_NAMES),
             "automation_tools_enabled": True,
         },
     }
@@ -221,6 +231,111 @@ def _public_text_list(value: Any) -> list[str]:
         if text:
             result.append(text)
     return result
+
+
+def _prompt_item_list(value: Any) -> list[str]:
+    """Return concise display items for optional prompt arguments."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = _public_text(value)
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            text = _public_text(item)
+            if text:
+                items.append(text)
+        return items
+    text = _public_text(value)
+    return [text] if text else []
+
+
+def _prompt_sentence(text: str) -> str:
+    """Return text with exactly one sentence-ending mark."""
+    return text if text.endswith((".", "?", "!")) else f"{text}."
+
+
+def _append_prompt_line(lines: list[str], label: str, value: Any) -> None:
+    """Append a labeled prompt line when the value has public text."""
+    text = _public_text(value)
+    if text:
+        lines.append(f"{label}: {_prompt_sentence(text)}")
+
+
+def _append_prompt_items(lines: list[str], label: str, value: Any) -> None:
+    """Append a comma-separated prompt line for optional list-like values."""
+    items = _prompt_item_list(value)
+    if items:
+        lines.append(f"{label}: {', '.join(items)}.")
+
+
+def _prompt_date_window(date_start: Any, date_end: Any) -> str | None:
+    """Return a concise focus-window phrase from optional dates."""
+    start = _public_text(date_start)
+    end = _public_text(date_end)
+    if start and end:
+        return f"{start} through {end}"
+    if start:
+        return f"starting {start}"
+    if end:
+        return f"through {end}"
+    return None
+
+
+def _aift_triage_prompt_text(
+    incident_name: str | None = None,
+    date_start: str | None = None,
+    date_end: str | None = None,
+    suspected_activity: str | None = None,
+    known_iocs: list[str] | None = None,
+    systems: list[str] | None = None,
+    usernames: list[str] | None = None,
+    hostnames: list[str] | None = None,
+) -> str:
+    """Build concise investigation context for an AIFT triage run."""
+    lines: list[str] = []
+    _append_prompt_line(lines, "Incident", incident_name)
+    date_window = _prompt_date_window(date_start, date_end)
+    if date_window:
+        lines.append(f"Focus window: {date_window}.")
+    _append_prompt_line(lines, "Suspected activity", suspected_activity)
+    _append_prompt_items(lines, "Known IOCs and entities", known_iocs)
+    _append_prompt_items(lines, "Systems in scope", systems)
+    _append_prompt_items(lines, "Usernames of interest", usernames)
+    _append_prompt_items(lines, "Hostnames of interest", hostnames)
+    lines.append(
+        "Prioritize evidence-backed findings, cite records, call out "
+        "uncertainty, and identify timeline gaps or recommended follow-up."
+    )
+    lines.append(f"AIFT disclaimer stance: {MCP_DISCLAIMER_STANCE}")
+    return "\n".join(lines) + "\n"
+
+
+def _aift_report_review_prompt_text(
+    report_path: str | None = None,
+    resource_uri: str | None = None,
+    case_name: str | None = None,
+    incident_name: str | None = None,
+    review_focus: str | None = None,
+) -> str:
+    """Build concise review instructions for a generated AIFT JSON report."""
+    lines = ["Review the generated AIFT JSON report for analyst follow-up."]
+    _append_prompt_line(lines, "Case", case_name)
+    _append_prompt_line(lines, "Incident", incident_name)
+    _append_prompt_line(lines, "Report path", report_path)
+    _append_prompt_line(lines, "MCP resource URI", resource_uri)
+    _append_prompt_line(lines, "Review focus", review_focus)
+    lines.append(
+        "Assess timeline consistency, evidence gaps, unsupported conclusions, "
+        "low-confidence findings, and concrete follow-up actions."
+    )
+    lines.append(
+        "Treat the report as AI-assisted case material, not independently "
+        "verified evidence."
+    )
+    lines.append(f"AIFT disclaimer stance: {MCP_DISCLAIMER_STANCE}")
+    return "\n".join(lines) + "\n"
 
 
 def _public_path_value(value: Any) -> str | None:
@@ -856,7 +971,8 @@ def build_mcp_server(
         instructions=(
             "AIFT local MCP adapter for forensic triage workflows. "
             "Tools can discover evidence, start asynchronous automation runs, "
-            "poll status, cancel runs, and return generated report paths."
+            "poll status, cancel runs, return generated report paths, and "
+            "render optional analyst prompt templates."
         ),
         json_response=True,
     )
@@ -968,6 +1084,58 @@ def build_mcp_server(
     def aift_get_report_paths(run_id: str) -> dict[str, Any]:
         """Return generated output paths for a run."""
         return _report_paths_payload(manager, run_id)
+
+    @mcp.prompt(
+        name="aift_triage_prompt",
+        description=(
+            "Build concise AIFT investigation context from incident dates, "
+            "suspected activity, scoped systems, usernames, hostnames, and IOCs."
+        ),
+    )
+    def aift_triage_prompt(
+        incident_name: str | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
+        suspected_activity: str | None = None,
+        known_iocs: list[str] | None = None,
+        systems: list[str] | None = None,
+        usernames: list[str] | None = None,
+        hostnames: list[str] | None = None,
+    ) -> str:
+        """Return an analyst-facing investigation-context prompt."""
+        return _aift_triage_prompt_text(
+            incident_name=incident_name,
+            date_start=date_start,
+            date_end=date_end,
+            suspected_activity=suspected_activity,
+            known_iocs=known_iocs,
+            systems=systems,
+            usernames=usernames,
+            hostnames=hostnames,
+        )
+
+    @mcp.prompt(
+        name="aift_report_review_prompt",
+        description=(
+            "Build concise instructions for reviewing a generated AIFT JSON "
+            "report for timeline issues, evidence gaps, and follow-up actions."
+        ),
+    )
+    def aift_report_review_prompt(
+        report_path: str | None = None,
+        resource_uri: str | None = None,
+        case_name: str | None = None,
+        incident_name: str | None = None,
+        review_focus: str | None = None,
+    ) -> str:
+        """Return analyst-facing review instructions for an AIFT report."""
+        return _aift_report_review_prompt_text(
+            report_path=report_path,
+            resource_uri=resource_uri,
+            case_name=case_name,
+            incident_name=incident_name,
+            review_focus=review_focus,
+        )
 
     @mcp.resource(
         "aift://runs/{run_id}/status",
