@@ -866,6 +866,34 @@ def _verify_hashes_before_report(
     )
 
 
+def _retain_image_report_records(
+    *,
+    all_metadata: list[dict[str, Any]],
+    all_hashes: list[dict[str, Any]],
+    retained_image_ids: set[str],
+    metadata: dict[str, Any],
+    hashes_entry: dict[str, Any],
+    image_id: str,
+    img_label: str,
+) -> None:
+    """Retain image-scoped metadata and hashes once report inputs exist."""
+    clean_image_id = str(image_id).strip()
+    if not clean_image_id:
+        return
+
+    metadata["image_id"] = clean_image_id
+    metadata["label"] = img_label
+    hashes_entry["image_id"] = clean_image_id
+    hashes_entry["label"] = img_label
+
+    if clean_image_id in retained_image_ids:
+        return
+
+    all_metadata.append(metadata)
+    all_hashes.append(hashes_entry)
+    retained_image_ids.add(clean_image_id)
+
+
 def run_automation(
     request: AutomationRequest,
     progress_callback: Callable[[str, str, float], None] | None = None,
@@ -1110,6 +1138,7 @@ def run_automation(
     image_descriptors: list[dict[str, Any]] = []
     all_metadata: list[dict[str, Any]] = []
     all_hashes: list[dict[str, Any]] = []
+    retained_report_image_ids: set[str] = set()
     skipped_images: list[dict[str, str]] = []
     successful_images = 0
 
@@ -1225,6 +1254,16 @@ def run_automation(
                 if cancelled is not None:
                     return cancelled
 
+                _retain_image_report_records(
+                    all_metadata=all_metadata,
+                    all_hashes=all_hashes,
+                    retained_image_ids=retained_report_image_ids,
+                    metadata=metadata,
+                    hashes_entry=hashes_entry,
+                    image_id=image_id,
+                    img_label=img_label,
+                )
+
                 # Intersect profile artifact keys with available parser entries.
                 available_keys = _available_artifact_keys(available)
                 image_parse = [a for a in parse_artifacts if a in available_keys]
@@ -1316,12 +1355,6 @@ def run_automation(
                     result.warnings.append(msg)
 
                 successful_images += 1
-                metadata.setdefault("image_id", image_id)
-                metadata.setdefault("label", img_label)
-                hashes_entry.setdefault("image_id", image_id)
-                hashes_entry.setdefault("label", img_label)
-                all_metadata.append(metadata)
-                all_hashes.append(hashes_entry)
                 image_descriptors.append({
                     "image_id": image_id,
                     "label": img_label,

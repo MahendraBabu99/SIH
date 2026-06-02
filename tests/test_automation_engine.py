@@ -1032,8 +1032,8 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(len(result.warnings) > 0)
 
-    def test_report_metadata_hashes_skip_images_that_fail_after_hashing(self) -> None:
-        """Report metadata and hashes only include images that parsed."""
+    def test_report_metadata_hashes_include_images_skipped_after_hashing(self) -> None:
+        """Report inputs retain image-scoped records for post-hash skips."""
         ev2 = self.root / "disk2.vmdk"
         ev2.write_bytes(b"\x00" * 16)
         evidence_files = [self.evidence_file, ev2]
@@ -1095,6 +1095,15 @@ class TestRunAutomation(unittest.TestCase):
         def _hash_for_path(path: str | Path) -> dict[str, object]:
             return dict(hash_by_name[Path(path).name])
 
+        def _verify_expected(
+            path: str | Path,
+            expected: str,
+            **kwargs: object,
+        ) -> tuple[bool, str]:
+            del path
+            del kwargs
+            return True, expected
+
         self.mocks["ForensicParser"].side_effect = (
             lambda **kwargs: ParserThatCanFailAfterHash(**kwargs)
         )
@@ -1106,13 +1115,26 @@ class TestRunAutomation(unittest.TestCase):
         )
         self.mocks["export_json_report"].side_effect = _capture_export
         self.mocks["compute_hashes"].side_effect = _hash_for_path
+        self.mocks["verify_hash"].side_effect = _verify_expected
 
         scenarios = [
-            (self.evidence_file.name, ev2.name, "2" * 64),
-            (ev2.name, self.evidence_file.name, "1" * 64),
+            (self.evidence_file.name, "img-001"),
+            (ev2.name, "img-002"),
         ]
+        expected_filename_by_id = {
+            "img-001": self.evidence_file.name,
+            "img-002": ev2.name,
+        }
+        expected_sha256_by_id = {
+            "img-001": "1" * 64,
+            "img-002": "2" * 64,
+        }
+        expected_label_by_id = {
+            "img-001": self.evidence_file.stem,
+            "img-002": ev2.stem,
+        }
 
-        for failed_name, expected_name, expected_sha256 in scenarios:
+        for failed_name, failed_image_id in scenarios:
             with self.subTest(failed_image=failed_name):
                 ParserThatCanFailAfterHash.fail_names = {failed_name}
                 html_calls.clear()
@@ -1143,22 +1165,54 @@ class TestRunAutomation(unittest.TestCase):
                 self.assertEqual(len(json_calls), 1)
                 self.assertIsNotNone(_EngineTestAnalyzer.last_full_metadata)
                 assert _EngineTestAnalyzer.last_full_metadata is not None
+                successful_image_id = (
+                    "img-002" if failed_image_id == "img-001" else "img-001"
+                )
                 self.assertEqual(
                     _EngineTestAnalyzer.last_full_metadata["evidence_file"],
-                    expected_name,
+                    expected_filename_by_id[successful_image_id],
                 )
 
                 for report_kwargs in [html_calls[0], json_calls[0]]:
                     metadata = report_kwargs["image_metadata"]
                     hashes = report_kwargs["evidence_hashes"]
+                    analysis_results = report_kwargs["analysis_results"]
+
+                    self.assertEqual(set(metadata), {"img-001", "img-002"})
+                    self.assertEqual(set(hashes), {"img-001", "img-002"})
+                    self.assertEqual(len(metadata), 2)
+                    self.assertEqual(len(hashes), 2)
+
+                    for image_id, filename in expected_filename_by_id.items():
+                        self.assertEqual(metadata[image_id]["image_id"], image_id)
+                        self.assertEqual(
+                            metadata[image_id]["label"],
+                            expected_label_by_id[image_id],
+                        )
+                        self.assertEqual(metadata[image_id]["evidence_file"], filename)
+                        self.assertEqual(hashes[image_id]["image_id"], image_id)
+                        self.assertEqual(
+                            hashes[image_id]["label"],
+                            expected_label_by_id[image_id],
+                        )
+                        self.assertEqual(hashes[image_id]["filename"], filename)
+                        self.assertEqual(
+                            hashes[image_id]["sha256"],
+                            expected_sha256_by_id[image_id],
+                        )
+                        self.assertEqual(
+                            hashes[image_id]["verification_status"],
+                            "PASS",
+                        )
+
+                    skipped = analysis_results.get("skipped_images", [])
+                    self.assertEqual(len(skipped), 1)
+                    self.assertEqual(skipped[0]["image_id"], failed_image_id)
                     self.assertEqual(
-                        [item["evidence_file"] for item in metadata.values()],
-                        [expected_name],
+                        skipped[0]["label"],
+                        expected_label_by_id[failed_image_id],
                     )
-                    self.assertEqual(
-                        [item["sha256"] for item in hashes.values()],
-                        [expected_sha256],
-                    )
+                    self.assertIn("All artifact parsing failed", skipped[0]["reason"])
 
     def test_all_images_fail_returns_failure(self) -> None:
         """If every image fails to open, result is failure."""

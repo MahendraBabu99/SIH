@@ -424,6 +424,68 @@ class TestExportJsonReport(unittest.TestCase):
         skipped = [entry for entry in data["evidence"] if entry["image_id"] == "img-3"]
         self.assertEqual(skipped[0]["skip_reason"], "All artifact parsing failed.")
 
+    def test_skipped_image_evidence_uses_retained_metadata_and_hashes(self) -> None:
+        """Skipped image evidence keeps filename, hashes, and skip reason."""
+        analysis = _make_multi_image_analysis()
+        analysis["skipped_images"] = [
+            {
+                "image_id": "img-3",
+                "label": "Damaged Image",
+                "reason": "All artifact parsing failed after hash intake.",
+            }
+        ]
+        metadata = [
+            {**_make_metadata("img-1"), "hostname": "server"},
+            {**_make_metadata("img-2"), "hostname": "workstation"},
+            {
+                **_make_metadata("img-3"),
+                "label": "Damaged Image",
+                "hostname": "damaged",
+                "evidence_file": "damaged.E01",
+            },
+        ]
+        hashes = [
+            {**_make_hashes("img-1"), "sha256": "1" * 64},
+            {**_make_hashes("img-2"), "sha256": "2" * 64},
+            {
+                **_make_hashes("img-3"),
+                "label": "Damaged Image",
+                "filename": "damaged.E01",
+                "sha256": "3" * 64,
+                "md5": "3" * 32,
+                "size_bytes": 333,
+            },
+        ]
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        evidence = {entry["image_id"]: entry for entry in data["evidence"]}
+        skipped = evidence["img-3"]
+        self.assertTrue(skipped["skipped"])
+        self.assertEqual(skipped["label"], "Damaged Image")
+        self.assertEqual(skipped["filename"], "damaged.E01")
+        self.assertEqual(skipped["hostname"], "damaged")
+        self.assertEqual(skipped["hashes"]["sha256"], "3" * 64)
+        self.assertEqual(skipped["hashes"]["md5"], "3" * 32)
+        self.assertEqual(skipped["hashes"]["size_bytes"], 333)
+        self.assertEqual(
+            skipped["skip_reason"],
+            "All artifact parsing failed after hash intake.",
+        )
+
+        notes = data["processing_notes"]
+        note_text = " ".join(note["message"] for note in notes)
+        self.assertIn("Skipped Damaged Image", note_text)
+        self.assertNotIn("did not match any analyzed or skipped image", note_text)
+        self.assertNotIn("No metadata record matched Damaged Image", note_text)
+        self.assertNotIn("No hash record matched Damaged Image", note_text)
+        self.assertNotIn("img-3", data["analysis"]["images"])
+        _assert_valid("automation-json-report.schema.json", data)
+
     def test_artifact_processing_warnings_are_reported_as_processing_notes(self) -> None:
         """Artifact chunk warnings survive JSON as notes, not findings."""
         analysis = _make_single_image_analysis()
