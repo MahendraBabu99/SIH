@@ -674,8 +674,8 @@ class TestPromptSectionRendering(unittest.TestCase):
         self.assertIn("row_ref,ts,message", prompt)
         self.assertIn("## Final Context Reminder", prompt)
 
-    def test_main_ioc_section_is_complete_when_final_reminder_is_truncated(self) -> None:
-        """Complete IOC targets are rendered before the tail reminder."""
+    def test_final_reminder_preserves_complete_ioc_targets(self) -> None:
+        """Complete IOC targets are rendered again in the tail reminder."""
         with TemporaryDirectory(prefix="aift-prompt-sections-") as tmp_dir:
             csv_path = Path(tmp_dir) / "custom.csv"
             with csv_path.open("w", newline="", encoding="utf-8") as fh:
@@ -692,9 +692,15 @@ class TestPromptSectionRendering(unittest.TestCase):
 
         main_ioc_section = prompt.split("## IOC Targets", 1)[1].split("## Host", 1)[0]
         final_reminder = prompt.split("## Final Context Reminder", 1)[1]
+        final_ioc_section = (
+            final_reminder.split("- IOC targets (mandatory follow-through):", 1)[1]
+            .split("- Treat investigation context", 1)[0]
+        )
         self.assertIn(domains[-1], main_ioc_section)
-        self.assertIn(domains[0], final_reminder)
-        self.assertNotIn(domains[-1], final_reminder)
+        self.assertIn("Investigate " + domains[0], final_reminder)
+        self.assertIn('<analysis-data label="investigation_context">', final_reminder)
+        self.assertIn(domains[0], final_ioc_section)
+        self.assertIn(domains[-1], final_ioc_section)
 
 
 ###############################################################################

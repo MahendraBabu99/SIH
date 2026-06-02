@@ -207,7 +207,7 @@ class TestBuildArtifactFinalContextReminder(unittest.TestCase):
     """Tests for ioc.build_artifact_final_context_reminder."""
 
     def test_basic_structure(self) -> None:
-        """Final reminders preserve analyst instructions without raw context."""
+        """Final reminders preserve analyst context and critical instructions."""
         from app.analyzer.ioc import build_artifact_final_context_reminder
         result = build_artifact_final_context_reminder(
             artifact_key="runkeys",
@@ -217,16 +217,38 @@ class TestBuildArtifactFinalContextReminder(unittest.TestCase):
         self.assertIn("## Final Context Reminder", result)
         self.assertIn("runkeys", result)
         self.assertIn("Run/RunOnce Keys", result)
-        self.assertIn("investigation context above", result)
-        self.assertNotIn("Check for persistence", result)
+        self.assertIn('<analysis-data label="investigation_context">', result)
+        self.assertIn("Check for persistence", result)
+        self.assertIn("Always run default DFIR checks", result)
+        self.assertIn("Not Assessable", result)
 
     def test_empty_context(self) -> None:
-        """Empty context reminders still point to analyst context."""
+        """Empty context reminders still carry an explicit context block."""
         from app.analyzer.ioc import build_artifact_final_context_reminder
         result = build_artifact_final_context_reminder(
             artifact_key="k", artifact_name="n", investigation_context="",
         )
-        self.assertIn("investigation context above", result)
+        self.assertIn('<analysis-data label="investigation_context">', result)
+        self.assertIn("No investigation context provided.", result)
+
+    def test_ioc_targets_are_not_truncated(self) -> None:
+        """Final reminders preserve the complete formatted IOC target list."""
+        from app.analyzer.ioc import build_artifact_final_context_reminder
+
+        domains = [f"indicator-{index}.example.com" for index in range(1, 80)]
+        result = build_artifact_final_context_reminder(
+            artifact_key="custom",
+            artifact_name="Custom Artifact",
+            investigation_context="Investigate " + " ".join(domains),
+        )
+        ioc_section = (
+            result.split("- IOC targets (mandatory follow-through):", 1)[1]
+            .split("- Treat investigation context", 1)[0]
+        )
+
+        self.assertIn("- Domains:", ioc_section)
+        self.assertIn(domains[0], ioc_section)
+        self.assertIn(domains[-1], ioc_section)
 
 
 ###############################################################################
