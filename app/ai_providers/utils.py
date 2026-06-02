@@ -29,6 +29,14 @@ _LEADING_REASONING_BLOCK_RE = re.compile(
     r")+",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_LEADING_REASONING_XML_OPEN_RE = re.compile(
+    r"^\s*<\s*(?:think|thinking|reasoning)\b[^>]*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_LEADING_REASONING_FENCE_OPEN_RE = re.compile(
+    r"^\s*```(?:think|thinking|reasoning)[^\n]*(?:\n|$)",
+    flags=re.IGNORECASE,
+)
 _OPENAI_REASONING_DELTA_FIELDS = ("reasoning_content", "reasoning", "thinking")
 _STREAM_REASONING_START_RE = re.compile(
     r"^\s*<\s*(?P<tag>think|thinking|reasoning)\b[^>]*>",
@@ -716,7 +724,9 @@ def _strip_leading_reasoning_blocks(text: str) -> str:
     """Remove leading model-thinking blocks from OpenAI-compatible output.
 
     Some local reasoning models emit ``<think>`` or ``<reasoning>`` blocks
-    at the start of their output. This strips those blocks.
+    at the start of their output. This strips complete leading blocks. If
+    a leading reasoning block is truncated before its closing marker, the
+    entire response is treated as non-answer text.
 
     Args:
         text: Raw model output that may begin with reasoning blocks.
@@ -727,7 +737,14 @@ def _strip_leading_reasoning_blocks(text: str) -> str:
     value = str(text or "").strip()
     if not value:
         return ""
-    return _LEADING_REASONING_BLOCK_RE.sub("", value, count=1).strip()
+
+    cleaned = _LEADING_REASONING_BLOCK_RE.sub("", value, count=1).strip()
+    if (
+        _LEADING_REASONING_XML_OPEN_RE.match(cleaned)
+        or _LEADING_REASONING_FENCE_OPEN_RE.match(cleaned)
+    ):
+        return ""
+    return cleaned
 
 
 def _clean_streamed_answer_text(answer_text: str, thinking_text: str) -> str:

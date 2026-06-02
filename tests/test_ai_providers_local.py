@@ -626,6 +626,27 @@ class TestLocalProvider(unittest.TestCase):
         self.assertNotIn("hidden chain-of-thought", str(ctx.exception))
 
     @patch("openai.OpenAI")
+    def test_analyze_unterminated_leading_think_block_raises_empty_response(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Truncated local reasoning markup must not become final answer text."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            "<think>hidden chain-of-thought before truncation\nPotential answer"
+        )
+
+        provider = LocalProvider(
+            base_url="http://localhost:11434/v1", model="llama3.1:70b"
+        )
+        with self.assertRaises(AIProviderError) as ctx:
+            provider.analyze("system", "user")
+
+        self.assertIn("empty response", str(ctx.exception))
+        self.assertNotIn("hidden chain-of-thought", str(ctx.exception))
+
+    @patch("openai.OpenAI")
     def test_analyze_retries_with_model_token_cap_when_max_tokens_too_large(
         self,
         mock_openai_cls: MagicMock,
@@ -701,6 +722,39 @@ class TestLocalProvider(unittest.TestCase):
         mock_client.files.create.return_value = SimpleNamespace(id="file-123")
         mock_client.responses.create.return_value = SimpleNamespace(
             output_text="<think>hidden attachment reasoning</think>"
+        )
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+
+            provider = LocalProvider(
+                base_url="http://localhost:11434/v1", model="llama3.1:70b"
+            )
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_attachments(
+                    "system",
+                    "user",
+                    attachments=[
+                        {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+                    ],
+                )
+
+        self.assertIn("empty response", str(ctx.exception))
+        self.assertNotIn("hidden attachment reasoning", str(ctx.exception))
+        self.assertEqual(mock_client.files.delete.call_count, 1)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_attachments_unterminated_reasoning_raises_empty(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Truncated Responses API reasoning markup is not attachment answer text."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.files.create.return_value = SimpleNamespace(id="file-123")
+        mock_client.responses.create.return_value = SimpleNamespace(
+            output_text="<reasoning>hidden attachment reasoning before truncation\nPotential answer"
         )
 
         with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:

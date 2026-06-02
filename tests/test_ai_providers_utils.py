@@ -428,6 +428,16 @@ class TestStripLeadingReasoningBlocks(unittest.TestCase):
         text = "<reasoning>\nlogic\n</reasoning>\nAnswer."
         self.assertEqual(_strip_leading_reasoning_blocks(text), "Answer.")
 
+    def test_returns_empty_for_unterminated_leading_think_block(self) -> None:
+        """Truncated leading reasoning markup must not become answer text."""
+        text = "<think>\nhidden reasoning that was cut off\nFinal answer maybe"
+        self.assertEqual(_strip_leading_reasoning_blocks(text), "")
+
+    def test_returns_empty_for_unterminated_leading_fenced_reasoning(self) -> None:
+        """Truncated leading fenced reasoning must not become answer text."""
+        text = "```thinking\nhidden reasoning that was cut off\nFinal answer maybe"
+        self.assertEqual(_strip_leading_reasoning_blocks(text), "")
+
     def test_returns_empty_for_empty(self) -> None:
         """Verify the behavior described by this test name."""
         self.assertEqual(_strip_leading_reasoning_blocks(""), "")
