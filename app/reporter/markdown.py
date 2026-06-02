@@ -59,9 +59,13 @@ MARKDOWN_HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.*)$")
 MARKDOWN_ORDERED_LIST_PATTERN = re.compile(r"^\d+\.\s+(.*)$")
 MARKDOWN_UNORDERED_LIST_PATTERN = re.compile(r"^[-*]\s+(.*)$")
 MARKDOWN_BOLD_STAR_PATTERN = re.compile(r"\*\*(.+?)\*\*")
-MARKDOWN_BOLD_UNDERSCORE_PATTERN = re.compile(r"__(.+?)__")
+MARKDOWN_BOLD_UNDERSCORE_PATTERN = re.compile(
+    r"(^|\s)__([^\s_](?:.*?[^\s_])?)__(?=$|\s|[.,;!?:)])"
+)
 MARKDOWN_ITALIC_STAR_PATTERN = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
-MARKDOWN_ITALIC_UNDERSCORE_PATTERN = re.compile(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
+MARKDOWN_ITALIC_UNDERSCORE_PATTERN = re.compile(
+    r"(^|\s)_([^\s_](?:.*?[^\s_])?)_(?=$|\s|[.,;!?:)])"
+)
 MARKDOWN_TABLE_SEPARATOR_CELL_PATTERN = re.compile(r"^:?-{3,}:?$")
 
 CONFIDENCE_CLASS_MAP = {
@@ -158,9 +162,9 @@ def render_inline_markdown(value: str, *, escape_html: bool = True) -> str:
 
         escaped = part
         escaped = MARKDOWN_BOLD_STAR_PATTERN.sub(r"<strong>\1</strong>", escaped)
-        escaped = MARKDOWN_BOLD_UNDERSCORE_PATTERN.sub(r"<strong>\1</strong>", escaped)
+        escaped = MARKDOWN_BOLD_UNDERSCORE_PATTERN.sub(r"\1<strong>\2</strong>", escaped)
         escaped = MARKDOWN_ITALIC_STAR_PATTERN.sub(r"<em>\1</em>", escaped)
-        escaped = MARKDOWN_ITALIC_UNDERSCORE_PATTERN.sub(r"<em>\1</em>", escaped)
+        escaped = MARKDOWN_ITALIC_UNDERSCORE_PATTERN.sub(r"\1<em>\2</em>", escaped)
         escaped = highlight_confidence_tokens(escaped)
         output.append(escaped)
     return "".join(output)

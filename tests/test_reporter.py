@@ -1343,6 +1343,11 @@ class MarkdownToHtmlTests(unittest.TestCase):
         result = markdown_to_html("This is __bold__ text.")
         self.assertIn("<strong>bold</strong>", result)
 
+    def test_double_underscores_inside_words_are_not_bolded(self) -> None:
+        result = markdown_to_html("Identifier: foo__bar__baz")
+        self.assertNotIn("<strong>", result)
+        self.assertIn("foo__bar__baz", result)
+
     def test_italic_with_single_star(self) -> None:
         result = markdown_to_html("This is *italic* text.")
         self.assertIn("<em>italic</em>", result)
@@ -1350,6 +1355,38 @@ class MarkdownToHtmlTests(unittest.TestCase):
     def test_italic_with_single_underscore(self) -> None:
         result = markdown_to_html("This is _italic_ text.")
         self.assertIn("<em>italic</em>", result)
+
+    def test_underscore_italic_with_punctuation_boundary(self) -> None:
+        result = markdown_to_html("Finding: _italic_.")
+        self.assertIn("<em>italic</em>", result)
+
+    def test_snake_case_identifiers_are_not_italicized(self) -> None:
+        identifiers = [
+            "source_ip",
+            "destination_ip",
+            "image_id",
+            "csv_output_dir",
+            "artifact_csv_paths",
+            "foo_bar_baz",
+        ]
+        result = markdown_to_html("Columns: " + " ".join(identifiers))
+        self.assertNotIn("<em>", result)
+        for identifier in identifiers:
+            self.assertIn(identifier, result)
+
+    def test_paths_with_underscores_are_not_italicized(self) -> None:
+        path = "C:/Users/test_user/AppData/file_name.exe"
+        result = markdown_to_html(f"Path: {path}")
+        self.assertNotIn("<em>", result)
+        self.assertIn(path, result)
+
+    def test_table_cells_preserve_underscore_identifiers_and_paths(self) -> None:
+        path = "C:/Users/test_user/AppData/file_name.exe"
+        md = f"| Column | Value |\n|---|---|\n| source_ip | {path} |"
+        result = markdown_to_html(md)
+        self.assertNotIn("<em>", result)
+        self.assertIn("<td>source_ip</td>", result)
+        self.assertIn(f"<td>{path}</td>", result)
 
     def test_inline_code(self) -> None:
         result = markdown_to_html("Run `cmd.exe` to test.")
@@ -1471,6 +1508,11 @@ class TestRenderInlineMarkdown(unittest.TestCase):
         result = render_inline_markdown("__bold__")
         self.assertIn("<strong>bold</strong>", result)
 
+    def test_double_underscores_inside_words_are_not_bolded(self) -> None:
+        result = render_inline_markdown("Identifier: foo__bar__baz")
+        self.assertNotIn("<strong>", result)
+        self.assertIn("foo__bar__baz", result)
+
     def test_italic_star(self) -> None:
         result = render_inline_markdown("*italic*")
         self.assertIn("<em>italic</em>", result)
@@ -1478,6 +1520,34 @@ class TestRenderInlineMarkdown(unittest.TestCase):
     def test_italic_underscore(self) -> None:
         result = render_inline_markdown("_italic_")
         self.assertIn("<em>italic</em>", result)
+
+    def test_italic_underscore_with_whitespace_boundary(self) -> None:
+        result = render_inline_markdown("This is _italic_ text.")
+        self.assertIn("<em>italic</em>", result)
+
+    def test_italic_underscore_with_punctuation_boundary(self) -> None:
+        result = render_inline_markdown("Finding: _italic_.")
+        self.assertIn("<em>italic</em>", result)
+
+    def test_snake_case_identifiers_are_not_italicized(self) -> None:
+        identifiers = [
+            "source_ip",
+            "destination_ip",
+            "image_id",
+            "csv_output_dir",
+            "artifact_csv_paths",
+            "foo_bar_baz",
+        ]
+        result = render_inline_markdown("Columns: " + " ".join(identifiers))
+        self.assertNotIn("<em>", result)
+        for identifier in identifiers:
+            self.assertIn(identifier, result)
+
+    def test_paths_with_underscores_are_not_italicized(self) -> None:
+        path = "C:/Users/test_user/AppData/file_name.exe"
+        result = render_inline_markdown(f"Path: {path}")
+        self.assertNotIn("<em>", result)
+        self.assertIn(path, result)
 
     def test_confidence_highlighted(self) -> None:
         result = render_inline_markdown("Confidence: CRITICAL")

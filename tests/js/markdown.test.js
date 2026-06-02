@@ -188,6 +188,12 @@ describe("inline formatting", () => {
     expect(c.querySelector("strong")).not.toBeNull();
   });
 
+  test("does not render __ markers inside identifiers as bold", () => {
+    const c = renderMd("Identifier: foo__bar__baz");
+    expect(c.querySelector("strong")).toBeNull();
+    expect(c.textContent).toContain("foo__bar__baz");
+  });
+
   test("renders italic with * markers", () => {
     const c = renderMd("This is *italic* text.");
     expect(c.querySelector("em")).not.toBeNull();
@@ -197,6 +203,35 @@ describe("inline formatting", () => {
   test("renders italic with _ markers", () => {
     const c = renderMd("This is _italic_ text.");
     expect(c.querySelector("em")).not.toBeNull();
+  });
+
+  test("renders italic with _ markers before punctuation", () => {
+    const c = renderMd("Finding: _italic_.");
+    expect(c.querySelector("em")).not.toBeNull();
+    expect(c.querySelector("em").textContent).toBe("italic");
+  });
+
+  test("does not render underscores inside identifiers as italic", () => {
+    const identifiers = [
+      "source_ip",
+      "destination_ip",
+      "image_id",
+      "csv_output_dir",
+      "artifact_csv_paths",
+      "foo_bar_baz",
+    ];
+    const c = renderMd(`Columns: ${identifiers.join(" ")}`);
+    expect(c.querySelector("em")).toBeNull();
+    identifiers.forEach((identifier) => {
+      expect(c.textContent).toContain(identifier);
+    });
+  });
+
+  test("does not render underscores inside paths as italic", () => {
+    const path = "C:/Users/test_user/AppData/file_name.exe";
+    const c = renderMd(`Path: ${path}`);
+    expect(c.querySelector("em")).toBeNull();
+    expect(c.textContent).toContain(path);
   });
 
   test("renders inline code with backticks", () => {
