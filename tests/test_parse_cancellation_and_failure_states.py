@@ -27,7 +27,7 @@ from app.parser.core import ForensicParser, ParserCancelledError
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
-from tests.conftest import FAKE_HASHES, FakeAnalyzer, FakeAuditLogger, FakeParser
+from tests.conftest import FAKE_HASHES, FakeAnalyzer, FakeAuditLogger, FakeParser, ImmediateThread
 
 _ENGINE = "app.automation.engine"
 _PATCH_TARGET_OPEN = "app.parser.core.Target.open"
@@ -432,6 +432,192 @@ class RouteParseValidationStateTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("Unsupported artifact", response.get_json()["error"])
+
+    def test_startup_cleanup_failure_restores_retryable_case_status(self) -> None:
+        """Startup cleanup failures finish progress and unblock parse retries."""
+        case_id = "startup-cleanup-single"
+        image_id = "img-001"
+        case_dir = self._install_case(
+            case_id,
+            [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
+        )
+        image_dir = case_dir / "images" / image_id
+        parsed_dir = image_dir / "parsed"
+        parsed_dir.mkdir(exist_ok=True)
+        stale_csv = parsed_dir / "runkeys.csv"
+        stale_csv.write_text("name\nold\n", encoding="utf-8")
+        with routes_state.STATE_LOCK:
+            image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
+            image_state.update(
+                {
+                    "parse_results": [
+                        {
+                            "artifact_key": "runkeys",
+                            "success": True,
+                            "csv_path": str(stale_csv),
+                        },
+                    ],
+                    "artifact_csv_paths": {"runkeys": str(stale_csv)},
+                    "csv_output_dir": str(parsed_dir),
+                },
+            )
+            routes_state.CASE_STATES[case_id].update(
+                {
+                    "status": "parsed",
+                    "image_artifact_csv_paths": {
+                        image_id: dict(image_state["artifact_csv_paths"]),
+                    },
+                },
+            )
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
+            patch(
+                "app.routes.evidence_utils.cleanup_parsed_data",
+                side_effect=RuntimeError("cleanup exploded"),
+            ),
+            patch(
+                "app.routes.tasks.run_task_with_case_log_context",
+                side_effect=AssertionError("parse worker should not run"),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/cases/{case_id}/images/{image_id}/parse",
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
+
+        progress_key = f"{case_id}::{image_id}"
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            image_state = case["image_states"][image_id]
+            image_progress = routes_state.PARSE_PROGRESS[progress_key]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            active_operations = routes_state.active_operations_for_case(case_id)
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(image_progress["status"], "failed")
+        self.assertEqual(image_progress["events"][-1]["type"], "parse_failed")
+        self.assertEqual(
+            image_progress["events"][-1]["error"],
+            "Failed to prepare parsing workspace.",
+        )
+        self.assertEqual(case["status"], "evidence_loaded")
+        self.assertEqual(aggregate_progress["status"], "failed")
+        self.assertEqual(aggregate_progress["events"][-1]["case_status"], "evidence_loaded")
+        self.assertEqual(image_state.get("artifact_csv_paths"), {})
+        self.assertEqual(image_state.get("csv_output_dir"), "")
+        self.assertEqual(case.get("image_artifact_csv_paths"), {})
+        self.assertEqual(active_operations, [])
+
+    def test_startup_cleanup_failure_keeps_other_image_csvs_parsed(self) -> None:
+        """A startup failure on one image preserves another parsed image."""
+        case_id = "startup-cleanup-multi"
+        img_success = "img-success"
+        img_failed = "img-failed"
+        available = [{"key": "runkeys", "name": "Run Keys", "available": True}]
+        case_dir = self._install_case(case_id, available, image_id=img_success)
+        success_dir = case_dir / "images" / img_success
+        failed_dir = self._add_image_to_case(case_id, img_failed, available)
+        success_parsed = success_dir / "parsed"
+        failed_parsed = failed_dir / "parsed"
+        success_parsed.mkdir(exist_ok=True)
+        failed_parsed.mkdir(exist_ok=True)
+        success_csv = success_parsed / "runkeys.csv"
+        failed_stale_csv = failed_parsed / "runkeys.csv"
+        success_csv.write_text("name\nusable\n", encoding="utf-8")
+        failed_stale_csv.write_text("name\nstale\n", encoding="utf-8")
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            success_state = case["image_states"][img_success]
+            failed_state = case["image_states"][img_failed]
+            success_state.update(
+                {
+                    "parse_results": [
+                        {
+                            "artifact_key": "runkeys",
+                            "success": True,
+                            "csv_path": str(success_csv),
+                        },
+                    ],
+                    "artifact_csv_paths": {"runkeys": str(success_csv)},
+                    "csv_output_dir": str(success_parsed),
+                },
+            )
+            failed_state.update(
+                {
+                    "parse_results": [
+                        {
+                            "artifact_key": "runkeys",
+                            "success": True,
+                            "csv_path": str(failed_stale_csv),
+                        },
+                    ],
+                    "artifact_csv_paths": {"runkeys": str(failed_stale_csv)},
+                    "csv_output_dir": str(failed_parsed),
+                },
+            )
+            case.update(
+                {
+                    "status": "parsed",
+                    "image_artifact_csv_paths": {
+                        img_success: dict(success_state["artifact_csv_paths"]),
+                        img_failed: dict(failed_state["artifact_csv_paths"]),
+                    },
+                },
+            )
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
+            patch(
+                "app.routes.evidence_utils.cleanup_parsed_data",
+                side_effect=RuntimeError("cleanup exploded"),
+            ),
+            patch(
+                "app.routes.tasks.run_task_with_case_log_context",
+                side_effect=AssertionError("parse worker should not run"),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/cases/{case_id}/images/{img_failed}/parse",
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
+
+        progress_key = f"{case_id}::{img_failed}"
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            failed_state = case["image_states"][img_failed]
+            image_progress = routes_state.PARSE_PROGRESS[progress_key]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            aggregate_event = aggregate_progress["events"][-1]
+            active_operations = routes_state.active_operations_for_case(case_id)
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(image_progress["status"], "failed")
+        self.assertEqual(image_progress["events"][-1]["type"], "parse_failed")
+        self.assertEqual(case["status"], "parsed")
+        self.assertEqual(aggregate_progress["status"], "completed")
+        self.assertEqual(aggregate_event["aggregate_outcome"], "partial_success")
+        self.assertEqual(aggregate_event["case_status"], "parsed")
+        self.assertEqual(set(case["image_artifact_csv_paths"]), {img_success})
+        self.assertEqual(
+            case["image_artifact_csv_paths"][img_success],
+            {"runkeys": str(success_csv)},
+        )
+        self.assertEqual(failed_state.get("artifact_csv_paths"), {})
+        self.assertEqual(failed_state.get("csv_output_dir"), "")
+        self.assertEqual(active_operations, [])
 
     def test_single_image_zero_success_does_not_mark_case_parsed(self) -> None:
         """A single-image parse where every artifact fails leaves the case unparsed."""

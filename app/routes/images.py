@@ -1239,7 +1239,7 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
                             "error": str(startup_error),
                         },
                     )
-                _finish_image_parse_progress(
+                aggregate_policy = _finish_image_parse_progress(
                     case_id,
                     image_id,
                     "failed",
@@ -1249,6 +1249,8 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
                     },
                     str(startup_error),
                 )
+                if aggregate_policy is not None:
+                    mark_case_status(case_id, str(aggregate_policy["case_status"]))
                 return
 
             run_task_with_case_log_context(
