@@ -342,12 +342,14 @@
     setEvidenceBusy(true);
     const intakeProgress = createIntakeProgressTracker();
     const intakeStatusEl = q("evidence-intake-status");
+    let intakeCaseId = "";
 
     try {
       /* Step 1: Create the case. */
       const c = await A.apiJson("/api/cases", { method: "POST", json: { case_name: A.val(el.caseName) }, signal: token.signal });
       if (!A.isEvidenceOperationCurrent(token)) return;
       const caseId = String(c.case_id || "").trim();
+      intakeCaseId = caseId;
       st.caseName = String(c.case_name || "");
       if (!caseId) throw new Error("Case ID missing from create response.");
       intakeProgress.setPhase("case-created");
@@ -456,6 +458,7 @@
       A.showStep(2);
     } catch (e) {
       if (!A.isEvidenceOperationCurrent(token) || e.name === "AbortError") return;
+      if (!clearFailedEvidenceIntakeState(intakeCaseId)) return;
       A.setMsg(el.evidenceMsg, `Evidence intake failed: ${e.message}`, "error");
       if (intakeStatusEl) intakeStatusEl.hidden = true;
     } finally {
@@ -465,6 +468,93 @@
         A.updateNav();
       }
     }
+  }
+
+  /**
+   * Clear state that is only valid after applyEvidence() has consumed a full
+   * intake response. This preserves the user's evidence forms and failure
+   * message while making the incomplete case unusable from later steps.
+   *
+   * @param {string} failedCaseId - Case ID allocated for the failed intake.
+   * @returns {boolean} True when this failed intake still owns the UI.
+   */
+  function clearFailedEvidenceIntakeState(failedCaseId) {
+    const currentCaseId = A.activeCaseId();
+    if (failedCaseId && currentCaseId && currentCaseId !== failedCaseId) return false;
+    if (!failedCaseId || currentCaseId === failedCaseId) A.setCaseId("");
+    st.caseName = "";
+    st.artifacts = [];
+    st.artifactNames = {};
+    st.selected = [];
+    st.selectedAi = [];
+    st.images = [];
+    st.detectedOs = "";
+
+    A.resetParseState();
+    A.resetAnalysisState();
+    A.resetChatState();
+
+    if (el.summaryCard) el.summaryCard.hidden = true;
+    if (el.sumHost) el.sumHost.textContent = "-";
+    if (el.sumOs) el.sumOs.textContent = "-";
+    if (el.sumDomain) el.sumDomain.textContent = "-";
+    if (el.sumIps) el.sumIps.textContent = "-";
+    if (el.sumSha) el.sumSha.textContent = "-";
+
+    const unsupportedBox = q("unsupported-evidence-error");
+    if (unsupportedBox) unsupportedBox.hidden = true;
+    const unsupportedHint = q("unsupported-evidence-hint");
+    if (unsupportedHint) unsupportedHint.hidden = true;
+    const artifactContent = q("artifact-selection-content");
+    if (artifactContent) artifactContent.hidden = false;
+
+    const tabContainer = q("artifact-image-tabs");
+    if (tabContainer) {
+      tabContainer.hidden = true;
+      const tabBar = tabContainer.querySelector(".artifact-tab-bar");
+      if (tabBar) tabBar.innerHTML = "";
+    }
+    const panelsContainer = q("artifact-image-panels");
+    if (panelsContainer) panelsContainer.innerHTML = "";
+    if (el.artifactsForm) el.artifactsForm.hidden = false;
+    if (el.applyRecommendedAllBtn) el.applyRecommendedAllBtn.hidden = true;
+    if (el.applySelectionAllBtn) el.applySelectionAllBtn.hidden = true;
+
+    const summariesContainer = q("evidence-summaries-container");
+    if (summariesContainer) summariesContainer.hidden = true;
+    const summariesList = q("evidence-summaries-list");
+    if (summariesList) summariesList.innerHTML = "";
+
+    A.getImageForms().forEach((card) => {
+      const metaCard = card.querySelector(".image-metadata-card");
+      if (metaCard) metaCard.hidden = true;
+      const statusMsg = card.querySelector(".image-status-msg");
+      if (statusMsg) {
+        statusMsg.hidden = true;
+        statusMsg.textContent = "";
+        delete statusMsg.dataset.status;
+      }
+    });
+
+    if (typeof A.clearDynamicArtifacts === "function") A.clearDynamicArtifacts();
+    A.artifactBoxes().forEach((cb) => {
+      cb.checked = false;
+      cb.disabled = true;
+      const select = A.ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
+      if (select) select.value = A.MODE_PARSE_AND_AI;
+      A.syncArtifactModeControl(cb, select);
+      const li = cb.closest("li");
+      if (li) {
+        li.classList.add("artifact-unavailable");
+        li.dataset.available = "false";
+        li.title = "Load evidence to detect availability";
+      }
+    });
+    if (el.parseBtn) el.parseBtn.disabled = true;
+
+    if (typeof A.showStep === "function") A.showStep(1);
+    else A.updateNav();
+    return true;
   }
 
   // ── Multi-image metadata helpers ────────────────────────────────────────

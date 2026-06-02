@@ -415,6 +415,45 @@ describe("submitEvidence stale operation handling", () => {
     return { promise, resolve, reject };
   }
 
+  function jsonResponse(payload, status = 200) {
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name) => String(name || "").toLowerCase() === "content-type" ? "application/json" : "" },
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    });
+  }
+
+  function configurePathImageForms(paths) {
+    while (A.getImageForms().length < paths.length) A.addImageForm();
+    A.getImageForms().forEach((card, index) => {
+      card.querySelector(".image-mode-path").checked = true;
+      card.querySelector(".image-mode-upload").checked = false;
+      card.querySelector(".image-path-input").value = paths[index] || "";
+      const label = card.querySelector(".image-label-input");
+      if (label) label.value = `Image ${index + 1}`;
+    });
+  }
+
+  function seedUsableOldMultiImageState() {
+    A.setCaseId("old-case");
+    setImagesAndBuildTabs(makeTwoWindowsImages());
+    A.renderImageSummaries(A.st.images);
+    A.applyRecommendedToAllImages();
+    A.st.parsedSelections = {
+      caseId: "old-case",
+      runId: "old-parse",
+      mode: "multi",
+      artifactOptions: [],
+      artifacts: ["runkeys"],
+      aiArtifacts: ["runkeys"],
+      images: { "img-w1": { image_id: "img-w1", artifacts: ["runkeys"], aiArtifacts: ["runkeys"] } },
+    };
+    A.st.chat.allMessages = [{ role: "user", content: "old question" }];
+    A.showStep(1);
+  }
+
   test("does not set an old case id when create-case response resolves after reset", async () => {
     const card = A.getImageForms()[0];
     card.querySelector(".image-mode-path").checked = true;
@@ -451,7 +490,15 @@ describe("submitEvidence stale operation handling", () => {
     global.fetch = jest
       .fn()
       .mockImplementationOnce(() => first.promise)
-      .mockImplementationOnce(() => second.promise);
+      .mockImplementationOnce(() => second.promise)
+      .mockImplementationOnce(() => jsonResponse({ success: true, image_id: "second-image", label: "Image 1" }, 201))
+      .mockImplementationOnce(() => jsonResponse({
+        success: true,
+        metadata: { hostname: "SECOND", os_version: "Windows 10" },
+        hashes: {},
+        os_type: "windows",
+        available_artifacts: [],
+      }));
 
     const firstSubmit = A.submitEvidence();
     const secondSubmit = A.submitEvidence();
@@ -473,6 +520,140 @@ describe("submitEvidence stale operation handling", () => {
     await Promise.all([firstSubmit, secondSubmit]);
 
     expect(A.activeCaseId()).toBe("second-case");
+  });
+
+  test("clears allocated case and stale artifact UI when the first image evidence request fails", async () => {
+    seedUsableOldMultiImageState();
+    configurePathImageForms(["E:\\evidence\\broken.E01"]);
+
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/cases") {
+        return jsonResponse({ success: true, case_id: "case-incomplete", case_name: "Incomplete" }, 201);
+      }
+      if (url === "/api/cases/case-incomplete/images") {
+        return jsonResponse({ success: true, image_id: "img-1", label: "Image 1" }, 201);
+      }
+      if (url === "/api/cases/case-incomplete/images/img-1/evidence") {
+        return jsonResponse({ success: false, error: "image intake failed" }, 500);
+      }
+      return jsonResponse({ success: true });
+    });
+
+    await A.submitEvidence();
+
+    expect(A.activeCaseId()).toBe("");
+    expect(A.st.step).toBe(1);
+    expect(document.getElementById("evidence-loaded-banner").hidden).toBe(true);
+    expect(A.el.evidenceMsg.hidden).toBe(false);
+    expect(A.el.evidenceMsg.dataset.status).toBe("failed");
+    expect(A.el.evidenceMsg.textContent).toContain("image intake failed");
+    expect(document.querySelector(".wizard-nav button[data-next-step='2']").disabled).toBe(true);
+    expect(document.getElementById("indicator-artifacts").classList.contains("is-disabled")).toBe(true);
+    expect(A.st.images).toEqual([]);
+    expect(A.st.selected).toEqual([]);
+    expect(A.st.selectedAi).toEqual([]);
+    expect(A.st.parsedSelections).toMatchObject({ caseId: "", runId: "", mode: "", images: {} });
+    expect(A.st.chat.allMessages).toEqual([]);
+    expect(document.getElementById("artifact-image-tabs").hidden).toBe(true);
+    expect(document.getElementById("artifact-image-panels").children).toHaveLength(0);
+    expect(document.getElementById("evidence-summaries-container").hidden).toBe(true);
+    expect(document.getElementById("evidence-summaries-list").children).toHaveLength(0);
+  });
+
+  test("clears partial image state when a later image evidence request fails", async () => {
+    seedUsableOldMultiImageState();
+    configurePathImageForms(["E:\\evidence\\first.E01", "E:\\evidence\\second.E01"]);
+
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/cases") {
+        return jsonResponse({ success: true, case_id: "case-partial", case_name: "Partial" }, 201);
+      }
+      if (url === "/api/cases/case-partial/images") {
+        const imageCallCount = global.fetch.mock.calls.filter((call) => String(call[0]).endsWith("/images")).length;
+        return jsonResponse({
+          success: true,
+          image_id: imageCallCount === 1 ? "img-1" : "img-2",
+          label: imageCallCount === 1 ? "First" : "Second",
+        }, 201);
+      }
+      if (url === "/api/cases/case-partial/images/img-1/evidence") {
+        return jsonResponse({
+          success: true,
+          metadata: { hostname: "FIRST", os_version: "Windows 10" },
+          hashes: { sha256: "firsthash" },
+          os_type: "windows",
+          available_artifacts: [{ key: "runkeys", name: "Run/RunOnce Keys", available: true }],
+        });
+      }
+      if (url === "/api/cases/case-partial/images/img-2/evidence") {
+        return jsonResponse({ success: false, error: "second image failed" }, 500);
+      }
+      return jsonResponse({ success: true });
+    });
+
+    await A.submitEvidence();
+
+    expect(A.activeCaseId()).toBe("");
+    expect(A.st.step).toBe(1);
+    expect(A.el.evidenceMsg.hidden).toBe(false);
+    expect(A.el.evidenceMsg.textContent).toContain("second image failed");
+    expect(document.querySelector(".wizard-nav button[data-next-step='2']").disabled).toBe(true);
+    expect(A.st.images).toEqual([]);
+    expect(A.st.artifacts).toEqual([]);
+    expect(A.st.parsedSelections).toMatchObject({ caseId: "", runId: "", mode: "", images: {} });
+    expect(document.getElementById("artifact-image-tabs").hidden).toBe(true);
+    expect(document.getElementById("artifact-image-panels").children).toHaveLength(0);
+    expect(document.getElementById("evidence-summaries-container").hidden).toBe(true);
+    A.getImageForms().forEach((card) => {
+      expect(card.querySelector(".image-metadata-card").hidden).toBe(true);
+      expect(card.querySelector(".image-status-msg").hidden).toBe(true);
+    });
+  });
+
+  test("does not clear state for a different active case when a failed intake loses ownership", async () => {
+    seedUsableOldMultiImageState();
+    configurePathImageForms(["E:\\evidence\\broken.E01"]);
+    let currentImages = [];
+    let currentParsedSelections = null;
+
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/cases") {
+        return jsonResponse({ success: true, case_id: "case-stale-failure", case_name: "Stale" }, 201);
+      }
+      if (url === "/api/cases/case-stale-failure/images") {
+        return jsonResponse({ success: true, image_id: "img-1", label: "Image 1" }, 201);
+      }
+      if (url === "/api/cases/case-stale-failure/images/img-1/evidence") {
+        A.setCaseId("other-active-case");
+        setImagesAndBuildTabs(makeTwoWindowsImages());
+        A.renderImageSummaries(A.st.images);
+        A.st.parsedSelections = {
+          caseId: "other-active-case",
+          runId: "other-parse",
+          mode: "multi",
+          artifactOptions: [],
+          artifacts: ["prefetch"],
+          aiArtifacts: ["prefetch"],
+          images: { "img-w2": { image_id: "img-w2", artifacts: ["prefetch"], aiArtifacts: ["prefetch"] } },
+        };
+        A.st.chat.allMessages = [{ role: "user", content: "current question" }];
+        currentImages = A.st.images.slice();
+        currentParsedSelections = A.st.parsedSelections;
+        return jsonResponse({ success: false, error: "stale failure" }, 500);
+      }
+      return jsonResponse({ success: true });
+    });
+
+    await A.submitEvidence();
+
+    expect(A.activeCaseId()).toBe("other-active-case");
+    expect(A.st.step).toBe(1);
+    expect(A.el.evidenceMsg.textContent).not.toContain("stale failure");
+    expect(A.st.images).toEqual(currentImages);
+    expect(A.st.parsedSelections).toBe(currentParsedSelections);
+    expect(A.st.chat.allMessages).toEqual([{ role: "user", content: "current question" }]);
+    expect(document.getElementById("artifact-image-tabs").hidden).toBe(false);
+    expect(document.getElementById("artifact-image-panels").children.length).toBeGreaterThan(0);
   });
 });
 
