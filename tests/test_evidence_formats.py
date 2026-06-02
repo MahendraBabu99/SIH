@@ -35,9 +35,14 @@ import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
-from app.evidence.archives import ArchiveExtractionLimits, validate_archive_member_target
+from app.evidence.archives import (
+    ARCHIVE_EXTENSIONS,
+    ArchiveExtractionLimits,
+    validate_archive_member_target,
+)
 from app.evidence.archive_resolver import can_open_with_dissect
 from app.evidence.constants import (
+    ARCHIVE_EVIDENCE_EXTENSIONS,
     EVIDENCE_UI_ACCEPT,
     EVIDENCE_UI_ACCEPT_EXTENSIONS,
     NON_ARCHIVE_EVIDENCE_EXTENSIONS,
@@ -217,6 +222,13 @@ class TestEvidenceFormatUiMetadata(unittest.TestCase):
         self.assertIn(f'accept="{EVIDENCE_UI_ACCEPT}"', html)
         self.assertIn(".e10", html)
         self.assertIn(".e99", html)
+
+    def test_archive_extension_helpers_use_canonical_constant(self) -> None:
+        """Archive discovery support is driven by the canonical constants."""
+        from app.automation import discovery
+
+        self.assertIs(ARCHIVE_EXTENSIONS, ARCHIVE_EVIDENCE_EXTENSIONS)
+        self.assertIs(discovery.ARCHIVE_EXTENSIONS, ARCHIVE_EVIDENCE_EXTENSIONS)
 
 
 # ---------------------------------------------------------------------------

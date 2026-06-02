@@ -65,7 +65,9 @@ class _DiscoveryContext:
 
     def contains_allowed_path(self, path: Path) -> bool:
         """Return True when *path* stays in selected or managed roots."""
-        resolved = path.resolve()
+        resolved = _resolve_discovery_path(path)
+        if resolved is None:
+            return False
         roots = [
             root
             for root in (self.source_root, self.workspace_root)
@@ -140,6 +142,19 @@ def _safe_component(value: str) -> str:
 def _can_open_with_dissect(path: Path) -> bool:
     """Probe whether Dissect can open *path* as a target."""
     return can_open_with_dissect(path)
+
+
+def _resolve_discovery_path(path: Path) -> Path | None:
+    """Resolve a discovery path, returning None for symlink loops."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError) as exc:
+        LOGGER.info(
+            "Skipping unresolvable path during evidence discovery: %s (%s)",
+            path,
+            exc,
+        )
+        return None
 
 
 def _deduplicate_segments(
@@ -227,7 +242,9 @@ def _discover_file(
 
 def _discover_directory(path: Path, context: _DiscoveryContext) -> list[EvidenceDescriptor]:
     """Discover evidence targets in a directory."""
-    directory = path.resolve()
+    directory = _resolve_discovery_path(path)
+    if directory is None:
+        return []
     if not context.contains_allowed_path(directory):
         LOGGER.info("Skipping directory outside selected evidence tree: %s", directory)
         return []
@@ -245,11 +262,9 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
         if _is_hidden_or_skipped(child):
             continue
 
-        if child.is_symlink():
-            LOGGER.info("Skipping symlink during evidence discovery: %s", child)
+        child_path = _resolve_discovery_path(child)
+        if child_path is None:
             continue
-
-        child_path = child.resolve()
         if not context.contains_allowed_path(child_path):
             LOGGER.info(
                 "Skipping path outside selected evidence tree during discovery: %s",
@@ -281,13 +296,15 @@ def _discover_path(
     strict_extension: bool,
 ) -> list[EvidenceDescriptor]:
     """Dispatch discovery based on path type."""
-    resolved = path.resolve()
+    resolved = _resolve_discovery_path(path)
+    if resolved is None:
+        return []
     if not context.contains_allowed_path(resolved):
         LOGGER.info("Skipping path outside selected evidence tree: %s", resolved)
         return []
-    if path.is_file():
+    if resolved.is_file():
         return _discover_file(resolved, context, strict_extension=strict_extension)
-    if path.is_dir():
+    if resolved.is_dir():
         return _discover_directory(resolved, context)
     return []
 

@@ -29,6 +29,8 @@ from zipfile import BadZipFile, ZipFile
 import py7zr
 from py7zr.io import Py7zIO, WriterFactory
 
+from app.evidence.constants import ARCHIVE_EVIDENCE_EXTENSIONS
+
 __all__ = [
     "ARCHIVE_EXTENSIONS",
     "ArchiveExtractionLimits",
@@ -41,13 +43,7 @@ __all__ = [
     "extract_7z_to_directory",
 ]
 
-ARCHIVE_EXTENSIONS: frozenset[str] = frozenset({
-    ".zip",
-    ".tar",
-    ".gz",
-    ".tgz",
-    ".7z",
-})
+ARCHIVE_EXTENSIONS = ARCHIVE_EVIDENCE_EXTENSIONS
 
 
 @dataclass(frozen=True)

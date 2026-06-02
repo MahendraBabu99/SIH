@@ -483,6 +483,65 @@ class TestDiscoverEvidence(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self._assert_direct_descriptor(result[0], inside_evidence)
 
+    @pytest.mark.requires_symlink
+    def test_child_symlink_to_allowed_workspace_file_is_followed(self) -> None:
+        """Recursive discovery follows child file symlinks to allowed roots."""
+        require_symlink_support(self)
+        selected = self.root / "selected"
+        selected.mkdir()
+        workspace = self.root / "case" / "evidence"
+        workspace.mkdir(parents=True)
+        evidence = workspace / "linked.E01"
+        evidence.write_bytes(b"image")
+        link = selected / "linked-file"
+        link.symlink_to(evidence)
+
+        result = self._discover_with_dissect_fail(
+            selected,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], evidence)
+
+    @pytest.mark.requires_symlink(target_is_directory=True)
+    def test_child_symlink_to_allowed_workspace_directory_is_followed(self) -> None:
+        """Recursive discovery recurses into child directory symlinks safely."""
+        require_symlink_support(self, target_is_directory=True)
+        selected = self.root / "selected"
+        selected.mkdir()
+        workspace = self.root / "case" / "evidence"
+        target_dir = workspace / "linked-dir"
+        target_dir.mkdir(parents=True)
+        evidence = target_dir / "disk.E01"
+        evidence.write_bytes(b"image")
+        link = selected / "linked-dir"
+        link.symlink_to(target_dir, target_is_directory=True)
+
+        result = self._discover_with_dissect_fail(
+            selected,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], evidence)
+
+    @pytest.mark.requires_symlink
+    def test_child_symlink_loop_is_skipped(self) -> None:
+        """Recursive discovery skips cyclic symlinks without aborting."""
+        require_symlink_support(self)
+        selected = self.root / "selected"
+        selected.mkdir()
+        evidence = selected / "inside.E01"
+        evidence.write_bytes(b"inside")
+        link = selected / "loop"
+        link.symlink_to(link)
+
+        result = self._discover_with_dissect_fail(selected)
+
+        self.assertEqual(len(result), 1)
+        self._assert_direct_descriptor(result[0], evidence)
+
     @pytest.mark.requires_symlink(target_is_directory=True)
     def test_top_level_symlink_target_still_discovers_selected_tree(self) -> None:
         """A symlink selected as the top-level path resolves to that target."""
