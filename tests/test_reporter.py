@@ -190,6 +190,70 @@ class ReporterTests(unittest.TestCase):
             )
             self.assertIn("©Flip Forensics", html)
 
+    def test_generate_single_image_does_not_render_orphan_metadata_or_hashes(self) -> None:
+        """Unmatched image-scoped records remain notes, not evidence values."""
+        with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = self._create_report_generator(cases_root)
+
+            analysis = _single_image_analysis(
+                case_id="case-orphan-records",
+                summary="No matched evidence records were supplied.",
+            )
+            metadata = [
+                {
+                    "image_id": "img-orphan",
+                    "hostname": "ORPHAN-HOST-DO-NOT-RENDER",
+                    "os_version": "Orphan OS",
+                    "domain": "orphan.example",
+                    "evidence_file": "orphan-metadata-disk.E01",
+                }
+            ]
+            hashes = [
+                {
+                    "image_id": "img-orphan",
+                    "filename": "orphan-hash-disk.E01",
+                    "sha256": "f" * 64,
+                    "md5": "e" * 32,
+                    "size_bytes": 4096,
+                    "verification_status": "PASS",
+                }
+            ]
+
+            report_path = reporter.generate(
+                analysis_results=analysis,
+                image_metadata=metadata,
+                evidence_hashes=hashes,
+                investigation_context="Confirm unmatched records are not rendered.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+
+            self.assertIn("Processing Notes", html)
+            self.assertIn("No metadata record matched Evidence Image", html)
+            self.assertIn("No hash record matched Evidence Image", html)
+            self.assertIn("Metadata record for image_id &#39;img-orphan&#39;", html)
+            self.assertIn("Hash record for image_id &#39;img-orphan&#39;", html)
+            self.assertRegex(html, r'class="hash-status skipped">\s*UNAVAILABLE\s*</div>')
+            self.assertIn(">Unknown<", html)
+            self.assertIn(">N/A<", html)
+
+            evidence_section = html[
+                html.index("<h2>Evidence Summary</h2>"):
+                html.index("<h2>Hash Verification Result</h2>")
+            ]
+            hash_section = html[
+                html.index("<h2>Hash Verification Result</h2>"):
+                html.index("<h2>Investigation Context</h2>")
+            ]
+            evidence_and_hash_sections = evidence_section + hash_section
+            self.assertNotIn("ORPHAN-HOST-DO-NOT-RENDER", evidence_and_hash_sections)
+            self.assertNotIn("orphan-metadata-disk.E01", evidence_and_hash_sections)
+            self.assertNotIn("orphan-hash-disk.E01", evidence_and_hash_sections)
+            self.assertNotIn("f" * 64, evidence_and_hash_sections)
+            self.assertNotIn("e" * 32, evidence_and_hash_sections)
+
     def test_generate_renders_analyzer_style_artifact_metadata(self) -> None:
         """HTML report uses canonical analyzer record/time fields."""
         with TemporaryDirectory(prefix="aift-reporter-test-") as temp_dir:

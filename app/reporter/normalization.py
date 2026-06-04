@@ -67,8 +67,8 @@ class NormalizedReportInputs:
         hash_rows: HTML-ready hash verification rows.
         processing_notes: User-facing warning and skip notes for reports.
         warnings: Plain warning strings suitable for log emission.
-        first_metadata: First matched or supplied metadata record.
-        first_hashes: First matched or supplied hash record.
+        first_metadata: Metadata from the first report image record.
+        first_hashes: Hashes from the first report image record.
         metadata_index: Indexed metadata input records.
         hashes_index: Indexed hash input records.
         is_multi_image: Whether report tables should use multi-image layout.
@@ -916,10 +916,6 @@ def normalize_report_inputs(
     first_record = image_records[0] if image_records else {}
     first_metadata = dict(first_record.get("metadata", {}))
     first_hashes = dict(first_record.get("hashes", {}))
-    if not first_metadata and metadata_index.ordered:
-        first_metadata = dict(metadata_index.ordered[0])
-    if not first_hashes and hashes_index.ordered:
-        first_hashes = dict(hashes_index.ordered[0])
 
     is_multi_image = len(image_records) > 1
 
