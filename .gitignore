@@ -39,10 +39,8 @@ cases/
 # Node.js (JS test tooling only)
 node_modules/
 
-# Local test outputs
-local_tests/.runs/
-local_tests/.pytest_cache/
-local_tests/**/__pycache__/
+# Local tests
+local_tests/
 
 # IDE and OS files
 .vscode/
@@ -60,7 +58,6 @@ Thumbs.db
 !.github/workflows/*.yml
 !config/artifact_ai_columns.yaml
 
-# Specification drafts and references must never be committed.
 SPECs/
 
 # pdoc build output
