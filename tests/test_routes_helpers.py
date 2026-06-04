@@ -603,11 +603,20 @@ class ArtifactHelperTests(unittest.TestCase):
         self.assertEqual(parse_list, ["runkeys", "mft"])
         self.assertEqual(analysis_list, ["runkeys"])
 
-    def test_extract_parse_selection_payload_rejects_legacy_format(self) -> None:
-        payload = {"artifacts": ["runkeys", "mft"]}
+    def test_extract_parse_selection_payload_rejects_unknown_fields(self) -> None:
+        payload = {"artifact_keys": ["runkeys", "mft"]}
         with self.assertRaises(ValueError) as ctx:
             artifact_profiles.extract_parse_selection_payload(payload)
-        self.assertIn("`artifact_options` is required", str(ctx.exception))
+        self.assertIn("may only include", str(ctx.exception))
+
+    def test_extract_parse_selection_payload_rejects_unknown_fields_with_options(self) -> None:
+        payload = {
+            "artifact_keys": ["runkeys"],
+            "artifact_options": [{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+        }
+        with self.assertRaises(ValueError) as ctx:
+            artifact_profiles.extract_parse_selection_payload(payload)
+        self.assertIn("may only include", str(ctx.exception))
 
     def test_extract_parse_selection_payload_rejects_missing_artifact_options(self) -> None:
         payload = {}

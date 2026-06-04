@@ -2097,11 +2097,11 @@ class RoutesTests(unittest.TestCase):
             self.client.post(f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)})
             resp = self.client.post(
                 first_image_parse_url(case_id),
-                json={"artifacts": ["runkeys"]},
+                json={"artifact_keys": ["runkeys"]},
             )
 
         self.assertEqual(resp.status_code, 400)
-        self.assertIn("`artifact_options` is required", resp.get_json()["error"])
+        self.assertIn("may only include", resp.get_json()["error"])
 
     def test_parse_already_running_returns_409(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "already-parsing.E01"

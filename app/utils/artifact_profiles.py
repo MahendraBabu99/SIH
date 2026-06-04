@@ -123,6 +123,15 @@ def extract_parse_selection_payload(
     payload: dict[str, Any],
 ) -> tuple[list[dict[str, str]], list[str], list[str]]:
     """Extract and normalise artifact selection from a parse request payload."""
+    allowed_keys = {"artifact_options", "analysis_date_range"}
+    unexpected_keys = set(payload) - allowed_keys
+    if unexpected_keys:
+        names = ", ".join(f"`{key}`" for key in sorted(unexpected_keys))
+        raise ValueError(
+            "Parse requests may only include `artifact_options` and "
+            f"`analysis_date_range`; unexpected field(s): {names}."
+        )
+
     if "artifact_options" not in payload:
         raise ValueError("`artifact_options` is required.")
 
