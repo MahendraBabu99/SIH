@@ -800,7 +800,7 @@ class RoutesTests(unittest.TestCase):
                 json={
                     "ai": {
                         "provider": "openai",
-                        "openai": {"api_key": "", "model": "gpt-5.4"},
+                        "openai": {"api_key": "", "model": "gpt-5.5"},
                     }
                 },
             )

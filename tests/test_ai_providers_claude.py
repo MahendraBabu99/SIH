@@ -181,7 +181,7 @@ class TestClaudeProvider(unittest.TestCase):
         stream_ctx.__exit__.return_value = None
         mock_client.messages.stream.return_value = stream_ctx
 
-        provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-6")
+        provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
         result = provider.analyze("system", "user", max_tokens=256000)
 
         self.assertEqual(result, "Claude streamed result")
@@ -213,7 +213,7 @@ class TestClaudeProvider(unittest.TestCase):
             csv_path = Path(temp_dir) / "runkeys.csv"
             csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
 
-            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-6")
+            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
             result = provider.analyze_with_attachments(
                 "system",
                 "user",
@@ -243,13 +243,13 @@ class TestClaudeProvider(unittest.TestCase):
         mock_anthropic_cls.return_value = mock_client
         mock_client.messages.create.side_effect = [
             _FakeBadRequestError(
-                "maxtokens: 256000 > 128000, which is the maximum allowed number of output tokens for claude-opus-4-6"
+                "maxtokens: 256000 > 128000, which is the maximum allowed number of output tokens for claude-opus-4-8"
             ),
             _make_anthropic_response("Claude capped result"),
         ]
 
         with patch("anthropic.BadRequestError", _FakeBadRequestError):
-            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-6")
+            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
             result = provider.analyze("system", "user", max_tokens=256000)
 
         self.assertEqual(result, "Claude capped result")
@@ -281,13 +281,13 @@ class TestClaudeProvider(unittest.TestCase):
         stream_ctx.__exit__.return_value = None
         mock_client.messages.stream.side_effect = [
             _FakeBadRequestError(
-                "maxtokens: 256000 > 128000, which is the maximum allowed number of output tokens for claude-opus-4-6"
+                "maxtokens: 256000 > 128000, which is the maximum allowed number of output tokens for claude-opus-4-8"
             ),
             stream_ctx,
         ]
 
         with patch("anthropic.BadRequestError", _FakeBadRequestError):
-            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-6")
+            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
             result = provider.analyze("system", "user", max_tokens=256000)
 
         self.assertEqual(result, "Claude streamed capped result")

@@ -385,9 +385,9 @@
       else el.setApiLabel.textContent = "OpenAI API Key";
     }
     if (el.setModel) {
-      if (p === "anthropic") el.setModel.placeholder = "claude-sonnet-4-20250514";
-      else if (p === "openai") el.setModel.placeholder = "gpt-5.4";
-      else if (p === "kimi") el.setModel.placeholder = "kimi-k2-turbo-preview";
+      if (p === "anthropic") el.setModel.placeholder = "claude-opus-4-8";
+      else if (p === "openai") el.setModel.placeholder = "gpt-5.5";
+      else if (p === "kimi") el.setModel.placeholder = "kimi-k2.6";
       else el.setModel.placeholder = "llama3.1:70b";
     }
   }

@@ -138,7 +138,7 @@ class KimiProvider(OpenAICompatibleChatMixin, AIProvider):
                     "Kimi rejected the configured model. "
                     f"Current model: `{self.model}`. "
                     "Set `ai.kimi.model` to a model enabled for your Moonshot account "
-                    "(for example `kimi-k2-turbo-preview`) and retry."
+                    "(for example `kimi-k2.6`) and retry."
                 )
         return super()._map_api_error(error)
 

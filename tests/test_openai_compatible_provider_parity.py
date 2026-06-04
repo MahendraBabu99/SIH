@@ -30,7 +30,7 @@ def _provider_factories() -> list[tuple[str, Callable[[], AIProvider]]]:
     """Return provider constructors that exercise the shared mixin."""
     return [
         ("OpenAI", lambda: OpenAIProvider(api_key="sk-test", model="gpt-4o")),
-        ("Kimi", lambda: KimiProvider(api_key="sk-test", model="kimi-k2-turbo-preview")),
+        ("Kimi", lambda: KimiProvider(api_key="sk-test", model="kimi-k2.6")),
         (
             "Local",
             lambda: LocalProvider(base_url="http://localhost:11434/v1", model="test-model"),
