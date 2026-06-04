@@ -56,8 +56,12 @@ Thumbs.db
 *.yml
 *.yaml.tmp
 *.yml.tmp
+!.github/workflows/*.yaml
+!.github/workflows/*.yml
 !config/artifact_ai_columns.yaml
-!SPECs/reference/*.yaml
+
+# Specification drafts and references must never be committed.
+SPECs/
 
 # pdoc build output
 _site/
