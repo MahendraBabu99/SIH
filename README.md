@@ -123,9 +123,9 @@ AIFT supports four AI backends and can be run completely isolated. All configura
 
 | Provider | What You Need | Notes |
 |----------|--------------|-------|
-| **Anthropic Claude** | API key from [console.anthropic.com](https://console.anthropic.com) | Recommended for analysis quality |
-| **OpenAI / GPT** | API key from [platform.openai.com](https://platform.openai.com) | GPT-4o or later |
-| **Kimi** | API key from [platform.moonshot.ai](https://platform.moonshot.ai) | Moonshot AI's Kimi K2 - OpenAI-compatible |
+| **Anthropic Claude** | API key from [console.anthropic.com](https://console.anthropic.com) | Default: `claude-opus-4-8`; recommended for analysis quality |
+| **OpenAI / GPT** | API key from [platform.openai.com](https://platform.openai.com) | Default: `gpt-5.5` |
+| **Kimi** | API key from [platform.moonshot.ai](https://platform.moonshot.ai) | Default: `kimi-k2.6`; OpenAI-compatible |
 | **Local model** | Any OpenAI-compatible server | Ollama, LM Studio, vLLM, text-generation-webui |
 
 ### Ollama (local, free, private)
