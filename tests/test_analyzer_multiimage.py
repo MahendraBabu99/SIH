@@ -169,8 +169,10 @@ class TestSingleImageAnalysis:
         assert artifact["source_csv"] == str(source_csv)
         analysis_csv = Path(artifact["analysis_csv"])
         assert analysis_csv.parent.name == "parsed_deduplicated"
+        assert analysis_csv.parent == parsed_dir.parent / "parsed_deduplicated"
         assert analysis_csv.name == "img1__runkeys.csv"
         assert analysis_csv.exists()
+        assert source_csv.exists()
         assert artifact["analysis_columns"]
         assert artifact["metadata"]["source_csv"] == str(source_csv)
 
@@ -921,10 +923,14 @@ class TestArtifactCsvPathsClearedBetweenImages:
             investigation_context="Test collision-safe outputs",
         )
 
-        scoped_csvs = {
-            path.name for path in (tmp_path / "parsed_deduplicated").glob("*.csv")
-        }
-        assert {"img1__runkeys.csv", "img2__runkeys.csv"}.issubset(scoped_csvs)
+        assert (
+            tmp_path / "images" / "img1" / "parsed_deduplicated" / "img1__runkeys.csv"
+        ).exists()
+        assert (
+            tmp_path / "images" / "img2" / "parsed_deduplicated" / "img2__runkeys.csv"
+        ).exists()
+        assert (tmp_path / "images" / "img1" / "parsed" / "runkeys.csv").exists()
+        assert (tmp_path / "images" / "img2" / "parsed" / "runkeys.csv").exists()
 
         prompt_names = {path.name for path in (tmp_path / "prompts").glob("*.md")}
         assert "artifact_img1__runkeys.md" in prompt_names

@@ -408,11 +408,11 @@ def resolve_analysis_input_output_dir(case_dir: Path | None, source_csv_path: Pa
     Returns:
         A ``Path`` to the output directory.
     """
-    if case_dir is not None:
-        return case_dir / DEDUPLICATED_PARSED_DIRNAME
     parent = source_csv_path.parent
     if parent.name.strip().lower() == "parsed":
         return parent.parent / DEDUPLICATED_PARSED_DIRNAME
+    if case_dir is not None:
+        return case_dir / DEDUPLICATED_PARSED_DIRNAME
     return parent / DEDUPLICATED_PARSED_DIRNAME
 
 

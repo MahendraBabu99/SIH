@@ -20,6 +20,7 @@ from typing import Any
 
 from flask import request
 
+from ..analyzer.constants import DEDUPLICATED_PARSED_DIRNAME
 from ..chat.csv_retrieval import invalidate_header_cache
 
 LOGGER = logging.getLogger(__name__)
@@ -248,17 +249,26 @@ def cleanup_parsed_data(
     # stale column data from the files about to be removed.
     invalidate_header_cache()
 
+    def _remove_parsed_tree_and_derived(parsed_path: Path) -> None:
+        """Remove stale source parsed CSVs and sibling derived analysis CSVs."""
+        safe_rmtree(parsed_path, cases_root)
+        safe_rmtree(parsed_path.parent / DEDUPLICATED_PARSED_DIRNAME, cases_root)
+
     # 1. Optionally clean the default parsed directory inside the case folder.
     default_parsed = case_dir / "parsed"
     if clean_default_parsed:
-        safe_rmtree(default_parsed, cases_root)
+        _remove_parsed_tree_and_derived(default_parsed)
+    else:
+        # Older analyzer builds wrote derived CSVs at case root. They are not
+        # source evidence and must not survive into a new parse attempt.
+        safe_rmtree(case_dir / DEDUPLICATED_PARSED_DIRNAME, cases_root)
 
     # 2. Clean per-image parsed directories.
     for _img_id, img_state in image_states.items():
         img_dir = img_state.get("dir")
         if img_dir:
             img_parsed = Path(str(img_dir)) / "parsed"
-            safe_rmtree(img_parsed, cases_root)
+            _remove_parsed_tree_and_derived(img_parsed)
 
     # 3. Clean external CSV output directory if configured and different
     #    from the default location.
@@ -284,6 +294,12 @@ def cleanup_parsed_data(
         cases_root,
         additional_allowed_roots=[resolved_prev.parent],
     )
+    if prev_path.name.strip().lower() == "parsed":
+        safe_rmtree(
+            prev_path.parent / DEDUPLICATED_PARSED_DIRNAME,
+            cases_root,
+            additional_allowed_roots=[resolved_prev.parent],
+        )
 
 
 def should_skip_hashing() -> bool:

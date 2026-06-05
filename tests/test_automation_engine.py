@@ -1280,6 +1280,10 @@ class TestRunAutomation(unittest.TestCase):
         result = run_automation(self._make_request())
         self.assertFalse(result.success)
         self.assertTrue(any("analysis" in e.lower() for e in result.errors))
+        case_dir = self.cases_dir / result.case_id
+        parsed_csvs = list((case_dir / "images").glob("*/parsed/runkeys.csv"))
+        self.assertTrue(parsed_csvs, "Original parsed CSV should survive AI failure.")
+        self.assertTrue(parsed_csvs[0].is_file())
 
     def test_progress_callback_called(self) -> None:
         """Progress callback receives expected phases and messages."""

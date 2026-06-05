@@ -85,6 +85,13 @@ class PurgeStaleDataTests(unittest.TestCase):
         (d / "prefetch.csv").write_text("x,y\n3,4\n", encoding="utf-8")
         return d
 
+    def _make_deduplicated_dir(self, parent_dir: Path | None = None) -> Path:
+        """Create a sibling ``parsed_deduplicated/`` dir with stub CSVs."""
+        d = (parent_dir or self.case_dir) / "parsed_deduplicated"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "runkeys.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+        return d
+
     def test_removes_default_parsed_directory(self) -> None:
         """The default case_dir/parsed directory should be deleted."""
         parsed = self._make_parsed_dir()
@@ -92,6 +99,15 @@ class PurgeStaleDataTests(unittest.TestCase):
 
         evidence_utils.cleanup_parsed_data(self.case_dir, {}, "")
         self.assertFalse(parsed.exists())
+
+    def test_removes_default_derived_directory(self) -> None:
+        """Stale default parsed_deduplicated output should be deleted too."""
+        parsed = self._make_parsed_dir()
+        derived = self._make_deduplicated_dir()
+
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "")
+        self.assertFalse(parsed.exists())
+        self.assertFalse(derived.exists())
 
     def test_noop_when_parsed_dir_missing(self) -> None:
         """No error when the parsed directory does not exist."""
@@ -102,9 +118,28 @@ class PurgeStaleDataTests(unittest.TestCase):
         ext_dir = Path(self.temp_dir.name) / "external" / "case-001" / "parsed"
         ext_dir.mkdir(parents=True)
         (ext_dir / "runkeys.csv").write_text("data\n", encoding="utf-8")
+        ext_derived = ext_dir.parent / "parsed_deduplicated"
+        ext_derived.mkdir(parents=True)
+        (ext_derived / "runkeys.csv").write_text("data\n", encoding="utf-8")
 
         evidence_utils.cleanup_parsed_data(self.case_dir, {}, str(ext_dir))
         self.assertFalse(ext_dir.exists())
+        self.assertFalse(ext_derived.exists())
+
+    def test_removes_image_derived_directory(self) -> None:
+        """Image reparse cleanup removes only that image's stale derived CSVs."""
+        img_dir = self.case_dir / "images" / "img1"
+        parsed = self._make_parsed_dir(img_dir)
+        derived = self._make_deduplicated_dir(img_dir)
+
+        evidence_utils.cleanup_parsed_data(
+            self.case_dir,
+            {"img1": {"dir": str(img_dir)}},
+            "",
+            clean_default_parsed=False,
+        )
+        self.assertFalse(parsed.exists())
+        self.assertFalse(derived.exists())
 
     def test_skips_external_if_same_as_default(self) -> None:
         """Don't attempt double-delete if external dir == default parsed dir."""

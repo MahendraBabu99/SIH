@@ -149,6 +149,14 @@ class TestResolveAnalysisInputOutputDir(unittest.TestCase):
         result = resolve_analysis_input_output_dir(Path("/case"), Path("/case/parsed/art.csv"))
         self.assertEqual(result, Path("/case/parsed_deduplicated"))
 
+    def test_with_case_dir_image_scoped_source(self) -> None:
+        from app.analyzer.data_prep import resolve_analysis_input_output_dir
+        result = resolve_analysis_input_output_dir(
+            Path("/case"),
+            Path("/case/images/img1/parsed/art.csv"),
+        )
+        self.assertEqual(result, Path("/case/images/img1/parsed_deduplicated"))
+
     def test_without_case_dir_parsed_parent(self) -> None:
         from app.analyzer.data_prep import resolve_analysis_input_output_dir
         result = resolve_analysis_input_output_dir(None, Path("/some/parsed/art.csv"))
@@ -172,6 +180,7 @@ class TestWriteAnalysisInputCsv(unittest.TestCase):
             rows = [{"ts": "2026-01-15", "name": "test"}]
             result = write_analysis_input_csv(source, rows, ["ts", "name"])
             self.assertTrue(result.exists())
+            self.assertEqual(result.parent, Path(tmp_dir) / "parsed_deduplicated")
             content = result.read_text(encoding="utf-8")
             self.assertIn("ts,name", content)
             self.assertIn("test", content)

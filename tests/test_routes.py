@@ -1544,6 +1544,10 @@ class RoutesTests(unittest.TestCase):
         image_results = next(iter(persisted_results["images"].values()))
         self.assertEqual(image_results["summary"], "final summary")
         self.assertEqual(image_results["per_artifact"][0]["artifact_key"], "runkeys")
+        with routes_state.STATE_LOCK:
+            image_state = next(iter(routes_state.CASE_STATES[case_id]["image_states"].values()))
+            parsed_dir = Path(image_state["csv_output_dir"])
+        self.assertTrue((parsed_dir / "runkeys.csv").exists())
 
     def test_chat_endpoints_store_history_and_return_retrieval_details(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "chat-endpoints.E01"
@@ -2768,6 +2772,10 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/api/cases/{case_id}/chat/history").status_code, 400)
             self.assertFalse((case_dir / "prompt.txt").exists())
             self.assertFalse((case_dir / "chat_history.jsonl").exists())
+            with routes_state.STATE_LOCK:
+                image_state = next(iter(routes_state.CASE_STATES[case_id]["image_states"].values()))
+                parsed_dir = Path(image_state["csv_output_dir"])
+            self.assertTrue((parsed_dir / "runkeys.csv").exists())
 
     def test_replace_evidence_clears_stale_downstream_state(self) -> None:
         """Loading new evidence must invalidate parse, analysis, and chat state."""
