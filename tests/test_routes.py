@@ -697,7 +697,7 @@ class RoutesTests(unittest.TestCase):
             html = index_resp.get_data(as_text=True)
             self.assertIn("AIFT%20Logo%202.0%20-%20White.png", html)
             self.assertIn("AIFT%20Logo%202.0.png", html)
-            self.assertIn("<title>AIFT | Flip Forensics</title>", html)
+            self.assertIn("<title>AIFT</title>", html)
             self.assertIn(f"v{TOOL_VERSION}", html)
             self.assertIn("©Flip Forensics", html)
 
