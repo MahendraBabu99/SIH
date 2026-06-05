@@ -15,4 +15,4 @@ Sudo configuration defining privilege escalation rules.
 - Check both /etc/sudoers and /etc/sudoers.d/ drop-in files.
 - Recently modified sudoers files are high-priority — correlate modification timestamps with other activity.
 - Attackers commonly add NOPASSWD entries for persistence or privilege escalation.
-- Cross-check: sudoers modifications should correlate with visudo usage in bash_history or file modification timestamps.
+- Later cross-check: sudoers modifications should be correlated later with visudo or editor activity in shell history and file modification timestamps.

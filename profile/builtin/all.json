@@ -323,6 +323,10 @@
       "mode": "parse_and_ai"
     },
     {
+      "artifact_key": "commandhistory",
+      "mode": "parse_and_ai"
+    },
+    {
       "artifact_key": "bash_history",
       "mode": "parse_and_ai"
     },
@@ -384,6 +388,106 @@
     },
     {
       "artifact_key": "ssh.known_hosts",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "authlog",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "audit",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "atop",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "iptables",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "network.dhcp",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "passwords",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "applications",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "recently_used",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "trash",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "cmdline",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "environ",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "processes",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sysmodules",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sockets.tcp",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sockets.udp",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sockets.raw",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sockets.packet",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sockets.unix",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "apt.logs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "dpkg.log",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "dpkg.status",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "yum.logs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "zypper.logs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "snap",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "vmlist",
       "mode": "parse_and_ai"
     }
   ]

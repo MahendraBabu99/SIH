@@ -537,6 +537,9 @@
           <legend>Shell History (Linux)</legend>
           <ul>
             <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="commandhistory" disabled> Command History</label>
+            </li>
+            <li data-available="false">
               <label><input type="checkbox" data-artifact-key="bash_history" disabled> Bash History</label>
             </li>
             <li data-available="false">
@@ -572,6 +575,9 @@
             <li data-available="false">
               <label><input type="checkbox" data-artifact-key="sudoers" disabled> Sudoers Config</label>
             </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="passwords" disabled> Shadow Password Hashes</label>
+            </li>
           </ul>
         </fieldset>
 
@@ -586,6 +592,15 @@
             </li>
             <li data-available="false">
               <label><input type="checkbox" data-artifact-key="packagemanager" disabled> Package History</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="authlog" disabled> Authentication Logs</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="audit" disabled> Linux Audit Logs</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="atop" disabled> Atop Logs</label>
             </li>
           </ul>
         </fieldset>
@@ -607,6 +622,99 @@
           <ul>
             <li data-available="false">
               <label><input type="checkbox" data-artifact-key="network.interfaces" disabled> Network Interfaces</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="network.dhcp" disabled> DHCP Lease Evidence</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="iptables" disabled> iptables and UFW Rules</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="sockets.tcp" disabled> TCP Sockets</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="sockets.udp" disabled> UDP Sockets</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="sockets.raw" disabled> Raw Sockets</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="sockets.packet" disabled> Packet Sockets</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="sockets.unix" disabled> Unix Domain Sockets</label>
+            </li>
+          </ul>
+        </fieldset>
+
+        <fieldset class="artifact-category artifact-category-linux" data-category="linux-process" data-os="linux" hidden>
+          <legend>Process (Linux)</legend>
+          <ul>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="processes" disabled> Processes</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="cmdline" disabled> Process Command Lines</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="environ" disabled> Process Environment</label>
+            </li>
+          </ul>
+        </fieldset>
+
+        <fieldset class="artifact-category artifact-category-linux" data-category="linux-system" data-os="linux" hidden>
+          <legend>System (Linux)</legend>
+          <ul>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="sysmodules" disabled> Kernel Modules</label>
+            </li>
+          </ul>
+        </fieldset>
+
+        <fieldset class="artifact-category artifact-category-linux" data-category="linux-user-activity" data-os="linux" hidden>
+          <legend>User Activity (Linux)</legend>
+          <ul>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="applications" disabled> Desktop Applications</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="recently_used" disabled> Recently Used Files</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="trash" disabled> Trash</label>
+            </li>
+          </ul>
+        </fieldset>
+
+        <fieldset class="artifact-category artifact-category-linux" data-category="linux-package-management" data-os="linux" hidden>
+          <legend>Package Management (Linux)</legend>
+          <ul>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="apt.logs" disabled> APT Logs</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="dpkg.log" disabled> DPKG Logs</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="dpkg.status" disabled> DPKG Package Status</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="yum.logs" disabled> YUM Logs</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="zypper.logs" disabled> Zypper Logs</label>
+            </li>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="snap" disabled> Snap Packages</label>
+            </li>
+          </ul>
+        </fieldset>
+
+        <fieldset class="artifact-category artifact-category-linux" data-category="linux-virtualization" data-os="linux" hidden>
+          <legend>Virtualization (Linux)</legend>
+          <ul>
+            <li data-available="false">
+              <label><input type="checkbox" data-artifact-key="vmlist" disabled> Proxmox VM Inventory</label>
             </li>
           </ul>
         </fieldset>

@@ -2,7 +2,7 @@
 artifact_key: journalctl
 name: Systemd Journal
 category: Logs
-function: journalctl
+function: journal
 description: Structured journal entries from systemd-journald, covering services, kernel,
   and user-session events with rich metadata.
 order: 240

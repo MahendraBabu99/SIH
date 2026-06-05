@@ -913,6 +913,19 @@ class RoutesTests(unittest.TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_linux_recommended_artifacts_are_in_linux_artifact_picker(self) -> None:
+        html = Path("templates/index.html").read_text(encoding="utf-8")
+        linux_html = html.split("<!-- Linux artifact categories -->", 1)[1]
+        picker_keys = set(re.findall(r'data-artifact-key="([^"]+)"', linux_html))
+        missing = [
+            artifact_key
+            for artifact_key, artifact_details in get_artifact_registry("linux").items()
+            if bool(artifact_details.get("recommended", True))
+            and artifact_key not in picker_keys
+        ]
+
+        self.assertEqual(missing, [])
+
     def test_all_profile_includes_every_artifact_as_parse_and_ai(self) -> None:
         with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             response = self.client.get("/api/artifact-profiles")
