@@ -686,6 +686,7 @@ class RoutesTests(unittest.TestCase):
     def test_index_prefers_aift_logo_2_and_handles_spaces(self) -> None:
         images_dir = Path(self.temp_dir.name) / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
+        (images_dir / "AIFT Logo 2.0 - White.png").write_bytes(b"\x89PNG\r\n\x1a\nwhite")
         (images_dir / "AIFT Logo 2.0.png").write_bytes(b"\x89PNG\r\n\x1a\nnew")
         (images_dir / "AIFT Logo Wide.png").write_bytes(b"\x89PNG\r\n\x1a\nwide")
         (images_dir / "AIFT_Logo.png").write_bytes(b"\x89PNG\r\n\x1a\nnormal")
@@ -694,18 +695,18 @@ class RoutesTests(unittest.TestCase):
             index_resp = self.client.get("/")
             self.assertEqual(index_resp.status_code, 200)
             html = index_resp.get_data(as_text=True)
-            self.assertIn("AIFT%20Logo%202.0.png", html)
+            self.assertIn("AIFT%20Logo%202.0%20-%20White.png", html)
             self.assertIn("<title>AIFT | Flip Forensics</title>", html)
             self.assertIn(f"v{TOOL_VERSION}", html)
             self.assertIn("©Flip Forensics", html)
 
-            image_resp = self.client.get("/images/AIFT%20Logo%202.0.png")
+            image_resp = self.client.get("/images/AIFT%20Logo%202.0%20-%20White.png")
             self.assertEqual(image_resp.status_code, 200)
-            self.assertEqual(image_resp.get_data(), b"\x89PNG\r\n\x1a\nnew")
+            self.assertEqual(image_resp.get_data(), b"\x89PNG\r\n\x1a\nwhite")
 
             favicon_resp = self.client.get("/favicon.ico")
             self.assertEqual(favicon_resp.status_code, 200)
-            self.assertEqual(favicon_resp.get_data(), b"\x89PNG\r\n\x1a\nnew")
+            self.assertEqual(favicon_resp.get_data(), b"\x89PNG\r\n\x1a\nwhite")
 
     def test_settings_test_connection_succeeds_without_active_case(self) -> None:
         captured_tokens: list[int] = []

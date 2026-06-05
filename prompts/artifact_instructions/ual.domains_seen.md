@@ -6,7 +6,7 @@ function: ual.domains_seen
 description: Windows Server User Access Logging domain records for resolved hostnames and
   addresses seen by the server.
 order: 1330
-recommended: false
+recommended: true
 default_mode: parse_and_ai
 ---
 

@@ -5,7 +5,7 @@ category: Server
 function: ual.role_access
 description: Windows Server User Access Logging role access records.
 order: 1320
-recommended: false
+recommended: true
 default_mode: parse_and_ai
 ---
 

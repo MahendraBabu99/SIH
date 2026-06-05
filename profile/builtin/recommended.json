@@ -207,6 +207,18 @@
       "mode": "parse_and_ai"
     },
     {
+      "artifact_key": "ual.client_access",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "ual.role_access",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "ual.domains_seen",
+      "mode": "parse_and_ai"
+    },
+    {
       "artifact_key": "cronjobs",
       "mode": "parse_and_ai"
     },
