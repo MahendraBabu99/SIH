@@ -303,6 +303,7 @@
         }
       });
     });
+    syncAdvancedArtifactSections(el.artifactsForm);
   }
 
   /**
@@ -467,17 +468,65 @@
     return identities.size > 1;
   }
 
-  /** Remove the dynamically-created "Additional" artifact category from the DOM. */
+  /** Remove the dynamically-created Advanced artifact section from the DOM. */
   function clearDynamicArtifacts() {
     const d = q("dynamic-artifact-category");
     if (d) d.remove();
+  }
+
+  /** Convert a category label to a stable DOM token. */
+  function artifactCategorySlug(rawCategory) {
+    return String(rawCategory || "Other")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "other";
+  }
+
+  /** Return the display category for a dynamic artifact descriptor. */
+  function artifactDescriptorCategory(rawArtifact) {
+    const category = rawArtifact && rawArtifact.category ? String(rawArtifact.category).trim() : "";
+    return category || "Other";
+  }
+
+  /** Create one artifact checkbox row from an availability descriptor. */
+  function createArtifactListItem(rawArtifact) {
+    const key = String(rawArtifact.key || "");
+    const avail = !!rawArtifact.available;
+    const name = String(rawArtifact.name || key);
+    st.artifactNames[key] = name;
+
+    const li = document.createElement("li");
+    li.dataset.available = String(avail);
+    li.classList.toggle("artifact-unavailable", !avail);
+    if (!avail) li.title = "Not found in this image";
+
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.artifactKey = key;
+    cb.disabled = !avail;
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(` ${name}`));
+    li.appendChild(label);
+    return li;
+  }
+
+  /** Hide Advanced sections that do not contain visible category groups. */
+  function syncAdvancedArtifactSections(root = el.artifactsForm) {
+    if (!root) return;
+    root.querySelectorAll("details.artifact-advanced-section").forEach((section) => {
+      const visibleFieldsets = Array.from(section.querySelectorAll("fieldset.artifact-category"))
+        .filter((fs) => !fs.hidden);
+      section.hidden = visibleFieldsets.length === 0;
+    });
   }
 
   /**
    * Populate the artifact selection UI from the backend's available-artifact list.
    *
    * Updates existing checkboxes (enabling available ones) and creates a
-   * dynamic "Additional" category for any artifacts not in the static HTML.
+   * foldable Advanced section for artifacts not present in the static HTML.
    *
    * @param {Object[]} list - Array of artifact descriptors with key, name, available.
    */
@@ -509,37 +558,44 @@
 
     const extra = list.filter((a) => a && a.key && !known.has(String(a.key)));
     if (extra.length && el.artifactsForm && el.parseBtn) {
-      const fs = document.createElement("fieldset");
-      fs.className = "artifact-category";
-      fs.dataset.category = "additional";
-      fs.id = "dynamic-artifact-category";
-      const lg = document.createElement("legend");
-      lg.textContent = "Additional";
-      fs.appendChild(lg);
-      const ul = document.createElement("ul");
+      const advanced = document.createElement("details");
+      advanced.className = "artifact-advanced-section";
+      advanced.id = "dynamic-artifact-category";
+
+      const summary = document.createElement("summary");
+      summary.textContent = "Advanced";
+      advanced.appendChild(summary);
+
+      const grid = document.createElement("div");
+      grid.className = "artifact-category-grid artifact-advanced-grid";
+
+      const grouped = new Map();
       extra.forEach((a) => {
-        const key = String(a.key || "");
-        const avail = !!a.available;
-        const name = String(a.name || key);
-        st.artifactNames[key] = name;
-        const li = document.createElement("li");
-        li.dataset.available = String(avail);
-        li.classList.toggle("artifact-unavailable", !avail);
-        if (!avail) li.title = "Not found in this image";
-        const label = document.createElement("label");
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.dataset.artifactKey = key;
-        cb.disabled = !avail;
-        label.appendChild(cb);
-        label.appendChild(document.createTextNode(` ${name}`));
-        li.appendChild(label);
-        ul.appendChild(li);
+        const categoryLabel = artifactDescriptorCategory(a);
+        const categoryKey = artifactCategorySlug(categoryLabel);
+        if (!grouped.has(categoryKey)) grouped.set(categoryKey, { label: categoryLabel, artifacts: [] });
+        grouped.get(categoryKey).artifacts.push(a);
       });
-      fs.appendChild(ul);
-      el.artifactsForm.appendChild(fs);
+
+      grouped.forEach((group, categoryKey) => {
+        const fs = document.createElement("fieldset");
+        fs.className = "artifact-category artifact-category-advanced";
+        fs.dataset.category = categoryKey;
+        fs.dataset.advancedCategory = "true";
+        const lg = document.createElement("legend");
+        lg.textContent = group.label;
+        fs.appendChild(lg);
+        const ul = document.createElement("ul");
+        group.artifacts.forEach((a) => ul.appendChild(createArtifactListItem(a)));
+        fs.appendChild(ul);
+        grid.appendChild(fs);
+      });
+
+      advanced.appendChild(grid);
+      el.artifactsForm.appendChild(advanced);
     }
     ensureArtifactModeControls();
+    syncAdvancedArtifactSections();
     updateParseButton();
   }
 
@@ -1002,6 +1058,7 @@
   A.ensureArtifactModeControl = ensureArtifactModeControl;
   A.syncArtifactModeControl = syncArtifactModeControl;
   A.clearDynamicArtifacts = clearDynamicArtifacts;
+  A.syncAdvancedArtifactSections = syncAdvancedArtifactSections;
   A.syncMode = syncMode;
   A.checkForUpdate = checkForUpdate;
   A.getImageForms = getImageForms;

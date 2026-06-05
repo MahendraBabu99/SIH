@@ -808,15 +808,17 @@
          (which only reflects the first image's OS). */
       const imgIsLinux = String(img.os_type || "").trim().toLowerCase() === "linux";
       if (el.artifactsForm) {
-        const fieldsets = el.artifactsForm.querySelectorAll("fieldset.artifact-category");
-        fieldsets.forEach((fs) => {
+        const fieldsetMatchesImage = (fs) => {
           const fsOs = String(fs.dataset.os || "").trim().toLowerCase();
           /* Include fieldsets that match this image's OS:
              - Linux fieldsets (data-os="linux") only for Linux images
              - Windows fieldsets (no data-os) only for non-Linux images */
-          if (fsOs === "linux" && !imgIsLinux) return;
-          if (!fsOs && imgIsLinux) return;
-          const clone = fs.cloneNode(true);
+          if (fsOs === "linux" && !imgIsLinux) return false;
+          if (!fsOs && imgIsLinux) return false;
+          return true;
+        };
+
+        const prepareFieldsetClone = (sourceFieldset, clone) => {
           /* Ensure the cloned fieldset is visible (the main form may
              have hidden it based on the first image's OS). */
           clone.hidden = false;
@@ -836,7 +838,7 @@
               li.title = available ? "" : "Not found in this image";
             }
             const descriptor = availMap.get(key);
-            if (descriptor && descriptor.name && li && String(fs.dataset.category || "") === "additional") {
+            if (descriptor && descriptor.name && li && sourceFieldset.dataset.advancedCategory === "true") {
               const labelEl = cb.closest("label");
               const txt = labelEl ? Array.from(labelEl.childNodes).find((n) => n.nodeType === Node.TEXT_NODE) : null;
               if (txt) txt.textContent = ` ${descriptor.name}`;
@@ -845,9 +847,46 @@
             const existingSelect = li ? li.querySelector("select.artifact-mode-select") : null;
             if (existingSelect) existingSelect.remove();
           });
-          panel.appendChild(clone);
+        };
+
+        const appendFieldsetClone = (sourceFieldset, targetRoot) => {
+          if (!fieldsetMatchesImage(sourceFieldset)) return false;
+          const clone = sourceFieldset.cloneNode(true);
+          prepareFieldsetClone(sourceFieldset, clone);
+          targetRoot.appendChild(clone);
+          return true;
+        };
+
+        Array.from(el.artifactsForm.children).forEach((node) => {
+          if (node.matches && node.matches("fieldset.artifact-category")) {
+            appendFieldsetClone(node, panel);
+            return;
+          }
+          if (!(node.matches && node.matches("details.artifact-advanced-section"))) return;
+
+          const sectionClone = document.createElement("details");
+          sectionClone.className = node.className;
+          sectionClone.open = node.open;
+
+          const summary = node.querySelector("summary");
+          if (summary) sectionClone.appendChild(summary.cloneNode(true));
+
+          const sourceGrid = node.querySelector(".artifact-advanced-grid");
+          const gridClone = document.createElement("div");
+          gridClone.className = sourceGrid ? sourceGrid.className : "artifact-category-grid artifact-advanced-grid";
+
+          let hasFieldsets = false;
+          node.querySelectorAll("fieldset.artifact-category").forEach((sourceFieldset) => {
+            hasFieldsets = appendFieldsetClone(sourceFieldset, gridClone) || hasFieldsets;
+          });
+          if (!hasFieldsets) return;
+
+          sectionClone.appendChild(gridClone);
+          panel.appendChild(sectionClone);
         });
       }
+
+      if (typeof A.syncAdvancedArtifactSections === "function") A.syncAdvancedArtifactSections(panel);
 
       /* Ensure mode controls are created for all checkboxes in this panel. */
       panel.querySelectorAll("input[type='checkbox'][data-artifact-key]").forEach((cb) => {

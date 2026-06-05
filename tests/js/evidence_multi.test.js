@@ -794,6 +794,79 @@ describe("buildMultiImageArtifactTabs", () => {
     expect(panels[1].dataset.imageId).toBe("img-w2");
   });
 
+  test("preserves grouped Advanced artifacts in each image panel", () => {
+    const images = [
+      {
+        image_id: "img-w1",
+        label: "Workstation 1",
+        os_type: "windows",
+        metadata: { hostname: "WS-01" },
+        hashes: {},
+        available_artifacts: [
+          { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+          {
+            key: "jumplist.automatic_destination",
+            name: "Automatic Jump Lists",
+            category: "User Activity",
+            available: true,
+          },
+        ],
+      },
+      {
+        image_id: "img-w2",
+        label: "Workstation 2",
+        os_type: "windows",
+        metadata: { hostname: "WS-02" },
+        hashes: {},
+        available_artifacts: [
+          { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+          {
+            key: "certlog.certificates",
+            name: "Certificate Logs",
+            category: "Certificates",
+            available: true,
+          },
+        ],
+      },
+    ];
+    const combinedArtifacts = [
+      { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+      {
+        key: "jumplist.automatic_destination",
+        name: "Automatic Jump Lists",
+        category: "User Activity",
+        available: true,
+      },
+      {
+        key: "certlog.certificates",
+        name: "Certificate Logs",
+        category: "Certificates",
+        available: true,
+      },
+    ];
+
+    A.st.images = images;
+    A.applyEvidence({
+      os_type: "windows",
+      metadata: { os_version: "Windows 11" },
+      hashes: {},
+      available_artifacts: combinedArtifacts,
+    });
+
+    const panel = document.querySelector(".artifact-image-panel[data-image-id='img-w1']");
+    const advanced = panel.querySelector("details.artifact-advanced-section");
+    expect(advanced).not.toBeNull();
+    expect(advanced.id).toBe("");
+    expect(advanced.querySelector("summary").textContent).toBe("Advanced");
+    expect(
+      advanced.querySelector("fieldset[data-category='user-activity'] input[data-artifact-key='jumplist.automatic_destination']")
+    ).not.toBeNull();
+    expect(
+      advanced.querySelector("fieldset[data-category='certificates'] input[data-artifact-key='certlog.certificates']")
+    ).not.toBeNull();
+    expect(document.querySelectorAll("#dynamic-artifact-category").length).toBe(1);
+  });
+
   test("preserves OS-specific labels for duplicate artifact keys", () => {
     setImagesAndBuildTabs(makeWindowsLinuxServiceImages());
 

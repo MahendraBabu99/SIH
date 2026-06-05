@@ -10,7 +10,7 @@
  *  - syncArtifactModeControl enables/disables selects
  *  - validateAnalysisDateRange validation logic
  *  - updateParseButton button state and label
- *  - clearDynamicArtifacts removes dynamic category
+ *  - clearDynamicArtifacts removes dynamic artifact sections
  *  - parse button visibility in multi-image mode
  *
  * @jest-environment jsdom
@@ -383,8 +383,8 @@ describe("updateParseButton", () => {
 // ── clearDynamicArtifacts ───────────────────────────────────────────────────
 
 describe("clearDynamicArtifacts", () => {
-  test("removes dynamic artifact category from DOM", () => {
-    // Create a fake dynamic category
+  test("removes dynamic artifact section from DOM", () => {
+    // Create a fake dynamic section
     const fs = document.createElement("fieldset");
     fs.id = "dynamic-artifact-category";
     document.body.appendChild(fs);
@@ -396,6 +396,47 @@ describe("clearDynamicArtifacts", () => {
 
   test("does nothing when no dynamic category exists", () => {
     expect(() => A.clearDynamicArtifacts()).not.toThrow();
+  });
+});
+
+describe("dynamic advanced artifacts", () => {
+  test("renders extra artifacts in a foldable Advanced section grouped by category", () => {
+    A.applyEvidence({
+      os_type: "windows",
+      metadata: { os_version: "Windows 11" },
+      hashes: {},
+      available_artifacts: [
+        { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+        {
+          key: "jumplist.automatic_destination",
+          name: "Automatic Jump Lists",
+          category: "User Activity",
+          available: true,
+        },
+        {
+          key: "certlog.certificates",
+          name: "Certificate Logs",
+          category: "Certificates",
+          available: true,
+        },
+      ],
+    });
+
+    const advanced = mustGet("dynamic-artifact-category");
+    expect(advanced.tagName).toBe("DETAILS");
+    expect(advanced.classList.contains("artifact-advanced-section")).toBe(true);
+    expect(advanced.querySelector("summary").textContent).toBe("Advanced");
+    expect(advanced.querySelector(".artifact-advanced-grid")).not.toBeNull();
+
+    const legends = Array.from(advanced.querySelectorAll("fieldset.artifact-category legend"))
+      .map((legend) => legend.textContent);
+    expect(legends).toEqual(["User Activity", "Certificates"]);
+    expect(
+      advanced.querySelector("fieldset[data-category='user-activity'] input[data-artifact-key='jumplist.automatic_destination']")
+    ).not.toBeNull();
+    expect(
+      advanced.querySelector("fieldset[data-category='certificates'] input[data-artifact-key='certlog.certificates']")
+    ).not.toBeNull();
   });
 });
 
