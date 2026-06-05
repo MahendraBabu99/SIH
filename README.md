@@ -72,6 +72,8 @@ python aift.py
 
 The app starts and opens your browser to `http://localhost:5000`. On first run, a default `config/config.yaml` is created automatically.
 
+For a production-style local run, use a WSGI server such as Waitress. 
+
 ### 3. Configure your AI provider
 
 Click the **gear icon** (⚙) in the top-right corner of the UI. Select your AI provider and enter the required credentials:
