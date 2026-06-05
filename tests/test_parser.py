@@ -225,7 +225,11 @@ class ParserTests(unittest.TestCase):
     def test_get_available_artifacts_adds_available_flag(self) -> None:
         class AvailabilityTarget:
             def has_function(self, function_name: str) -> bool:
-                return function_name in {"runkeys", "browser.history"}
+                return function_name in {
+                    "runkeys",
+                    "browser.history",
+                    "jumplist.automatic_destination",
+                }
 
         audit = FakeAuditLogger()
         with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
@@ -234,8 +238,12 @@ class ParserTests(unittest.TestCase):
 
         runkeys = next(item for item in artifacts if item["key"] == "runkeys")
         tasks = next(item for item in artifacts if item["key"] == "tasks")
+        automatic_jumplist = next(
+            item for item in artifacts if item["key"] == "jumplist.automatic_destination"
+        )
         self.assertTrue(runkeys["available"])
         self.assertFalse(tasks["available"])
+        self.assertTrue(automatic_jumplist["available"])
         self.assertIn("available", runkeys)
 
     def test_get_available_artifacts_handles_plugin_error(self) -> None:
@@ -1614,7 +1622,17 @@ class ArtifactRegistryTests(unittest.TestCase):
         self.assertGreater(len(WINDOWS_ARTIFACT_REGISTRY), 0)
 
     def test_known_artifacts_present(self) -> None:
-        expected_keys = {"runkeys", "tasks", "services", "evtx", "mft", "shimcache", "prefetch"}
+        expected_keys = {
+            "runkeys",
+            "tasks",
+            "services",
+            "evtx",
+            "mft",
+            "shimcache",
+            "prefetch",
+            "jumplist.automatic_destination",
+            "jumplist.custom_destination",
+        }
         for key in expected_keys:
             self.assertIn(key, WINDOWS_ARTIFACT_REGISTRY)
 

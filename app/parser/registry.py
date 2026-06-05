@@ -346,6 +346,34 @@ WINDOWS_ARTIFACT_REGISTRY: dict[str, dict[str, str]] = {
             "Prioritize activity involving remote access tools, cloud storage, and sensitive document paths."
         ),
     },
+    "jumplist.automatic_destination": {
+        "name": "Automatic Jump Lists",
+        "category": "User Activity",
+        "function": "jumplist.automatic_destination",
+        "description": (
+            "Automatically generated Windows Jump Lists that record recently accessed applications, files, "
+            "folders, and network locations through embedded shortcut metadata."
+        ),
+        "analysis_hint": (
+            "Use automatic Jump Lists to reconstruct per-user file and application activity. "
+            "Prioritize suspicious target paths, command-line arguments, removable media, network shares, "
+            "and entries whose target timestamps align with the compromise window."
+        ),
+    },
+    "jumplist.custom_destination": {
+        "name": "Custom Jump Lists",
+        "category": "User Activity",
+        "function": "jumplist.custom_destination",
+        "description": (
+            "Pinned or user-curated Windows Jump Lists that preserve shortcuts to applications, files, "
+            "folders, and network locations selected for quick access."
+        ),
+        "analysis_hint": (
+            "Use custom Jump Lists to identify user-pinned or attacker-staged resources. "
+            "Flag unusual local paths, remote shares, script/tool references, and shortcut arguments; "
+            "correlate target timestamps with execution, file system, and shell activity artifacts."
+        ),
+    },
     "sru.network_data": {
         "name": "SRUM Network Data",
         "category": "Network",

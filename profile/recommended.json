@@ -59,6 +59,14 @@
       "mode": "parse_and_ai"
     },
     {
+      "artifact_key": "jumplist.automatic_destination",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "jumplist.custom_destination",
+      "mode": "parse_and_ai"
+    },
+    {
       "artifact_key": "sru.network_data",
       "mode": "parse_and_ai"
     },

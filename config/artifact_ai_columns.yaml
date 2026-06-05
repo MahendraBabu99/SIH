@@ -73,6 +73,38 @@ artifact_ai_columns:
     - order
     - command
     - username
+  jumplist.automatic_destination:
+    - type
+    - application_name
+    - lnk_name
+    - lnk_full_path
+    - lnk_arguments
+    - local_base_path
+    - common_path_suffix
+    - lnk_path
+    - lnk_workdir
+    - lnk_net_name
+    - machine_id
+    - target_mtime
+    - target_atime
+    - target_ctime
+    - username
+  jumplist.custom_destination:
+    - type
+    - application_name
+    - lnk_name
+    - lnk_full_path
+    - lnk_arguments
+    - local_base_path
+    - common_path_suffix
+    - lnk_path
+    - lnk_workdir
+    - lnk_net_name
+    - machine_id
+    - target_mtime
+    - target_atime
+    - target_ctime
+    - username
   bam:
     - ts
     - path
