@@ -2,7 +2,7 @@
   <img src="images/AIFT Logo - White Text.png" alt="AIFT Logo" width="400">
 </p>
 
-# AIFT - AI Forensic Triage V1.5
+# AIFT - AI Forensic Triage V2.0
 
 **Automated Windows and Linux forensic triage, powered by AI.**
 
@@ -23,7 +23,7 @@ Upload Evidence → Select Artifacts → Parse → AI Analysis → HTML Report
 1. **Run the app** - a local web interface opens in your browser.
 2. **Add evidence** - drag-and-drop an E01, VMDK, VHD, raw image, or archive; point to a local path for large images; or use **Scan Directory** to find forensic images and triage-package targets inside a folder. Add multiple images to a single case for cross-system analysis.
 3. **Pick artifacts** - choose from 25+ Windows or 19 Linux forensic artifacts per image, which will be parsed by [Dissect](https://github.com/fox-it/dissect).
-4. **Get results** - AI analyzes each artifact for indicators of compromise, correlates findings across artifacts and across systems, and generates a self-contained HTML report with evidence hashes and full audit trail.
+4. **Get results** - AI analyzes each artifact for indicators of compromise, correlates findings across artifacts and across systems, and generates HTML/JSON reports with evidence hashes and full audit trail.
 
 No Elasticsearch. No Docker. No database. One Python script, one command.
 
@@ -88,8 +88,8 @@ Click **Test Connection** to verify everything works. That's it - you're ready t
 - To bulk-add evidence from a folder, use **Scan Directory** beneath the case name. Enter an absolute local folder path; AIFT runs the same Dissect-aware discovery used by automation mode, shows the discovered targets, and creates one local-path image card per target. This is separate from **Add Image**, which only adds a blank one-for-one image form.
 - To analyze multiple systems, click **Add Image** to add more evidence sources to the same case. Each image is labeled and processed independently.
 - AIFT opens each image or Triage Package.
-- Select artifacts manually or click **Recommended**. Each image has its own artifact tab with OS-specific options. Use **Apply to All** to replicate a selection across all images. You can also save and load artifact profiles.
-- Optional: set the **AI Date Filter** before parsing if you know the incident window. The filter is applied to every artifact selected for AI analysis, with a 7-day buffer on both sides. It narrows only the AI analysis input; parsing still writes the full artifact CSVs, and rows without parseable timestamps are kept.
+- Select artifacts manually or click **Recommended**. Each image has its own OS-specific artifact tab. Use **Apply to All** to copy matching selections without overwriting OS-specific or differently named artifacts. You can also save and load artifact profiles.
+- Optional: set the **AI Date Filter** before parsing if you know the incident window. It narrows only AI input, with a 7-day buffer on both sides. Parsing is independent; all rows remain unless a positive **Artifact CSV Row Limit** caps parsed CSV output.
 - Click **Parse**. Per-image progress is shown in real time.
 - Enter your investigation context (e.g., "Suspected unauthorized access between Jan 1-15, 2026. Look for new accounts and remote access tools. IOC identified: abc.exe").
 - Click **Analyze**. Per-artifact findings stream in for each image, followed by per-image summaries and (for multi-image cases) a cross-system correlation identifying lateral movement, shared IOCs, and incident timeline across all systems.
@@ -210,7 +210,7 @@ AIFT uses [Dissect](https://github.com/fox-it/dissect) for evidence loading, whi
 | **Backup** | `.vbk` | Veeam Backup files |
 | **Dissect native** | `.asdf`, `.asif` | Dissect `acquire` output |
 | **FTK / AccessData** | `.ad1` | Logical images |
-| **Archives** | `.zip`, `.7z`, `.tar`, `.tar.gz` | Extracted safely and resolved with Dissect-aware discovery |
+| **Archives** | `.zip`, `.7z`, `.tar`, `.tar.gz` | Opened directly when Dissect can; otherwise extracted safely and resolved with Dissect-aware discovery |
 
 Evidence can also be provided as a **directory path** (e.g., KAPE or Velociraptor triage output for Windows, or UAC triage output for Linux). AIFT first asks Dissect whether a directory or extracted archive root is itself a target; only if it is not loadable does AIFT recurse into child folders and files. This prevents incidental nested files, such as tracing `.bin` files inside a KAPE collection, from being selected ahead of the loadable triage package directory.
 
@@ -234,7 +234,7 @@ AIFT supports analyzing multiple evidence sources in a single case - for example
 - **Chat** context includes findings from all images for cross-system follow-up questions.
 - **CSV downloads** are organized into subdirectories by image label.
 
-Single-image cases work exactly as before - the multi-image features activate only when multiple images are added.
+Single-image cases keep the normal single-system UI and report; grouped multi-image views and cross-system correlation activate when multiple images are added.
 
 ---
 
@@ -252,23 +252,23 @@ Features under active development:
 AIFT is built with forensic defensibility in mind:
 
 - **Evidence is read-only.** Disk images are never modified. Dissect opens everything in read-only mode.
-- **SHA-256 + MD5 hashing** on intake and before report generation (can be skipped in Settings → Advanced for faster intake of large images). Hash match is verified and shown in the report.
+- **SHA-256 + MD5 hashing** on intake; before reports, AIFT re-verifies SHA-256 when integrity data is available. Reports show PASS, FAIL, SKIPPED, or UNAVAILABLE.
 - **Complete audit trail.** Every action (upload, parse, analyze, report) is logged with UTC timestamps to a per-case `audit.jsonl` file.
 - **AI guardrails.** The AI is instructed to cite specific records, state uncertainty explicitly, and never fabricate evidence. Findings include confidence ratings (HIGH / MEDIUM / LOW).
-- **Prompt audit trail.** Every prompt sent to the AI (system prompt + user prompt) is saved to the case's `prompts/` directory. This allows full review of exactly what the AI was asked, regardless of provider.
+- **Prompt audit trail.** Primary analysis prompts (artifact, chunk/merge, summary, cross-image) are saved. In CSV attachment mode, prompt files may contain an attachment reference; the analysis-input CSV is the row source.
 - **Disclaimer in every report.** AI-assisted findings must be verified by a qualified examiner before use in legal or formal proceedings.
 
 ---
 
 ## Report Output
 
-AIFT generates a **self-contained HTML report** - all CSS inlined, no external dependencies. Open it in any browser, print it, or archive it. The report includes:
+AIFT generates a **self-contained HTML report** plus a matching JSON export for integrations/API use. Open the HTML in any browser, print it, or archive it. The report includes:
 
 - Evidence metadata and hash verification (per-image in multi-image cases)
 - Executive summary with confidence assessment
 - Per-artifact findings with cited evidence
 - Cross-system analysis panel (multi-image cases)
-- Investigation gaps and recommended next steps
+- Processing notes, investigation gaps, and recommended next steps
 - Complete audit trail
 
 Parsed artifact data is also available as a downloadable CSV bundle for further analysis (organized by image label in multi-image cases).

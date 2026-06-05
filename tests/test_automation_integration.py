@@ -313,7 +313,7 @@ class _IntegrationTestBase(unittest.TestCase):
             report = {
                 "report_metadata": {
                     "tool": "AIFT",
-                    "tool_version": "1.6.0-test",
+                    "tool_version": "2.0.0-test",
                     "report_generated_utc": "2026-05-31T00:00:00+00:00",
                     "case_id": "case-integ-001",
                     "case_name": "Integration Case",

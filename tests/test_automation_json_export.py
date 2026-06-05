@@ -223,7 +223,7 @@ class TestExportJsonReport(unittest.TestCase):
             investigation_context=kwargs.get("investigation_context", "Test prompt"),
             audit_log_entries=kwargs.get("audit_log_entries", _make_audit_entries()),
             output_path=out,
-            tool_version=kwargs.get("tool_version", "1.6.0-test"),
+            tool_version=kwargs.get("tool_version", "2.0.0-test"),
         )
         with open(result_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -266,7 +266,7 @@ class TestExportJsonReport(unittest.TestCase):
         _, data = self._export()
         meta = data["report_metadata"]
         self.assertEqual(meta["tool"], "AIFT")
-        self.assertEqual(meta["tool_version"], "1.6.0-test")
+        self.assertEqual(meta["tool_version"], "2.0.0-test")
         self.assertEqual(meta["case_id"], SAMPLE_CASE_ID)
         self.assertEqual(meta["case_name"], SAMPLE_CASE_NAME)
         self.assertIn("report_generated_utc", meta)
