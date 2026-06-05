@@ -8,7 +8,8 @@
 window.AIFT = (() => {
   // ── Constants ──────────────────────────────────────────────────────────────
   const STEP_IDS = ["step-evidence", "step-artifacts", "step-parsing", "step-analysis", "step-results"];
-  const RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS = new Set(["mft", "usnjrnl", "evtx", "defender.evtx"]);
+  const RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS = new Set(["usnjrnl"]);
+  const RECOMMENDED_PRESET_PARSE_ONLY_ARTIFACTS = new Set(["mft", "evtx"]);
   const MODE_PARSE_AND_AI = "parse_and_ai";
   const MODE_PARSE_ONLY = "parse_only";
   const RECOMMENDED_PROFILE = "recommended";
@@ -1193,7 +1194,8 @@ window.AIFT = (() => {
   // ── Public API ─────────────────────────────────────────────────────────────
   return {
     // Constants
-    STEP_IDS, RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS, MODE_PARSE_AND_AI, MODE_PARSE_ONLY,
+    STEP_IDS, RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS, RECOMMENDED_PRESET_PARSE_ONLY_ARTIFACTS,
+    MODE_PARSE_AND_AI, MODE_PARSE_ONLY,
     RECOMMENDED_PROFILE, DROP_HELP, EVIDENCE_ACCEPT, EVIDENCE_ACCEPT_EXTENSIONS,
     CONFIDENCE_TOKEN_PATTERN, AI_MAX_TOKENS_WARNING_THRESHOLD,
     CONFIDENCE_CLASS_MAP, SSE_MAX_RETRIES, SSE_RETRY_BASE_DELAY_MS, SSE_RETRY_MAX_DELAY_MS,

@@ -39,6 +39,18 @@
       "mode": "parse_and_ai"
     },
     {
+      "artifact_key": "evtx",
+      "mode": "parse_only"
+    },
+    {
+      "artifact_key": "defender.evtx",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mft",
+      "mode": "parse_only"
+    },
+    {
       "artifact_key": "recyclebin",
       "mode": "parse_and_ai"
     },

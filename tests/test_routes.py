@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -889,14 +890,27 @@ class RoutesTests(unittest.TestCase):
             for option in options
         }
         self.assertEqual(option_modes, expected_modes)
-        self.assertNotIn("mft", option_keys)
         self.assertNotIn("usnjrnl", option_keys)
-        self.assertNotIn("evtx", option_keys)
-        self.assertNotIn("defender.evtx", option_keys)
+        self.assertEqual(option_modes.get("mft"), "parse_only")
+        self.assertEqual(option_modes.get("evtx"), "parse_only")
+        self.assertEqual(option_modes.get("defender.evtx"), "parse_and_ai")
         # Linux artifacts should now be present.
         self.assertIn("bash_history", option_keys)
         self.assertIn("syslog", option_keys)
         self.assertEqual(option_modes.get("firewall.logs"), "parse_only")
+
+    def test_windows_recommended_artifacts_are_in_normal_artifact_picker(self) -> None:
+        html = Path("templates/index.html").read_text(encoding="utf-8")
+        windows_html = html.split("<!-- Linux artifact categories -->", 1)[0]
+        picker_keys = set(re.findall(r'data-artifact-key="([^"]+)"', windows_html))
+        missing = [
+            artifact_key
+            for artifact_key, artifact_details in get_artifact_registry("windows").items()
+            if bool(artifact_details.get("recommended", True))
+            and artifact_key not in picker_keys
+        ]
+
+        self.assertEqual(missing, [])
 
     def test_all_profile_includes_every_artifact_as_parse_and_ai(self) -> None:
         with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):

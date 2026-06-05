@@ -7,7 +7,7 @@ description: Microsoft Defender event logs describing detections, remediation ac
   and protection state changes. These records show what malware was seen and how protection
   responded.
 order: 200
-recommended: false
+recommended: true
 default_mode: parse_and_ai
 ---
 

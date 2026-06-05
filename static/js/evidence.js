@@ -746,6 +746,16 @@
 
   /** Apply a checkbox preset ("recommended" or "clear") within a DOM root. */
   function applyArtifactPresetIn(root, mode) {
+    if (mode === "recommended") {
+      const recommendedProfile = findProfileByName(A.RECOMMENDED_PROFILE);
+      const profileOptions = recommendedProfile && Array.isArray(recommendedProfile.artifact_options)
+        ? recommendedProfile.artifact_options
+        : [];
+      if (profileOptions.length) {
+        applyArtifactSelectionMapToRoot(root, profileOptions);
+        return;
+      }
+    }
     artifactBoxesIn(root).forEach((cb) => {
       const select = ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);
       if (cb.disabled) {
@@ -755,7 +765,12 @@
       }
       if (mode === "clear") cb.checked = false;
       else cb.checked = !A.RECOMMENDED_PRESET_EXCLUDED_ARTIFACTS.has(String(cb.dataset.artifactKey || "").trim().toLowerCase());
-      if (select) select.value = A.MODE_PARSE_AND_AI;
+      if (select) {
+        const key = String(cb.dataset.artifactKey || "").trim().toLowerCase();
+        select.value = mode === "recommended" && A.RECOMMENDED_PRESET_PARSE_ONLY_ARTIFACTS.has(key)
+          ? A.MODE_PARSE_ONLY
+          : A.MODE_PARSE_AND_AI;
+      }
       syncArtifactModeControl(cb, select);
     });
   }

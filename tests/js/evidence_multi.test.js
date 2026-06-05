@@ -805,9 +805,9 @@ describe("buildMultiImageArtifactTabs", () => {
         available_artifacts: [
           { key: "runkeys", name: "Run/RunOnce Keys", available: true },
           {
-            key: "jumplist.automatic_destination",
-            name: "Automatic Jump Lists",
-            category: "User Activity",
+            key: "certlog.certificates",
+            name: "Issued Certificates",
+            category: "PKI",
             available: true,
           },
         ],
@@ -821,9 +821,9 @@ describe("buildMultiImageArtifactTabs", () => {
         available_artifacts: [
           { key: "runkeys", name: "Run/RunOnce Keys", available: true },
           {
-            key: "certlog.certificates",
-            name: "Certificate Logs",
-            category: "Certificates",
+            key: "mssql.errorlog",
+            name: "MSSQL Error Log",
+            category: "Database",
             available: true,
           },
         ],
@@ -832,15 +832,15 @@ describe("buildMultiImageArtifactTabs", () => {
     const combinedArtifacts = [
       { key: "runkeys", name: "Run/RunOnce Keys", available: true },
       {
-        key: "jumplist.automatic_destination",
-        name: "Automatic Jump Lists",
-        category: "User Activity",
+        key: "certlog.certificates",
+        name: "Issued Certificates",
+        category: "PKI",
         available: true,
       },
       {
-        key: "certlog.certificates",
-        name: "Certificate Logs",
-        category: "Certificates",
+        key: "mssql.errorlog",
+        name: "MSSQL Error Log",
+        category: "Database",
         available: true,
       },
     ];
@@ -859,10 +859,10 @@ describe("buildMultiImageArtifactTabs", () => {
     expect(advanced.id).toBe("");
     expect(advanced.querySelector("summary").textContent).toBe("Advanced");
     expect(
-      advanced.querySelector("fieldset[data-category='user-activity'] input[data-artifact-key='jumplist.automatic_destination']")
+      advanced.querySelector("fieldset[data-category='pki'] input[data-artifact-key='certlog.certificates']")
     ).not.toBeNull();
     expect(
-      advanced.querySelector("fieldset[data-category='certificates'] input[data-artifact-key='certlog.certificates']")
+      advanced.querySelector("fieldset[data-category='database'] input[data-artifact-key='mssql.errorlog']")
     ).not.toBeNull();
     expect(document.querySelectorAll("#dynamic-artifact-category").length).toBe(1);
   });
@@ -1207,19 +1207,51 @@ describe("applyRecommendedToAllImages", () => {
     }
   });
 
-  test("does not check excluded artifacts (evtx, mft)", () => {
+  test("uses loaded recommended profile modes for all image panels", () => {
+    A.st.profiles = [
+      {
+        name: "recommended",
+        builtin: true,
+        artifact_options: [
+          { artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI },
+          { artifact_key: "evtx", mode: A.MODE_PARSE_ONLY },
+          { artifact_key: "mft", mode: A.MODE_PARSE_ONLY },
+        ],
+      },
+    ];
     setImagesAndBuildTabs(makeWindowsLinuxImages());
     A.applyRecommendedToAllImages();
 
     const winPanel = document.querySelector(".artifact-image-panel[data-image-id='img-win']");
     const evtxCb = winPanel.querySelector("input[data-artifact-key='evtx']");
-    if (evtxCb && !evtxCb.disabled) {
-      expect(evtxCb.checked).toBe(false);
-    }
     const mftCb = winPanel.querySelector("input[data-artifact-key='mft']");
-    if (mftCb && !mftCb.disabled) {
-      expect(mftCb.checked).toBe(false);
-    }
+    const evtxMode = evtxCb.closest("li").querySelector(".artifact-mode-select");
+    const mftMode = mftCb.closest("li").querySelector(".artifact-mode-select");
+
+    expect(evtxCb.checked).toBe(true);
+    expect(mftCb.checked).toBe(true);
+    expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+  });
+
+  test("sets fallback recommended parse-only artifacts", () => {
+    const images = makeWindowsLinuxImages();
+    images[0].available_artifacts.push({ key: "defender.evtx", name: "Defender Logs", available: true });
+    setImagesAndBuildTabs(images);
+    A.applyRecommendedToAllImages();
+
+    const winPanel = document.querySelector(".artifact-image-panel[data-image-id='img-win']");
+    const defenderCb = winPanel.querySelector("input[data-artifact-key='defender.evtx']");
+    const evtxCb = winPanel.querySelector("input[data-artifact-key='evtx']");
+    const mftCb = winPanel.querySelector("input[data-artifact-key='mft']");
+    const evtxMode = evtxCb.closest("li").querySelector(".artifact-mode-select");
+    const mftMode = mftCb.closest("li").querySelector(".artifact-mode-select");
+
+    expect(defenderCb.checked).toBe(true);
+    expect(evtxCb.checked).toBe(true);
+    expect(mftCb.checked).toBe(true);
+    expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
   });
 
   test("does nothing when not in multi-image mode", () => {

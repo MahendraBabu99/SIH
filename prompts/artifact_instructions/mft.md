@@ -7,8 +7,8 @@ description: Master File Table metadata for NTFS files and directories, includin
   attributes, and record references. MFT helps reconstruct file lifecycle and artifact provenance
   at scale.
 order: 210
-recommended: false
-default_mode: parse_and_ai
+recommended: true
+default_mode: parse_only
 ---
 
 Complete file metadata with MACB timestamps for every file on the volume.

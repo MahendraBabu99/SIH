@@ -224,6 +224,79 @@ describe("artifact selection helpers", () => {
   });
 });
 
+describe("recommended artifact action", () => {
+  function loadWindowsArtifactsForRecommendedAction() {
+    A.applyEvidence({
+      os_type: "windows",
+      metadata: { os_version: "Windows 11" },
+      hashes: {},
+      available_artifacts: [
+        { key: "defender.evtx", name: "Defender Logs", available: true },
+        { key: "evtx", name: "Windows Event Logs", available: true },
+        { key: "mft", name: "MFT", available: true },
+        { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+        { key: "usnjrnl", name: "USN Journal", available: true },
+      ],
+    });
+  }
+
+  test("single-image Recommended button uses loaded profile modes", () => {
+    loadWindowsArtifactsForRecommendedAction();
+    A.st.profiles = [
+      {
+        name: "recommended",
+        builtin: true,
+        artifact_options: [
+          { artifact_key: "defender.evtx", mode: A.MODE_PARSE_AND_AI },
+          { artifact_key: "evtx", mode: A.MODE_PARSE_ONLY },
+          { artifact_key: "mft", mode: A.MODE_PARSE_ONLY },
+        ],
+      },
+    ];
+    const runkeys = mustQuery(document, "input[data-artifact-key='runkeys']");
+    runkeys.checked = true;
+    A.ensureArtifactModeControl(runkeys, A.MODE_PARSE_AND_AI);
+
+    mustGet("preset-quick-triage").click();
+
+    const defender = mustQuery(document, "input[data-artifact-key='defender.evtx']");
+    const evtx = mustQuery(document, "input[data-artifact-key='evtx']");
+    const mft = mustQuery(document, "input[data-artifact-key='mft']");
+    const evtxMode = mustQuery(evtx.closest("li"), ".artifact-mode-select");
+    const mftMode = mustQuery(mft.closest("li"), ".artifact-mode-select");
+    const defenderMode = mustQuery(defender.closest("li"), ".artifact-mode-select");
+
+    expect(defender.checked).toBe(true);
+    expect(evtx.checked).toBe(true);
+    expect(mft.checked).toBe(true);
+    expect(runkeys.checked).toBe(false);
+    expect(defenderMode.value).toBe(A.MODE_PARSE_AND_AI);
+    expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+  });
+
+  test("single-image fallback keeps Defender EVTX selected and EVTX/MFT parse-only", () => {
+    loadWindowsArtifactsForRecommendedAction();
+    A.st.profiles = [];
+
+    mustGet("preset-quick-triage").click();
+
+    const defender = mustQuery(document, "input[data-artifact-key='defender.evtx']");
+    const evtx = mustQuery(document, "input[data-artifact-key='evtx']");
+    const mft = mustQuery(document, "input[data-artifact-key='mft']");
+    const usn = mustQuery(document, "input[data-artifact-key='usnjrnl']");
+    const evtxMode = mustQuery(evtx.closest("li"), ".artifact-mode-select");
+    const mftMode = mustQuery(mft.closest("li"), ".artifact-mode-select");
+
+    expect(defender.checked).toBe(true);
+    expect(evtx.checked).toBe(true);
+    expect(mft.checked).toBe(true);
+    expect(usn.checked).toBe(false);
+    expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+  });
+});
+
 describe("dropped file state", () => {
   test("stores dropped files outside DOM expandos and clears them", () => {
     const card = A.getImageForms()[0];
@@ -408,15 +481,15 @@ describe("dynamic advanced artifacts", () => {
       available_artifacts: [
         { key: "runkeys", name: "Run/RunOnce Keys", available: true },
         {
-          key: "jumplist.automatic_destination",
-          name: "Automatic Jump Lists",
-          category: "User Activity",
+          key: "certlog.certificates",
+          name: "Issued Certificates",
+          category: "PKI",
           available: true,
         },
         {
-          key: "certlog.certificates",
-          name: "Certificate Logs",
-          category: "Certificates",
+          key: "mssql.errorlog",
+          name: "MSSQL Error Log",
+          category: "Database",
           available: true,
         },
       ],
@@ -430,12 +503,12 @@ describe("dynamic advanced artifacts", () => {
 
     const legends = Array.from(advanced.querySelectorAll("fieldset.artifact-category legend"))
       .map((legend) => legend.textContent);
-    expect(legends).toEqual(["User Activity", "Certificates"]);
+    expect(legends).toEqual(["PKI", "Database"]);
     expect(
-      advanced.querySelector("fieldset[data-category='user-activity'] input[data-artifact-key='jumplist.automatic_destination']")
+      advanced.querySelector("fieldset[data-category='pki'] input[data-artifact-key='certlog.certificates']")
     ).not.toBeNull();
     expect(
-      advanced.querySelector("fieldset[data-category='certificates'] input[data-artifact-key='certlog.certificates']")
+      advanced.querySelector("fieldset[data-category='database'] input[data-artifact-key='mssql.errorlog']")
     ).not.toBeNull();
   });
 });

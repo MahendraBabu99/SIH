@@ -1012,9 +1012,9 @@
   /**
    * Apply the recommended preset to every image tab panel.
    *
-   * Iterates all per-image panels and checks/unchecks artifacts according
-   * to the recommended preset rules (excludes MFT, USN Journal, EVTX,
-   * Defender Logs).  Only visible in multi-image mode.
+   * Iterates all per-image panels and applies the loaded recommended profile
+   * when available. The fallback keeps only the frontend preset behavior:
+   * USN Journal is excluded, while EVTX and MFT are selected as parse-only.
    */
   function applyRecommendedToAllImages() {
     if (!isMultiImage()) return;
