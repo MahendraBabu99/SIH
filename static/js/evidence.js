@@ -833,8 +833,9 @@
     A.clearMsg(el.artifactsMsg);
     const profileName = A.val(el.profileName);
     if (!profileName) return A.setMsg(el.artifactsMsg, "Enter a profile name before saving.", "error");
-    if (profileName.toLowerCase() === A.RECOMMENDED_PROFILE) {
-      return A.setMsg(el.artifactsMsg, "`recommended` is reserved. Pick a different name.", "error");
+    const profileNameKey = profileName.toLowerCase();
+    if (profileNameKey === A.RECOMMENDED_PROFILE || profileNameKey === "all") {
+      return A.setMsg(el.artifactsMsg, `\`${profileNameKey}\` is reserved. Pick a different name.`, "error");
     }
     const options = serializeArtifactSelections("active");
     if (!options.length) return A.setMsg(el.artifactsMsg, "Select at least one artifact before saving a profile.", "error");

@@ -49,7 +49,7 @@ class _RouteLevelParser:
             case_dir: Case directory path.
             audit_logger: Audit logger provided by automation.
             parsed_dir: CSV output directory.
-            **_kwargs: Ignored compatibility keyword arguments.
+            **_kwargs: Ignored extra keyword arguments.
         """
         del evidence_path, audit_logger
         self.case_dir = Path(case_dir)
@@ -91,7 +91,7 @@ class _RouteLevelParser:
         Args:
             artifact_key: Artifact key to parse.
             progress_callback: Optional callback for record-count progress.
-            **_kwargs: Ignored compatibility keyword arguments.
+            **_kwargs: Ignored extra keyword arguments.
 
         Returns:
             Parser result dictionary.
@@ -136,7 +136,7 @@ class _RouteLevelAnalyzer:
             artifact_keys: Artifact keys selected for analysis.
             investigation_context: Analyst prompt.
             metadata: Image metadata.
-            **_kwargs: Ignored compatibility keyword arguments.
+            **_kwargs: Ignored extra keyword arguments.
 
         Returns:
             Analysis result dictionary.
@@ -403,8 +403,8 @@ class TestApiToReportIntegration(unittest.TestCase):
             "  ai_max_tokens: 4096\n",
             encoding="utf-8",
         )
-        profile_dir = workspace / "profile"
-        profile_dir.mkdir()
+        profile_dir = workspace / "profile" / "builtin"
+        profile_dir.mkdir(parents=True)
         (profile_dir / "recommended.json").write_text(
             json.dumps({
                 "name": "recommended",
@@ -511,8 +511,8 @@ class TestApiToReportIntegration(unittest.TestCase):
             "  ai_max_tokens: 4096\n",
             encoding="utf-8",
         )
-        profile_dir = workspace / "profile"
-        profile_dir.mkdir()
+        profile_dir = workspace / "profile" / "builtin"
+        profile_dir.mkdir(parents=True)
         (profile_dir / "recommended.json").write_text(
             json.dumps({
                 "name": "recommended",

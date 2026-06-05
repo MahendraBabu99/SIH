@@ -838,10 +838,13 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(list_after_save.status_code, 200)
             names = [profile["name"] for profile in list_after_save.get_json()["profiles"]]
             self.assertIn("recommended", names)
+            self.assertIn("all", names)
             self.assertIn("IR Minimal", names)
 
-        recommended_profile_path = profiles_dir / "recommended.json"
+        recommended_profile_path = profiles_dir / "builtin" / "recommended.json"
         self.assertTrue(recommended_profile_path.exists())
+        all_profile_path = profiles_dir / "builtin" / "all.json"
+        self.assertTrue(all_profile_path.exists())
 
         saved_profile_path = profiles_dir / "ir_minimal.json"
         self.assertTrue(saved_profile_path.exists())
@@ -894,6 +897,39 @@ class RoutesTests(unittest.TestCase):
         self.assertIn("bash_history", option_keys)
         self.assertIn("syslog", option_keys)
         self.assertEqual(option_modes.get("firewall.logs"), "parse_only")
+
+    def test_all_profile_includes_every_artifact_as_parse_and_ai(self) -> None:
+        with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
+            response = self.client.get("/api/artifact-profiles")
+            self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        profiles = payload["profiles"]
+        all_profile = next(
+            profile for profile in profiles if str(profile.get("name", "")).strip().lower() == "all"
+        )
+        options = list(all_profile.get("artifact_options", []))
+        option_keys = [str(option.get("artifact_key", "")).strip() for option in options]
+
+        expected_keys: list[str] = []
+        seen: set[str] = set()
+        for registry in get_all_artifact_registries():
+            for artifact_key in registry:
+                normalized = artifact_key.lower()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                expected_keys.append(artifact_key)
+
+        self.assertEqual(option_keys, expected_keys)
+        self.assertTrue(options)
+        self.assertTrue(
+            all(str(option.get("mode", "")).strip() == "parse_and_ai" for option in options)
+        )
+        self.assertIn("mft", option_keys)
+        self.assertIn("evtx", option_keys)
+        self.assertIn("defender.evtx", option_keys)
+        self.assertIn("bash_history", option_keys)
 
     def test_settings_update_persists_csv_output_dir(self) -> None:
         csv_output_dir = str((Path(self.temp_dir.name) / "csv output").resolve())
@@ -2394,15 +2430,17 @@ class RoutesTests(unittest.TestCase):
         self.assertIn("empty response", resp.get_json()["error"])
 
     def test_profile_save_rejects_reserved_name(self) -> None:
-        resp = self.client.post(
-            "/api/artifact-profiles",
-            json={
-                "name": "recommended",
-                "artifact_options": [{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
-            },
-        )
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("built-in", resp.get_json()["error"])
+        for name in ("recommended", "all"):
+            with self.subTest(name=name):
+                resp = self.client.post(
+                    "/api/artifact-profiles",
+                    json={
+                        "name": name,
+                        "artifact_options": [{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                    },
+                )
+                self.assertEqual(resp.status_code, 400)
+                self.assertIn("built-in", resp.get_json()["error"])
 
     def test_profile_save_rejects_empty_name(self) -> None:
         resp = self.client.post(

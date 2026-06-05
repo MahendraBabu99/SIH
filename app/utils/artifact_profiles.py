@@ -22,7 +22,9 @@ __all__ = [
     "MODE_PARSE_ONLY",
     "PROFILE_NAME_RE",
     "BUILTIN_RECOMMENDED_PROFILE",
+    "BUILTIN_ALL_PROFILE",
     "PROFILE_DIRNAME",
+    "BUILTIN_PROFILE_DIRNAME",
     "PROFILE_FILE_SUFFIX",
     "RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS",
     "normalize_artifact_mode",
@@ -49,9 +51,12 @@ MODE_PARSE_ONLY = "parse_only"
 
 PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
 BUILTIN_RECOMMENDED_PROFILE = "recommended"
+BUILTIN_ALL_PROFILE = "all"
 PROFILE_DIRNAME = "profile"
+BUILTIN_PROFILE_DIRNAME = "builtin"
 PROFILE_FILE_SUFFIX = ".json"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_BUILTIN_PROFILE_NAMES = {BUILTIN_RECOMMENDED_PROFILE, BUILTIN_ALL_PROFILE}
 
 
 def normalize_artifact_mode(value: Any, default_mode: str = MODE_PARSE_AND_AI) -> str:
@@ -226,6 +231,25 @@ def _recommended_artifact_options() -> list[dict[str, str]]:
     return profile
 
 
+def _all_artifact_options() -> list[dict[str, str]]:
+    """Build artifact options for the built-in all profile."""
+    profile: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for registry in get_all_artifact_registries():
+        for artifact_key in registry:
+            normalized_key = str(artifact_key).strip().lower()
+            if normalized_key in seen:
+                continue
+            seen.add(normalized_key)
+            profile.append(
+                {
+                    "artifact_key": str(artifact_key),
+                    "mode": MODE_PARSE_AND_AI,
+                }
+            )
+    return profile
+
+
 def _recommended_profile_excluded_artifacts() -> set[str]:
     """Return prompt-backed artifact keys excluded from the recommended profile."""
     excluded: set[str] = set()
@@ -243,8 +267,8 @@ def resolve_profiles_root(config_path: str | Path) -> Path:
     """Resolve the directory where artifact profiles are stored.
 
     Args:
-        config_path: Path to the active YAML config file. Accepted for API
-            compatibility; profile storage is repository-wide.
+        config_path: Path to the active YAML config file. Accepted by the
+            shared helper signature; profile storage is repository-wide.
 
     Returns:
         The repository ``profile`` directory used by the GUI, CLI, API, and MCP.
@@ -262,6 +286,30 @@ def _recommended_profile_payload() -> dict[str, Any]:
     }
 
 
+def _all_profile_payload() -> dict[str, Any]:
+    """Build the full payload for the built-in all profile."""
+    return {
+        "name": BUILTIN_ALL_PROFILE,
+        "builtin": True,
+        "artifact_options": _all_artifact_options(),
+    }
+
+
+def _builtin_profile_payload(name: str) -> dict[str, Any] | None:
+    """Return the generated payload for a built-in profile name."""
+    name_key = str(name or "").strip().lower()
+    if name_key == BUILTIN_RECOMMENDED_PROFILE:
+        return _recommended_profile_payload()
+    if name_key == BUILTIN_ALL_PROFILE:
+        return _all_profile_payload()
+    return None
+
+
+def _builtin_profile_path(profiles_root: Path, name: str) -> Path:
+    """Return the canonical file path for a built-in profile."""
+    return profiles_root / BUILTIN_PROFILE_DIRNAME / f"{name}{PROFILE_FILE_SUFFIX}"
+
+
 def write_profile_file(path: Path, payload: dict[str, Any]) -> None:
     """Write an artifact profile to a JSON file."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -272,7 +320,7 @@ def write_profile_file(path: Path, payload: dict[str, Any]) -> None:
 def _load_profile_file(
     path: Path,
     *,
-    preserve_recommended_contents: bool = False,
+    allow_builtin_name: bool = False,
 ) -> dict[str, Any] | None:
     """Load and validate a single artifact profile from a JSON file."""
     try:
@@ -288,7 +336,16 @@ def _load_profile_file(
     name = str(raw.get("name", "")).strip() or path.stem
     if not name:
         return None
-    if name.lower() != BUILTIN_RECOMMENDED_PROFILE and not PROFILE_NAME_RE.fullmatch(name):
+    name_key = name.lower()
+    if name_key in _BUILTIN_PROFILE_NAMES and not allow_builtin_name:
+        LOGGER.warning(
+            "Skipping profile with reserved built-in name %r in %s",
+            name,
+            path,
+        )
+        return None
+
+    if name_key not in _BUILTIN_PROFILE_NAMES and not PROFILE_NAME_RE.fullmatch(name):
         LOGGER.warning("Skipping profile with invalid name in %s", path)
         return None
 
@@ -306,10 +363,7 @@ def _load_profile_file(
         return None
 
     builtin = bool(raw.get("builtin", False))
-    if name.lower() == BUILTIN_RECOMMENDED_PROFILE and not preserve_recommended_contents:
-        builtin = True
-        artifact_options = _recommended_artifact_options()
-    elif not artifact_options:
+    if not artifact_options:
         LOGGER.warning("Skipping profile with no artifact options in %s", path)
         return None
 
@@ -323,27 +377,37 @@ def _load_profile_file(
 
 def load_profile_from_file(path: str | Path) -> dict[str, Any] | None:
     """Load one artifact profile JSON file from an explicit path."""
-    return _load_profile_file(
-        Path(path).expanduser().resolve(),
-        preserve_recommended_contents=True,
-    )
+    return _load_profile_file(Path(path).expanduser().resolve(), allow_builtin_name=True)
 
 
-def _ensure_recommended_profile(profiles_root: Path) -> None:
-    """Ensure the built-in recommended profile exists on disk."""
-    recommended_path = profiles_root / f"{BUILTIN_RECOMMENDED_PROFILE}{PROFILE_FILE_SUFFIX}"
-    if recommended_path.exists():
-        return
-    write_profile_file(recommended_path, _recommended_profile_payload())
+def _ensure_builtin_profiles(profiles_root: Path) -> None:
+    """Ensure built-in profile files exist on disk and match generated state."""
+    builtin_payloads = {
+        BUILTIN_RECOMMENDED_PROFILE: _recommended_profile_payload(),
+        BUILTIN_ALL_PROFILE: _all_profile_payload(),
+    }
+    for name, payload in builtin_payloads.items():
+        write_profile_file(_builtin_profile_path(profiles_root, name), payload)
 
 
 def load_profiles_from_directory(profiles_root: Path) -> list[dict[str, Any]]:
     """Load all valid artifact profiles from the profiles directory."""
     profiles_root.mkdir(parents=True, exist_ok=True)
-    _ensure_recommended_profile(profiles_root)
+    _ensure_builtin_profiles(profiles_root)
 
     profiles: list[dict[str, Any]] = []
     seen_names: set[str] = set()
+    for name in (BUILTIN_RECOMMENDED_PROFILE, BUILTIN_ALL_PROFILE):
+        path = _builtin_profile_path(profiles_root, name)
+        profile = _load_profile_file(path, allow_builtin_name=True)
+        if profile is None:
+            continue
+        profile_key = str(profile.get("name", "")).strip().lower()
+        if not profile_key or profile_key in seen_names:
+            continue
+        seen_names.add(profile_key)
+        profiles.append(profile)
+
     for path in sorted(
         profiles_root.glob(f"*{PROFILE_FILE_SUFFIX}"),
         key=lambda item: item.name.lower(),
@@ -361,7 +425,9 @@ def load_profiles_from_directory(profiles_root: Path) -> list[dict[str, Any]]:
         key=lambda item: (
             0
             if str(item.get("name", "")).strip().lower() == BUILTIN_RECOMMENDED_PROFILE
-            else 1,
+            else 1
+            if str(item.get("name", "")).strip().lower() == BUILTIN_ALL_PROFILE
+            else 2,
             str(item.get("name", "")).strip().lower(),
         )
     )
@@ -394,8 +460,8 @@ def normalize_profile_name(value: Any) -> str:
     name = str(value or "").strip()
     if not name:
         raise ValueError("Profile name is required.")
-    if name.lower() == BUILTIN_RECOMMENDED_PROFILE:
-        raise ValueError("`recommended` is a built-in profile and cannot be overwritten.")
+    if name.lower() in _BUILTIN_PROFILE_NAMES:
+        raise ValueError(f"`{name.lower()}` is a built-in profile and cannot be overwritten.")
     if not PROFILE_NAME_RE.fullmatch(name):
         raise ValueError(
             "Profile name must be 1-64 chars and use letters, numbers, spaces, period, underscore, or hyphen."

@@ -708,6 +708,8 @@ class ArtifactHelperTests(unittest.TestCase):
     def test_normalize_profile_name_reserved(self) -> None:
         with self.assertRaises(ValueError):
             artifact_profiles.normalize_profile_name("recommended")
+        with self.assertRaises(ValueError):
+            artifact_profiles.normalize_profile_name("all")
 
     def test_normalize_profile_name_invalid_chars(self) -> None:
         with self.assertRaises(ValueError):
@@ -765,6 +767,7 @@ class ArtifactRouteProfileFacadeTests(unittest.TestCase):
                 self.assertIs(getattr(routes_artifacts, name), getattr(artifact_profiles, name))
 
     def test_mode_constants_are_single_source(self) -> None:
+        self.assertEqual(routes_artifacts.BUILTIN_ALL_PROFILE, artifact_profiles.BUILTIN_ALL_PROFILE)
         self.assertEqual(routes_artifacts.MODE_PARSE_AND_AI, artifact_profiles.MODE_PARSE_AND_AI)
         self.assertEqual(routes_artifacts.MODE_PARSE_ONLY, artifact_profiles.MODE_PARSE_ONLY)
         self.assertEqual(routes_state.MODE_PARSE_AND_AI, artifact_profiles.MODE_PARSE_AND_AI)

@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import app.automation.engine as engine_module
+import app.utils.artifact_profiles as artifact_profiles
 from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.evidence.descriptor import descriptor_for_path
@@ -338,6 +339,37 @@ class TestAutomationProfileRoots(unittest.TestCase):
         self.assertEqual(analysis, ["runkeys"])
         self.assertEqual(warnings, [])
 
+    def test_explicit_canonical_all_profile_file_loads_path_contents(self) -> None:
+        """Explicit JSON profile paths are loaded directly from disk."""
+        with TemporaryDirectory(prefix="aift-profile-canonical-all-file-") as temp_dir:
+            root = Path(temp_dir)
+            profile_root = (
+                root
+                / artifact_profiles.PROFILE_DIRNAME
+                / artifact_profiles.BUILTIN_PROFILE_DIRNAME
+            )
+            profile_root.mkdir(parents=True)
+            profile_path = profile_root / "all.json"
+            profile_path.write_text(
+                json.dumps({
+                    "name": "all",
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_only"},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            with patch("app.utils.artifact_profiles.PROJECT_ROOT", root):
+                parse, analysis, warnings = engine_module._load_profile(
+                    str(profile_path),
+                    root / "settings" / "case-settings.yml",
+                )
+
+        self.assertEqual(parse, ["runkeys"])
+        self.assertEqual(analysis, [])
+        self.assertEqual(warnings, [])
+
     def test_load_profile_ignores_config_sibling_profile_root(self) -> None:
         """Automation ignores config-adjacent profiles and reads repository profile/."""
         with TemporaryDirectory(prefix="aift-profile-canonical-") as temp_dir:
@@ -356,11 +388,11 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 }),
                 encoding="utf-8",
             )
-            legacy_root = root / "profile"
-            legacy_root.mkdir()
-            (legacy_root / "legacy.json").write_text(
+            profile_root = root / "profile"
+            profile_root.mkdir()
+            (profile_root / "custom.json").write_text(
                 json.dumps({
-                    "name": "legacy",
+                    "name": "custom",
                     "artifact_options": [
                         {"artifact_key": "runkeys", "mode": "parse_and_ai"},
                     ],
@@ -373,7 +405,7 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
             ):
                 parse, analysis, warnings = engine_module._load_profile(
-                    "legacy",
+                    "custom",
                     config_path,
                 )
 
@@ -382,13 +414,13 @@ class TestAutomationProfileRoots(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_load_profile_creates_repository_profile_root_when_missing(self) -> None:
-        """Built-in recommended fallback is created in repository profile/."""
-        with TemporaryDirectory(prefix="aift-profile-no-legacy-") as temp_dir:
+        """Built-in recommended fallback is created in repository profile/builtin/."""
+        with TemporaryDirectory(prefix="aift-profile-builtins-") as temp_dir:
             root = Path(temp_dir)
             config_path = root / "settings" / "config.yaml"
             config_path.parent.mkdir(parents=True)
             config_path.write_text("ai_provider: fake\n", encoding="utf-8")
-            legacy_root = root / "profile"
+            profile_root = root / "profile"
 
             with (
                 patch.object(engine_module, "_PROJECT_ROOT", root),
@@ -398,7 +430,9 @@ class TestAutomationProfileRoots(unittest.TestCase):
                     "missing",
                     config_path,
                 )
-                self.assertTrue((legacy_root / "recommended.json").exists())
+                builtin_root = profile_root / artifact_profiles.BUILTIN_PROFILE_DIRNAME
+                self.assertTrue((builtin_root / "recommended.json").exists())
+                self.assertTrue((builtin_root / "all.json").exists())
 
         self.assertTrue(parse)
         self.assertTrue(set(analysis).issubset(set(parse)))

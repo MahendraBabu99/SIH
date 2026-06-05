@@ -8,6 +8,7 @@ This module handles:
 Attributes:
     PROFILE_NAME_RE: Regex for validating artifact profile names.
     BUILTIN_RECOMMENDED_PROFILE: Name of the built-in recommended profile.
+    BUILTIN_ALL_PROFILE: Name of the built-in all profile.
     PROFILE_DIRNAME: Subdirectory for profile JSON files.
     PROFILE_FILE_SUFFIX: File extension for profile files.
     RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS: Artifacts excluded from the
@@ -25,6 +26,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, request
 
 from ..utils.artifact_profiles import (
+    BUILTIN_ALL_PROFILE,
     BUILTIN_RECOMMENDED_PROFILE,
     MODE_PARSE_AND_AI,
     MODE_PARSE_ONLY,
@@ -61,6 +63,7 @@ __all__ = [
     "MODE_PARSE_ONLY",
     "PROFILE_NAME_RE",
     "BUILTIN_RECOMMENDED_PROFILE",
+    "BUILTIN_ALL_PROFILE",
     "PROFILE_DIRNAME",
     "PROFILE_FILE_SUFFIX",
     "RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS",
@@ -257,7 +260,10 @@ def save_artifact_profile() -> Response | tuple[Response, int]:
             None,
         )
         if existing is not None and bool(existing.get("builtin", False)):
-            return error_response("`recommended` is a built-in profile and cannot be overwritten.", 400)
+            return error_response(
+                f"`{profile_key}` is a built-in profile and cannot be overwritten.",
+                400,
+            )
 
         if existing is not None:
             target_path = Path(existing.get("path"))
