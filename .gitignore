@@ -42,6 +42,8 @@ node_modules/
 # Local tests
 local_tests/
 
+release notes/
+
 # IDE and OS files
 .vscode/
 .idea/
