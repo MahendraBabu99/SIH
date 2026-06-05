@@ -67,6 +67,7 @@ from .state import (
     now_iso,
     error_response,
     success_response,
+    resolve_favicon_filename,
     resolve_logo_filename,
     new_progress,
     mask_sensitive,
@@ -132,6 +133,7 @@ def index() -> str:
     evidence_metadata = evidence_ui_metadata()
     return render_template(
         "index.html",
+        favicon_filename=resolve_favicon_filename(),
         logo_filename=resolve_logo_filename(),
         tool_version=TOOL_VERSION,
         evidence_ui_accept=evidence_metadata["accept"],
@@ -179,10 +181,10 @@ def favicon() -> Response | tuple[Response, int]:
     Returns:
         The logo image file, or a 404 error.
     """
-    logo_filename = resolve_logo_filename()
-    if not logo_filename:
+    favicon_filename = resolve_favicon_filename()
+    if not favicon_filename:
         return error_response("Icon not found.", 404)
-    return image_asset(logo_filename)
+    return image_asset(favicon_filename)
 
 
 @routes_bp.get("/images/<path:filename>")

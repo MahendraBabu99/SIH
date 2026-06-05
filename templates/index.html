@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AIFT | Flip Forensics</title>
-  {% if logo_filename %}
-    <link rel="icon" type="image/png" href="{{ url_for('routes.image_asset', filename=logo_filename) }}">
-    <link rel="apple-touch-icon" href="{{ url_for('routes.image_asset', filename=logo_filename) }}">
+  {% if favicon_filename %}
+    <link rel="icon" type="image/png" href="{{ url_for('routes.image_asset', filename=favicon_filename) }}">
+    <link rel="apple-touch-icon" href="{{ url_for('routes.image_asset', filename=favicon_filename) }}">
   {% endif %}
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <script src="{{ url_for('static', filename='js/utils.js') }}" defer></script>

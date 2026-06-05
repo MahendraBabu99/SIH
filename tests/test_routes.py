@@ -696,6 +696,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(index_resp.status_code, 200)
             html = index_resp.get_data(as_text=True)
             self.assertIn("AIFT%20Logo%202.0%20-%20White.png", html)
+            self.assertIn("AIFT%20Logo%202.0.png", html)
             self.assertIn("<title>AIFT | Flip Forensics</title>", html)
             self.assertIn(f"v{TOOL_VERSION}", html)
             self.assertIn("©Flip Forensics", html)
@@ -706,7 +707,7 @@ class RoutesTests(unittest.TestCase):
 
             favicon_resp = self.client.get("/favicon.ico")
             self.assertEqual(favicon_resp.status_code, 200)
-            self.assertEqual(favicon_resp.get_data(), b"\x89PNG\r\n\x1a\nwhite")
+            self.assertEqual(favicon_resp.get_data(), b"\x89PNG\r\n\x1a\nnew")
 
     def test_settings_test_connection_succeeds_without_active_case(self) -> None:
         captured_tokens: list[int] = []

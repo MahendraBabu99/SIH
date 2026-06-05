@@ -46,7 +46,7 @@ from flask import Response, jsonify, stream_with_context
 
 from ..utils.artifact_profiles import MODE_PARSE_AND_AI, MODE_PARSE_ONLY
 from ..logging.case_logging import unregister_case_log_handler
-from ..utils.config import LOGO_FILE_CANDIDATES
+from ..utils.config import FAVICON_FILE_CANDIDATES, LOGO_FILE_CANDIDATES
 from ..evidence.constants import DISSECT_EVIDENCE_EXTENSIONS
 
 __all__ = [
@@ -79,6 +79,7 @@ __all__ = [
     "success_response",
     "safe_name",
     "resolve_logo_filename",
+    "resolve_favicon_filename",
     "safe_int",
     "normalize_case_status",
     "new_progress",
@@ -189,14 +190,17 @@ def safe_name(value: str, fallback: str = "item") -> str:
     return cleaned or fallback
 
 
-def resolve_logo_filename() -> str:
-    """Resolve the application logo filename from the images directory.
+def _resolve_image_filename(candidates: tuple[str, ...]) -> str:
+    """Resolve an image filename from the images directory.
+
+    Args:
+        candidates: Ordered image filenames to prefer.
 
     Returns:
-        The logo filename, or an empty string if none is found.
+        The resolved image filename, or an empty string if none is found.
     """
     if IMAGES_ROOT.is_dir():
-        for filename in LOGO_FILE_CANDIDATES:
+        for filename in candidates:
             if (IMAGES_ROOT / filename).is_file():
                 return filename
         image_files = sorted(
@@ -207,6 +211,24 @@ def resolve_logo_filename() -> str:
         if image_files:
             return image_files[0]
     return ""
+
+
+def resolve_logo_filename() -> str:
+    """Resolve the application logo filename from the images directory.
+
+    Returns:
+        The logo filename, or an empty string if none is found.
+    """
+    return _resolve_image_filename(LOGO_FILE_CANDIDATES)
+
+
+def resolve_favicon_filename() -> str:
+    """Resolve the browser favicon filename from the images directory.
+
+    Returns:
+        The favicon filename, or an empty string if none is found.
+    """
+    return _resolve_image_filename(FAVICON_FILE_CANDIDATES)
 
 
 def safe_int(value: Any, default: int = 0) -> int:

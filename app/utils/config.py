@@ -17,7 +17,9 @@ Attributes:
     PROJECT_ROOT: Resolved path to the repository root directory.
     DEFAULT_CONFIG: Complete default configuration dictionary.
     LOGO_FILE_CANDIDATES: Ordered tuple of logo filenames to search for in
-        the ``images/`` directory.
+        the ``images/`` directory for dark-background UI surfaces.
+    FAVICON_FILE_CANDIDATES: Ordered tuple of icon filenames to search for in
+        the ``images/`` directory for browser tab icons.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ __all__ = [
     "DEFAULT_CONFIG",
     "KNOWN_AI_PROVIDERS",
     "LOGO_FILE_CANDIDATES",
+    "FAVICON_FILE_CANDIDATES",
 ]
 
 logger = logging.getLogger(__name__)
@@ -127,6 +130,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
 LOGO_FILE_CANDIDATES = (
     "AIFT Logo 2.0 - White.png",
     "AIFT Logo 2.0.png",
+)
+
+# Ordered list of favicon filenames to look for in the images/ directory.
+# Browser tabs use the dark logo so it remains visible on light tab chrome.
+FAVICON_FILE_CANDIDATES = (
+    "AIFT Logo 2.0.png",
+    "AIFT Logo 2.0 - White.png",
 )
 
 
