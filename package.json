@@ -1,7 +1,7 @@
 {
   "name": "aift",
   "version": "1.0.0",
-  "description": "<p align=\"center\">\r   <img src=\"images/AIFT Logo - White Text.png\" alt=\"AIFT Logo\" width=\"400\">\r </p>",
+  "description": "<p align=\"center\">\r   <img src=\"images/AIFT%20Logo%202.0.png\" alt=\"AIFT Logo\" width=\"400\">\r </p>",
   "main": "index.js",
   "directories": {
     "test": "tests"

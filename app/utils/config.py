@@ -125,8 +125,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # Ordered list of logo filenames to look for in the images/ directory.
 # The first match wins; the fallback in routes.py picks any image alphabetically.
 LOGO_FILE_CANDIDATES = (
-    "AIFT Logo - White Text.png",
-    "AIFT Logo - Dark Text.png",
+    "AIFT Logo 2.0 - White.png",
+    "AIFT Logo 2.0.png",
 )
 
 

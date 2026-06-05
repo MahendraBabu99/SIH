@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="images/AIFT Logo - White Text.png" alt="AIFT Logo" width="400">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/AIFT%20Logo%202.0%20-%20White.png">
+    <img src="images/AIFT%20Logo%202.0.png" alt="AIFT Logo" width="400">
+  </picture>
 </p>
 
 # AIFT - AI Forensic Triage V2.0
