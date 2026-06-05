@@ -143,8 +143,10 @@ class TestHeadlessNoFlask(unittest.TestCase):
                 parse_artifacts, analysis_artifacts, warnings = engine._load_profile("recommended")
                 if not parse_artifacts:
                     raise AssertionError("recommended profile did not load parse artifacts")
-                if parse_artifacts != analysis_artifacts:
-                    raise AssertionError("recommended profile should analyze all generated artifacts")
+                if not set(analysis_artifacts).issubset(set(parse_artifacts)):
+                    raise AssertionError("recommended profile analysis artifacts must be parse artifacts")
+                if "firewall.logs" in analysis_artifacts:
+                    raise AssertionError("parse-only recommended artifact unexpectedly selected for AI")
                 parse_artifacts, analysis_artifacts, warnings = engine._load_profile("custom", config_path)
                 if parse_artifacts != ["runkeys"] or analysis_artifacts != ["runkeys"]:
                     raise AssertionError("repository custom profile did not load")

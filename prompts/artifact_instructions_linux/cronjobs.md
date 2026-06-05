@@ -1,3 +1,15 @@
+---
+artifact_key: cronjobs
+name: Cron Jobs
+category: Persistence
+function: cronjobs
+description: Scheduled tasks defined in user crontabs and system-wide /etc/cron.* directories.
+  Cron is a common persistence and periodic-execution mechanism on Linux systems.
+order: 100
+recommended: true
+default_mode: parse_and_ai
+---
+
 Scheduled tasks — primary persistence mechanism on Linux.
 - Suspicious: entries running scripts from /tmp, /dev/shm, or user-writable directories; entries executing curl/wget/python/bash with URLs or encoded payloads; entries owned by unexpected users; unusual schedules (every minute, @reboot).
 - Locations: /var/spool/cron/crontabs/ (per-user), /etc/crontab, /etc/cron.d/, /etc/cron.{hourly,daily,weekly,monthly}/.

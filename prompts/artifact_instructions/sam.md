@@ -1,3 +1,15 @@
+---
+artifact_key: sam
+name: SAM Users
+category: Security
+function: sam
+description: Local Security Account Manager user account records and account state metadata.
+  This artifact supports detection of unauthorized local account creation and privilege abuse.
+order: 350
+recommended: true
+default_mode: parse_and_ai
+---
+
 Local user accounts from the SAM registry hive.
 - Suspicious: recently created accounts (especially near the incident window), accounts added to the Administrators group, accounts with names mimicking system accounts, re-enabled previously disabled accounts, password changes on accounts that shouldn't change.
 - Key fields: account name, creation date, last password change, group memberships, account flags (enabled/disabled).

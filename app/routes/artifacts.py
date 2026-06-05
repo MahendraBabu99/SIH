@@ -46,11 +46,7 @@ from ..utils.artifact_profiles import (
     validate_analysis_date_range,
     write_profile_file,
 )
-from ..parser.registry import (
-    LINUX_ARTIFACT_REGISTRY,
-    WINDOWS_ARTIFACT_REGISTRY,
-    get_artifact_registry,
-)
+from ..parser.registry import get_artifact_registry, get_supported_artifact_keys
 from .state import (
     PARSE_PROGRESS,
     STATE_LOCK,
@@ -146,7 +142,7 @@ def validate_requested_parse_artifacts(
     payload_known_keys, available_keys = _available_artifact_key_sets(
         available_artifacts,
     )
-    supported_keys = set(WINDOWS_ARTIFACT_REGISTRY) | set(LINUX_ARTIFACT_REGISTRY)
+    supported_keys = get_supported_artifact_keys()
     known_keys = set(get_artifact_registry(os_type)) | (
         payload_known_keys & supported_keys
     )

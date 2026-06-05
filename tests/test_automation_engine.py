@@ -401,7 +401,9 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 self.assertTrue((legacy_root / "recommended.json").exists())
 
         self.assertTrue(parse)
-        self.assertEqual(parse, analysis)
+        self.assertTrue(set(analysis).issubset(set(parse)))
+        self.assertIn("firewall.logs", parse)
+        self.assertNotIn("firewall.logs", analysis)
         self.assertTrue(any("Profile 'missing' not found" in warning for warning in warnings))
 
 

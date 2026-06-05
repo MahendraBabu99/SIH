@@ -40,7 +40,7 @@ from app.utils.hasher import (
     verify_hashes_for_report,
 )
 from app.parser.core import ForensicParser, ParserCancelledError
-from app.parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
+from app.parser.registry import get_supported_artifact_keys
 from app.reporter.generator import ReportGenerator
 from app.utils.artifact_profiles import (
     artifact_options_to_lists,
@@ -400,7 +400,7 @@ def _validate_profile_artifact_keys(
     Returns:
         List of human-readable validation error strings.
     """
-    known_keys = set(WINDOWS_ARTIFACT_REGISTRY) | set(LINUX_ARTIFACT_REGISTRY)
+    known_keys = get_supported_artifact_keys()
     requested = list(dict.fromkeys([*parse_artifacts, *analysis_artifacts]))
     unknown = [artifact for artifact in requested if artifact not in known_keys]
     if not unknown:

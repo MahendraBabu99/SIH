@@ -1,3 +1,16 @@
+---
+artifact_key: evtx
+name: Windows Event Logs
+category: Event Logs
+function: evtx
+description: Windows event channel records covering authentication, process creation, services,
+  policy changes, and system health. EVTX is often the backbone for timeline and intrusion
+  reconstruction.
+order: 190
+recommended: false
+default_mode: parse_and_ai
+---
+
 Primary security telemetry and event timeline. Richest artifact for incident reconstruction.
 - High-signal Event IDs to prioritize:
   - Logon: 4624 (success), 4625 (failure), 4634 (logoff), 4648 (explicit creds), 4672 (special privileges)

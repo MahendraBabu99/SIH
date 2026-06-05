@@ -23,6 +23,7 @@ from .constants import PROJECT_ROOT
 from .ioc import build_priority_directives, extract_ioc_targets, format_ioc_targets
 from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
 from .utils import coerce_projection_columns, normalize_artifact_key
+from ..parser.registry import parse_artifact_prompt_text
 from ..utils.os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
@@ -88,12 +89,21 @@ def load_artifact_instruction_prompts(
     prompts: dict[str, str] = {}
     for prompt_path in sorted(instructions_dir.glob("*.md")):
         try:
-            prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+            raw_prompt_text = prompt_path.read_text(encoding="utf-8")
         except OSError:
             continue
+        metadata, prompt_text = parse_artifact_prompt_text(raw_prompt_text)
         if not prompt_text:
             continue
-        prompts[prompt_path.stem.strip().lower()] = prompt_text
+        prompt_keys = [prompt_path.stem.strip().lower()]
+        artifact_key = str(metadata.get("artifact_key", "")).strip().lower()
+        if artifact_key:
+            prompt_keys.append(artifact_key)
+            prompt_keys.append(artifact_key.replace(".", "_"))
+            prompt_keys.append(artifact_key.replace("_", "."))
+        for prompt_key in prompt_keys:
+            if prompt_key:
+                prompts[prompt_key] = prompt_text
     return prompts
 
 

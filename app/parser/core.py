@@ -845,6 +845,9 @@ class ForensicParser:
         if isinstance(record, dict):
             return dict(record)
 
+        if isinstance(record, (list, tuple)):
+            return {f"field_{index}": value for index, value in enumerate(record, start=1)}
+
         try:
             return dict(vars(record))
         except TypeError as exc:

@@ -24,7 +24,7 @@ from app import create_app
 from app.ai_providers import AIProviderError
 from app.chat.manager import ChatManager
 from app.logging.case_logging import case_log_context, unregister_all_case_log_handlers
-from app.parser.registry import WINDOWS_ARTIFACT_REGISTRY
+from app.parser.registry import get_all_artifact_registries, get_artifact_registry
 from app.utils.version import TOOL_VERSION
 import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
@@ -619,11 +619,10 @@ class RoutesTests(unittest.TestCase):
             self.assertNotIn("os_warning", payload)
 
             # Returned artifact keys should come from the Linux registry.
-            from app.parser.registry import LINUX_ARTIFACT_REGISTRY
             returned_keys = {
                 str(a["key"]) for a in payload.get("available_artifacts", [])
             }
-            linux_keys = set(LINUX_ARTIFACT_REGISTRY.keys())
+            linux_keys = set(get_artifact_registry("linux").keys())
             self.assertTrue(
                 returned_keys.issubset(linux_keys),
                 f"Returned keys {returned_keys - linux_keys} are not in Linux registry",
@@ -865,20 +864,28 @@ class RoutesTests(unittest.TestCase):
 
         # The recommended profile now includes both Windows and Linux
         # artifacts (minus the excluded set), so profiles work for any OS.
-        from app.parser.registry import LINUX_ARTIFACT_REGISTRY
         expected_keys: list[str] = []
+        expected_modes: dict[str, str] = {}
         seen: set[str] = set()
-        for registry in (WINDOWS_ARTIFACT_REGISTRY, LINUX_ARTIFACT_REGISTRY):
-            for artifact_key in registry:
+        for registry in get_all_artifact_registries():
+            for artifact_key, artifact_details in registry.items():
                 normalized = artifact_key.lower()
-                if normalized in routes_artifacts.RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS:
+                if not bool(artifact_details.get("recommended", True)):
                     continue
                 if normalized in seen:
                     continue
                 seen.add(normalized)
                 expected_keys.append(artifact_key)
+                expected_modes[artifact_key] = str(
+                    artifact_details.get("default_mode") or "parse_and_ai"
+                )
 
         self.assertEqual(option_keys, expected_keys)
+        option_modes = {
+            str(option.get("artifact_key", "")).strip(): str(option.get("mode", "")).strip()
+            for option in options
+        }
+        self.assertEqual(option_modes, expected_modes)
         self.assertNotIn("mft", option_keys)
         self.assertNotIn("usnjrnl", option_keys)
         self.assertNotIn("evtx", option_keys)
@@ -886,7 +893,7 @@ class RoutesTests(unittest.TestCase):
         # Linux artifacts should now be present.
         self.assertIn("bash_history", option_keys)
         self.assertIn("syslog", option_keys)
-        self.assertTrue(all(str(option.get("mode", "")) == "parse_and_ai" for option in options))
+        self.assertEqual(option_modes.get("firewall.logs"), "parse_only")
 
     def test_settings_update_persists_csv_output_dir(self) -> None:
         csv_output_dir = str((Path(self.temp_dir.name) / "csv output").resolve())

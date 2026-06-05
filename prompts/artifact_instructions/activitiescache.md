@@ -1,3 +1,15 @@
+---
+artifact_key: activitiescache
+name: Activities Cache
+category: User Activity
+function: activitiescache
+description: Windows Timeline activity records reflecting user interactions with apps, documents,
+  and URLs. Provides broader behavioral context across applications and time.
+order: 270
+recommended: true
+default_mode: parse_and_ai
+---
+
 Windows Timeline database tracking application focus time and user activity.
 - Provides a timeline of what applications the user was actively working in, with timestamps.
 - Suspicious: remote access tool usage, cloud storage clients during off-hours, admin utilities not part of the user's normal role, sensitive document access patterns.

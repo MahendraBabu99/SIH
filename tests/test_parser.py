@@ -15,12 +15,11 @@ from app.parser.core import (
     MAX_RECORDS_PER_ARTIFACT,
 )
 from app.parser.registry import (
-    LINUX_ARTIFACT_REGISTRY,
-    WINDOWS_ARTIFACT_REGISTRY,
     get_artifact_registry,
     _artifact_prompt_name_candidates,
     _load_artifact_guidance_prompt,
     _apply_artifact_guidance_from_prompts,
+    parse_artifact_prompt_text,
 )
 
 # Patch targets point to where the names are looked up at runtime (the core module).
@@ -278,7 +277,7 @@ class ParserTests(unittest.TestCase):
             self.assertFalse(artifact["available"])
 
     def test_get_available_artifacts_returns_all_registry_entries(self) -> None:
-        """Every artifact in WINDOWS_ARTIFACT_REGISTRY should appear in the result."""
+        """Every Windows prompt-backed artifact should appear in the result."""
         class NoOpTarget:
             def has_function(self, function_name: str) -> bool:
                 return False
@@ -289,15 +288,16 @@ class ParserTests(unittest.TestCase):
             artifacts = parser.get_available_artifacts()
 
         returned_keys = {a["key"] for a in artifacts}
-        self.assertEqual(returned_keys, set(WINDOWS_ARTIFACT_REGISTRY.keys()))
+        self.assertEqual(returned_keys, set(get_artifact_registry("windows").keys()))
 
     def test_registry_artifact_guidance_comes_from_prompt_files(self) -> None:
         runkeys_prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "artifact_instructions" / "runkeys.md"
-        expected_prompt = runkeys_prompt_path.read_text(encoding="utf-8").strip()
+        _, expected_prompt = parse_artifact_prompt_text(runkeys_prompt_path.read_text(encoding="utf-8"))
+        registry = get_artifact_registry("windows")
 
         self.assertTrue(expected_prompt)
-        self.assertIn("runkeys", WINDOWS_ARTIFACT_REGISTRY)
-        self.assertEqual(WINDOWS_ARTIFACT_REGISTRY["runkeys"].get("artifact_guidance", ""), expected_prompt)
+        self.assertIn("runkeys", registry)
+        self.assertEqual(registry["runkeys"].get("artifact_guidance", ""), expected_prompt)
 
     def test_call_target_function_handles_namespaced_functions(self) -> None:
         class DispatchTarget:
@@ -989,6 +989,10 @@ class RecordToDictTests(unittest.TestCase):
         result = ForensicParser._record_to_dict({"a": 1, "b": 2})
         self.assertEqual(result, {"a": 1, "b": 2})
 
+    def test_tuple_record_uses_positional_fields(self) -> None:
+        result = ForensicParser._record_to_dict(("provider", "value"))
+        self.assertEqual(result, {"field_1": "provider", "field_2": "value"})
+
     def test_object_with_dict_attr(self) -> None:
         class SimpleObj:
             def __init__(self) -> None:
@@ -1608,20 +1612,21 @@ class ApplyArtifactGuidanceFromPromptsTests(unittest.TestCase):
 
 
 class ArtifactRegistryTests(unittest.TestCase):
-    """Tests for the WINDOWS_ARTIFACT_REGISTRY data structure."""
+    """Tests for the Windows prompt-backed artifact registry."""
 
     def test_all_entries_have_required_keys(self) -> None:
         """Every registry entry should have name, category, function, description."""
-        for key, details in WINDOWS_ARTIFACT_REGISTRY.items():
+        for key, details in get_artifact_registry("windows").items():
             self.assertIn("name", details, f"{key} missing 'name'")
             self.assertIn("category", details, f"{key} missing 'category'")
             self.assertIn("function", details, f"{key} missing 'function'")
             self.assertIn("description", details, f"{key} missing 'description'")
 
     def test_registry_is_not_empty(self) -> None:
-        self.assertGreater(len(WINDOWS_ARTIFACT_REGISTRY), 0)
+        self.assertGreater(len(get_artifact_registry("windows")), 0)
 
     def test_known_artifacts_present(self) -> None:
+        registry = get_artifact_registry("windows")
         expected_keys = {
             "runkeys",
             "tasks",
@@ -1632,13 +1637,19 @@ class ArtifactRegistryTests(unittest.TestCase):
             "prefetch",
             "jumplist.automatic_destination",
             "jumplist.custom_destination",
+            "lnk",
+            "mru.run",
+            "firewall.rules",
+            "defender.exclusions",
+            "amcache.applaunches",
+            "lsa.secrets",
         }
         for key in expected_keys:
-            self.assertIn(key, WINDOWS_ARTIFACT_REGISTRY)
+            self.assertIn(key, registry)
 
     def test_evtx_artifacts_identified_correctly(self) -> None:
         """EVTX-type artifacts should have function names ending with 'evtx'."""
-        for key, details in WINDOWS_ARTIFACT_REGISTRY.items():
+        for key, details in get_artifact_registry("windows").items():
             func = details["function"]
             if "evtx" in key:
                 self.assertTrue(
@@ -1680,7 +1691,7 @@ class LinuxParserTests(unittest.TestCase):
             artifacts = parser.get_available_artifacts()
 
         returned_keys = {a["key"] for a in artifacts}
-        self.assertEqual(returned_keys, set(LINUX_ARTIFACT_REGISTRY.keys()))
+        self.assertEqual(returned_keys, set(get_artifact_registry("linux").keys()))
 
     def test_parse_artifact_resolves_linux_key(self) -> None:
         """Parsing a Linux-only artifact key should work on a Linux target."""
@@ -1730,15 +1741,15 @@ class LinuxParserTests(unittest.TestCase):
 
 
 class LinuxArtifactRegistryTests(unittest.TestCase):
-    """Tests for the LINUX_ARTIFACT_REGISTRY and get_artifact_registry."""
+    """Tests for the Linux prompt-backed artifact registry and get_artifact_registry."""
 
     def test_linux_registry_is_not_empty(self) -> None:
         """The Linux registry should contain artifacts."""
-        self.assertGreater(len(LINUX_ARTIFACT_REGISTRY), 0)
+        self.assertGreater(len(get_artifact_registry("linux")), 0)
 
     def test_linux_registry_has_required_keys(self) -> None:
         """Every Linux registry entry should have name, category, function, description."""
-        for key, details in LINUX_ARTIFACT_REGISTRY.items():
+        for key, details in get_artifact_registry("linux").items():
             self.assertIn("name", details, f"{key} missing 'name'")
             self.assertIn("category", details, f"{key} missing 'category'")
             self.assertIn("function", details, f"{key} missing 'function'")
@@ -1754,28 +1765,29 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
             "ssh.authorized_keys", "ssh.known_hosts",
             "network.interfaces",
         }
+        registry = get_artifact_registry("linux")
         for key in expected:
-            self.assertIn(key, LINUX_ARTIFACT_REGISTRY, f"Expected Linux artifact '{key}' not found")
+            self.assertIn(key, registry, f"Expected Linux artifact '{key}' not found")
 
     def test_get_artifact_registry_returns_linux_for_linux(self) -> None:
         """get_artifact_registry('linux') should return the Linux registry."""
         result = get_artifact_registry("linux")
-        self.assertIs(result, LINUX_ARTIFACT_REGISTRY)
+        self.assertIn("bash_history", result)
 
     def test_get_artifact_registry_returns_windows_for_windows(self) -> None:
         """get_artifact_registry('windows') should return the Windows registry."""
         result = get_artifact_registry("windows")
-        self.assertIs(result, WINDOWS_ARTIFACT_REGISTRY)
+        self.assertIn("runkeys", result)
 
     def test_get_artifact_registry_defaults_to_windows(self) -> None:
         """get_artifact_registry with unknown OS should default to Windows."""
         result = get_artifact_registry("esxi")
-        self.assertIs(result, WINDOWS_ARTIFACT_REGISTRY)
+        self.assertIn("runkeys", result)
 
     def test_get_artifact_registry_handles_none(self) -> None:
         """get_artifact_registry(None) should default to Windows."""
         result = get_artifact_registry(None)  # type: ignore[arg-type]
-        self.assertIs(result, WINDOWS_ARTIFACT_REGISTRY)
+        self.assertIn("runkeys", result)
 
     def test_linux_registry_loads_guidance_from_correct_directory(self) -> None:
         """Linux artifact guidance should be loaded from artifact_instructions_linux/."""
@@ -1787,7 +1799,7 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
 
     def test_linux_registry_has_artifact_guidance(self) -> None:
         """At least some Linux artifacts should have artifact_guidance loaded from prompt files."""
-        guided = [key for key, d in LINUX_ARTIFACT_REGISTRY.items() if d.get("artifact_guidance")]
+        guided = [key for key, d in get_artifact_registry("linux").items() if d.get("artifact_guidance")]
         self.assertGreater(
             len(guided), 0,
             "No Linux artifacts have 'artifact_guidance' — prompt loading may be broken.",
@@ -1809,7 +1821,11 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
         name), but other Linux keys should be distinct.
         """
         shared_allowed = {"services"}
-        overlap = set(LINUX_ARTIFACT_REGISTRY) & set(WINDOWS_ARTIFACT_REGISTRY) - shared_allowed
+        overlap = (
+            set(get_artifact_registry("linux"))
+            & set(get_artifact_registry("windows"))
+            - shared_allowed
+        )
         self.assertEqual(
             overlap, set(),
             f"Unexpected key overlap between Linux and Windows registries: {overlap}",
@@ -1817,17 +1833,17 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
 
     def test_get_artifact_registry_whitespace_and_case_variants(self) -> None:
         """get_artifact_registry should handle whitespace and case variations."""
-        self.assertIs(get_artifact_registry("  Linux  "), LINUX_ARTIFACT_REGISTRY)
-        self.assertIs(get_artifact_registry("LINUX"), LINUX_ARTIFACT_REGISTRY)
-        self.assertIs(get_artifact_registry("  WINDOWS  "), WINDOWS_ARTIFACT_REGISTRY)
-        self.assertIs(get_artifact_registry(""), WINDOWS_ARTIFACT_REGISTRY)
+        self.assertIn("bash_history", get_artifact_registry("  Linux  "))
+        self.assertIn("bash_history", get_artifact_registry("LINUX"))
+        self.assertIn("runkeys", get_artifact_registry("  WINDOWS  "))
+        self.assertIn("runkeys", get_artifact_registry(""))
 
     def test_every_linux_artifact_has_prompt_file(self) -> None:
         """Every Linux registry entry should have a matching prompt file loaded."""
         from app.parser.registry import _LINUX_PROMPTS_DIR, _artifact_prompt_name_candidates
 
         missing: list[str] = []
-        for artifact_key in LINUX_ARTIFACT_REGISTRY:
+        for artifact_key in get_artifact_registry("linux"):
             candidates = _artifact_prompt_name_candidates(artifact_key)
             found = any(
                 (_LINUX_PROMPTS_DIR / f"{stem}.md").is_file()
@@ -1843,7 +1859,7 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
     def test_every_linux_artifact_has_guidance_loaded(self) -> None:
         """Every Linux registry entry should have artifact_guidance populated."""
         missing = [
-            key for key, details in LINUX_ARTIFACT_REGISTRY.items()
+            key for key, details in get_artifact_registry("linux").items()
             if not details.get("artifact_guidance")
         ]
         self.assertEqual(

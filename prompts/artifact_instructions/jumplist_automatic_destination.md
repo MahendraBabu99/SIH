@@ -1,3 +1,15 @@
+---
+artifact_key: jumplist.automatic_destination
+name: Automatic Jump Lists
+category: User Activity
+function: jumplist.automatic_destination
+description: Automatically generated Windows Jump Lists that record recently accessed applications,
+  files, folders, and network locations through embedded shortcut metadata.
+order: 280
+recommended: true
+default_mode: parse_and_ai
+---
+
 Automatic Jump Lists record per-user recently accessed applications, files, folders, and network locations through embedded shortcut metadata.
 
 - Treat Jump List entries as user activity context, not standalone proof of execution. Corroborate with Prefetch, Amcache, UserAssist, Shellbags, MFT, and event logs.

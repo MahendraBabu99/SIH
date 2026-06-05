@@ -1,3 +1,15 @@
+---
+artifact_key: packagemanager
+name: Package History
+category: Logs
+function: packagemanager
+description: Package installation, removal, and update history from apt, yum, dnf, or other
+  package managers. Shows software changes over time.
+order: 250
+recommended: true
+default_mode: parse_and_ai
+---
+
 Package installation and removal history — shows software changes over time.
 - Suspicious: recently installed offensive tools (nmap, netcat/ncat, tcpdump, wireshark, gcc, make, gdb, strace), removed security tools (auditd, fail2ban, rkhunter, clamav), packages from non-standard repositories or PPAs, installations correlating with incident timing.
 - Compiler toolchain installation (build-essential, gcc, make) on a production server is notable — may indicate kernel exploit compilation.

@@ -22,7 +22,7 @@ Upload Evidence → Select Artifacts → Parse → AI Analysis → HTML Report
 
 1. **Run the app** - a local web interface opens in your browser.
 2. **Add evidence** - drag-and-drop an E01, VMDK, VHD, raw image, or archive; point to a local path for large images; or use **Scan Directory** to find forensic images and triage-package targets inside a folder. Add multiple images to a single case for cross-system analysis.
-3. **Pick artifacts** - choose from 27 Windows or 19 Linux forensic artifacts per image, which will be parsed by [Dissect](https://github.com/fox-it/dissect).
+3. **Pick artifacts** - choose from 79 Windows or 18 Linux forensic artifacts per image, which will be parsed by [Dissect](https://github.com/fox-it/dissect).
 4. **Get results** - AI analyzes each artifact for indicators of compromise, correlates findings across artifacts and across systems, and generates HTML/JSON reports with evidence hashes and full audit trail.
 
 No Elasticsearch. No Docker. No database. One Python script, one command.
@@ -165,20 +165,22 @@ export KIMI_API_KEY="sk-..."
 
 AIFT uses [Dissect](https://github.com/fox-it/dissect) by Fox-IT (NCC Group) for forensic parsing - pure Python, no external dependencies. The OS type is detected automatically when the image is opened.
 
-### Windows (27 artifacts)
+### Windows (79 artifacts)
 
 | Category | Artifacts |
 |----------|----------|
 | **Persistence** | Run/RunOnce Keys, Scheduled Tasks, Services, WMI Persistence |
-| **Execution** | Shimcache, Amcache, Prefetch, BAM/DAM, UserAssist, MUIcache |
+| **Execution** | Shimcache, Amcache, Prefetch, BAM/DAM, UserAssist, RecentFileCache, StartupInfo, Windows Error Reporting, Amcache sub-artifacts |
 | **Event Logs** | Windows Event Logs (all channels), Defender Logs |
 | **File System** | NTFS MFT, USN Journal, Recycle Bin |
-| **User Activity** | Browser History, Browser Downloads, PowerShell History, Activities Cache, Automatic Jump Lists, Custom Jump Lists |
-| **Network** | SRUM Network Data, SRUM Application Usage |
-| **Registry** | Shellbags, USB Device History |
-| **Security** | SAM User Accounts, Defender Quarantine |
+| **User Activity** | Browser History, Browser Downloads, PowerShell History, Activities Cache, Jump Lists, LNK files, MRUs, Thumbcache/Iconcache, Office Trusted Documents |
+| **Network** | SRUM Network Data, SRUM Application Usage, Firewall Rules/Logs, Network History |
+| **Registry** | Shellbags, USB Device History, MUIcache |
+| **Security** | SAM User Accounts, Defender Quarantine, Defender Exclusions, Defender MpLog/MpCmdRun, Audit Policy |
+| **Enterprise** | UAL, Active Directory, AD CS, MSSQL Error Log |
+| **Sensitive** | Credential and DPAPI key-provider artifacts are available as opt-in parse-only artifacts |
 
-### Linux (19 artifacts)
+### Linux (18 artifacts)
 
 | Category | Artifacts |
 |----------|----------|

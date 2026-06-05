@@ -77,15 +77,14 @@ _ANALYSIS_UNAVAILABLE_TEXT = "Analysis unavailable; recorded as a data gap."
 _SUMMARY_UNAVAILABLE_TEXT = "Summary unavailable; recorded as a data gap."
 
 try:
-    from ..parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
+    from ..parser.registry import get_artifact_registry
 except Exception as error:
     LOGGER.warning(
-        "Failed to import artifact registries from app.parser.registry: %s. "
+        "Failed to import artifact registry loader from app.parser.registry: %s. "
         "Artifact metadata lookups will be unavailable.",
         error,
     )
-    WINDOWS_ARTIFACT_REGISTRY: dict[str, dict[str, str]] = {}
-    LINUX_ARTIFACT_REGISTRY: dict[str, dict[str, str]] = {}
+    get_artifact_registry = None  # type: ignore[assignment]
 
 __all__ = ["ForensicAnalyzer"]
 
@@ -1373,10 +1372,12 @@ class ForensicAnalyzer:
             A dict with at least ``name``, ``description``, and
             ``analysis_hint`` keys.
         """
-        if self.os_type == "linux":
-            registries = (LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY)
+        if get_artifact_registry is None:
+            registries = ({}, {})
+        elif self.os_type == "linux":
+            registries = (get_artifact_registry("linux"), get_artifact_registry("windows"))
         else:
-            registries = (WINDOWS_ARTIFACT_REGISTRY, LINUX_ARTIFACT_REGISTRY)
+            registries = (get_artifact_registry("windows"), get_artifact_registry("linux"))
 
         for registry in registries:
             if artifact_key in registry:

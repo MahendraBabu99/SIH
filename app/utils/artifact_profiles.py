@@ -15,7 +15,7 @@ import re
 from typing import Any
 
 from .config import PROJECT_ROOT
-from ..parser.registry import LINUX_ARTIFACT_REGISTRY, WINDOWS_ARTIFACT_REGISTRY
+from ..parser.registry import get_all_artifact_registries
 
 __all__ = [
     "MODE_PARSE_AND_AI",
@@ -51,7 +51,6 @@ PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
 BUILTIN_RECOMMENDED_PROFILE = "recommended"
 PROFILE_DIRNAME = "profile"
 PROFILE_FILE_SUFFIX = ".json"
-RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS = {"mft", "usnjrnl", "evtx", "defender.evtx"}
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -211,16 +210,33 @@ def _recommended_artifact_options() -> list[dict[str, str]]:
     """Build artifact options for the built-in recommended profile."""
     profile: list[dict[str, str]] = []
     seen: set[str] = set()
-    for registry in (WINDOWS_ARTIFACT_REGISTRY, LINUX_ARTIFACT_REGISTRY):
-        for artifact_key in registry:
+    for registry in get_all_artifact_registries():
+        for artifact_key, artifact_details in registry.items():
             normalized_key = str(artifact_key).strip().lower()
-            if normalized_key in RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS:
+            if not bool(artifact_details.get("recommended", True)):
                 continue
             if normalized_key in seen:
                 continue
             seen.add(normalized_key)
-            profile.append({"artifact_key": str(artifact_key), "mode": MODE_PARSE_AND_AI})
+            mode = normalize_artifact_mode(
+                artifact_details.get("default_mode"),
+                default_mode=MODE_PARSE_AND_AI,
+            )
+            profile.append({"artifact_key": str(artifact_key), "mode": mode})
     return profile
+
+
+def _recommended_profile_excluded_artifacts() -> set[str]:
+    """Return prompt-backed artifact keys excluded from the recommended profile."""
+    excluded: set[str] = set()
+    for registry in get_all_artifact_registries():
+        for artifact_key, artifact_details in registry.items():
+            if not bool(artifact_details.get("recommended", True)):
+                excluded.add(str(artifact_key).strip().lower())
+    return excluded
+
+
+RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS = _recommended_profile_excluded_artifacts()
 
 
 def resolve_profiles_root(config_path: str | Path) -> Path:

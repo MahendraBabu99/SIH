@@ -95,6 +95,106 @@
       "mode": "parse_and_ai"
     },
     {
+      "artifact_key": "lnk",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.run",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.recentdocs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.opensave",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.lastvisited",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.acmru",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.networkdrive",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.mstsc",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.msoffice",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "firewall.rules",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "firewall.logs",
+      "mode": "parse_only"
+    },
+    {
+      "artifact_key": "defender.exclusions",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.mplog",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.mpcmdrun",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "recentfilecache",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "startupinfo",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "wer",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "wua_history",
+      "mode": "parse_only"
+    },
+    {
+      "artifact_key": "thumbcache.thumbcache",
+      "mode": "parse_only"
+    },
+    {
+      "artifact_key": "thumbcache.iconcache",
+      "mode": "parse_only"
+    },
+    {
+      "artifact_key": "network_history",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "trusteddocs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "auditpol",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "amcache.applaunches",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "amcache.general",
+      "mode": "parse_and_ai"
+    },
+    {
       "artifact_key": "cronjobs",
       "mode": "parse_and_ai"
     },

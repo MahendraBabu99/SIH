@@ -1,3 +1,15 @@
+---
+artifact_key: python_history
+name: Python History
+category: Shell History
+function: python_history
+description: Python REPL history from interactive interpreter sessions. May reveal attacker
+  use of Python for scripting, exploitation, or data manipulation.
+order: 150
+recommended: true
+default_mode: parse_and_ai
+---
+
 Python interactive REPL history — records commands typed in the Python interpreter.
 - Suspicious: import os/subprocess/socket/pty, eval/exec calls, network connections (socket.connect, urllib, requests), file operations on sensitive paths (/etc/shadow, /root/.ssh), os.system or subprocess.call with shell commands, pty.spawn for shell upgrades.
 - Often used for interactive exploitation after initial access — attacker drops into Python to avoid bash history or leverage Python capabilities.

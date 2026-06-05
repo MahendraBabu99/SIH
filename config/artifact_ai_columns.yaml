@@ -153,6 +153,393 @@ artifact_ai_columns:
     - param2
     - param3
 
+  lnk:
+    - lnk_path
+    - lnk_name
+    - lnk_arguments
+    - local_base_path
+    - common_path_suffix
+    - lnk_full_path
+    - lnk_net_name
+    - lnk_device_name
+    - machine_id
+    - target_mtime
+    - target_atime
+    - target_ctime
+  mru.run:
+    - regf_mtime
+    - index
+    - value
+    - key
+    - username
+  mru.recentdocs:
+    - regf_mtime
+    - index
+    - value
+    - key
+    - username
+  mru.opensave:
+    - regf_mtime
+    - index
+    - value
+    - key
+    - username
+  mru.lastvisited:
+    - regf_mtime
+    - index
+    - filename
+    - path
+    - key
+    - username
+  mru.acmru:
+    - regf_mtime
+    - index
+    - category
+    - value
+    - key
+    - username
+  mru.networkdrive:
+    - regf_mtime
+    - index
+    - value
+    - key
+    - username
+  mru.mstsc:
+    - regf_mtime
+    - index
+    - value
+    - key
+    - username
+  mru.msoffice:
+    - ts
+    - regf_mtime
+    - index
+    - value
+    - key
+    - username
+  firewall.rules:
+    - key
+    - name
+    - active
+    - action
+    - dir
+    - protocol
+    - lport
+    - rport
+    - app
+    - svc
+    - profile
+    - source
+  firewall.logs:
+    - ts
+    - action
+    - protocol
+    - src_ip
+    - dst_ip
+    - src_port
+    - dst_port
+    - path
+    - source
+  defender.exclusions:
+    - regf_mtime
+    - type
+    - value
+  defender.mpcmdrun:
+    - ts_start
+    - ts_end
+    - command
+    - source
+  defender.mplog:
+    - ts
+    - start_time
+    - end_time
+    - process_image_name
+    - process
+    - path
+    - status
+    - blocked_file
+    - detection
+    - threat
+    - resources
+    - actions
+    - process_exclusions
+    - path_exclusions
+    - ext_exclusions
+    - source_log
+  recentfilecache:
+    - path
+  startupinfo:
+    - ts
+    - path
+    - commandline
+    - pid
+    - parent_pid
+    - parent_start_time
+    - parent_name
+    - disk_usage
+    - cpu_usage
+  wer:
+    - ts
+    - event_type
+    - target_app_id
+    - app_name
+    - app_path
+    - friendly_event_name
+    - report_identifier
+    - metadata_hash
+    - wer_file_path
+  wua_history:
+    - ts
+    - title
+    - kb
+    - status_mapped
+    - mapped_result_string
+    - classification
+    - client_id
+    - server_selection_mapped
+  thumbcache.thumbcache:
+    - identifier
+    - hash
+    - extension
+    - data_size
+    - path
+    - in_use
+    - flags
+    - last_modified
+  thumbcache.iconcache:
+    - identifier
+    - hash
+    - extension
+    - data_size
+    - path
+    - in_use
+    - flags
+    - last_modified
+  network_history:
+    - created
+    - last_connected
+    - profile_name
+    - description
+    - dns_suffix
+    - default_gateway_mac
+    - signature
+  trusteddocs:
+    - ts_modified
+    - ts_created
+    - ts_enabled
+    - application
+    - document
+    - state
+    - username
+    - source
+  auditpol:
+    - category
+    - name
+    - value
+  amcache.files:
+    - last_modified_timestamp
+    - last_modified_store_timestamp
+    - link_timestamp
+    - created_timestamp
+    - mtime_regf
+    - path
+    - digest
+    - program_id
+    - product_name
+    - company_name
+    - file_size
+  amcache.programs:
+    - install_date
+    - mtime_regf
+    - name
+    - version
+    - publisher
+    - path
+    - uninstall_key
+    - product_code
+  amcache.applications:
+    - install_date
+    - install_date_arp_last_modified
+    - mtime_regf
+    - name
+    - publisher
+    - root_dir_path
+    - source
+    - uninstall_string
+    - program_id
+  amcache.application_files:
+    - mtime_regf
+    - program_id
+    - digest
+    - path
+    - name
+    - publisher
+    - version
+    - product_name
+    - link_date
+    - size
+    - is_pefile
+    - is_oscomponent
+  amcache.applaunches:
+    - ts
+    - path
+    - source
+  amcache.general:
+    - ts
+    - path
+    - type
+    - name
+    - version
+    - program_id
+    - exit_message
+    - source
+  amcache.shortcuts:
+    - mtime_regf
+    - path
+  amcache.drivers:
+    - mtime_regf
+    - driver_name
+    - inf
+    - driver_version
+    - product
+    - service
+    - driver_signed
+    - last_write_time
+    - driver_timestamp
+  ual.client_access:
+    - last_access_date
+    - access_date
+    - insert_date
+    - address
+    - authenticated_user
+    - client_name
+    - access_count
+    - total_access_count
+    - role_name
+    - product_name
+  ual.role_access:
+    - first_seen_date
+    - last_seen_date
+    - role_name
+    - product_name
+    - path
+  ual.domains_seen:
+    - last_seen_date
+    - address
+    - resolved_hostname
+    - path
+  ad.users:
+    - cn
+    - upn
+    - sam_name
+    - sid
+    - rid
+    - password_last_set
+    - logon_last_success
+    - creation_time
+    - last_modified_time
+    - admin_count
+    - user_account_control
+    - member_of
+    - service_principal_name
+  ad.computers:
+    - cn
+    - sam_name
+    - sid
+    - creation_time
+    - last_modified_time
+    - user_account_control
+    - service_principal_name
+    - dns_hostname
+  ad.group_policies:
+    - cn
+    - display_name
+    - name
+    - distinguished_name
+    - creation_time
+    - last_modified_time
+    - object_guid
+  certlog.requests:
+    - request_id
+    - submitted_when
+    - resolved_when
+    - requester_name
+    - caller_name
+    - common_name
+    - subject_dn
+    - disposition
+    - request_status_code
+  certlog.request_attributes:
+    - request_id
+    - attribute_name
+    - common_name
+    - table_name
+    - ca
+    - source
+  certlog.crls:
+    - crl_last_published
+    - this_update
+    - next_update
+    - number
+    - ca
+    - source
+  certlog.certificates:
+    - request_id
+    - common_name
+    - subject_dn
+    - certificate_template
+    - fingerprint
+    - not_valid_before
+    - not_valid_after
+  certlog.certificate_extensions:
+    - request_id
+    - extension_name
+    - extension_flags
+    - extension_raw_value
+    - table_name
+    - ca
+    - source
+  mssql.errorlog:
+    - ts
+    - instance
+    - process
+    - message
+    - path
+  lsa.secrets:
+    - ts
+    - name
+    - value
+    - source
+  defaultpassword.defaultpassword:
+    - ts_mtime
+    - default_password
+    - source
+  winlogon.winlogon:
+    - ts_mtime
+    - password
+    - source
+  credhist.credhist:
+    - guid
+    - decrypted
+    - sha1
+    - nt
+    - username
+  dpapi.keyprovider.credhist.keys:
+    - field_1
+    - field_2
+  dpapi.keyprovider.defaultpassword.lsa.keys:
+    - field_1
+    - field_2
+  dpapi.keyprovider.defaultpassword.winlogon.keys:
+    - field_1
+    - field_2
+  dpapi.keyprovider.empty.keys:
+    - field_1
+    - field_2
+  dpapi.keyprovider.keychain.keys:
+    - field_1
+    - field_2
+
   # ─── Linux Artifacts ───
 
   # All shell histories share the same record: unix/history
