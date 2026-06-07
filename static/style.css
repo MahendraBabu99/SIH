@@ -429,6 +429,24 @@ button:disabled {
   align-items: flex-end;
 }
 
+.profile-message {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.profile-message[data-status="failed"] {
+  color: var(--danger);
+}
+
+.profile-message[data-status="success"] {
+  color: var(--success);
+}
+
+.profile-message[data-status="in-progress"] {
+  color: var(--accent);
+}
+
 #artifact-profile-load,
 #artifact-profile-save {
   width: 100%;

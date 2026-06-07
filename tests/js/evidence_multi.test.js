@@ -1473,6 +1473,8 @@ describe("profile actions with image tabs", () => {
     ];
     A.el.profileSelect.innerHTML = '<option value="focused">focused</option>';
     A.el.profileSelect.value = "focused";
+    A.clearMsg(A.el.profileMsg);
+    A.clearMsg(A.el.artifactsMsg);
 
     A.el.profileLoadBtn.dispatchEvent(new Event("click"));
 
@@ -1485,6 +1487,9 @@ describe("profile actions with image tabs", () => {
     expect(firstRunkeys.checked).toBe(true);
     expect(firstMode.value).toBe(A.MODE_PARSE_ONLY);
     expect(secondRunkeys.checked).toBe(false);
+    expect(A.el.profileMsg.textContent).toBe("Loaded profile: focused");
+    expect(A.el.profileMsg.dataset.status).toBe("success");
+    expect(A.el.artifactsMsg.hidden).toBe(true);
   });
 
   test("saves profile options from the active image tab instead of the hidden form", async () => {

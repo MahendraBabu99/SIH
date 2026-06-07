@@ -47,7 +47,7 @@
     showStep(1);
     A.fetchCsrfToken().catch(() => {});
     A.loadSettings().catch((e) => A.setMsg(el.settingsMsg, `Unable to load settings: ${e.message}`, "error"));
-    A.loadArtifactProfiles().catch((e) => A.setMsg(el.artifactsMsg, `Unable to load profiles: ${e.message}`, "error"));
+    A.loadArtifactProfiles().catch((e) => A.setMsg(el.profileMsg || el.artifactsMsg, `Unable to load profiles: ${e.message}`, "error"));
     A.checkForUpdate().catch(() => {});
 
     /* Close any open SSE connections when the user leaves or closes the tab. */
@@ -88,6 +88,7 @@
     el.artifactsForm = q("artifacts-form");
     el.profileSelect = q("artifact-profile-select");
     el.profileLoadBtn = q("artifact-profile-load");
+    el.profileMsg = q("artifact-profile-message");
     el.profileName = q("artifact-profile-name");
     el.profileSaveBtn = q("artifact-profile-save");
     el.quickBtn = q("preset-quick-triage");
@@ -172,6 +173,7 @@
   function addMessages() {
     el.evidenceMsg = A.ensureMsg(el.evidenceForm, "evidence-message");
     el.artifactsMsg = A.ensureMsg(el.artifactsForm, "artifacts-message");
+    el.profileMsg = el.profileMsg || A.ensureMsg(q("artifact-profiles"), "artifact-profile-message");
     el.analysisMsg = A.ensureMsg(el.analysisForm, "analysis-message");
     el.resultsMsg = A.ensureMsg(q("step-results"), "results-message");
     el.settingsMsg = A.ensureMsg(el.settingsForm, "settings-message");
@@ -509,7 +511,7 @@
       intakeStatus.textContent = "";
     }
 
-    [el.evidenceMsg, el.artifactsMsg, el.parseErr, el.analysisMsg, el.resultsMsg].forEach(A.clearMsg);
+    [el.evidenceMsg, el.artifactsMsg, el.profileMsg, el.parseErr, el.analysisMsg, el.resultsMsg].forEach(A.clearMsg);
     A.renderParsePlaceholder();
     A.renderAnalysis();
     A.renderExecSummary();

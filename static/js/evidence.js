@@ -886,39 +886,39 @@
     const silent = !!opts.silent;
     const options = Array.isArray(profile.artifact_options) ? profile.artifact_options : [];
     applyArtifactSelectionMap(options, opts.scope || "active");
-    if (!silent) A.setMsg(el.artifactsMsg, `Loaded profile: ${profile.name}`, "success");
+    if (!silent) A.setMsg(el.profileMsg || el.artifactsMsg, `Loaded profile: ${profile.name}`, "success");
     return true;
   }
 
   /** Load and apply the currently selected profile from the dropdown. */
   function applySelectedProfile() {
-    A.clearMsg(el.artifactsMsg);
+    A.clearMsg(el.profileMsg || el.artifactsMsg);
     const selectedName = el.profileSelect ? el.profileSelect.value : A.RECOMMENDED_PROFILE;
     const profile = findProfileByName(selectedName);
-    if (!profile) return A.setMsg(el.artifactsMsg, "Selected profile is not available.", "error");
+    if (!profile) return A.setMsg(el.profileMsg || el.artifactsMsg, "Selected profile is not available.", "error");
     applyArtifactProfile(profile);
   }
 
   /** Save the current artifact selection as a named profile on the backend. */
   async function saveCurrentProfile() {
-    A.clearMsg(el.artifactsMsg);
+    A.clearMsg(el.profileMsg || el.artifactsMsg);
     const profileName = A.val(el.profileName);
-    if (!profileName) return A.setMsg(el.artifactsMsg, "Enter a profile name before saving.", "error");
+    if (!profileName) return A.setMsg(el.profileMsg || el.artifactsMsg, "Enter a profile name before saving.", "error");
     const profileNameKey = profileName.toLowerCase();
     if (profileNameKey === A.RECOMMENDED_PROFILE || profileNameKey === "all") {
-      return A.setMsg(el.artifactsMsg, `\`${profileNameKey}\` is reserved. Pick a different name.`, "error");
+      return A.setMsg(el.profileMsg || el.artifactsMsg, `\`${profileNameKey}\` is reserved. Pick a different name.`, "error");
     }
     const options = serializeArtifactSelections("active");
-    if (!options.length) return A.setMsg(el.artifactsMsg, "Select at least one artifact before saving a profile.", "error");
+    if (!options.length) return A.setMsg(el.profileMsg || el.artifactsMsg, "Select at least one artifact before saving a profile.", "error");
     try {
       const response = await A.apiJson("/api/artifact-profiles", { method: "POST", json: { name: profileName, artifact_options: options } });
       const profilesRaw = Array.isArray(response && response.profiles) ? response.profiles : [];
       st.profiles = profilesRaw.map((profile) => normalizeArtifactProfile(profile)).filter(Boolean);
       renderArtifactProfileOptions(profileName);
       if (el.profileName) el.profileName.value = "";
-      A.setMsg(el.artifactsMsg, `Profile saved: ${profileName}`, "success");
+      A.setMsg(el.profileMsg || el.artifactsMsg, `Profile saved: ${profileName}`, "success");
     } catch (e) {
-      A.setMsg(el.artifactsMsg, `Failed to save profile: ${e.message}`, "error");
+      A.setMsg(el.profileMsg || el.artifactsMsg, `Failed to save profile: ${e.message}`, "error");
     }
   }
 

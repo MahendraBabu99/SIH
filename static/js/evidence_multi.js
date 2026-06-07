@@ -305,6 +305,7 @@
   async function submitEvidence() {
     A.clearMsg(el.evidenceMsg);
     A.clearMsg(el.artifactsMsg);
+    A.clearMsg(el.profileMsg);
     A.clearMsg(el.parseErr);
 
     const imageForms = A.getImageForms();
