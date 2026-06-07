@@ -683,6 +683,20 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertTrue(active_staging.exists())
         self.assertTrue(staging_parent.exists())
 
+    def test_cleanup_replacement_staging_ignores_non_staging_child(self) -> None:
+        """Cleanup does not remove arbitrary image directories."""
+        case_dir = self._install_case("replace-staging-unrelated", "img-001")
+        image_dir = case_dir / "images" / "img-001"
+        unrelated_dir = image_dir / "not-staging"
+        unrelated_file = unrelated_dir / "keep.txt"
+        unrelated_dir.mkdir()
+        unrelated_file.write_text("keep", encoding="utf-8")
+
+        routes_images._cleanup_replacement_staging(unrelated_dir, image_dir)
+
+        self.assertTrue(unrelated_file.exists())
+        self.assertTrue(unrelated_dir.exists())
+
     def test_clear_chat_history_rejects_active_operations(self) -> None:
         """Chat history cannot be cleared while chat or case work is active."""
         case_id = "chat-clear-lock"

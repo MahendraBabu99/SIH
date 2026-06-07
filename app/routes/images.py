@@ -248,12 +248,17 @@ def _restore_evidence_backup(active_evidence_dir: Path, backup_dir: Path | None)
 def _cleanup_replacement_staging(staging_dir: Path, image_dir: Path) -> None:
     """Remove replacement staging if it is still under the image directory."""
     staging_parent = staging_dir.parent
-    if staging_dir.exists() and _path_inside(staging_dir, image_dir):
-        shutil.rmtree(staging_dir, ignore_errors=True)
     try:
         expected_parent = (image_dir / ".replacement_staging").resolve()
-        if staging_parent.resolve() == expected_parent:
-            staging_parent.rmdir()
+        is_replacement_staging = staging_parent.resolve() == expected_parent
+    except (OSError, RuntimeError, ValueError):
+        return
+    if not is_replacement_staging or not _path_inside(staging_dir, image_dir):
+        return
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    try:
+        staging_parent.rmdir()
     except (OSError, RuntimeError, ValueError):
         # Another replacement attempt may still be using the parent directory.
         pass
