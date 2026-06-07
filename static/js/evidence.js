@@ -499,7 +499,7 @@
     const li = document.createElement("li");
     li.dataset.available = String(avail);
     li.classList.toggle("artifact-unavailable", !avail);
-    if (!avail) li.title = "Not found in this image";
+    if (!avail) li.title = "Not parseable in this image";
 
     const label = document.createElement("label");
     const cb = document.createElement("input");
@@ -523,7 +523,7 @@
   }
 
   /**
-   * Populate the artifact selection UI from the backend's available-artifact list.
+   * Populate the artifact selection UI from the backend's parseable-artifact list.
    *
    * Updates existing checkboxes (enabling available ones) and creates a
    * foldable Advanced section for artifacts not present in the static HTML.
@@ -548,7 +548,7 @@
       if (li) {
         li.dataset.available = String(available);
         li.classList.toggle("artifact-unavailable", !available);
-        li.title = available ? "" : "Not found in this image";
+        li.title = available ? "" : "Not parseable in this image";
       }
       if (info && info.name && !artifactKeyHasMultipleStaticIdentities(key)) setLabelText(cb, String(info.name));
       const modeSelect = ensureArtifactModeControl(cb, A.MODE_PARSE_AND_AI);

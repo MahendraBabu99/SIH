@@ -25,6 +25,11 @@ beforeEach(() => {
 // ── Tab visual states ──────────────────────────────────────────────────────
 
 describe("tab indicator visual states", () => {
+  test("step 2 label names parseable artifacts", () => {
+    expect(mustGet("indicator-artifacts").textContent).toBe("Parseable Artifacts");
+    expect(mustGet("step-artifacts-title").textContent).toBe("Step 2: Parseable Artifacts");
+  });
+
   test("step 1 indicator is active on initial load", () => {
     expect(A.el.indicators[0].classList.contains("is-active")).toBe(true);
     expect(A.el.indicators[1].classList.contains("is-active")).toBe(false);

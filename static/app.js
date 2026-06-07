@@ -489,7 +489,7 @@
       if (li) {
         li.classList.add("artifact-unavailable");
         li.dataset.available = "false";
-        li.title = "Load evidence to detect availability";
+        li.title = "Load evidence to detect parseable artifacts";
       }
     });
     A.clearDynamicArtifacts();

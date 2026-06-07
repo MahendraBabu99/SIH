@@ -421,7 +421,7 @@
         };
         st.images.push(imageEntry);
 
-        /* Merge available artifacts. */
+        /* Merge parseable artifacts. */
         if (Array.isArray(ev.available_artifacts)) {
           ev.available_artifacts.forEach((a) => {
             if (!a || !a.key) return;
@@ -548,7 +548,7 @@
       if (li) {
         li.classList.add("artifact-unavailable");
         li.dataset.available = "false";
-        li.title = "Load evidence to detect availability";
+        li.title = "Load evidence to detect parseable artifacts";
       }
     });
     if (el.parseBtn) el.parseBtn.disabled = true;
@@ -731,7 +731,7 @@
    * Build per-image artifact tabs when multiple images are present.
    *
    * Clones the main artifact form fieldsets into per-image panels, each with
-   * its own checkboxes filtered to that image's available artifacts.  The
+   * its own checkboxes filtered to that image's parseable artifacts.  The
    * main form is hidden and the tab interface is shown instead.
    */
   /** AbortController used to remove prior change listeners from the panels container. */
@@ -836,7 +836,7 @@
             if (li) {
               li.dataset.available = String(available);
               li.classList.toggle("artifact-unavailable", !available);
-              li.title = available ? "" : "Not found in this image";
+              li.title = available ? "" : "Not parseable in this image";
             }
             const descriptor = availMap.get(key);
             if (descriptor && descriptor.name && li && sourceFieldset.dataset.advancedCategory === "true") {

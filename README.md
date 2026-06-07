@@ -25,7 +25,7 @@ Upload Evidence → Select Artifacts → Parse → AI Analysis → HTML Report
 
 1. **Run the app** - a local web interface opens in your browser.
 2. **Add evidence** - drag-and-drop an E01, VMDK, VHD, raw image, or archive; point to a local path for large images; or use **Scan Directory** to find forensic images and triage-package targets inside a folder. Add multiple images to a single case for cross-system analysis.
-3. **Pick artifacts** - choose from 79 Windows or 18 Linux forensic artifacts per image, which will be parsed by [Dissect](https://github.com/fox-it/dissect).
+3. **Pick parseable artifacts** - choose from 79 Windows or 18 Linux forensic artifacts per image, which will be parsed by [Dissect](https://github.com/fox-it/dissect).
 4. **Get results** - AI analyzes each artifact for indicators of compromise, correlates findings across artifacts and across systems, and generates HTML/JSON reports with evidence hashes and full audit trail.
 
 No Elasticsearch. No Docker. No database. One Python script, one command.
@@ -194,7 +194,7 @@ AIFT uses [Dissect](https://github.com/fox-it/dissect) by Fox-IT (NCC Group) for
 | **Logs** | Syslog, Systemd Journal, Package History |
 | **SSH** | SSH Authorized Keys, SSH Known Hosts |
 
-Only artifacts present in the image are shown. Unavailable artifacts are automatically grayed out.
+Only parseable artifacts for the image are enabled. Artifacts that are not parseable for that image are automatically grayed out; parseable artifacts may still yield zero records.
 
 ---
 
