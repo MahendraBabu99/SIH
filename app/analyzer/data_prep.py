@@ -142,6 +142,31 @@ def compute_statistics(
 # Column selection and projection
 # ---------------------------------------------------------------------------
 
+def _artifact_lookup_candidates(artifact_key: str) -> list[str]:
+    """Return artifact keys to try from most specific to most general."""
+    normalized_key = normalize_artifact_key(artifact_key)
+    candidates: list[str] = []
+
+    def add(candidate: str) -> None:
+        clean = candidate.strip().lower()
+        if clean and clean not in candidates:
+            candidates.append(clean)
+
+    add(normalized_key)
+
+    # Split EVTX and similar files use "<artifact_key>_<group>.csv". Preserve
+    # dotted parent keys first so "defender.evtx_<channel>" finds
+    # "defender.evtx" before the coarser "defender" fallback.
+    if "_" in normalized_key:
+        add(normalized_key.split("_", 1)[0])
+
+    # Keep the historical generic fallback for "evtx_security" -> "evtx".
+    if "." in normalized_key:
+        add(normalized_key.split(".", 1)[0])
+
+    return candidates
+
+
 def select_ai_columns(
     artifact_key: str,
     available_columns: list[str],
@@ -159,15 +184,11 @@ def select_ai_columns(
     Returns:
         A 2-tuple of ``(selected_columns, projection_applied)``.
     """
-    normalized_key = normalize_artifact_key(artifact_key)
-    configured_columns = column_projections.get(normalized_key)
-    # Fallback: try the base artifact type (part before first underscore/dot)
-    # so that "evtx_security" still picks up the generic "evtx" projection
-    # when no channel-specific projection is configured.
-    if not configured_columns:
-        base_key = normalized_key.split("_", 1)[0].split(".", 1)[0]
-        if base_key != normalized_key:
-            configured_columns = column_projections.get(base_key)
+    configured_columns: tuple[str, ...] | None = None
+    for candidate_key in _artifact_lookup_candidates(artifact_key):
+        configured_columns = column_projections.get(candidate_key)
+        if configured_columns:
+            break
     if not configured_columns:
         return list(available_columns), False
 
@@ -825,18 +846,23 @@ def _resolve_analysis_instructions(
     Returns:
         The analysis instruction text.
     """
-    normalized_key = normalize_artifact_key(artifact_key)
-    # Try the raw key, the normalised key, and dot/underscore variants
-    # so that "ssh.authorized_keys" matches "ssh_authorized_keys.md".
-    candidates: list[str] = [artifact_key, normalized_key]
-    # Also try the base artifact type (e.g. "evtx" from "evtx_security")
-    # so channel-specific keys fall back to the generic instruction prompt.
-    base_key = normalized_key.split("_", 1)[0].split(".", 1)[0]
-    if base_key != normalized_key and base_key not in candidates:
-        candidates.append(base_key)
-    for variant in (artifact_key.replace(".", "_"), artifact_key.replace("_", ".")):
-        if variant not in candidates:
-            candidates.append(variant)
+    candidates: list[str] = []
+
+    def add(candidate: str) -> None:
+        clean = candidate.strip().lower()
+        if clean and clean not in candidates:
+            candidates.append(clean)
+
+    add(artifact_key)
+    for candidate in _artifact_lookup_candidates(artifact_key):
+        add(candidate)
+
+    # Try dot/underscore variants so file-stem prompts such as
+    # "ssh_authorized_keys.md" still match dotted artifact keys.
+    for candidate in list(candidates):
+        add(candidate.replace(".", "_"))
+        add(candidate.replace("_", "."))
+
     for key in candidates:
         prompt = artifact_instruction_prompts.get(key.strip().lower(), "").strip()
         if prompt:

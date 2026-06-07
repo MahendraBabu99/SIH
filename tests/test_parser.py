@@ -684,6 +684,46 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(rows[0].get("size", ""), "")
         self.assertEqual(rows[0].get("version", ""), "")
 
+    def test_parse_artifact_combines_multiple_functions(self) -> None:
+        class KeyProviderLeaf:
+            def __init__(self, provider: str) -> None:
+                self.provider = provider
+
+            def keys(self) -> list[FakeRecord]:
+                return [FakeRecord({"provider": self.provider})]
+
+        class DefaultPasswordNamespace:
+            lsa = KeyProviderLeaf("lsa")
+            winlogon = KeyProviderLeaf("winlogon")
+
+        class KeyProviderNamespace:
+            credhist = KeyProviderLeaf("credhist")
+            defaultpassword = DefaultPasswordNamespace()
+            empty = KeyProviderLeaf("empty")
+            keychain = KeyProviderLeaf("keychain")
+
+        class DpapiNamespace:
+            keyprovider = KeyProviderNamespace()
+
+        class MultiFunctionTarget:
+            dpapi = DpapiNamespace()
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(MultiFunctionTarget(), Path(temp_dir), audit)
+            result = parser.parse_artifact("dpapi.keyprovider")
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["record_count"], 5)
+
+            with Path(result["csv_path"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(
+            {row["provider"] for row in rows},
+            {"credhist", "lsa", "winlogon", "empty", "keychain"},
+        )
+
     def test_get_image_metadata_includes_timezone_and_install_date(self) -> None:
         class FullMetadataTarget:
             hostname = "dc-01"
@@ -1641,7 +1681,11 @@ class ArtifactRegistryTests(unittest.TestCase):
             "mru.run",
             "firewall.rules",
             "defender.exclusions",
-            "amcache.applaunches",
+            "amcache",
+            "certlog",
+            "dpapi.keyprovider",
+            "thumbcache",
+            "ual",
             "lsa.secrets",
         }
         for key in expected_keys:

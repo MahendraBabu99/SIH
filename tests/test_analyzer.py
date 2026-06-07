@@ -1215,7 +1215,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(len(fake_provider.attachments_calls[0]), 1)
         self.assertEqual(fake_provider.attachments_calls[0][0]["path"], str(expected_path))
         self.assertTrue(dedup_exists)
-        self.assertEqual(projected_header, "row_ref,ts,name,command,username")
+        self.assertEqual(projected_header, "row_ref,ts,name,command,key,username")
         self.assertEqual(fake_provider.attachments_calls[0][0]["mime_type"], "text/csv")
 
     def test_attachment_delivery_uses_file_reference_when_prompt_fits(self) -> None:
@@ -1254,7 +1254,7 @@ class AnalyzerTests(unittest.TestCase):
                     config={
                         "ai": {"provider": "local"},
                         "analysis": {
-                            "ai_max_tokens": 6000,
+                            "ai_max_tokens": 9000,
                             "ai_response_max_tokens": 1000,
                             "ai_input_safety_margin_tokens": 0,
                             "artifact_deduplication_enabled": False,
@@ -1272,7 +1272,7 @@ class AnalyzerTests(unittest.TestCase):
             csv_prompts = [
                 call["user_prompt"]
                 for call in fake_provider.calls
-                if "row_ref,ts,name,command,username" in call["user_prompt"]
+                if "row_ref,ts,name,command,key,username" in call["user_prompt"]
             ]
 
         self.assertEqual(result["status"], "success")
@@ -1511,14 +1511,14 @@ class AnalyzerTests(unittest.TestCase):
                 dedup_rows = list(dedup_reader)
                 dedup_header = list(dedup_reader.fieldnames or [])
 
-        self.assertIn("Rows removed as timestamp/ID-only duplicates: 1.", filled_prompt)
-        self.assertIn("Total=2", filled_prompt)
-        self.assertNotIn("key", dedup_header)
+        self.assertIn("Rows removed as timestamp/ID-only duplicates: 0.", filled_prompt)
+        self.assertIn("Total=3", filled_prompt)
+        self.assertIn("key", dedup_header)
         self.assertEqual(
             dedup_header,
-            ["row_ref", "ts", "name", "command", "username", "_dedup_comment"],
+            ["row_ref", "ts", "name", "command", "key", "username"],
         )
-        self.assertEqual(len(dedup_rows), 2)
+        self.assertEqual(len(dedup_rows), 3)
 
     def test_prepare_artifact_data_can_disable_deduplication(self) -> None:
         """Verify prepare artifact data can disable deduplication."""

@@ -126,6 +126,14 @@ def _metadata_text(metadata: dict[str, Any], key: str, default: str = "") -> str
     return str(value).strip() or default
 
 
+def _metadata_function(metadata: dict[str, Any], default: str) -> str | list[str]:
+    value = metadata.get("function", default)
+    if isinstance(value, list):
+        functions = [str(item).strip() for item in value if str(item).strip()]
+        return functions or default
+    return str(value).strip() or default
+
+
 def _artifact_details_from_prompt(
     prompt_path: Path,
     index: int,
@@ -144,7 +152,7 @@ def _artifact_details_from_prompt(
 
     name = _metadata_text(metadata, "name", artifact_key)
     category = _metadata_text(metadata, "category", _DEFAULT_CATEGORY)
-    function = _metadata_text(metadata, "function", artifact_key)
+    function = _metadata_function(metadata, artifact_key)
     description = _metadata_text(metadata, "description", "")
     guidance = body.strip()
 

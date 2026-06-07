@@ -1,698 +1,118 @@
 artifact_ai_columns:
-  runkeys:
-    - ts
-    - name
-    - command
-    - username
-  shimcache:
-    - last_modified
-    - name
-    - path
-  sam:
-    - ts
-    - rid
-    - fullname
-    - username
-    - admincomment
-    - lastlogin
-    - lastpasswordset
-    - lastincorrectlogin
-  services:
-    - ts
-    - name
-    - servicedll
-    - imagepath
-    - imagepath_args
-    - start
-  shellbags:
-    - ts_mtime
-    - ts_atime
-    - ts_btime
-    - type
-    - path
-    - username
-  amcache:
-    - mtime_regf
-    - path
-    - publisher
-    - version
-    - product_name
-    - size
-    - is_oscomponent
-  browser.downloads:
-    - ts_start
-    - ts_end
-    - browser
-    - path
-    - url
-    - size
-    - state
-    - username
-  browser.history:
-    - ts
-    - browser
-    - url
-    - title
-    - visit_count
-    - from_url
-    - username
-  prefetch:
-    - ts
-    - filename
-    - linkedfile
-  mft:
-    - ts
-    - ts_type
-    - path
-  usnjrnl:
-    - ts
-    - path
-    - reason
-  powershell_history:
-    - mtime
-    - order
-    - command
-    - username
-  jumplist.automatic_destination:
-    - type
-    - application_name
-    - lnk_name
-    - lnk_full_path
-    - lnk_arguments
-    - local_base_path
-    - common_path_suffix
-    - lnk_path
-    - lnk_workdir
-    - lnk_net_name
-    - machine_id
-    - target_mtime
-    - target_atime
-    - target_ctime
-    - username
-  jumplist.custom_destination:
-    - type
-    - application_name
-    - lnk_name
-    - lnk_full_path
-    - lnk_arguments
-    - local_base_path
-    - common_path_suffix
-    - lnk_path
-    - lnk_workdir
-    - lnk_net_name
-    - machine_id
-    - target_mtime
-    - target_atime
-    - target_ctime
-    - username
-  bam:
-    - ts
-    - path
-  sru.application:
-    - ts
-    - app
-    - user
-    - foreground_cycle_time
-  tasks:
-    - task_path
-    - uri
-    - date
-    - user_id
-    - display_name
-    - run_level
-    - arguments
-    - command
-  userassist:
-    - ts
-    - path
-    - number_of_executions
-    - username
-  muicache:
-    - name
-    - value
-    - path
-    - username
-  recyclebin:
-    - ts
-    - path
-    - filesize
-    - username
-  evtx:
-    - ts
-    - EventID
-    - Provider_Name
-    - Action_Name
-    - Additional_Actions_String
-    - Channel
-    - Computer
-    - Process_Name
-    - Product_Name
-    - Security_UserID
-    - EventData_Name
-    - param1
-    - param2
-    - param3
+  # Windows persistence and execution artefacts.
+  runkeys: [ts, name, command, key, username]
+  tasks: [task_path, uri, date, last_run_date, author, task_name, display_name, enabled, hidden, user_id, run_as, logon_type, group_id, run_level, action_type, action, command, arguments, args, working_directory, start_in]
+  services: [ts, name, displayname, description, servicedll, imagepath, imagepath_args, objectname, start, type]
+  cim: [filter_name, filter_query, filter_query_language, filter_creator_sid, creator_sid, machine_name, name, command_line_template, executable_path, working_directory]
+  shimcache: [last_modified, index, name, path]
+  amcache: [ts, install_date, last_modified_timestamp, created_timestamp, path, name, publisher, version, product_name, company_name, digest, file_size, size, driver_name, service, driver_signed, is_pefile, is_oscomponent]
+  prefetch: [ts, filename, prefetch, linkedfile, linkedfiles, runcount, previousruns]
+  bam: [ts, path]
+  userassist: [ts, path, number_of_executions, application_focus_count, application_focus_duration, username]
+  defender.evtx: [ts, EventID, EventRecordID, Provider_Name, Channel, Computer, Action_Name, Additional_Actions_String, Category_Name, Severity_Name, Threat_Name, Threat_ID, Type_Name, Detection_ID, Detection_Time, Detection_User, Path, Process_Name, Remediation_User, Security_UserID, Source_Name, State, Status_Description, Error_Description, Pre_Execution_Status, Post_Clean_Status, Product_Name, Product_Version, Engine_Version, Security_intelligence_Version]
+  mft: [ts, ts_type, path, filesize, owner, inuse, ads]
+  usnjrnl: [ts, path, reason, source, attr]
 
-  lnk:
-    - lnk_path
-    - lnk_name
-    - lnk_arguments
-    - local_base_path
-    - common_path_suffix
-    - lnk_full_path
-    - lnk_net_name
-    - lnk_device_name
-    - machine_id
-    - target_mtime
-    - target_atime
-    - target_ctime
-  mru.run:
-    - regf_mtime
-    - index
-    - value
-    - key
-    - username
-  mru.recentdocs:
-    - regf_mtime
-    - index
-    - value
-    - key
-    - username
-  mru.opensave:
-    - regf_mtime
-    - index
-    - value
-    - key
-    - username
-  mru.lastvisited:
-    - regf_mtime
-    - index
-    - filename
-    - path
-    - key
-    - username
-  mru.acmru:
-    - regf_mtime
-    - index
-    - category
-    - value
-    - key
-    - username
-  mru.networkdrive:
-    - regf_mtime
-    - index
-    - value
-    - key
-    - username
-  mru.mstsc:
-    - regf_mtime
-    - index
-    - value
-    - key
-    - username
-  mru.msoffice:
-    - ts
-    - regf_mtime
-    - index
-    - value
-    - key
-    - username
-  firewall.rules:
-    - key
-    - name
-    - active
-    - action
-    - dir
-    - protocol
-    - lport
-    - rport
-    - app
-    - svc
-    - profile
-    - source
-  firewall.logs:
-    - ts
-    - action
-    - protocol
-    - src_ip
-    - dst_ip
-    - src_port
-    - dst_port
-    - path
-    - source
-  defender.exclusions:
-    - regf_mtime
-    - type
-    - value
-  defender.mpcmdrun:
-    - ts_start
-    - ts_end
-    - command
-    - source
-  defender.mplog:
-    - ts
-    - start_time
-    - end_time
-    - process_image_name
-    - process
-    - path
-    - status
-    - blocked_file
-    - detection
-    - threat
-    - resources
-    - actions
-    - process_exclusions
-    - path_exclusions
-    - ext_exclusions
-    - source_log
-  recentfilecache:
-    - path
-  startupinfo:
-    - ts
-    - path
-    - commandline
-    - pid
-    - parent_pid
-    - parent_start_time
-    - parent_name
-    - disk_usage
-    - cpu_usage
-  wer:
-    - ts
-    - event_type
-    - target_app_id
-    - app_name
-    - app_path
-    - friendly_event_name
-    - report_identifier
-    - metadata_hash
-    - wer_file_path
-  wua_history:
-    - ts
-    - title
-    - kb
-    - status_mapped
-    - mapped_result_string
-    - classification
-    - client_id
-    - server_selection_mapped
-  thumbcache.thumbcache:
-    - identifier
-    - hash
-    - extension
-    - data_size
-    - path
-    - in_use
-    - flags
-    - last_modified
-  thumbcache.iconcache:
-    - identifier
-    - hash
-    - extension
-    - data_size
-    - path
-    - in_use
-    - flags
-    - last_modified
-  network_history:
-    - created
-    - last_connected
-    - profile_name
-    - description
-    - dns_suffix
-    - default_gateway_mac
-    - signature
-  trusteddocs:
-    - ts_modified
-    - ts_created
-    - ts_enabled
-    - application
-    - document
-    - state
-    - username
-    - source
-  auditpol:
-    - category
-    - name
-    - value
-  amcache.files:
-    - last_modified_timestamp
-    - last_modified_store_timestamp
-    - link_timestamp
-    - created_timestamp
-    - mtime_regf
-    - path
-    - digest
-    - program_id
-    - product_name
-    - company_name
-    - file_size
-  amcache.programs:
-    - install_date
-    - mtime_regf
-    - name
-    - version
-    - publisher
-    - path
-    - uninstall_key
-    - product_code
-  amcache.applications:
-    - install_date
-    - install_date_arp_last_modified
-    - mtime_regf
-    - name
-    - publisher
-    - root_dir_path
-    - source
-    - uninstall_string
-    - program_id
-  amcache.application_files:
-    - mtime_regf
-    - program_id
-    - digest
-    - path
-    - name
-    - publisher
-    - version
-    - product_name
-    - link_date
-    - size
-    - is_pefile
-    - is_oscomponent
-  amcache.applaunches:
-    - ts
-    - path
-    - source
-  amcache.general:
-    - ts
-    - path
-    - type
-    - name
-    - version
-    - program_id
-    - exit_message
-    - source
-  amcache.shortcuts:
-    - mtime_regf
-    - path
-  amcache.drivers:
-    - mtime_regf
-    - driver_name
-    - inf
-    - driver_version
-    - product
-    - service
-    - driver_signed
-    - last_write_time
-    - driver_timestamp
-  ual.client_access:
-    - last_access_date
-    - access_date
-    - insert_date
-    - address
-    - authenticated_user
-    - client_name
-    - access_count
-    - total_access_count
-    - role_name
-    - product_name
-  ual.role_access:
-    - first_seen_date
-    - last_seen_date
-    - role_name
-    - product_name
-    - path
-  ual.domains_seen:
-    - last_seen_date
-    - address
-    - resolved_hostname
-    - path
-  ad.users:
-    - cn
-    - upn
-    - sam_name
-    - sid
-    - rid
-    - password_last_set
-    - logon_last_success
-    - creation_time
-    - last_modified_time
-    - admin_count
-    - user_account_control
-    - member_of
-    - service_principal_name
-  ad.computers:
-    - cn
-    - sam_name
-    - sid
-    - creation_time
-    - last_modified_time
-    - user_account_control
-    - service_principal_name
-    - dns_hostname
-  ad.group_policies:
-    - cn
-    - display_name
-    - name
-    - distinguished_name
-    - creation_time
-    - last_modified_time
-    - object_guid
-  certlog.requests:
-    - request_id
-    - submitted_when
-    - resolved_when
-    - requester_name
-    - caller_name
-    - common_name
-    - subject_dn
-    - disposition
-    - request_status_code
-  certlog.request_attributes:
-    - request_id
-    - attribute_name
-    - common_name
-    - table_name
-    - ca
-    - source
-  certlog.crls:
-    - crl_last_published
-    - this_update
-    - next_update
-    - number
-    - ca
-    - source
-  certlog.certificates:
-    - request_id
-    - common_name
-    - subject_dn
-    - certificate_template
-    - fingerprint
-    - not_valid_before
-    - not_valid_after
-  certlog.certificate_extensions:
-    - request_id
-    - extension_name
-    - extension_flags
-    - extension_raw_value
-    - table_name
-    - ca
-    - source
-  mssql.errorlog:
-    - ts
-    - instance
-    - process
-    - message
-    - path
-  lsa.secrets:
-    - ts
-    - name
-    - value
-    - source
-  defaultpassword.defaultpassword:
-    - ts_mtime
-    - default_password
-    - source
-  winlogon.winlogon:
-    - ts_mtime
-    - password
-    - source
-  credhist.credhist:
-    - guid
-    - decrypted
-    - sha1
-    - nt
-    - username
-  dpapi.keyprovider.credhist.keys:
-    - field_1
-    - field_2
-  dpapi.keyprovider.defaultpassword.lsa.keys:
-    - field_1
-    - field_2
-  dpapi.keyprovider.defaultpassword.winlogon.keys:
-    - field_1
-    - field_2
-  dpapi.keyprovider.empty.keys:
-    - field_1
-    - field_2
-  dpapi.keyprovider.keychain.keys:
-    - field_1
-    - field_2
+  # Windows user activity, shell artefacts, and registry artefacts.
+  browser.downloads: [ts_start, ts_end, browser, path, url, size, state, username]
+  browser.history: [ts, browser, url, title, host, visit_type, visit_count, typed, hidden, from_url, username]
+  powershell_history: [mtime, order, command, username]
+  activitiescache: [start_time, end_time, app_id, activity_type, activity_status, activity_priority, group, tag, payload, clipboard_payload, username]
+  sru.application: [ts, app, user, foreground_cycle_time, background_cycle_time, face_time, foreground_bytes_read, foreground_bytes_written, background_bytes_read, background_bytes_written]
+  sru.network_data: [ts, app, user, bytes_sent, bytes_recvd, interface_luid, l2_profile_id, l2_profile_flags]
+  shellbags: [ts_mtime, ts_atime, ts_btime, regf_mtime, type, path, username]
+  usb: [type, serial, vendor, product, revision, friendly_name, first_insert, first_install, last_insert, last_removal, volumes, mounts, users]
+  muicache: [regf_mtime, index, name, value, path, username]
+  recyclebin: [ts, path, deleted_path, filesize, username]
+  lnk: [lnk_path, lnk_name, lnk_mtime, lnk_atime, lnk_ctime, lnk_arguments, local_base_path, common_path_suffix, lnk_full_path, lnk_net_name, lnk_device_name, target_mtime, target_atime, target_ctime]
+  jumplist.automatic_destination: [type, application_name, lnk_name, lnk_full_path, lnk_arguments, local_base_path, common_path_suffix, lnk_path, lnk_workdir, lnk_net_name, lnk_device_name, lnk_mtime, lnk_atime, lnk_ctime, target_mtime, target_atime, target_ctime, username]
+  jumplist.custom_destination: [type,  application_name, lnk_name, lnk_full_path, lnk_arguments, local_base_path, common_path_suffix, lnk_path, lnk_workdir, lnk_net_name, lnk_device_name, lnk_mtime, lnk_atime, lnk_ctime, target_mtime, target_atime, target_ctime, username]
+  mru.run: [regf_mtime, index, value, key, username]
+  mru.recentdocs: [regf_mtime, index, value, key, username]
+  mru.opensave: [regf_mtime, index, value, key, username]
+  mru.lastvisited: [regf_mtime, index, filename, path, key, username]
+  mru.acmru: [regf_mtime, index, category, value, key, username]
+  mru.networkdrive: [regf_mtime, index, value, key, username]
+  mru.mstsc: [regf_mtime, index, value, key, username]
+  mru.msoffice: [ts, regf_mtime, index, value, key, username]
+  recentfilecache: [path]
+  network_history: [created, last_connected, profile_guid, profile_name, description, dns_suffix, first_network, default_gateway_mac, signature]
+  trusteddocs: [ts_modified, ts_created, ts_enabled, application, document, state, username]
 
-  # ─── Linux Artifacts ───
+  # Windows security, logs, and telemetry.
+  sam: [ts, rid, username, fullname, admincomment, usercomment, lastlogin, lastpasswordset, lastincorrectlogin, failedlogins, logins, flags]
+  evtx: [ts, EventID, Provider_Name, Channel, Computer, Level, SubjectUserName, SubjectDomainName, TargetUserName, TargetDomainName, TargetUserSid, LogonType, IpAddress, IpPort, WorkstationName, ProcessName, ProcessId, NewProcessName, CommandLine, ParentProcessName, ParentProcessId, ServiceName, ServiceFileName, TaskName, TaskContent, Image, User, OriginalFileName, ParentImage, ParentCommandLine, DestinationIp, DestinationHostname, DestinationPort, SourceIp, SourcePort, QueryName, QueryResults, TargetFilename, TargetObject, Details, RuleName, ScriptBlockText, HostApplication, Path, Message, param1, param2, param3, param4, param5, param6, source]
+  firewall.rules: [key, version, action, active, dir, protocol, profile, lport, rport, app, svc, name, desc, embedctxt, ra4, ra6, icmp4, icmp6, edge, defer, lport2_10, lport2_20, rport2_10, luauth, luown, la6, ra42, ra62, apppkgid, platform, platform2, security, lom]
+  firewall.logs: [ts, action, protocol, src_ip, dst_ip, src_port, dst_port, size, path, info]
+  defender.exclusions: [regf_mtime, type, value]
+  defender.mpcmdrun: [ts_start, ts_end, command, source]
+  defender.mplog: [ts, source_log, process_image_name, process, pid, path, image_path, blocked_file, original_file_name, full_path, full_path_with_drive_letter, full_path_with_device_path, status, state, scan_request, file_id, reason, desired_access, detection, threat, threat_type, command, threats, resources, actions, process_exclusions, path_exclusions, ext_exclusions, signature_id, sigsha, threat_level, scan_id, scan_source, start_time, end_time, total_time, max_time_file, result_count, plugin_states]
+  defender.quarantine: [ts, threat_id, detection_name, detection_type, detection_path, quarantine_id, scan_id, resource_id, creation_time, last_write_time, last_accessed_time]
+  startupinfo: [ts, path, commandline, pid, parent_pid, parent_start_time, parent_name, disk_usage, cpu_usage]
+  wer: [ts, event_type, target_app_id, app_name, app_path, friendly_event_name, report_identifier, metadata_hash, wer_file_path, metadata_file_path, "*"]
+  wua_history: [ts, title, kb, status_mapped, mapped_result_string, classification, client_id, server_selection_mapped, path]
+  auditpol: [category, name, value]
+  thumbcache: [identifier, hash, extension, data_size, path, in_use, flags, last_modified]
 
-  # All shell histories share the same record: unix/history
-  bash_history:
-    - ts
-    - command
-    - shell
-    - username
+  # Windows application, enterprise, and credential artefacts.
+  ual: [last_access_date, access_date, insert_date, first_seen_date, last_seen_date, address, authenticated_user, client_name, resolved_hostname, access_count, total_access_count, tenant_id, role_guid, role_name, product_name, path]
+  ad.users: [cn, upn, sam_name, sid, rid, description, password_last_set, logon_last_success, logon_last_failed, account_expires, creation_time, last_modified_time, admin_count, is_deleted, user_account_control, primary_group_id, member_of, service_principal_name, distinguished_name, object_guid]
+  ad.computers: [cn, sam_name, dns_hostname, sid, description, creation_time, last_modified_time, password_last_set, logon_last_success, logon_last_failed, account_expires, admin_count, is_deleted, user_account_control, service_principal_name, operating_system, operating_system_version, distinguished_name, object_guid]
+  ad.group_policies: [cn, display_name, name, distinguished_name, creation_time, last_modified_time, object_guid]
+  certlog: [request_id, submitted_when, resolved_when, requester_name, caller_name, common_name, subject_dn, disposition, disposition_message, request_status_code, request_type, request_flags, attribute_name, table_name, crl_last_published, this_update, next_update, number, crl_publish_status_code, upn, certificate_template, fingerprint, serial_number_hex, not_valid_before, not_valid_after, public_key_algorithm, public_key_length, extension_name, extension_flags, extension_raw_value, ca, source]
+  mssql.errorlog: [ts, instance, process, message, path]
+  lsa.secrets: [ts, name, value]
+  defaultpassword.defaultpassword: [ts_mtime, default_password, source]
+  winlogon.winlogon: [ts_mtime, password, source]
+  credhist.credhist: [guid, decrypted, sha1, nt, username, user_id]
+  dpapi.keyprovider: [field_1, field_2]
 
-  zsh_history:
-    - ts
-    - command
-    - shell
-    - username
+  # Linux account, command, and login artefacts.
+  commandhistory: [ts, order, shell, username, command, source]
+  bash_history: [ts, order, shell, username, command, source]
+  zsh_history: [ts, order, shell, username, command, source]
+  fish_history: [ts, order, shell, username, command, source]
+  python_history: [ts, order, shell, username, command, source]
+  wtmp: [ts, ut_type, ut_user, ut_host, ut_addr, ut_line, ut_pid, ut_id]
+  btmp: [ts, ut_type, ut_user, ut_host, ut_addr, ut_line, ut_pid, ut_id]
+  lastlog: [ts, uid, ut_user, ut_host, ut_tty]
+  users: [name, passwd, uid, gid, gecos, home, shell, source]
+  groups: [name, gid, members, source]
+  passwords: [name, crypt, algorithm, hash, last_change, min_age, max_age, warning_period, inactivity_period, expiration_date]
+  sudoers: [source, user, host, command, runas_user, runas_group, options, tags]
+  cronjobs: [key, value, minute, hour, day, month, weekday, command, username, source, user_home]
+  authlog: [ts, service, pid, action, user, effective_user, by, remote_ip, remote_ips, host_ip, host_ips, port, authentication_type, hash_algorithm, key_hash, command, tty, pwd, cwd, session, su_result, message, source]
+  audit: [ts, audit_type, audit_id, message, source]
 
-  fish_history:
-    - ts
-    - command
-    - shell
-    - username
+  # Linux process, service, network, and log artefacts.
+  services_linux: [ts, type, name, source, Unit_Description, Unit_Documentation, Service_Type, Service_ExecStart, Service_ExecStartPre, Service_ExecStartPost, Service_ExecReload, Service_ExecStop, Service_User, Service_Group, Service_WorkingDirectory, Service_Restart, Service_Environment, Install_WantedBy, "*"]
+  syslog: [ts, service, pid, message, source]
+  journalctl: [ts, priority, unit, systemd_unit, user_unit, systemd_user_unit, syslog_identifier, syslog_pid, pid, uid, gid, audit_session, audit_loginuid, comm, exe, cmdline, message, transport, journal_hostname, source]
+  atop: [ts, process, cmdline, filepath, pid, tgid, ppid, ruid, euid, rgid, egid, state, excode, container]
+  cmdline: [ts, pid, name, state, cmdline]
+  environ: [ts, pid, name, variable, content]
+  processes: [ts, pid, ppid, parent, name, state, runtime]
+  sysmodules: [name, size, refcount, used_by, source]
+  sockets.tcp: [protocol, local_ip, local_port, remote_ip, remote_port, state, owner, pid, name, cmdline, inode, rx_queue, tx_queue]
+  sockets.udp: [protocol, local_ip, local_port, remote_ip, remote_port, state, owner, pid, name, cmdline, inode, rx_queue, tx_queue]
+  sockets.raw: [protocol, local_ip, local_port, remote_ip, remote_port, state, owner, pid, name, cmdline, inode, rx_queue, tx_queue]
+  sockets.packet: [protocol, protocol_type, socket_type, iface, uid, owner, pid, name, cmdline, inode, rmem, sk]
+  sockets.unix: [protocol, type, state, path, inode, ref, socket_flags]
+  iptables: [ts, program, version, table, chain, type, rule, packet_count, byte_count, source]
+  network.interfaces: [name, type, enabled, cidr, gateway, dns, mac, dhcp_ipv4, dhcp_ipv6, last_connected, vlan, configurator, source]
+  network.dhcp: [name, type, enabled, cidr, gateway, dns, mac, dhcp_ipv4, dhcp_ipv6, last_connected, vlan, configurator, source]
 
-  python_history:
-    - ts
-    - command
-    - shell
-    - username
-
-  # Login records (utmp-based)
-  wtmp:
-    - ts
-    - ut_type
-    - ut_user
-    - ut_host
-    - ut_line
-    - ut_pid
-
-  btmp:
-    - ts
-    - ut_type
-    - ut_user
-    - ut_host
-    - ut_line
-    - ut_addr
-
-  lastlog:
-    - ts
-    - uid
-    - ut_user
-    - ut_host
-    - ut_tty
-
-  # User and group management
-  users:
-    - name
-    - passwd
-    - uid
-    - gid
-    - home
-    - shell
-    - gecos
-    - source
-
-  # Cron jobs
-  cronjobs:
-    - key
-    - value
-    - minute
-    - hour
-    - day
-    - month
-    - weekday
-    - command
-    - username
-    - source
-    - user_home
-
-  # User groups (linux)
-  groups:
-    - name
-    - gid
-    - members
-    - source
-
-  # Sudoers configuration (linux)
-  sudoers:
-    - source
-    - user
-    - host
-    - command
-    - runas_user
-    - options
-
-  # Systemd / init.d services (linux/service record)
-  # NOTE: systemd units have dynamic fields (Unit_Description, Service_ExecStart, etc.)
-  # The base columns are listed first; the trailing "*" passes through any
-  # additional dynamic fields that are present in the parsed CSV.
-  services_linux:
-    - ts
-    - type
-    - name
-    - source
-    - "*"
-
-  # Syslog (linux/log/messages)
-  syslog:
-    - ts
-    - service
-    - pid
-    - message
-    - source
-
-  # Systemd journal (linux/log/journal)
-  journalctl:
-    - ts
-    - unit
-    - priority
-    - message
-    - syslog_identifier
-    - pid
-    - comm
-
-  # Package manager logs (unix/packagemanager/log)
-  packagemanager:
-    - ts
-    - package_manager
-    - operation
-    - package_name
-    - command
-    - requested_by_user
-
-  # SSH artifacts (application/openssh)
-  ssh.authorized_keys:
-    - key_type
-    - comment
-    - fingerprint
-    - options
-    - username
-
-  ssh.known_hosts:
-    - mtime_ts
-    - key_type
-    - host
-    - port
-    - fingerprint
-    - username
-
-  # Network interfaces (unix/network/interface)
-  network.interfaces:
-    - name
-    - type
-    - enabled
-    - cidr
-    - gateway
-    - dns
-    - mac
-    - source
+  # Linux application, package, desktop, and SSH artefacts.
+  packagemanager: [ts, package_manager, operation, package_name, command, requested_by_user]
+  apt.logs: [ts, package_manager, operation, package_name, command, requested_by_user]
+  dpkg.log: [ts, operation, name, status, version_old, version, arch]
+  dpkg.status: [name, status, version, arch, priority, section]
+  yum.logs: [ts, package_manager, operation, package_name, command, requested_by_user]
+  zypper.logs: [ts, package_manager, operation, package_name, command, requested_by_user]
+  applications: [ts_modified, ts_installed, name, version, author, type, path]
+  snap: [ts_modified, ts_installed, name, version, author, type, path]
+  recently_used: [ts, visited, modified, added, user, href, mimetype, groups, private, name, exec, count, source]
+  trash: [ts, path, deleted_path, filesize, username, source]
+  ssh.authorized_keys: [key_type, fingerprint, options, comment, username, user_home, path]
+  ssh.known_hosts: [mtime_ts, host, port, key_type, fingerprint, marker, comment, username, user_home, path]
+  vmlist: [path]

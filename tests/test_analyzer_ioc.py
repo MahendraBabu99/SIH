@@ -411,6 +411,20 @@ class TestLoadArtifactAiColumnProjections(unittest.TestCase):
             result = load_artifact_ai_column_projections(config_path)
         self.assertEqual(result, {})
 
+    def test_dotted_evtx_projection_key_is_preserved(self) -> None:
+        """defender.evtx is an artifact key, not an .evtx file extension."""
+        from app.analyzer.prompts import load_artifact_ai_column_projections
+        with TemporaryDirectory(prefix="aift-proj-") as tmp_dir:
+            config_path = Path(tmp_dir) / "config.yaml"
+            config_path.write_text(
+                "artifact_ai_columns:\n"
+                "  defender.evtx:\n    - ts\n    - Action_Name\n",
+                encoding="utf-8",
+            )
+            result = load_artifact_ai_column_projections(config_path)
+        self.assertIn("defender.evtx", result)
+        self.assertNotIn("defender", result)
+
 
     def test_os_suffixed_key_used_for_matching_os(self) -> None:
         """services_linux columns should be used when os_type='linux'."""

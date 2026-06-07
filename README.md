@@ -168,12 +168,12 @@ export KIMI_API_KEY="sk-..."
 
 AIFT uses [Dissect](https://github.com/fox-it/dissect) by Fox-IT (NCC Group) for forensic parsing - pure Python, no external dependencies. The OS type is detected automatically when the image is opened.
 
-### Windows (79 artifacts)
+### Windows (60 artifacts)
 
 | Category | Artifacts |
 |----------|----------|
 | **Persistence** | Run/RunOnce Keys, Scheduled Tasks, Services, WMI Persistence |
-| **Execution** | Shimcache, Amcache, Prefetch, BAM/DAM, UserAssist, RecentFileCache, StartupInfo, Windows Error Reporting, Amcache sub-artifacts |
+| **Execution** | Shimcache, Amcache, Prefetch, BAM/DAM, UserAssist, RecentFileCache, StartupInfo, Windows Error Reporting |
 | **Event Logs** | Windows Event Logs (all channels), Defender Logs |
 | **File System** | NTFS MFT, USN Journal, Recycle Bin |
 | **User Activity** | Browser History, Browser Downloads, PowerShell History, Activities Cache, Jump Lists, LNK files, MRUs, Thumbcache/Iconcache, Office Trusted Documents |
@@ -181,7 +181,7 @@ AIFT uses [Dissect](https://github.com/fox-it/dissect) by Fox-IT (NCC Group) for
 | **Registry** | Shellbags, USB Device History, MUIcache |
 | **Security** | SAM User Accounts, Defender Quarantine, Defender Exclusions, Defender MpLog/MpCmdRun, Audit Policy |
 | **Enterprise** | UAL, Active Directory, AD CS, MSSQL Error Log |
-| **Sensitive** | Credential and DPAPI key-provider artifacts are available as opt-in parse-only artifacts |
+| **Sensitive** | Credential artifacts and combined DPAPI key-provider output are available as opt-in parse-only artifacts |
 
 ### Linux (18 artifacts)
 

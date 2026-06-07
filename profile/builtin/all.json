@@ -183,11 +183,7 @@
       "mode": "parse_and_ai"
     },
     {
-      "artifact_key": "thumbcache.thumbcache",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "thumbcache.iconcache",
+      "artifact_key": "thumbcache",
       "mode": "parse_and_ai"
     },
     {
@@ -203,47 +199,7 @@
       "mode": "parse_and_ai"
     },
     {
-      "artifact_key": "amcache.files",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.programs",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.applications",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.application_files",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.applaunches",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.general",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.shortcuts",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "amcache.drivers",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "ual.client_access",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "ual.role_access",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "ual.domains_seen",
+      "artifact_key": "ual",
       "mode": "parse_and_ai"
     },
     {
@@ -259,23 +215,7 @@
       "mode": "parse_and_ai"
     },
     {
-      "artifact_key": "certlog.requests",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "certlog.request_attributes",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "certlog.crls",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "certlog.certificates",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "certlog.certificate_extensions",
+      "artifact_key": "certlog",
       "mode": "parse_and_ai"
     },
     {
@@ -299,23 +239,7 @@
       "mode": "parse_and_ai"
     },
     {
-      "artifact_key": "dpapi.keyprovider.credhist.keys",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "dpapi.keyprovider.defaultpassword.lsa.keys",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "dpapi.keyprovider.defaultpassword.winlogon.keys",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "dpapi.keyprovider.empty.keys",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "dpapi.keyprovider.keychain.keys",
+      "artifact_key": "dpapi.keyprovider",
       "mode": "parse_and_ai"
     },
     {

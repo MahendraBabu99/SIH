@@ -444,8 +444,10 @@ def normalize_artifact_key(artifact_key: str) -> str:
         The lowercased, normalized artifact key.
     """
     key = artifact_key.strip().lower()
-    # Strip common file extensions so "evtx_Security.csv" → "evtx_security".
-    for ext in (".csv", ".evtx", ".json"):
+    # Strip wrapper/data file extensions so "evtx_Security.csv" normalizes
+    # to "evtx_security". Do not strip ".evtx": it is also a valid dotted
+    # artifact namespace (for example "defender.evtx").
+    for ext in (".csv", ".json"):
         if key.endswith(ext):
             key = key[: -len(ext)]
     # Strip trailing _partN suffixes from multi-file splits.

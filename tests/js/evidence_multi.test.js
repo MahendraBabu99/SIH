@@ -805,8 +805,8 @@ describe("buildMultiImageArtifactTabs", () => {
         available_artifacts: [
           { key: "runkeys", name: "Run/RunOnce Keys", available: true },
           {
-            key: "certlog.certificates",
-            name: "Issued Certificates",
+            key: "certlog",
+            name: "AD CS Certificate Logs",
             category: "PKI",
             available: true,
           },
@@ -832,8 +832,8 @@ describe("buildMultiImageArtifactTabs", () => {
     const combinedArtifacts = [
       { key: "runkeys", name: "Run/RunOnce Keys", available: true },
       {
-        key: "certlog.certificates",
-        name: "Issued Certificates",
+        key: "certlog",
+        name: "AD CS Certificate Logs",
         category: "PKI",
         available: true,
       },
@@ -859,7 +859,7 @@ describe("buildMultiImageArtifactTabs", () => {
     expect(advanced.id).toBe("");
     expect(advanced.querySelector("summary").textContent).toBe("Advanced");
     expect(
-      advanced.querySelector("fieldset[data-category='pki'] input[data-artifact-key='certlog.certificates']")
+      advanced.querySelector("fieldset[data-category='pki'] input[data-artifact-key='certlog']")
     ).not.toBeNull();
     expect(
       advanced.querySelector("fieldset[data-category='database'] input[data-artifact-key='mssql.errorlog']")

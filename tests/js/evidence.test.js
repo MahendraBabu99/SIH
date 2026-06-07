@@ -481,8 +481,8 @@ describe("dynamic advanced artifacts", () => {
       available_artifacts: [
         { key: "runkeys", name: "Run/RunOnce Keys", available: true },
         {
-          key: "certlog.certificates",
-          name: "Issued Certificates",
+          key: "certlog",
+          name: "AD CS Certificate Logs",
           category: "PKI",
           available: true,
         },
@@ -505,7 +505,7 @@ describe("dynamic advanced artifacts", () => {
       .map((legend) => legend.textContent);
     expect(legends).toEqual(["PKI", "Database"]);
     expect(
-      advanced.querySelector("fieldset[data-category='pki'] input[data-artifact-key='certlog.certificates']")
+      advanced.querySelector("fieldset[data-category='pki'] input[data-artifact-key='certlog']")
     ).not.toBeNull();
     expect(
       advanced.querySelector("fieldset[data-category='database'] input[data-artifact-key='mssql.errorlog']")

@@ -205,16 +205,22 @@ class ForensicParser:
         registry = get_artifact_registry(self.os_type)
         available_artifacts: list[dict[str, Any]] = []
         for artifact_key, artifact_details in registry.items():
-            function_name = str(artifact_details.get("function", artifact_key))
-            try:
-                available = bool(self.target.has_function(function_name))
-            except Exception:
-                available = False
-                logger.warning(
-                    "Probe for artifact function '%s' raised an unexpected error",
-                    function_name,
-                    exc_info=True,
-                )
+            function_names = self._artifact_function_names(
+                artifact_details.get("function", artifact_key),
+                artifact_key,
+            )
+            available = False
+            for function_name in function_names:
+                try:
+                    if bool(self.target.has_function(function_name)):
+                        available = True
+                        break
+                except Exception:
+                    logger.warning(
+                        "Probe for artifact function '%s' raised an unexpected error",
+                        function_name,
+                        exc_info=True,
+                    )
 
             available_artifact = dict(artifact_details)
             available_artifact["key"] = artifact_key
@@ -222,6 +228,33 @@ class ForensicParser:
             available_artifacts.append(available_artifact)
 
         return available_artifacts
+
+    @staticmethod
+    def _artifact_function_names(function_value: Any, artifact_key: str) -> list[str]:
+        """Return one or more Dissect function names for an artifact."""
+        if isinstance(function_value, (list, tuple)):
+            function_names = [str(item).strip() for item in function_value if str(item).strip()]
+        else:
+            function_names = [str(function_value or artifact_key).strip()]
+        return function_names or [artifact_key]
+
+    def _call_target_functions(self, function_names: list[str]) -> Iterable[Any]:
+        """Invoke one or more Dissect functions and yield their records."""
+        if len(function_names) == 1:
+            yield from self._call_target_function(function_names[0])
+            return
+
+        for function_name in function_names:
+            try:
+                records = self._call_target_function(function_name)
+                yield from records
+            except Exception:
+                logger.warning(
+                    "Skipping failed function '%s' in combined artifact",
+                    function_name,
+                    exc_info=True,
+                )
+                continue
 
     def _call_target_function(self, function_name: str) -> Any:
         """Invoke a Dissect function on the target, including namespaced functions.
@@ -289,7 +322,12 @@ class ForensicParser:
                 "error": f"Unknown artifact key: {artifact_key}",
             }
 
-        function_name = str(artifact.get("function", artifact_key))
+        function_names = self._artifact_function_names(
+            artifact.get("function", artifact_key),
+            artifact_key,
+        )
+        function_name = ", ".join(function_names)
+        is_evtx_artifact = len(function_names) == 1 and self._is_evtx_artifact(function_names[0])
         start_time = perf_counter()
         record_count = 0
         csv_path = ""
@@ -308,8 +346,8 @@ class ForensicParser:
         try:
             if cancel_check is not None and cancel_check():
                 raise ParserCancelledError("Parsing cancelled by user.")
-            records = self._call_target_function(function_name)
-            if self._is_evtx_artifact(function_name):
+            records = self._call_target_functions(function_names)
+            if is_evtx_artifact:
                 all_csv_paths, record_count = self._write_evtx_records(
                     artifact_key=artifact_key,
                     records=records,
@@ -357,7 +395,7 @@ class ForensicParser:
                 "success": True,
                 "error": None,
             }
-            if self._is_evtx_artifact(function_name):
+            if is_evtx_artifact:
                 result["csv_paths"] = [str(p) for p in all_csv_paths]
             return result
         except ParserCancelledError:

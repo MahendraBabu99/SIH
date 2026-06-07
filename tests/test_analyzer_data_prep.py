@@ -409,8 +409,13 @@ class TestNormalizeArtifactKey(unittest.TestCase):
         self.assertEqual(normalize_artifact_key("MFT"), "mft")
         self.assertEqual(normalize_artifact_key("evtx_Security"), "evtx_security")
         self.assertEqual(normalize_artifact_key("evtx_System"), "evtx_system")
+        self.assertEqual(normalize_artifact_key("defender.evtx"), "defender.evtx")
+        self.assertEqual(
+            normalize_artifact_key("defender.evtx_Microsoft-Windows-Windows_Defender_Operational.csv"),
+            "defender.evtx_microsoft-windows-windows_defender_operational",
+        )
         self.assertEqual(normalize_artifact_key("shimcache_data"), "shimcache_data")
-        self.assertEqual(normalize_artifact_key("amcache.applications"), "amcache.applications")
+        self.assertEqual(normalize_artifact_key("sru.application"), "sru.application")
         self.assertEqual(normalize_artifact_key("prefetch_data"), "prefetch_data")
         self.assertEqual(normalize_artifact_key("services_list"), "services_list")
         self.assertEqual(normalize_artifact_key("tasks_scheduled"), "tasks_scheduled")

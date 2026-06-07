@@ -92,6 +92,23 @@ class TestSelectAiColumns(unittest.TestCase):
         self.assertEqual(cols, ["ts", "name", "extra"])
         self.assertEqual(cols.count("ts"), 1)
 
+    def test_dotted_evtx_split_uses_dotted_parent_projection(self) -> None:
+        """defender.evtx split CSVs should use defender.evtx, not defender/evtx."""
+        from app.analyzer.data_prep import select_ai_columns
+        projections = {
+            "defender.evtx": ("ts", "Action_Name"),
+            "defender": ("ts", "wrong"),
+            "evtx": ("ts", "EventID"),
+        }
+        available = ["ts", "EventID", "Action_Name", "wrong", "extra"]
+        cols, applied = select_ai_columns(
+            "defender.evtx_Microsoft-Windows-Windows_Defender_Operational",
+            available,
+            projections,
+        )
+        self.assertTrue(applied)
+        self.assertEqual(cols, ["ts", "Action_Name"])
+
 
 class TestProjectRowsForAnalysis(unittest.TestCase):
     """Tests for data_prep.project_rows_for_analysis."""
@@ -237,6 +254,19 @@ class TestResolveAnalysisInstructions(unittest.TestCase):
             artifact_instruction_prompts={"ssh_authorized_keys": "SSH KEY GUIDE"},
         )
         self.assertEqual(result, "SSH KEY GUIDE")
+
+    def test_dotted_evtx_split_matches_dotted_parent_prompt(self) -> None:
+        """defender.evtx split CSVs should keep Defender-specific guidance."""
+        from app.analyzer.data_prep import _resolve_analysis_instructions
+        result = _resolve_analysis_instructions(
+            artifact_key="defender.evtx_Microsoft-Windows-Windows_Defender_Operational",
+            artifact_metadata={},
+            artifact_instruction_prompts={
+                "defender.evtx": "DEFENDER EVTX GUIDE",
+                "evtx": "GENERIC EVTX GUIDE",
+            },
+        )
+        self.assertEqual(result, "DEFENDER EVTX GUIDE")
 
     def test_underscore_key_matches_dotted_prompt(self) -> None:
         """network_interfaces should match prompt keyed as network.interfaces."""
