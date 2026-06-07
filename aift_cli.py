@@ -30,6 +30,19 @@ EXIT_SUCCESS = 0
 EXIT_FAILURE = 1
 EXIT_PARTIAL = 2
 
+AIFT_LOGO = """       d8888 8888888 8888888888 88888888888
+      d88888   888   888            888
+     d88P888   888   888            888
+    d88P 888   888   8888888        888
+   d88P  888   888   888            888
+  d88P   888   888   888            888
+ d8888888888   888   888            888
+d88P     888 8888888 888            888
+
+╭─╮╷   ╭─╴╭─╮╭─╮╭─╴╭╮╷╭─╮╷╭─╴   ╶┬╴╭─╮╷╭─╮╭─╴╭─╴
+├─┤│   ├╴ │ │├┬╯├╴ │╰┤╰─╮││      │ ├┬╯│├─┤│╶╮├╴
+╵ ╵╵   ╵  ╰─╯╵╰╴╰─╴╵ ╵╰─╯╵╰─╴    ╵ ╵╰╴╵╵ ╵╰─╯╰─╴"""
+
 # Project root: aift_cli.py lives at the repository root.
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _DEFAULT_CONFIG_RELATIVE_PATH = Path("config") / "config.yaml"
@@ -123,6 +136,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Suppress progress output. Only print final result.",
     )
     optional.add_argument(
+        "--no-logo",
+        action="store_true",
+        default=False,
+        help="Skip the startup logo and print only the AIFT version line.",
+    )
+    optional.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -183,6 +202,38 @@ def _format_duration(seconds: float) -> str:
     if minutes > 0:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _format_startup_line() -> str:
+    """Return the one-line CLI startup label with centralized version metadata."""
+    from app.utils.version import TOOL_VERSION
+
+    return f"AIFT {TOOL_VERSION} - By Flip Forensics"
+
+
+def _prepare_stdout_for_text(text: str) -> None:
+    """Allow Unicode banner text to be printed on legacy Windows code pages."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
+
+
+def _print_startup_banner(include_logo: bool = True) -> None:
+    """Print the CLI startup banner.
+
+    Args:
+        include_logo: If True, print the AIFT ASCII logo before the version line.
+            If False, print only the version line.
+    """
+    if include_logo:
+        _prepare_stdout_for_text(AIFT_LOGO)
+        print(AIFT_LOGO)
+        print()
+    print(_format_startup_line())
 
 
 def _make_progress_callback(quiet: bool) -> Any:
@@ -419,6 +470,8 @@ def main() -> None:
     args = parser.parse_args()
 
     _configure_logging(args.verbose)
+    if not args.quiet:
+        _print_startup_banner(include_logo=not args.no_logo)
 
     # Resolve prompt (may be a file reference).
     prompt = _resolve_prompt(args.prompt)

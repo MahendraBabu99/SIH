@@ -22,10 +22,12 @@ from aift_cli import (
     EXIT_PARTIAL,
     EXIT_SUCCESS,
     _build_parser,
+    _format_startup_line,
     _format_duration,
     _make_progress_callback,
     _list_profiles,
     _print_summary,
+    _print_startup_banner,
     _resolve_prompt,
     main,
 )
@@ -72,6 +74,39 @@ class TestFormatDuration(unittest.TestCase):
     def test_zero(self) -> None:
         """Zero seconds formats correctly."""
         self.assertEqual(_format_duration(0), "0s")
+
+
+class TestStartupBanner(unittest.TestCase):
+    """Tests for CLI startup banner output."""
+
+    def test_startup_line_uses_version_and_attribution(self) -> None:
+        """Startup line includes the centralized version and author attribution."""
+        from app.utils.version import TOOL_VERSION
+
+        self.assertEqual(
+            _format_startup_line(),
+            f"AIFT {TOOL_VERSION} - By Flip Forensics",
+        )
+
+    def test_full_banner_prints_logo_and_version_line(self) -> None:
+        """Default startup banner includes the ASCII logo and version line."""
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_startup_banner(include_logo=True)
+
+        output = stdout.getvalue()
+        self.assertIn("d8888 8888888", output)
+        self.assertIn(_format_startup_line(), output)
+
+    def test_no_logo_banner_prints_only_version_line(self) -> None:
+        """Compact startup banner omits the ASCII logo."""
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_startup_banner(include_logo=False)
+
+        output = stdout.getvalue()
+        self.assertEqual(output, f"{_format_startup_line()}\n")
+        self.assertNotIn("d8888 8888888", output)
 
 
 class TestMakeProgressCallback(unittest.TestCase):
@@ -214,6 +249,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
         self.assertIsNone(args.case_name)
         self.assertFalse(args.skip_hashing)
         self.assertFalse(args.quiet)
+        self.assertFalse(args.no_logo)
         self.assertFalse(args.verbose)
 
     def test_all_optional_args(self) -> None:
@@ -229,6 +265,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
             "--date-start", "2026-04-01",
             "--date-end", "2026-04-15",
             "--quiet",
+            "--no-logo",
             "--verbose",
         ])
         self.assertEqual(args.output, "/output")
@@ -239,6 +276,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
         self.assertEqual(args.date_start, "2026-04-01")
         self.assertEqual(args.date_end, "2026-04-15")
         self.assertTrue(args.quiet)
+        self.assertTrue(args.no_logo)
         self.assertTrue(args.verbose)
 
 
@@ -437,6 +475,7 @@ class TestCLIExecution(unittest.TestCase):
             patch("aift_cli.assert_supported_python_version"),
             patch("app.automation.engine.run_automation", return_value=_make_result()) as mock_run,
             patch("aift_cli._configure_logging"),
+            patch("aift_cli._print_startup_banner") as mock_banner,
         ):
             try:
                 main()
@@ -445,6 +484,45 @@ class TestCLIExecution(unittest.TestCase):
             # The progress_callback kwarg should be None in quiet mode.
             call_kwargs = mock_run.call_args
             self.assertIsNone(call_kwargs.kwargs.get("progress_callback"))
+            mock_banner.assert_not_called()
+
+    def test_default_run_prints_full_startup_banner(self) -> None:
+        """Normal CLI execution prints the full startup banner."""
+        with (
+            patch("sys.argv", [
+                "aift_cli.py", "-e", str(self.evidence),
+                "-p", "test",
+            ]),
+            patch("aift_cli.assert_supported_python_version"),
+            patch("app.automation.engine.run_automation", return_value=_make_result()),
+            patch("aift_cli._configure_logging"),
+            patch("aift_cli._print_startup_banner") as mock_banner,
+        ):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+            mock_banner.assert_called_once_with(include_logo=True)
+
+    def test_no_logo_prints_compact_startup_banner(self) -> None:
+        """--no-logo prints only the version attribution line."""
+        with (
+            patch("sys.argv", [
+                "aift_cli.py", "-e", str(self.evidence),
+                "-p", "test", "--no-logo",
+            ]),
+            patch("aift_cli.assert_supported_python_version"),
+            patch("app.automation.engine.run_automation", return_value=_make_result()),
+            patch("aift_cli._configure_logging"),
+            patch("aift_cli._print_startup_banner") as mock_banner,
+        ):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+            mock_banner.assert_called_once_with(include_logo=False)
 
     def test_default_output_is_cwd(self) -> None:
         """Without --output, reports go to current directory."""
