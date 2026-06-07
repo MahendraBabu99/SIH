@@ -893,7 +893,7 @@ class RoutesTests(unittest.TestCase):
         }
         self.assertEqual(option_modes, expected_modes)
         self.assertNotIn("usnjrnl", option_keys)
-        self.assertEqual(option_modes.get("mft"), "parse_only")
+        self.assertNotIn("mft", option_keys)
         self.assertEqual(option_modes.get("evtx"), "parse_only")
         self.assertEqual(option_modes.get("defender.evtx"), "parse_and_ai")
         # Linux artifacts should now be present.

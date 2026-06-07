@@ -249,7 +249,6 @@ describe("recommended artifact action", () => {
         artifact_options: [
           { artifact_key: "defender.evtx", mode: A.MODE_PARSE_AND_AI },
           { artifact_key: "evtx", mode: A.MODE_PARSE_ONLY },
-          { artifact_key: "mft", mode: A.MODE_PARSE_ONLY },
         ],
       },
     ];
@@ -268,14 +267,14 @@ describe("recommended artifact action", () => {
 
     expect(defender.checked).toBe(true);
     expect(evtx.checked).toBe(true);
-    expect(mft.checked).toBe(true);
+    expect(mft.checked).toBe(false);
     expect(runkeys.checked).toBe(false);
     expect(defenderMode.value).toBe(A.MODE_PARSE_AND_AI);
     expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
-    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 
-  test("single-image fallback keeps Defender EVTX selected and EVTX/MFT parse-only", () => {
+  test("single-image fallback excludes MFT and keeps EVTX parse-only", () => {
     loadWindowsArtifactsForRecommendedAction();
     A.st.profiles = [];
 
@@ -290,10 +289,10 @@ describe("recommended artifact action", () => {
 
     expect(defender.checked).toBe(true);
     expect(evtx.checked).toBe(true);
-    expect(mft.checked).toBe(true);
+    expect(mft.checked).toBe(false);
     expect(usn.checked).toBe(false);
     expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
-    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 });
 

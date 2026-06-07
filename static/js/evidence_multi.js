@@ -1015,7 +1015,7 @@
    *
    * Iterates all per-image panels and applies the loaded recommended profile
    * when available. The fallback keeps only the frontend preset behavior:
-   * USN Journal is excluded, while EVTX and MFT are selected as parse-only.
+   * MFT and USN Journal are excluded, while EVTX is selected as parse-only.
    */
   function applyRecommendedToAllImages() {
     if (!isMultiImage()) return;

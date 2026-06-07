@@ -1215,7 +1215,6 @@ describe("applyRecommendedToAllImages", () => {
         artifact_options: [
           { artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI },
           { artifact_key: "evtx", mode: A.MODE_PARSE_ONLY },
-          { artifact_key: "mft", mode: A.MODE_PARSE_ONLY },
         ],
       },
     ];
@@ -1229,12 +1228,12 @@ describe("applyRecommendedToAllImages", () => {
     const mftMode = mftCb.closest("li").querySelector(".artifact-mode-select");
 
     expect(evtxCb.checked).toBe(true);
-    expect(mftCb.checked).toBe(true);
+    expect(mftCb.checked).toBe(false);
     expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
-    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 
-  test("sets fallback recommended parse-only artifacts", () => {
+  test("fallback recommended excludes MFT and sets EVTX parse-only", () => {
     const images = makeWindowsLinuxImages();
     images[0].available_artifacts.push({ key: "defender.evtx", name: "Defender Logs", available: true });
     setImagesAndBuildTabs(images);
@@ -1249,9 +1248,9 @@ describe("applyRecommendedToAllImages", () => {
 
     expect(defenderCb.checked).toBe(true);
     expect(evtxCb.checked).toBe(true);
-    expect(mftCb.checked).toBe(true);
+    expect(mftCb.checked).toBe(false);
     expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
-    expect(mftMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 
   test("does nothing when not in multi-image mode", () => {

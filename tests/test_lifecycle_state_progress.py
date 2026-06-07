@@ -477,7 +477,7 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
         self.assertEqual(metadata_path.read_text(encoding="utf-8"), original_metadata)
         self.assertTrue((image_dir / "evidence" / "old.E01").exists())
-        self.assertFalse(any((image_dir / ".replacement_staging").glob("**/*")))
+        self.assertFalse((image_dir / ".replacement_staging").exists())
         routes_state.CASE_STATES[case_id]["audit"].log.assert_any_call(
             "evidence_replacement_failed",
             {
@@ -587,7 +587,7 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotIn(image_id, restored_case.get("image_artifact_csv_paths", {}))
         self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
         self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
-        self.assertFalse(any((image_dir / ".replacement_staging").glob("**/*")))
+        self.assertFalse((image_dir / ".replacement_staging").exists())
 
     def test_upload_replacement_rewrites_hash_summary_paths_after_staging(self) -> None:
         """Committed upload replacements do not retain staging paths in hash metadata."""
@@ -665,7 +665,23 @@ class LifecycleStateProgressTests(unittest.TestCase):
         image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
         self.assertEqual(image_state["evidence_hashes"]["_source_path"], str(active_file))
         self.assertEqual(image_state["evidence_file_hashes"][0]["path"], str(active_file))
-        self.assertFalse(any((image_dir / ".replacement_staging").glob("**/*")))
+        self.assertFalse((image_dir / ".replacement_staging").exists())
+
+    def test_cleanup_replacement_staging_keeps_parent_for_active_sibling(self) -> None:
+        """Replacement staging parent remains when another attempt is staged."""
+        case_dir = self._install_case("replace-staging-sibling", "img-001")
+        image_dir = case_dir / "images" / "img-001"
+        staging_parent = image_dir / ".replacement_staging"
+        completed_staging = staging_parent / "completed"
+        active_staging = staging_parent / "active"
+        completed_staging.mkdir(parents=True)
+        active_staging.mkdir()
+
+        routes_images._cleanup_replacement_staging(completed_staging, image_dir)
+
+        self.assertFalse(completed_staging.exists())
+        self.assertTrue(active_staging.exists())
+        self.assertTrue(staging_parent.exists())
 
     def test_clear_chat_history_rejects_active_operations(self) -> None:
         """Chat history cannot be cleared while chat or case work is active."""
