@@ -182,6 +182,30 @@ class _FailingParser:
         }
 
 
+class _EmptySuccessfulParser(_FailingParser):
+    """Parser fake whose artifacts parse cleanly but yield zero records."""
+
+    def parse_artifact(
+        self,
+        artifact_key: str,
+        progress_callback: object | None = None,
+        cancel_check: object | None = None,
+    ) -> dict[str, Any]:
+        """Return a successful zero-record parser result."""
+        del cancel_check
+        if callable(progress_callback):
+            progress_callback({"artifact_key": artifact_key, "record_count": 0})
+        csv_path = self.parsed_dir / f"{artifact_key}.csv"
+        csv_path.touch()
+        return {
+            "csv_path": str(csv_path),
+            "record_count": 0,
+            "duration_seconds": 0.01,
+            "success": True,
+            "error": None,
+        }
+
+
 class _CancellingParser(_FailingParser):
     """Parser fake that reports user cancellation during parsing."""
 
@@ -699,6 +723,69 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self.assertEqual(progress["status"], "failed")
         self.assertEqual(progress["events"][-1]["reason"], "zero_success")
 
+    def test_zero_record_parse_completes_without_artifact_failure(self) -> None:
+        """A successful zero-record artifact is not reported as a parse error."""
+        case_id = "zero-record-image"
+        image_id = "img-001"
+        case_dir = self._install_case(
+            case_id,
+            [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
+        )
+        image_dir = case_dir / "images" / image_id
+        progress_key = f"{case_id}::{image_id}"
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+
+        with patch.object(routes_tasks, "ForensicParser", _EmptySuccessfulParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=image_id,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(image_dir / "evidence.E01"),
+                parsed_dir=str(image_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            image_state = case["image_states"][image_id]
+            progress = routes_state.PARSE_PROGRESS[progress_key]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            artifact_events = [
+                event for event in progress["events"]
+                if event.get("artifact_key") == "runkeys"
+            ]
+            final_event = progress["events"][-1]
+
+        self.assertEqual(case["status"], "evidence_loaded")
+        self.assertEqual(image_state.get("artifact_csv_paths"), {})
+        self.assertEqual(progress["status"], "completed")
+        self.assertEqual(aggregate_progress["status"], "completed")
+        self.assertIsNone(aggregate_progress["error"])
+        self.assertTrue((image_dir / "parsed" / "runkeys.csv").exists())
+        self.assertIn("artifact_completed", [event["type"] for event in artifact_events])
+        self.assertNotIn("artifact_failed", [event["type"] for event in artifact_events])
+        completed_event = next(event for event in artifact_events if event["type"] == "artifact_completed")
+        self.assertEqual(completed_event["record_count"], 0)
+        self.assertFalse(completed_event["has_usable_output"])
+        self.assertIsNone(completed_event["error"])
+        self.assertEqual(final_event["type"], "parse_completed")
+        self.assertEqual(final_event["reason"], "no_usable_output")
+        self.assertFalse(final_event["has_usable_csvs"])
+        self.assertEqual(final_event["successful_artifacts"], 1)
+        self.assertEqual(final_event["failed_artifacts"], 0)
+        self.assertEqual(final_event["no_record_artifacts"], 1)
+        self.assertIsNone(final_event["error"])
+        self.assertIn("no records", final_event["message"])
+        aggregate_event = aggregate_progress["events"][-1]
+        self.assertEqual(aggregate_event["aggregate_outcome"], "no_usable_output")
+        self.assertEqual(aggregate_event["aggregate_status"], "completed")
+        self.assertFalse(aggregate_event["has_usable_csvs"])
+
     def test_mixed_multi_image_zero_success_keeps_case_parsed(self) -> None:
         """One zero-output image does not poison another image's parsed CSVs."""
         case_id = "partial-zero-multi"
@@ -870,6 +957,58 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self.assertEqual(case.get("image_artifact_csv_paths"), {})
         self.assertEqual(aggregate_progress["status"], "failed")
         self.assertEqual(aggregate_event["aggregate_outcome"], "no_usable_output")
+        self.assertIsNone(routes_tasks.build_multi_image_analysis_payload_from_case(case))
+
+    def test_all_zero_record_multi_image_parse_completes_non_analyzable(self) -> None:
+        """All-clean zero-record image parses complete without parsed CSVs."""
+        case_id = "all-zero-record-multi"
+        img1 = "img-empty-1"
+        img2 = "img-empty-2"
+        available = [{"key": "runkeys", "name": "Run Keys", "available": True}]
+        case_dir = self._install_case(case_id, available, image_id=img1)
+        img1_dir = case_dir / "images" / img1
+        img2_dir = self._add_image_to_case(case_id, img2, available)
+
+        with routes_state.STATE_LOCK:
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img1}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[f"{case_id}::{img2}"] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+        with patch.object(routes_tasks, "ForensicParser", _EmptySuccessfulParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img1,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img1_dir / "evidence.E01"),
+                parsed_dir=str(img1_dir / "parsed"),
+            )
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=img2,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(img2_dir / "evidence.E01"),
+                parsed_dir=str(img2_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            aggregate_event = aggregate_progress["events"][-1]
+
+        self.assertEqual(case["status"], "evidence_loaded")
+        self.assertEqual(case.get("image_artifact_csv_paths"), {})
+        self.assertEqual(aggregate_progress["status"], "completed")
+        self.assertIsNone(aggregate_progress["error"])
+        self.assertEqual(aggregate_event["aggregate_outcome"], "no_usable_output")
+        self.assertEqual(aggregate_event["aggregate_status"], "completed")
+        self.assertFalse(aggregate_event["has_usable_csvs"])
+        self.assertCountEqual(aggregate_event["completed_image_ids"], [img1, img2])
+        self.assertCountEqual(aggregate_event["non_usable_image_ids"], [img1, img2])
         self.assertIsNone(routes_tasks.build_multi_image_analysis_payload_from_case(case))
 
     def test_route_cancel_progress_stream_includes_cancel_events(self) -> None:

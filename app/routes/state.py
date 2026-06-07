@@ -299,7 +299,7 @@ def resolve_image_parse_aggregate(
         image_statuses: Mapping of image ID to terminal/current parse status.
         image_artifact_csv_paths: Current parsed CSV aggregate by image ID.
         no_usable_case_status: Case lifecycle status to use when all related
-            parses are non-cancelled failures and no usable CSVs remain.
+            parses finish without usable CSVs.
 
     Returns:
         JSON-compatible aggregate policy details.
@@ -345,6 +345,10 @@ def resolve_image_parse_aggregate(
         else:
             aggregate_outcome = "full_success"
         case_status = "parsed"
+    elif statuses and all(status == "completed" for status in statuses):
+        aggregate_status = "completed"
+        aggregate_outcome = "no_usable_output"
+        case_status = normalize_case_status(no_usable_case_status) or "evidence_loaded"
     else:
         aggregate_status = "failed"
         aggregate_outcome = "no_usable_output"

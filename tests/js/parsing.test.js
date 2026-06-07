@@ -216,6 +216,31 @@ describe("parse state lifecycle", () => {
     expect(A.st.parse.done).toBe(true);
     expect(A.el.indicators[3].classList.contains("is-disabled")).toBe(false);
   });
+
+  test("zero-record parse completion stays on parsing without failure", () => {
+    A.setCaseId("test-case");
+    A.showStep(3);
+    A.st.parse.run = true;
+    A.st.parse.done = false;
+    A.st.parse.fail = false;
+    A.st.selected = ["runkeys"];
+    A.st.selectedAi = ["runkeys"];
+
+    A._onParseEvent({
+      type: "parse_completed",
+      has_usable_csvs: false,
+      outcome: "no_usable_output",
+      message: "Parsing completed, but the selected artifacts produced no records to analyze.",
+      sequence: 1,
+    });
+
+    expect(A.st.step).toBe(3);
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parse.fail).toBe(false);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    expect(A.el.indicators[3].classList.contains("is-disabled")).toBe(true);
+    expect(A.el.parseErr.textContent).toContain("no records");
+  });
 });
 
 // ── Parse button states ─────────────────────────────────────────────────────
@@ -494,6 +519,32 @@ describe("parse SSE ownership and retry state", () => {
     expect(A.st.parse.done).toBe(true);
     expect(A.st.selectedAi).toEqual(["evtx"]);
     expect(Object.keys(A.st.parsedSelections.images)).toEqual(["img1"]);
+  });
+
+  test("multi-image zero-record completion does not unlock analysis", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-no-records");
+    const owner = A.newRunOwner("case-no-records", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.selectedAi = ["evtx"];
+    installImageParseState(A, owner);
+
+    A._onImageParseEvent("img1", {
+      type: "parse_completed",
+      has_usable_csvs: false,
+      outcome: "no_usable_output",
+      sequence: 1,
+    }, owner);
+    jest.runOnlyPendingTimers();
+
+    expect(A.st.imageParse.img1.noUsable).toBe(true);
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.parse.fail).toBe(false);
+    expect(A.st.step).not.toBe(4);
+    expect(A.st.parsedSelections.caseId).toBe("");
+    expect(A.el.parseErr.textContent).toContain("no records");
+    jest.useRealTimers();
   });
 
   test("multi-image cancelled terminal event blocks partial success unlock", () => {

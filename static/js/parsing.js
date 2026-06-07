@@ -120,6 +120,31 @@
     st.parse.selectionStale = false;
   }
 
+  /** Return whether a parse completion produced record-bearing CSVs. */
+  function parseEventHasUsableCsvs(payload = {}) {
+    return payload.has_usable_csvs !== false && payload.outcome !== "no_usable_output";
+  }
+
+  /** Mark a parse as finished without analysis-ready records. */
+  function finishParseWithNoUsableRecords(payload = {}) {
+    st.parse.run = false;
+    st.parse.done = false;
+    st.parse.fail = false;
+    st.parse.selectionStale = false;
+    A.clearParsedSelections();
+    updateParseProgress(true);
+    A.stopTimer("parse");
+    A.clearMsg(el.analysisMsg);
+    A.setMsg(
+      el.parseErr,
+      String(payload.message || payload.error || "Parsing completed, but selected artifacts produced no records to analyze."),
+      "info",
+    );
+    A.updateParseButton();
+    A.updateNav();
+    return A.showStep(3);
+  }
+
   /** Commit successful multi-image parse snapshots and exclude failed images. */
   function commitMultiParsedSelections(owner) {
     if (!owner || !A.isRunOwnerCurrent(st.parse, owner)) return false;
@@ -128,7 +153,7 @@
     const allAiArtifacts = new Set();
     Object.keys(st.imageParse).forEach((imageId) => {
       const imgState = st.imageParse[imageId];
-      if (!imgState || !imgState.done || imgState.fail || !imgState.snapshot) return;
+      if (!imgState || !imgState.done || imgState.fail || imgState.noUsable || !imgState.snapshot) return;
       images[imageId] = Object.assign({}, imgState.snapshot);
       images[imageId].artifactOptions = cloneArtifactOptions(imgState.snapshot.artifactOptions);
       images[imageId].artifacts = (imgState.snapshot.artifacts || []).map(String).filter(Boolean);
@@ -640,6 +665,11 @@
     const anyCancelled = imageIds.some((id) => st.imageParse[id].cancelled);
     const anyControlEnded = imageIds.some((id) => st.imageParse[id].controlEnded || st.imageParse[id].transportFailed);
     const allFailed = imageIds.every((id) => st.imageParse[id].fail);
+    const anyFailed = imageIds.some((id) => st.imageParse[id].fail);
+    const anyUsable = imageIds.some((id) => {
+      const s = st.imageParse[id];
+      return s.done && !s.fail && !s.noUsable;
+    });
 
     updateMultiImageParseProgress();
 
@@ -680,6 +710,22 @@
       A.clearParsedSelections();
       A.stopTimer("parse");
       A.setMsg(el.parseErr, "All image parsing failed.", "error");
+      A.updateParseButton();
+      A.updateNav();
+      return;
+    }
+
+    if (!anyUsable) {
+      st.parse.run = false;
+      st.parse.done = false;
+      st.parse.fail = anyFailed;
+      st.parse.selectionStale = false;
+      A.clearParsedSelections();
+      A.stopTimer("parse");
+      const message = anyFailed
+        ? "Parsing finished, but no selected artifacts produced records to analyze. Some parsing errors occurred; check the image details."
+        : "Parsing completed, but selected artifacts produced no records to analyze.";
+      A.setMsg(el.parseErr, message, anyFailed ? "error" : "info");
       A.updateParseButton();
       A.updateNav();
       return;
@@ -749,6 +795,11 @@
       return A.setMsg(el.parseErr, `Parse failed for ${A.artifactName(key)}: ${String(p.error || "Unknown parser error.")}`, "error");
     }
     if (t === "parse_completed") {
+      if (!parseEventHasUsableCsvs(p)) {
+        st.parse.pendingSelectionSnapshot = null;
+        closeParseSse();
+        return finishParseWithNoUsableRecords(p);
+      }
       commitSingleParsedSelection(owner, p);
       st.parse.run = false;
       st.parse.done = true;
@@ -885,14 +936,16 @@
       return;
     }
     if (t === "parse_completed") {
+      const hasUsableCsvs = parseEventHasUsableCsvs(p);
       imgState.run = false;
       imgState.done = true;
       imgState.fail = false;
       imgState.cancelled = false;
+      imgState.noUsable = !hasUsableCsvs;
       imgState.controlEnded = false;
       imgState.transportFailed = false;
-      imgState.parsedSnapshot = imgState.snapshot || null;
-      setImageParseSectionStatus(imageId, "completed");
+      imgState.parsedSnapshot = hasUsableCsvs ? (imgState.snapshot || null) : null;
+      setImageParseSectionStatus(imageId, hasUsableCsvs ? "completed" : "no records");
       closeImageParseSse(imageId);
       checkMultiImageCompletion(owner);
       return;

@@ -298,7 +298,7 @@ def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
 
 
 def _parse_result_has_usable_output(result: dict[str, Any]) -> bool:
-    """Return whether a parser result produced records and CSV output.
+    """Return whether a parser result produced records usable for analysis.
 
     Args:
         result: Parser result dictionary returned by ``parse_artifact``.
@@ -319,6 +319,15 @@ def _parse_result_has_usable_output(result: dict[str, Any]) -> bool:
     if isinstance(csv_paths, list) and any(str(path).strip() for path in csv_paths):
         return True
     return bool(str(result.get("csv_path", "")).strip())
+
+
+def _parse_result_succeeded(result: dict[str, Any]) -> bool:
+    """Return whether the parser completed without a parser error.
+
+    A successful parse can legitimately produce zero records.  That is not
+    usable for AI analysis, but it is also not a parse failure.
+    """
+    return bool(result.get("success"))
 
 
 # ---------------------------------------------------------------------------
@@ -434,13 +443,17 @@ def run_parse_loop(
             result_entry = {"artifact_key": artifact, **result}
             results.append(result_entry)
 
+            parse_succeeded = _parse_result_succeeded(result)
             usable_output = _parse_result_has_usable_output(result)
+            message = result.get("message")
+            if parse_succeeded and not message and result.get("error"):
+                message = result.get("error")
             emit_progress(
                 PARSE_PROGRESS, progress_key,
                 {
                     "type": (
                         "artifact_completed"
-                        if usable_output
+                        if parse_succeeded
                         else "artifact_failed"
                     ),
                     "artifact_key": artifact,
@@ -449,10 +462,12 @@ def run_parse_loop(
                         result.get("duration_seconds", 0.0),
                     ),
                     "csv_path": str(result.get("csv_path", "")),
+                    "has_usable_output": usable_output,
+                    "message": message,
                     "error": (
-                        result.get("error")
-                        if usable_output
-                        else result.get("error") or "No usable parsed output."
+                        None
+                        if parse_succeeded
+                        else result.get("error") or "Parser returned no successful result."
                     ),
                 },
             )

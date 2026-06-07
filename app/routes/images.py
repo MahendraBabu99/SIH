@@ -1471,10 +1471,20 @@ def _run_image_parse(
             img_state["artifact_options"] = list(artifact_options)
             rebuild_case_parse_artifacts(case)
 
-        completed = len(csv_map)
-        failed = len(results) - completed
-        if completed == 0:
-            user_message = "No requested artifacts produced usable parsed output."
+        usable = len(csv_map)
+        successful = sum(1 for result in results if result.get("success"))
+        failed = len(results) - successful
+        no_usable_successes = max(0, successful - usable)
+        if usable == 0:
+            all_parse_attempts_failed = successful == 0
+            user_message = (
+                "No requested artifacts produced usable parsed output."
+                if all_parse_attempts_failed
+                else (
+                    "Parsing completed, but the selected artifacts produced "
+                    "no records to analyze."
+                )
+            )
             with STATE_LOCK:
                 image_states = case.setdefault("image_states", {})
                 img_state = image_states.setdefault(image_id, {})
@@ -1482,16 +1492,21 @@ def _run_image_parse(
             aggregate_policy = _finish_image_parse_progress(
                 case_id,
                 image_id,
-                "failed",
+                "failed" if all_parse_attempts_failed else "completed",
                 {
-                    "type": "parse_failed",
-                    "reason": "zero_success",
-                    "error": user_message,
+                    "type": "parse_failed" if all_parse_attempts_failed else "parse_completed",
+                    "reason": "zero_success" if all_parse_attempts_failed else "no_usable_output",
+                    "outcome": "no_usable_output",
+                    "has_usable_csvs": False,
+                    "message": user_message,
+                    "error": user_message if all_parse_attempts_failed else None,
                     "total_artifacts": len(results),
-                    "successful_artifacts": 0,
+                    "successful_artifacts": successful,
+                    "usable_artifacts": 0,
+                    "no_record_artifacts": no_usable_successes,
                     "failed_artifacts": failed,
                 },
-                error=user_message,
+                error=user_message if all_parse_attempts_failed else None,
                 no_usable_case_status="evidence_loaded",
             )
             if aggregate_policy is not None:
@@ -1512,9 +1527,12 @@ def _run_image_parse(
         completion_event: dict[str, Any] = {
             "type": "parse_completed",
             "image_id": image_id,
-            "outcome": "full_success" if completed == len(results) else "partial_success",
+            "outcome": "full_success" if usable == len(results) else "partial_success",
+            "has_usable_csvs": True,
             "total_artifacts": len(results),
-            "successful_artifacts": completed,
+            "successful_artifacts": successful,
+            "usable_artifacts": usable,
+            "no_record_artifacts": no_usable_successes,
             "failed_artifacts": failed,
             "image_artifact_csv_paths": image_artifact_csv_paths,
         }
