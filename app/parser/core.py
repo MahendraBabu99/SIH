@@ -247,14 +247,29 @@ class ForensicParser:
         for function_name in function_names:
             try:
                 records = self._call_target_function(function_name)
-                yield from records
-            except Exception:
-                logger.warning(
-                    "Skipping failed function '%s' in combined artifact",
+            except (AttributeError, UnsupportedPluginError):
+                logger.info(
+                    "Skipping unavailable function '%s' in combined artifact",
                     function_name,
                     exc_info=True,
                 )
                 continue
+            try:
+                yield from records
+            except UnsupportedPluginError:
+                logger.info(
+                    "Skipping unavailable function '%s' in combined artifact",
+                    function_name,
+                    exc_info=True,
+                )
+                continue
+            except Exception:
+                logger.warning(
+                    "Combined artifact function '%s' failed",
+                    function_name,
+                    exc_info=True,
+                )
+                raise
 
     def _call_target_function(self, function_name: str) -> Any:
         """Invoke a Dissect function on the target, including namespaced functions.

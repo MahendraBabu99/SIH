@@ -724,6 +724,59 @@ class ParserTests(unittest.TestCase):
             {"credhist", "lsa", "winlogon", "empty", "keychain"},
         )
 
+    def test_parse_artifact_combined_skips_unavailable_functions(self) -> None:
+        class KeyProviderLeaf:
+            def keys(self) -> list[FakeRecord]:
+                return [FakeRecord({"provider": "credhist"})]
+
+        class KeyProviderNamespace:
+            credhist = KeyProviderLeaf()
+
+        class DpapiNamespace:
+            keyprovider = KeyProviderNamespace()
+
+        class PartialMultiFunctionTarget:
+            dpapi = DpapiNamespace()
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(PartialMultiFunctionTarget(), Path(temp_dir), audit)
+            result = parser.parse_artifact("dpapi.keyprovider")
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["record_count"], 1)
+
+            with Path(result["csv_path"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(rows[0]["provider"], "credhist")
+
+    def test_parse_artifact_combined_fails_on_unexpected_function_error(self) -> None:
+        class BrokenKeyProviderLeaf:
+            def keys(self) -> list[FakeRecord]:
+                raise RuntimeError("provider exploded")
+
+        class DefaultPasswordNamespace:
+            lsa = BrokenKeyProviderLeaf()
+
+        class KeyProviderNamespace:
+            defaultpassword = DefaultPasswordNamespace()
+
+        class DpapiNamespace:
+            keyprovider = KeyProviderNamespace()
+
+        class BrokenMultiFunctionTarget:
+            dpapi = DpapiNamespace()
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(BrokenMultiFunctionTarget(), Path(temp_dir), audit)
+            result = parser.parse_artifact("dpapi.keyprovider")
+
+            self.assertFalse(result["success"])
+            self.assertIn("provider exploded", result["error"])
+            self.assertFalse((Path(temp_dir) / "parsed" / "dpapi.keyprovider.csv").exists())
+
     def test_get_image_metadata_includes_timezone_and_install_date(self) -> None:
         class FullMetadataTarget:
             hostname = "dc-01"
