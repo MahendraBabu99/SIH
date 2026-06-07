@@ -827,7 +827,7 @@ class TestBuildCrossImagePromptEdgeCases:
         rows = result.splitlines()
         table_rows = [row for row in rows if row.startswith("|")]
         assert len(table_rows) == 3
-        assert '<analysis-data label="image_metadata">' in result
+        assert "[BEGIN image_metadata]" in result
         assert r"img\|1" in table_rows[2]
         assert "Workstation One" in table_rows[2]
         assert r"host\|name" in table_rows[2]

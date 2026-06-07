@@ -217,7 +217,7 @@ class TestBuildArtifactFinalContextReminder(unittest.TestCase):
         self.assertIn("## Final Context Reminder", result)
         self.assertIn("runkeys", result)
         self.assertIn("Run/RunOnce Keys", result)
-        self.assertIn('<analysis-data label="investigation_context">', result)
+        self.assertIn("[BEGIN investigation_context]", result)
         self.assertIn("Check for persistence", result)
         self.assertIn("Always run default DFIR checks", result)
         self.assertIn("Not Assessable", result)
@@ -228,7 +228,7 @@ class TestBuildArtifactFinalContextReminder(unittest.TestCase):
         result = build_artifact_final_context_reminder(
             artifact_key="k", artifact_name="n", investigation_context="",
         )
-        self.assertIn('<analysis-data label="investigation_context">', result)
+        self.assertIn("[BEGIN investigation_context]", result)
         self.assertIn("No investigation context provided.", result)
 
     def test_ioc_targets_are_not_truncated(self) -> None:
@@ -481,10 +481,10 @@ class TestBuildSummaryPrompt(unittest.TestCase):
             ],
             metadata_map={"hostname": "host1", "os_version": "Win10", "domain": "corp"},
         )
-        self.assertIn('Context: <analysis-data label="investigation_context">', result)
+        self.assertIn("Context: [BEGIN investigation_context]", result)
         self.assertIn("Test context", result)
         self.assertIn("Host: host1", result)
-        self.assertIn('<analysis-data label="per_artifact_findings">', result)
+        self.assertIn("[BEGIN per_artifact_findings]", result)
         self.assertIn("### RunKeys (runkeys)", result)
         self.assertTrue(result.rstrip().endswith("mark unsupported claims as data gaps."))
 

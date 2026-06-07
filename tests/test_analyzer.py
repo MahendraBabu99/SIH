@@ -386,7 +386,7 @@ class AnalyzerTests(unittest.TestCase):
                 investigation_context="Focus on January 15, 2026.",
             )
 
-        self.assertIn('Instructions=<analysis-data label="artifact_guidance">', filled_prompt)
+        self.assertIn("Instructions=[BEGIN artifact_guidance]", filled_prompt)
         self.assertIn("RUNKEYS-SPECIFIC-INSTRUCTIONS", filled_prompt)
 
     def test_prepare_artifact_data_uses_small_context_prompt_template(self) -> None:
@@ -523,7 +523,7 @@ class AnalyzerTests(unittest.TestCase):
                 investigation_context="Focus on January 15, 2026.",
             )
 
-        self.assertIn('Instructions=<analysis-data label="artifact_guidance">', filled_prompt)
+        self.assertIn("Instructions=[BEGIN artifact_guidance]", filled_prompt)
         self.assertIn("EVTX-SPECIFIC-INSTRUCTIONS", filled_prompt)
 
     def test_prepare_artifact_data_includes_all_rows_regardless_of_timestamps(self) -> None:
@@ -1868,7 +1868,7 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(summary, "summary-output")
         self.assertEqual(len(fake_provider.calls), 1)
         self.assertEqual(fake_provider.calls[0]["system_prompt"], "SYSTEM PROMPT")
-        self.assertIn('SummaryContext=<analysis-data label="investigation_context">', fake_provider.calls[0]["user_prompt"])
+        self.assertIn("SummaryContext=[BEGIN investigation_context]", fake_provider.calls[0]["user_prompt"])
         self.assertIn("Investigate persistence", fake_provider.calls[0]["user_prompt"])
         self.assertIn("### Run/RunOnce Keys (runkeys)", fake_provider.calls[0]["user_prompt"])
 

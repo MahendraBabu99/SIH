@@ -198,7 +198,7 @@ DEFAULT_ARTIFACT_PROMPT_TEMPLATE = (
     "- Use baseline and statistics only as supporting context for behavior shifts.\n\n"
     "## Analysis Instructions (Artifact Guidance)\n{{analysis_instructions}}\n\n"
     "## Full Data (CSV Evidence Rows)\n"
-    "<analysis-data label=\"artifact_csv\">\n```csv\n{{data_csv}}\n```\n</analysis-data>\n\n"
+    "```csv\n{{data_csv}}\n```\n\n"
     "## Final Analysis Rules\nUse the provided evidence, cite row references, and mark unsupported claims as data gaps.\n"
 )
 
@@ -215,7 +215,7 @@ DEFAULT_ARTIFACT_PROMPT_TEMPLATE_SMALL_CONTEXT = (
     "- Use baseline references only as supporting context for behavior shifts.\n\n"
     "## Analysis Instructions (Artifact Guidance)\n{{analysis_instructions}}\n\n"
     "## Full Data (CSV Evidence Rows)\n"
-    "<analysis-data label=\"artifact_csv\">\n```csv\n{{data_csv}}\n```\n</analysis-data>\n\n"
+    "```csv\n{{data_csv}}\n```\n\n"
     "## Final Analysis Rules\nUse the provided evidence, cite row references, and mark unsupported claims as data gaps.\n"
 )
 

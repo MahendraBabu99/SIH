@@ -54,11 +54,9 @@ Order by severity, then confidence. Do not pad with low-value observations.
 ### Full Data (CSV Evidence Rows)
 The CSV values below are the artifact evidence rows for this analysis.
 
-<analysis-data label="artifact_csv">
 ```csv
 {{data_csv}}
 ```
-</analysis-data>
 
 ## Final Analysis Rules
 

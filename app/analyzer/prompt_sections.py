@@ -12,7 +12,7 @@ Attributes:
 
 from __future__ import annotations
 
-from html import escape
+import re
 
 ANALYSIS_PROMPT_FOOTER = (
     "## Final Analyst Instructions\n"
@@ -23,8 +23,14 @@ ANALYSIS_PROMPT_FOOTER = (
 )
 
 
+def _normalize_section_label(label: str) -> str:
+    """Return a compact ASCII label for prompt section delimiters."""
+    normalized = " ".join(str(label or "").strip().split()) or "section"
+    return re.sub(r"[^A-Za-z0-9_. -]", "_", normalized)
+
+
 def wrap_prompt_section(label: str, text: object, *, default: str = "") -> str:
-    """Wrap prompt content in a neutral labeled section.
+    """Wrap prompt content in a readable labeled section.
 
     Args:
         label: Short internal label describing the section.
@@ -34,14 +40,14 @@ def wrap_prompt_section(label: str, text: object, *, default: str = "") -> str:
     Returns:
         A labeled text block for embedding in a prompt.
     """
-    safe_label = escape(str(label).strip() or "section", quote=True)
+    safe_label = _normalize_section_label(str(label))
     body = str(text or "").strip()
     if not body:
         body = default
     return (
-        f'<analysis-data label="{safe_label}">\n'
+        f"[BEGIN {safe_label}]\n"
         f"{body}\n"
-        "</analysis-data>"
+        f"[END {safe_label}]"
     )
 
 

@@ -384,10 +384,10 @@ class TestBuildMergePrompt(unittest.TestCase):
             chunk_merge_prompt_template=template,
         )
         self.assertIn("Chunks: 3", result)
-        self.assertIn('<analysis-data label="investigation_context">', result)
+        self.assertIn("[BEGIN investigation_context]", result)
         self.assertIn("Check for lateral movement.", result)
         self.assertIn("Artifact: Event Logs (evtx)", result)
-        self.assertIn('<analysis-data label="per_chunk_findings">', result)
+        self.assertIn("[BEGIN per_chunk_findings]", result)
         self.assertIn("finding1", result)
         self.assertTrue(result.rstrip().endswith("mark unsupported claims as data gaps."))
 
@@ -645,8 +645,8 @@ class TestPromptSectionRendering(unittest.TestCase):
 
         self.assertIn("Investigation Context (Analyst-Provided)", prompt)
         self.assertIn("Full Data (CSV Evidence Rows)", prompt)
-        self.assertIn('<analysis-data label="investigation_context">', prompt)
-        self.assertIn('<analysis-data label="artifact_csv">', prompt)
+        self.assertIn("[BEGIN investigation_context]", prompt)
+        self.assertIn("```csv", prompt)
         self.assertIn("PowerShell launched encoded command", prompt)
         self.assertIn("Final Analysis Rules", prompt)
         self.assertTrue(prompt.rstrip().endswith("mark unsupported claims as data gaps."))
@@ -698,7 +698,7 @@ class TestPromptSectionRendering(unittest.TestCase):
         )
         self.assertIn(domains[-1], main_ioc_section)
         self.assertIn("Investigate " + domains[0], final_reminder)
-        self.assertIn('<analysis-data label="investigation_context">', final_reminder)
+        self.assertIn("[BEGIN investigation_context]", final_reminder)
         self.assertIn(domains[0], final_ioc_section)
         self.assertIn(domains[-1], final_ioc_section)
 

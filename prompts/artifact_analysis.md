@@ -62,11 +62,9 @@ What can't be determined from this artifact and why. Include: missing time range
 ### Full Data (CSV Evidence Rows)
 The CSV values below are the artifact evidence rows for this analysis.
 
-<analysis-data label="artifact_csv">
 ```csv
 {{data_csv}}
 ```
-</analysis-data>
 
 ## Final Analysis Rules
 
