@@ -41,6 +41,12 @@ from typing import Any, Callable, Iterable
 
 from dissect.target import Target
 from dissect.target.exceptions import PluginError, UnsupportedPluginError
+from dissect.target.plugins.os.windows.thumbcache import (
+    IconcacheRecord,
+    IndexRecord,
+    ThumbcacheRecord,
+)
+from dissect.thumbcache import Error as ThumbcacheError, Thumbcache
 
 from .registry import get_artifact_registry
 
@@ -51,6 +57,10 @@ logger = logging.getLogger(__name__)
 UNKNOWN_VALUE = "Unknown"
 EVTX_MAX_RECORDS_PER_FILE = 500_000
 MAX_RECORDS_PER_ARTIFACT = 0
+_PREFIXED_THUMBCACHE_FUNCTIONS = {
+    "thumbcache.thumbcache": ("thumbcache", ThumbcacheRecord),
+    "thumbcache.iconcache": ("iconcache", IconcacheRecord),
+}
 
 
 class ParserCancelledError(Exception):
@@ -246,21 +256,24 @@ class ForensicParser:
 
         for function_name in function_names:
             try:
-                records = self._call_target_function(function_name)
-            except (AttributeError, UnsupportedPluginError):
-                logger.info(
-                    "Skipping unavailable function '%s' in combined artifact",
+                records = self._call_target_function(
                     function_name,
-                    exc_info=True,
+                    log_resolution_errors=False,
+                )
+            except (AttributeError, UnsupportedPluginError) as error:
+                logger.info(
+                    "Skipping unavailable function '%s' in combined artifact: %s",
+                    function_name,
+                    error,
                 )
                 continue
             try:
                 yield from records
-            except UnsupportedPluginError:
+            except UnsupportedPluginError as error:
                 logger.info(
-                    "Skipping unavailable function '%s' in combined artifact",
+                    "Skipping unavailable function '%s' in combined artifact: %s",
                     function_name,
-                    exc_info=True,
+                    error,
                 )
                 continue
             except Exception:
@@ -271,13 +284,22 @@ class ForensicParser:
                 )
                 raise
 
-    def _call_target_function(self, function_name: str) -> Any:
+    def _call_target_function(
+        self,
+        function_name: str,
+        log_resolution_errors: bool = True,
+    ) -> Any:
         """Invoke a Dissect function on the target, including namespaced functions.
 
         For simple names like ``"shimcache"`` it calls ``target.shimcache()``.
         For dotted names like ``"browser.history"`` it traverses the namespace
         chain (``target.browser.history()``) and calls the final attribute.
         """
+        if function_name in _PREFIXED_THUMBCACHE_FUNCTIONS:
+            get_function = getattr(self.target, "get_function", None)
+            if callable(get_function):
+                return self._call_prefixed_thumbcache_function(function_name)
+
         if "." not in function_name:
             function = getattr(self.target, function_name)
             return function() if callable(function) else function
@@ -287,6 +309,22 @@ class ForensicParser:
         try:
             for namespace in parts:
                 current = getattr(current, namespace)
+        except (AttributeError, UnsupportedPluginError) as error:
+            if log_resolution_errors:
+                logger.warning(
+                    "Failed to resolve nested function '%s' (stopped at '%s')",
+                    function_name,
+                    namespace,
+                    exc_info=True,
+                )
+            else:
+                logger.debug(
+                    "Nested function '%s' is unavailable (stopped at '%s'): %s",
+                    function_name,
+                    namespace,
+                    error,
+                )
+            raise
         except Exception:
             logger.warning(
                 "Failed to resolve nested function '%s' (stopped at '%s')",
@@ -297,6 +335,90 @@ class ForensicParser:
             raise
 
         return current() if callable(current) else current
+
+    def _call_prefixed_thumbcache_function(self, function_name: str) -> Iterable[Any]:
+        """Invoke Dissect thumbcache/iconcache parsing with prefix-specific paths.
+
+        Dissect exposes ``thumbcache.thumbcache`` and ``thumbcache.iconcache``
+        from the same plugin and lower-level parser. The plugin-level
+        compatibility check accepts any ``*_idx.db`` file, so a user profile
+        that only has iconcache data can still be visited by the thumbcache
+        export. Calling the lower-level parser only for directories with the
+        requested prefix-specific index avoids partial-parser errors while
+        preserving Dissect's record shape.
+        """
+        if self.target is None:
+            return ()
+
+        prefix, record_type = _PREFIXED_THUMBCACHE_FUNCTIONS[function_name]
+        plugin, _ = self.target.get_function(function_name)
+        return self._iter_prefixed_thumbcache_records(plugin, prefix, record_type)
+
+    def _iter_prefixed_thumbcache_records(
+        self,
+        plugin: Any,
+        prefix: str,
+        record_type: Callable[..., Any],
+    ) -> Iterable[Any]:
+        for cache_path in plugin.get_cache_paths():
+            if not self._cache_path_has_thumbcache_prefix(cache_path, prefix):
+                continue
+
+            try:
+                cache = Thumbcache(cache_path, prefix=prefix)
+                yield from self._create_thumbcache_records(cache, record_type)
+            except ThumbcacheError as error:
+                logger.warning(
+                    "Failed to parse %s cache path %s: %s",
+                    prefix,
+                    cache_path,
+                    error,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to parse %s cache path %s",
+                    prefix,
+                    cache_path,
+                    exc_info=True,
+                )
+
+    def _create_thumbcache_records(
+        self,
+        cache: Thumbcache,
+        record_type: Callable[..., Any],
+    ) -> Iterable[Any]:
+        for path, entry in cache.entries():
+            yield record_type(
+                identifier=entry.identifier,
+                hash=entry.hash,
+                extension=entry.extension,
+                header_checksum=entry.header_checksum,
+                data_checksum=entry.data_checksum,
+                path=path,
+                data_size=len(entry.data),
+                _target=self.target,
+            )
+        for index_entry in cache.index_entries():
+            yield IndexRecord(
+                identifier=index_entry.identifier.hex(),
+                in_use=index_entry.in_use(),
+                flags=index_entry.flags,
+                last_modified=index_entry.last_modified,
+                path=cache.index_file,
+                _target=self.target,
+            )
+
+    @staticmethod
+    def _cache_path_has_thumbcache_prefix(cache_path: Any, prefix: str) -> bool:
+        try:
+            return any(cache_path.glob(f"{prefix}*_idx.db"))
+        except Exception:
+            logger.debug(
+                "Failed to check %s cache path for prefix-specific index files",
+                prefix,
+                exc_info=True,
+            )
+            return False
 
     def parse_artifact(
         self,

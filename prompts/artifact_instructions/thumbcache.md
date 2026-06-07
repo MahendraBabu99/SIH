@@ -2,7 +2,9 @@
 artifact_key: thumbcache
 name: Thumbcache and Iconcache
 category: User Activity
-function: thumbcache
+function:
+  - thumbcache.thumbcache
+  - thumbcache.iconcache
 description: Combined per-user Windows thumbnail and icon cache metadata for viewed
   files, shell items, applications, and cached previews.
 order: 1180

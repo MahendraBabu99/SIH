@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from datetime import date, datetime, time
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -750,6 +751,134 @@ class ParserTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle))
 
         self.assertEqual(rows[0]["provider"], "credhist")
+
+    def test_parse_artifact_combined_logs_unavailable_functions_without_traceback(self) -> None:
+        class KeyProviderLeaf:
+            def keys(self) -> list[FakeRecord]:
+                return [FakeRecord({"provider": "lsa"})]
+
+        class DefaultPasswordNamespace:
+            lsa = KeyProviderLeaf()
+
+        class KeyProviderNamespace:
+            defaultpassword = DefaultPasswordNamespace()
+
+            def __getattr__(self, name: str) -> object:
+                if name == "credhist":
+                    raise UnsupportedPluginError("CREDHIST plugin not available on target")
+                raise AttributeError(name)
+
+        class DpapiNamespace:
+            keyprovider = KeyProviderNamespace()
+
+        class PartialMultiFunctionTarget:
+            dpapi = DpapiNamespace()
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(PartialMultiFunctionTarget(), Path(temp_dir), audit)
+            with self.assertLogs("app.parser.core", level="INFO") as captured:
+                result = parser.parse_artifact("dpapi.keyprovider")
+
+        skip_records = [
+            record for record in captured.records
+            if "Skipping unavailable function" in record.getMessage()
+        ]
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["record_count"], 1)
+        self.assertGreaterEqual(len(skip_records), 1)
+        self.assertTrue(all(record.exc_info is None for record in skip_records))
+        self.assertTrue(all(record.levelno == logging.INFO for record in skip_records))
+
+    def test_prefixed_thumbcache_parser_uses_only_matching_index_paths(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class FakeCachePath:
+            def __init__(self, name: str, prefixes: set[str]) -> None:
+                self.name = name
+                self.prefixes = prefixes
+
+            def glob(self, pattern: str) -> list[Path]:
+                prefix = pattern.removesuffix("*_idx.db")
+                if prefix in self.prefixes:
+                    return [Path(f"{self.name}/{prefix}_idx.db")]
+                return []
+
+            def __str__(self) -> str:
+                return self.name
+
+        class FakeThumbEntry:
+            identifier = "entry-id"
+            hash = "entry-hash"
+            extension = "jpg"
+            header_checksum = b"\x01"
+            data_checksum = b"\x02"
+            data = b"image-bytes"
+
+        class FakeIndexEntry:
+            identifier = b"\xaa" * 8
+            flags = 3
+            last_modified = None
+
+            def in_use(self) -> bool:
+                return True
+
+        class FakeThumbcache:
+            def __init__(self, path: FakeCachePath, prefix: str) -> None:
+                self.path = path
+                self.prefix = prefix
+                self.index_file = Path(f"{path.name}/{prefix}_idx.db")
+                calls.append((path.name, prefix))
+
+            def entries(self) -> list[tuple[Path, FakeThumbEntry]]:
+                return [(Path(f"{self.path.name}/{self.prefix}_32.db"), FakeThumbEntry())]
+
+            def index_entries(self) -> list[FakeIndexEntry]:
+                return [FakeIndexEntry()]
+
+        class FakeThumbcachePlugin:
+            def get_cache_paths(self) -> list[FakeCachePath]:
+                return [
+                    FakeCachePath("thumb-only", {"thumbcache"}),
+                    FakeCachePath("icon-only", {"iconcache"}),
+                    FakeCachePath("both", {"thumbcache", "iconcache"}),
+                ]
+
+        class ThumbcacheTarget:
+            os = "windows"
+            hostname = "host-01"
+            domain = "corp.local"
+            path = Path("target")
+
+            def __init__(self) -> None:
+                self.plugin = FakeThumbcachePlugin()
+
+            def get_function(self, function_name: str) -> tuple[FakeThumbcachePlugin, None]:
+                self.requested_function = function_name
+                return self.plugin, None
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(ThumbcacheTarget(), Path(temp_dir), audit)
+            with patch("app.parser.core.Thumbcache", FakeThumbcache):
+                thumb_records = list(parser._call_target_function("thumbcache.thumbcache"))
+                icon_records = list(parser._call_target_function("thumbcache.iconcache"))
+
+        self.assertEqual(
+            calls,
+            [
+                ("thumb-only", "thumbcache"),
+                ("both", "thumbcache"),
+                ("icon-only", "iconcache"),
+                ("both", "iconcache"),
+            ],
+        )
+        self.assertEqual(len(thumb_records), 4)
+        self.assertEqual(len(icon_records), 4)
+        first_row = ForensicParser._record_to_dict(thumb_records[0])
+        self.assertEqual(first_row["hostname"], "host-01")
+        self.assertEqual(first_row["domain"], "corp.local")
 
     def test_parse_artifact_combined_fails_on_unexpected_function_error(self) -> None:
         class BrokenKeyProviderLeaf:
@@ -1743,6 +1872,13 @@ class ArtifactRegistryTests(unittest.TestCase):
         }
         for key in expected_keys:
             self.assertIn(key, registry)
+
+    def test_thumbcache_registry_combines_thumbcache_and_iconcache(self) -> None:
+        registry = get_artifact_registry("windows")
+        self.assertEqual(
+            registry["thumbcache"]["function"],
+            ["thumbcache.thumbcache", "thumbcache.iconcache"],
+        )
 
     def test_evtx_artifacts_identified_correctly(self) -> None:
         """EVTX-type artifacts should have function names ending with 'evtx'."""
