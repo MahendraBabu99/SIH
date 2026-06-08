@@ -912,8 +912,8 @@ def run_automation(
     6. For each evidence file: open Dissect target, extract metadata,
        compute hashes, intersect artifacts with profile, parse to CSV.
     7. Run AI analysis across all images.
-    8. Generate HTML report (copied to *output_dir*).
-    9. Generate JSON report (written to *output_dir*).
+    8. Generate a case-local HTML report, copied to *output_dir* when explicit.
+    9. Generate a case-local JSON report, copied to *output_dir* when explicit.
     10. Return :class:`AutomationResult` with all paths and status.
 
     The *progress_callback* receives ``(phase, message, percentage)`` where

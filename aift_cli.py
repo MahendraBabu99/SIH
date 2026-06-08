@@ -85,7 +85,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "-o", "--output",
         metavar="OUTPUT",
         default=None,
-        help="Output directory for reports. Defaults to current working directory.",
+        help=(
+            "Output directory for reports. If omitted, reports are written to "
+            "the created case folder under cases/<case_id>/reports."
+        ),
     )
     optional.add_argument(
         "--profile",
@@ -362,8 +365,8 @@ def _print_summary(result: Any) -> None:
         print()
 
     if getattr(result, "analysis_results_path", None):
-        print("  Analysis Results:")
-        print(f"    JSON: {result.analysis_results_path}")
+        print("  Case Analysis Payload:")
+        print(f"    analysis_results.json: {result.analysis_results_path}")
         print()
 
     if result.errors:
@@ -481,8 +484,9 @@ def main() -> None:
 
     date_range = _resolve_date_range(args.date_start, args.date_end)
 
-    # Resolve output directory.
-    output_dir = Path(args.output).resolve() if args.output else Path.cwd()
+    # Resolve only explicit output directories.  When omitted, the automation
+    # engine resolves reports into the created case's reports directory.
+    output_dir = Path(args.output).resolve() if args.output else None
 
     # Lazy-import the automation engine to avoid loading Flask.
     from app.automation.engine import AutomationRequest, run_automation

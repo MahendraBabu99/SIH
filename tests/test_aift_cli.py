@@ -2,7 +2,7 @@
 
 Covers argument parsing (help, version, list-profiles, required args, prompt
 from file), and execution flow (success/failure/partial exit codes, quiet
-mode, verbose mode, default output directory).
+mode, verbose mode, output directory handling).
 """
 
 from __future__ import annotations
@@ -142,7 +142,8 @@ class TestPrintSummary(unittest.TestCase):
             _print_summary(result)
 
         output = stdout.getvalue()
-        self.assertIn("Analysis Results", output)
+        self.assertIn("Case Analysis Payload", output)
+        self.assertIn("analysis_results.json:", output)
         self.assertIn(str(path), output)
 
     def test_failed_summary_prints_available_partial_reports(self) -> None:
@@ -524,8 +525,8 @@ class TestCLIExecution(unittest.TestCase):
 
             mock_banner.assert_called_once_with(include_logo=False)
 
-    def test_default_output_is_cwd(self) -> None:
-        """Without --output, reports go to current directory."""
+    def test_omitted_output_delegates_to_case_reports_dir(self) -> None:
+        """Without --output, the engine chooses the case reports directory."""
         with (
             patch("sys.argv", [
                 "aift_cli.py", "-e", str(self.evidence), "-p", "test",
@@ -539,7 +540,34 @@ class TestCLIExecution(unittest.TestCase):
             except SystemExit:
                 pass
             req = mock_run.call_args[0][0]
-            self.assertEqual(req.output_dir, Path.cwd())
+            self.assertIsNone(req.output_dir)
+
+    def test_explicit_output_is_resolved(self) -> None:
+        """Explicit --output paths are resolved before reaching the engine."""
+        output_dir = self.root / "exports"
+        with (
+            patch("sys.argv", [
+                "aift_cli.py",
+                "-e",
+                str(self.evidence),
+                "-p",
+                "test",
+                "--output",
+                str(output_dir),
+            ]),
+            patch("aift_cli.assert_supported_python_version"),
+            patch(
+                "app.automation.engine.run_automation",
+                return_value=_make_result(),
+            ) as mock_run,
+            patch("aift_cli._configure_logging"),
+        ):
+            try:
+                main()
+            except SystemExit:
+                pass
+            req = mock_run.call_args[0][0]
+            self.assertEqual(req.output_dir, output_dir.resolve())
 
     def test_profile_file_path_passed_to_request(self) -> None:
         """--profile may be a profile name or an explicit profile JSON path."""
