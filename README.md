@@ -56,7 +56,7 @@ These are example triage outputs, not final forensic reports and not universal b
 ## What AIFT Does
 
 - **Automated Dissect parsing.** AIFT automatically parses different forensic artifacts using Dissect. Even if AI analysis fails, the analyst can still review all CSVs parsed by Dissect.
-- **Browser, CLI, REST API, and MCP.** The same headless automation engine powers every interface, so evidence handling and report output stay consistent.
+- **Browser, CLI, REST API, and MCP.** Shared core components keep outputs consistent; CLI, REST API, and MCP use the same automation engine.
 - **Windows and Linux coverage.** Current prompt-backed registry: **60 Windows artifacts** and **44 Linux artifacts**, enabled only when parseable for the target.
 - **Multi-system triage.** Analyze a workstation, server, and domain controller in one case, then review correlated timelines, accounts, IOCs, lateral movement clues, and gaps.
 - **Provider choice.** Use Claude, OpenAI, Kimi, or a local OpenAI-compatible endpoint such as Ollama, LM Studio, vLLM, or text-generation-webui.
@@ -100,7 +100,7 @@ Local models use an OpenAI-compatible endpoint, for example `http://localhost:11
 python aift.py
 ```
 
-AIFT opens `http://localhost:5000` and creates `config/config.yaml` on first run. From the browser you can upload evidence, point to a local path, scan a directory, select artifacts or profiles, parse, analyze, chat with the results, and download the triage output.
+AIFT opens the configured local URL (`http://127.0.0.1:5000` by default) and creates `config/config.yaml` on first run. From the browser you can upload evidence, point to a local path, scan a directory, select artifacts or profiles, parse, analyze, chat with the results, and download the triage output.
 
 ---
 
