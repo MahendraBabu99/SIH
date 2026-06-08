@@ -148,6 +148,95 @@ def _notify(
             LOGGER.debug("Progress callback raised; ignoring.", exc_info=True)
 
 
+def _expected_analysis_prompt_count(
+    image_descriptors: list[dict[str, Any]],
+) -> int:
+    """Estimate how many top-level AI prompts the analyzer will start.
+
+    Args:
+        image_descriptors: Image analysis descriptors built during parsing.
+
+    Returns:
+        Count of per-artifact, per-image summary, and cross-image prompts.
+    """
+    artifact_count = sum(
+        len(desc.get("artifact_keys", []))
+        for desc in image_descriptors
+    )
+    summary_count = len(image_descriptors)
+    cross_image_count = 1 if len(image_descriptors) > 1 else 0
+    return artifact_count + summary_count + cross_image_count
+
+
+def _make_analysis_progress_callback(
+    progress_callback: Callable[[str, str, float], None] | None,
+    *,
+    expected_prompt_count: int,
+) -> Callable[..., None] | None:
+    """Adapt analyzer prompt-start events to automation progress events.
+
+    The analyzer progress stream can include provider ``thinking`` payloads.
+    Automation/CLI progress only needs safe prompt lifecycle messages, so this
+    adapter forwards ``started`` events and ignores provider text.
+
+    Args:
+        progress_callback: Automation progress callback.
+        expected_prompt_count: Approximate number of top-level prompts.
+
+    Returns:
+        Analyzer-compatible callback, or ``None`` when progress is disabled.
+    """
+    if progress_callback is None:
+        return None
+
+    prompt_total = max(1, expected_prompt_count)
+    started_count = 0
+
+    def _analysis_progress(*args: Any, **_kwargs: Any) -> None:
+        """Forward safe analyzer progress events to the automation callback."""
+        nonlocal started_count
+
+        artifact_key = ""
+        status = ""
+        payload: dict[str, Any] = {}
+
+        if len(args) >= 3:
+            artifact_key = str(args[0])
+            status = str(args[1])
+            if isinstance(args[2], dict):
+                payload = dict(args[2])
+        elif len(args) == 1 and isinstance(args[0], dict):
+            event = args[0]
+            artifact_key = str(event.get("artifact_key", ""))
+            status = str(event.get("status", ""))
+            result = event.get("result")
+            if isinstance(result, dict):
+                payload = dict(result)
+        else:
+            return
+
+        if status != "started":
+            return
+
+        started_count += 1
+        artifact_name = str(
+            payload.get("artifact_name")
+            or payload.get("artifact_key")
+            or artifact_key
+            or "AI analysis"
+        ).strip()
+        image_label = str(payload.get("image_label") or "").strip()
+        if image_label and image_label not in artifact_name:
+            message = f"Starting AI prompt for {artifact_name} on {image_label}..."
+        else:
+            message = f"Starting AI prompt for {artifact_name}..."
+
+        percentage = min(95.0, (started_count / prompt_total) * 95.0)
+        _notify(progress_callback, "analysis", message, percentage)
+
+    return _analysis_progress
+
+
 def _normalize_cancel_check(
     cancel_check: object | None,
 ) -> Callable[[], bool] | None:
@@ -1453,6 +1542,12 @@ def run_automation(
         analysis_results = analyzer.run_multi_image_analysis(
             images=image_descriptors,
             investigation_context=prompt,
+            progress_callback=_make_analysis_progress_callback(
+                progress_callback,
+                expected_prompt_count=_expected_analysis_prompt_count(
+                    image_descriptors
+                ),
+            ),
             cancel_check=safe_cancel_check,
             analysis_date_range=request.date_range,
         )

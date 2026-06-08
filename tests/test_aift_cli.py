@@ -8,6 +8,7 @@ mode, verbose mode, output directory handling).
 from __future__ import annotations
 
 import io
+import logging
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +23,7 @@ from aift_cli import (
     EXIT_PARTIAL,
     EXIT_SUCCESS,
     _build_parser,
+    _configure_logging,
     _format_startup_line,
     _format_duration,
     _make_progress_callback,
@@ -120,6 +122,31 @@ class TestMakeProgressCallback(unittest.TestCase):
         """Non-quiet mode returns a callable."""
         cb = _make_progress_callback(False)
         self.assertTrue(callable(cb))
+
+
+class TestConfigureLogging(unittest.TestCase):
+    """Tests for CLI logging configuration."""
+
+    @patch("aift_cli.logging.basicConfig")
+    @patch("aift_cli.logging.getLogger")
+    def test_non_verbose_logging_prints_errors_only(
+        self,
+        mock_get_logger: MagicMock,
+        mock_basic_config: MagicMock,
+    ) -> None:
+        """Default CLI logging suppresses warning-level third-party chatter."""
+        root_logger = MagicMock()
+        root_handler = MagicMock()
+        root_logger.handlers = [root_handler]
+        app_logger = MagicMock()
+        mock_get_logger.side_effect = [root_logger, app_logger]
+
+        _configure_logging(verbose=False)
+
+        self.assertEqual(mock_basic_config.call_args.kwargs["level"], logging.ERROR)
+        root_logger.setLevel.assert_called_once_with(logging.ERROR)
+        root_handler.setLevel.assert_called_once_with(logging.ERROR)
+        app_logger.setLevel.assert_called_once_with(logging.ERROR)
 
 
 class TestPrintSummary(unittest.TestCase):

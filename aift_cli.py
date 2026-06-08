@@ -436,14 +436,19 @@ def _configure_logging(verbose: bool) -> None:
     """Configure Python logging for the CLI session.
 
     Args:
-        verbose: If True, set ``app`` loggers to DEBUG. Otherwise, WARNING.
+        verbose: If True, set loggers to DEBUG. Otherwise, only errors are
+            printed.
     """
-    level = logging.DEBUG if verbose else logging.WARNING
+    level = logging.DEBUG if verbose else logging.ERROR
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    for handler in root_logger.handlers:
+        handler.setLevel(level)
     logging.getLogger("app").setLevel(level)
 
 

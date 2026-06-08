@@ -1304,6 +1304,60 @@ class TestRunAutomation(unittest.TestCase):
         self.assertIn("discovery", phases_seen)
         self.assertIn("reporting", phases_seen)
 
+    def test_analysis_prompt_starts_are_forwarded_to_progress_callback(self) -> None:
+        """Analyzer prompt-start events surface as analysis progress messages."""
+
+        class PromptProgressAnalyzer(_EngineTestAnalyzer):
+            """Analyzer fake that emits one GUI-style prompt-start event."""
+
+            def run_multi_image_analysis(
+                self,
+                images: list[dict[str, Any]],
+                investigation_context: str,
+                progress_callback: Any | None = None,
+                cancel_check: Any | None = None,
+                analysis_date_range: tuple[str, str] | None = None,
+            ) -> dict[str, object]:
+                if progress_callback is not None:
+                    progress_callback(
+                        "runkeys",
+                        "started",
+                        {
+                            "artifact_key": "runkeys",
+                            "artifact_name": "Run/RunOnce Keys",
+                            "image_label": "Workstation-1",
+                        },
+                    )
+                return super().run_multi_image_analysis(
+                    images=images,
+                    investigation_context=investigation_context,
+                    progress_callback=progress_callback,
+                    cancel_check=cancel_check,
+                    analysis_date_range=analysis_date_range,
+                )
+
+        self.mocks["ForensicAnalyzer"].side_effect = (
+            lambda **kwargs: PromptProgressAnalyzer(**kwargs)
+        )
+
+        events: list[tuple[str, str, float]] = []
+
+        def _cb(phase: str, message: str, pct: float) -> None:
+            events.append((phase, message, pct))
+
+        result = run_automation(self._make_request(), progress_callback=_cb)
+
+        self.assertTrue(result.success)
+        self.assertTrue(
+            any(
+                phase == "analysis"
+                and message == (
+                    "Starting AI prompt for Run/RunOnce Keys on Workstation-1..."
+                )
+                for phase, message, _pct in events
+            )
+        )
+
     @pytest.mark.concurrency
     def test_cancel_during_artifact_loop_stops_long_run(self) -> None:
         """Cancellation between artifacts stops before analysis/reporting."""

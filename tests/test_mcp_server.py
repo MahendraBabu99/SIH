@@ -641,6 +641,12 @@ class TestMCPTools(unittest.TestCase):
         manager = FakeRunManager()
         manager.status_payload["_private_state"] = "hidden"
         manager.status_payload["cancel_event"] = object()
+        manager.status_payload["status"] = "running"
+        manager.status_payload["phase"] = "analysis"
+        manager.status_payload["message"] = (
+            "Starting AI prompt for Run/RunOnce Keys on Workstation-1..."
+        )
+        manager.status_payload["percentage"] = 47.5
         manager.status_payload["result"]["provider_reasoning"] = "hidden"
         manager.list_payload["runs"][0]["thread"] = object()
         manager.list_payload["runs"][0]["api_key"] = "hidden"
@@ -649,6 +655,13 @@ class TestMCPTools(unittest.TestCase):
 
         status = _tool(server, "aift_get_run_status")("run-1")
         self.assertTrue(status["success"])
+        self.assertEqual(status["status"], "running")
+        self.assertEqual(status["phase"], "analysis")
+        self.assertEqual(
+            status["message"],
+            "Starting AI prompt for Run/RunOnce Keys on Workstation-1...",
+        )
+        self.assertEqual(status["percentage"], 47.5)
         self.assertEqual(status["warnings"], ["partial parse"])
         self.assertEqual(status["errors"], [])
         self.assertEqual(status["result"]["html_report_path"], "report.html")
