@@ -1,9 +1,9 @@
 ---
 artifact_key: lnk
-name: Shortcut Files
+name: LNK Files
 category: User Activity
 function: lnk
-description: Windows shortcut files from ProgramData, user profiles, and Windows folders,
+description: Windows LNK files from ProgramData, user profiles, and Windows folders,
   including linked targets, arguments, network paths, and timestamps.
 order: 1000
 recommended: true
