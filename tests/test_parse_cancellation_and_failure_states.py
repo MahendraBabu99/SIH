@@ -11,6 +11,7 @@ Attributes:
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import unittest
 from pathlib import Path
@@ -81,6 +82,15 @@ class _CancellationAuditFails:
         if action == "parsing_cancelled":
             raise RuntimeError("audit sink unavailable")
         self.entries.append((action, details))
+
+
+class _AlwaysFailingAudit:
+    """Audit logger fake that raises for every action."""
+
+    def log(self, action: str, details: dict[str, Any]) -> None:
+        """Raise instead of recording an audit entry."""
+        del action, details
+        raise RuntimeError("audit sink unavailable")
 
 
 class _ParserTarget:
@@ -218,6 +228,45 @@ class _CancellingParser(_FailingParser):
         """Raise the parser cancellation sentinel."""
         del artifact_key, progress_callback, cancel_check
         raise ParserCancelledError("Parsing cancelled by user.")
+
+
+class _WarningParser(FakeParser):
+    """Parser fake that emits recoverable Dissect log warnings."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Log a target-open warning, then initialise the fake parser."""
+        logging.getLogger("dissect.target.target").error(
+            "Error parsing response headers: 'NoneType' object has no attribute 'decode'",
+        )
+        super().__init__(**kwargs)
+
+    def parse_artifact(
+        self,
+        artifact_key: str,
+        progress_callback: object | None = None,
+    ) -> dict[str, object]:
+        """Log a plugin warning, then return a successful parse result."""
+        logging.getLogger("dissect.target.plugins.os.windows.jumplist").warning(
+            "Failed to parse LNK file from directory a",
+        )
+        return super().parse_artifact(artifact_key, progress_callback=progress_callback)
+
+
+class _ExplodingParser(_FailingParser):
+    """Parser fake that logs a recoverable warning, then crashes."""
+
+    def parse_artifact(
+        self,
+        artifact_key: str,
+        progress_callback: object | None = None,
+        cancel_check: object | None = None,
+    ) -> dict[str, Any]:
+        """Raise a runtime parser error after a Dissect warning."""
+        del progress_callback, cancel_check
+        logging.getLogger("dissect.target.target").warning(
+            "Recoverable parser warning before runtime failure",
+        )
+        raise RuntimeError("parser exploded")
 
 
 class RouteParseValidationStateTests(unittest.TestCase):
@@ -539,6 +588,55 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self.assertEqual(case.get("image_artifact_csv_paths"), {})
         self.assertEqual(active_operations, [])
 
+    def test_startup_cleanup_failure_still_finishes_when_audit_fails(self) -> None:
+        """Audit sink failures do not hide startup cleanup failures from the GUI."""
+        case_id = "startup-cleanup-audit-fails"
+        image_id = "img-001"
+        self._install_case(
+            case_id,
+            [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
+        )
+        with routes_state.STATE_LOCK:
+            routes_state.CASE_STATES[case_id]["audit"] = _AlwaysFailingAudit()
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images.threading, "Thread", ImmediateThread),
+            patch(
+                "app.routes.evidence_utils.cleanup_parsed_data",
+                side_effect=RuntimeError("cleanup exploded"),
+            ),
+            patch(
+                "app.routes.tasks.run_task_with_case_log_context",
+                side_effect=AssertionError("parse worker should not run"),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/cases/{case_id}/images/{image_id}/parse",
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
+
+        progress_key = f"{case_id}::{image_id}"
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            image_progress = routes_state.PARSE_PROGRESS[progress_key]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(image_progress["status"], "failed")
+        self.assertEqual(image_progress["events"][-1]["type"], "parse_failed")
+        self.assertEqual(
+            image_progress["events"][-1]["error"],
+            "Failed to prepare parsing workspace.",
+        )
+        self.assertEqual(case["status"], "evidence_loaded")
+        self.assertEqual(aggregate_progress["status"], "failed")
+
     def test_startup_cleanup_failure_keeps_other_image_csvs_parsed(self) -> None:
         """A startup failure on one image preserves another parsed image."""
         case_id = "startup-cleanup-multi"
@@ -679,6 +777,130 @@ class RouteParseValidationStateTests(unittest.TestCase):
         self.assertEqual(progress["status"], "failed")
         self.assertEqual(progress["events"][-1]["reason"], "zero_success")
         self.assertFalse((image_dir / "parsed" / "runkeys.csv").exists())
+
+    def test_parse_loop_surfaces_recoverable_dissect_logs_as_warnings(self) -> None:
+        """Recoverable Dissect log records are visible in parse progress."""
+        case_id = "recoverable-dissect-warning"
+        image_id = "img-001"
+        case_dir = self._install_case(
+            case_id,
+            [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
+        )
+        image_dir = case_dir / "images" / image_id
+        progress_key = f"{case_id}::{image_id}"
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="running")
+
+        with patch.object(routes_tasks, "ForensicParser", _WarningParser):
+            outcome = routes_tasks.run_parse_loop(
+                case_id=case_id,
+                evidence_path=str(image_dir / "evidence.E01"),
+                case_dir=str(case_dir),
+                audit_logger=case["audit"],
+                parsed_dir=str(image_dir / "parsed"),
+                parse_artifacts=["runkeys"],
+                progress_key=progress_key,
+            )
+
+        self.assertIsNotNone(outcome)
+        with routes_state.STATE_LOCK:
+            events = list(routes_state.PARSE_PROGRESS[progress_key]["events"])
+        warnings = [event for event in events if event["type"] == "parse_warning"]
+        self.assertEqual(len(warnings), 2)
+        self.assertEqual(warnings[0]["level"], "ERROR")
+        self.assertEqual(warnings[0]["logger"], "dissect.target.target")
+        self.assertIn("response headers", warnings[0]["message"])
+        self.assertNotIn("artifact_key", warnings[0])
+        self.assertEqual(warnings[1]["level"], "WARNING")
+        self.assertEqual(warnings[1]["logger"], "dissect.target.plugins.os.windows.jumplist")
+        self.assertEqual(warnings[1]["artifact_key"], "runkeys")
+        self.assertIn("Failed to parse LNK", warnings[1]["message"])
+        self.assertIn("artifact_completed", [event["type"] for event in events])
+
+    def test_runtime_parser_exception_finishes_progress_and_removes_log_handler(self) -> None:
+        """Parser crashes emit a visible failure and clean up warning capture."""
+        case_id = "runtime-parser-exception"
+        image_id = "img-001"
+        case_dir = self._install_case(
+            case_id,
+            [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
+        )
+        image_dir = case_dir / "images" / image_id
+        progress_key = f"{case_id}::{image_id}"
+        with routes_state.STATE_LOCK:
+            routes_state.CASE_STATES[case_id]["audit"] = _AlwaysFailingAudit()
+            routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+
+        with patch.object(routes_tasks, "ForensicParser", _ExplodingParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=image_id,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(image_dir / "evidence.E01"),
+                parsed_dir=str(image_dir / "parsed"),
+            )
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            image_progress = routes_state.PARSE_PROGRESS[progress_key]
+            aggregate_progress = routes_state.PARSE_PROGRESS[case_id]
+            events = list(image_progress["events"])
+        warnings = [event for event in events if event["type"] == "parse_warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["artifact_key"], "runkeys")
+        self.assertEqual(image_progress["status"], "failed")
+        self.assertEqual(image_progress["events"][-1]["type"], "parse_failed")
+        self.assertIn("Parsing failed before completion: parser exploded", image_progress["error"])
+        self.assertEqual(case["status"], "error")
+        self.assertEqual(aggregate_progress["status"], "failed")
+
+        logging.getLogger("dissect.target.target").warning(
+            "late warning after parser failure",
+        )
+        with routes_state.STATE_LOCK:
+            self.assertEqual(len(routes_state.PARSE_PROGRESS[progress_key]["events"]), len(events))
+
+    def test_runtime_parser_exception_audits_as_parsing_failed(self) -> None:
+        """Run-level parser crashes are audited as parse failures, not startup failures."""
+        case_id = "runtime-parser-audit"
+        image_id = "img-001"
+        case_dir = self._install_case(
+            case_id,
+            [{"key": "runkeys", "name": "Run Keys", "available": True}],
+            image_id=image_id,
+        )
+        image_dir = case_dir / "images" / image_id
+        progress_key = f"{case_id}::{image_id}"
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(status="running")
+            routes_state.PARSE_PROGRESS[case_id] = routes_state.new_progress(status="running")
+
+        with patch.object(routes_tasks, "ForensicParser", _ExplodingParser):
+            routes_images._run_image_parse(
+                case_id=case_id,
+                image_id=image_id,
+                parse_artifacts=["runkeys"],
+                analysis_artifacts=["runkeys"],
+                artifact_options=[{"artifact_key": "runkeys", "mode": "parse_and_ai"}],
+                config_snapshot={},
+                evidence_path=str(image_dir / "evidence.E01"),
+                parsed_dir=str(image_dir / "parsed"),
+            )
+
+        self.assertTrue(case["audit"].entries)
+        action, details = case["audit"].entries[-1]
+        self.assertEqual(action, "parsing_failed")
+        self.assertEqual(details["image_id"], image_id)
+        self.assertEqual(details["stage"], "parser_runtime")
+        self.assertEqual(details["error"], "parser exploded")
 
     def test_image_zero_success_does_not_mark_case_parsed(self) -> None:
         """An image parse with no usable artifacts leaves the case unparsed."""

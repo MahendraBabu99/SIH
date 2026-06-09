@@ -1243,14 +1243,22 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
                 )
                 audit = case.get("audit")
                 if audit is not None:
-                    audit.log(
-                        "parse_startup_failed",
-                        {
-                            "image_id": image_id,
-                            "stage": "startup_cleanup",
-                            "error": str(startup_error),
-                        },
-                    )
+                    try:
+                        audit.log(
+                            "parse_startup_failed",
+                            {
+                                "image_id": image_id,
+                                "stage": "startup_cleanup",
+                                "error": str(startup_error),
+                            },
+                        )
+                    except Exception:
+                        LOGGER.warning(
+                            "Failed to audit startup cleanup failure for case %s image %s",
+                            case_id,
+                            image_id,
+                            exc_info=True,
+                        )
                 aggregate_policy = _finish_image_parse_progress(
                     case_id,
                     image_id,
@@ -1540,12 +1548,33 @@ def _run_image_parse(
         if aggregate_policy is not None:
             mark_case_status(case_id, str(aggregate_policy["case_status"]))
         invalidate_header_cache(parsed_dir)
-    except Exception:
+    except Exception as error:
         LOGGER.exception("Background parse failed for case %s image %s", case_id, image_id)
+        error_detail = str(error).strip()
         user_message = (
-            "Parsing failed due to an internal error. "
-            "Check logs and retry after confirming the evidence file is readable."
+            f"Parsing failed before completion: {error_detail}"
+            if error_detail
+            else (
+                "Parsing failed due to an internal error. "
+                "Check logs and retry after confirming the evidence file is readable."
+            )
         )
+        try:
+            audit_logger.log(
+                "parsing_failed",
+                {
+                    "image_id": image_id,
+                    "stage": "parser_runtime",
+                    "error": error_detail or user_message,
+                },
+            )
+        except Exception:
+            LOGGER.warning(
+                "Failed to audit parser runtime failure for case %s image %s",
+                case_id,
+                image_id,
+                exc_info=True,
+            )
         aggregate_policy = _finish_image_parse_progress(
             case_id,
             image_id,

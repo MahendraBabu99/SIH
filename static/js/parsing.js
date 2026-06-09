@@ -125,6 +125,15 @@
     return payload.has_usable_csvs !== false && payload.outcome !== "no_usable_output";
   }
 
+  /** Build a concise user-facing message for recoverable parser warnings. */
+  function parseWarningText(payload = {}, artifactLabel = "") {
+    const level = String(payload.level || "WARNING").toUpperCase();
+    const prefix = level === "ERROR" || level === "CRITICAL" ? "Dissect reported a recoverable error" : "Dissect warning";
+    const scope = artifactLabel ? ` while parsing ${artifactLabel}` : "";
+    const message = String(payload.message || "The parser reported a recoverable issue and is continuing.");
+    return `${prefix}${scope}: ${message}`;
+  }
+
   /** Mark a parse as finished without analysis-ready records. */
   function finishParseWithNoUsableRecords(payload = {}) {
     st.parse.run = false;
@@ -468,6 +477,27 @@
     el.parseProgress.value = Math.max(0, Math.min(100, Math.round((done / keys.length) * 100)));
   }
 
+  /** Return whether a parse row is already in a terminal state. */
+  function isTerminalParseStatus(status) {
+    return status === "completed" || status === "failed";
+  }
+
+  /** Mark any unfinished single-image parse rows as failed. */
+  function failPendingParseRows() {
+    Object.keys(st.parse.status || {}).forEach((key) => {
+      if (!isTerminalParseStatus(st.parse.status[key])) setParseRow(key, "failed", null);
+    });
+  }
+
+  /** Mark any unfinished per-image parse rows as failed. */
+  function failPendingImageParseRows(imageId) {
+    const imgState = st.imageParse[imageId];
+    if (!imgState || !imgState.status) return;
+    Object.keys(imgState.status).forEach((key) => {
+      if (!isTerminalParseStatus(imgState.status[key])) setImageParseRow(imageId, key, "failed", null);
+    });
+  }
+
   // ── Multi-image parse progress UI ─────────────────────────────────────────
 
   /**
@@ -582,7 +612,7 @@
    * @param {string} imageId - Image ID.
    * @param {string} msg - Error message.
    */
-  function setImageParseSectionError(imageId, msg) {
+  function setImageParseSectionError(imageId, msg, kind = "error") {
     const container = q("parse-image-sections");
     if (!container) return;
     const section = container.querySelector(`.parse-image-section[data-image-id="${A.cssEscape(imageId)}"]`);
@@ -591,6 +621,7 @@
     if (errP) {
       errP.textContent = msg;
       errP.hidden = false;
+      errP.dataset.status = kind === "warning" ? "warning" : "failed";
     }
   }
 
@@ -788,6 +819,13 @@
     if (t === "artifact_started") return (setParseRow(String(p.artifact_key || ""), "parsing", A.num(p.record_count, null)), updateParseProgress());
     if (t === "artifact_progress") return setParseRow(String(p.artifact_key || ""), "parsing", A.num(p.record_count, 0));
     if (t === "artifact_completed") return (setParseRow(String(p.artifact_key || ""), "completed", A.num(p.record_count, 0)), updateParseProgress());
+    if (t === "parse_warning") {
+      const key = String(p.artifact_key || "");
+      const message = parseWarningText(p, key ? A.artifactName(key) : "");
+      if (key) setParseRow(key, "warning", A.num(p.record_count, null), message);
+      A.setMsg(el.parseErr, message, "warning");
+      return;
+    }
     if (t === "artifact_failed") {
       const key = String(p.artifact_key || "");
       setParseRow(key, "failed", A.num(p.record_count, 0), String(p.error || "Unknown parser error."));
@@ -815,11 +853,13 @@
       return;
     }
     if (t === "parse_failed") {
+      failPendingParseRows();
       st.parse.run = false;
       st.parse.done = false;
       st.parse.fail = true;
       st.parse.selectionStale = false;
       A.clearParsedSelections();
+      updateParseProgress();
       A.stopTimer("parse");
       closeParseSse();
       A.setMsg(el.parseErr, String(p.error || "Parsing failed."), "error");
@@ -847,11 +887,13 @@
         A.updateNav();
         return;
       }
+      failPendingParseRows();
       st.parse.run = false;
       st.parse.done = false;
       st.parse.fail = true;
       st.parse.selectionStale = false;
       A.clearParsedSelections();
+      updateParseProgress();
       A.stopTimer("parse");
       const message = t === "idle"
         ? "No active parse progress stream. Start parsing again."
@@ -928,6 +970,14 @@
       updateMultiImageParseProgress();
       return;
     }
+    if (t === "parse_warning") {
+      const key = String(p.artifact_key || "");
+      const message = parseWarningText(p, key ? A.artifactNameForImage(imageId, key) : "");
+      if (key) setImageParseRow(imageId, key, "warning", A.num(p.record_count, null), message);
+      setImageParseSectionStatus(imageId, "warning");
+      setImageParseSectionError(imageId, message, "warning");
+      return;
+    }
     if (t === "artifact_failed") {
       const key = String(p.artifact_key || "");
       setImageParseRow(imageId, key, "failed", A.num(p.record_count, 0), String(p.error || "Unknown parser error."));
@@ -951,6 +1001,7 @@
       return;
     }
     if (t === "parse_failed") {
+      failPendingImageParseRows(imageId);
       imgState.run = false;
       imgState.done = false;
       imgState.fail = true;
@@ -982,6 +1033,7 @@
         checkMultiImageCompletion(owner);
         return;
       }
+      failPendingImageParseRows(imageId);
       imgState.run = false;
       imgState.done = false;
       imgState.fail = true;
@@ -1029,6 +1081,7 @@
         imgState.run = false;
         imgState.fail = true;
         imgState.transportFailed = true;
+        failPendingImageParseRows(imageId);
         closeImageParseSse(imageId);
         setImageParseSectionStatus(imageId, "failed");
         setImageParseSectionError(imageId, `Connection lost after ${A.SSE_MAX_RETRIES} retries.`);
@@ -1070,7 +1123,9 @@
         st.parse.fail = true;
         st.parse.selectionStale = false;
         A.clearParsedSelections();
+        failPendingParseRows();
         st.parse.retryCount = 0;
+        updateParseProgress();
         A.stopTimer("parse");
         closeParseSse();
         A.setMsg(el.parseErr, `Parse progress connection lost after ${A.SSE_MAX_RETRIES} retries. Start parsing again.`, "error");

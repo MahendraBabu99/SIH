@@ -669,6 +669,10 @@ input[type="radio"] {
   color: var(--accent);
 }
 
+.image-status-msg[data-status="warning"] {
+  color: var(--warning);
+}
+
 .evidence-scan-help {
   margin-left: 0;
 }
@@ -1020,6 +1024,10 @@ input[type="radio"] {
   color: var(--danger);
 }
 
+.parse-image-section-header .parse-image-status[data-status="warning"] {
+  color: var(--warning);
+}
+
 .parse-image-section table {
   width: 100%;
   border-collapse: collapse;
@@ -1044,6 +1052,10 @@ input[type="radio"] {
   padding: var(--space-2) var(--space-4);
   color: var(--danger);
   font-size: 0.82rem;
+}
+
+.parse-image-section .parse-image-error[data-status="warning"] {
+  color: var(--warning);
 }
 
 .unsupported-evidence-error {
@@ -1146,6 +1158,39 @@ thead th {
   color: #ffcbc6;
   padding: 0.5rem 0.65rem;
   margin-top: var(--space-3);
+}
+
+#parse-error-message[data-status="warning"] {
+  border-color: var(--warning);
+  background: rgb(255 152 0 / 14%);
+  color: var(--warning);
+}
+
+#parse-error-message[data-status="in-progress"] {
+  border-color: var(--accent);
+  background: rgb(0 188 212 / 12%);
+  color: var(--accent);
+}
+
+#parse-error-message[data-status="success"] {
+  border-color: var(--success);
+  background: rgb(76 175 80 / 12%);
+  color: var(--success);
+}
+
+#parse-single-table td[data-status="warning"],
+.parse-image-section td[data-status="warning"] {
+  color: var(--warning);
+}
+
+#parse-single-table td[data-status="failed"],
+.parse-image-section td[data-status="failed"] {
+  color: var(--danger);
+}
+
+#parse-single-table td[data-status="completed"],
+.parse-image-section td[data-status="completed"] {
+  color: var(--success);
 }
 
 /* ==========================================================================

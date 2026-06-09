@@ -20,6 +20,7 @@ from typing import Any
 
 from ..ai_providers import AIProviderError, create_provider
 from ..ai_providers.utils import stream_chunk_answer_text, stream_chunk_reasoning_text
+from ..analyzer.prompt_sections import append_current_datetime_line
 from ..chat.manager import ChatManager
 from .state import (
     PROJECT_ROOT,
@@ -222,12 +223,14 @@ def compress_findings_with_ai(
     try:
         compressed = provider.analyze(
             system_prompt=load_compress_findings_prompt(),
-            user_prompt=(
-                f"Compress the following per-artifact forensic findings to "
-                f"roughly {target_tokens} tokens. Keep the bullet-point "
-                f"format (\"- artifact: summary\"). Preserve every "
-                f"suspicious indicator, timestamp, path, and conclusion.\n\n"
-                f"{findings_text}"
+            user_prompt=append_current_datetime_line(
+                (
+                    f"Compress the following per-artifact forensic findings to "
+                    f"roughly {target_tokens} tokens. Keep the bullet-point "
+                    f"format (\"- artifact: summary\"). Preserve every "
+                    f"suspicious indicator, timestamp, path, and conclusion.\n\n"
+                    f"{findings_text}"
+                )
             ),
             max_tokens=target_tokens,
         )
@@ -457,6 +460,7 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
             chat_manager.estimate_token_count(system_prompt)
             + chat_manager.estimate_token_count(context_block)
             + chat_manager.estimate_token_count(message_for_ai)
+            + chat_manager.estimate_token_count(append_current_datetime_line("").strip())
         )
         history_budget = max(0, prompt_budget - fixed_tokens)
 
@@ -479,6 +483,7 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
                 f"Context Block:\n{context_block}\n\n"
                 f"New User Question:\n{message_for_ai}"
             )
+        chat_user_prompt = append_current_datetime_line(chat_user_prompt)
         started_at = time.perf_counter()
         chunks: list[str] = []
         chat_response_max_tokens = max(1, int(chat_max_tokens * 0.2))

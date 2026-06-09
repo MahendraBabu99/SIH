@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 
 from app.analyzer.citations import match_column_name
 from app.analyzer.core import ForensicAnalyzer
+from app.analyzer.prompt_sections import append_analysis_prompt_footer, current_datetime_prompt_line
 from conftest import FakeProvider
 
 
@@ -191,6 +192,28 @@ class TestEstimateTokens(unittest.TestCase):
         raw = 400 / 4
         # 10% margin: expect >= 110.
         self.assertGreaterEqual(result, int(raw * 1.1))
+
+
+class TestCurrentDateTimePromptLine(unittest.TestCase):
+    """Tests for the required current-date prompt line."""
+
+    def test_current_datetime_line_uses_utc_iso_format(self) -> None:
+        line = current_datetime_prompt_line(
+            datetime(2026, 6, 8, 10, 11, 12, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(line, "Current date and time (UTC): 2026-06-08T10:11:12Z")
+
+    def test_analysis_footer_includes_current_datetime_line_once(self) -> None:
+        prompt = append_analysis_prompt_footer("Prompt body")
+        reprompt = append_analysis_prompt_footer(prompt)
+
+        self.assertRegex(
+            prompt,
+            r"(?m)^Current date and time \(UTC\): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+        )
+        self.assertEqual(reprompt.count("Current date and time"), 1)
+        self.assertTrue(reprompt.rstrip().endswith("mark unsupported claims as data gaps."))
 
 
 class TestBuildFullDataCsv(unittest.TestCase):
@@ -649,6 +672,7 @@ class TestPromptSectionRendering(unittest.TestCase):
         self.assertIn("```csv", prompt)
         self.assertIn("PowerShell launched encoded command", prompt)
         self.assertIn("Final Analysis Rules", prompt)
+        self.assertIn("Current date and time (UTC):", prompt)
         self.assertTrue(prompt.rstrip().endswith("mark unsupported claims as data gaps."))
 
     def test_shipped_artifact_templates_include_priority_and_complete_ioc_sections(self) -> None:

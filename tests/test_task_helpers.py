@@ -115,6 +115,7 @@ class CompressFindingsWithAiTests(unittest.TestCase):
         self.assertEqual(provider.analyze.call_args.kwargs["max_tokens"], 400)
         self.assertIn("roughly 400 tokens", provider.analyze.call_args.kwargs["user_prompt"])
         self.assertIn("- runkeys: suspicious entry", provider.analyze.call_args.kwargs["user_prompt"])
+        self.assertIn("Current date and time (UTC):", provider.analyze.call_args.kwargs["user_prompt"])
 
     @patch.object(routes_tasks_chat, "load_compress_findings_prompt", return_value="compress prompt")
     def test_enforces_minimum_compression_budget(self, _mock_prompt: MagicMock) -> None:

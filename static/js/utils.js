@@ -347,14 +347,18 @@ window.AIFT = (() => {
    *
    * @param {HTMLElement|null} node - The message element (from ensureMsg).
    * @param {string} text - Message content; falsy clears the message.
-   * @param {string} [kind="info"] - One of "info", "error", or "success".
+   * @param {string} [kind="info"] - One of "info", "warning", "error", or "success".
    */
   function setMsg(node, text, kind = "info") {
     if (!node) return;
     if (!text) return clearMsg(node);
     node.hidden = false;
     node.textContent = text;
-    node.dataset.status = kind === "error" ? "failed" : kind === "success" ? "success" : "in-progress";
+    let status = "in-progress";
+    if (kind === "error") status = "failed";
+    else if (kind === "success") status = "success";
+    else if (kind === "warning") status = "warning";
+    node.dataset.status = status;
   }
 
   /** Hide and clear a status-message node. @param {HTMLElement|null} node */

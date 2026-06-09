@@ -241,6 +241,75 @@ describe("parse state lifecycle", () => {
     expect(A.el.indicators[3].classList.contains("is-disabled")).toBe(true);
     expect(A.el.parseErr.textContent).toContain("no records");
   });
+
+  test("recoverable parser warning is visible without failing single-image parse", () => {
+    A.setCaseId("warning-case");
+    const owner = A.newRunOwner("warning-case", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.selected = ["jumplist"];
+    A.st.selectedAi = ["jumplist"];
+
+    A._onParseEvent({
+      type: "parse_started",
+      artifacts: ["jumplist"],
+      analysis_artifacts: ["jumplist"],
+      sequence: 1,
+    }, owner);
+    A._onParseEvent({
+      type: "parse_warning",
+      artifact_key: "jumplist",
+      level: "ERROR",
+      message: "Error parsing response headers: 'NoneType' object has no attribute 'decode'",
+      sequence: 2,
+    }, owner);
+
+    expect(A.st.parse.run).toBe(true);
+    expect(A.st.parse.fail).toBe(false);
+    expect(A.st.parse.rows.jumplist.tdS.textContent).toBe("warning");
+    expect(A.el.parseErr.dataset.status).toBe("warning");
+    expect(A.el.parseErr.textContent).toContain("recoverable error");
+
+    A._onParseEvent({
+      type: "artifact_completed",
+      artifact_key: "jumplist",
+      record_count: 3,
+      sequence: 3,
+    }, owner);
+
+    expect(A.st.parse.rows.jumplist.tdS.textContent).toBe("completed");
+  });
+
+  test("terminal single-image parse failure replaces warning row state", () => {
+    A.setCaseId("warning-failure-case");
+    const owner = A.newRunOwner("warning-failure-case", "parse");
+    A.st.parse.owner = owner;
+    A.st.parse.run = true;
+    A.st.selected = ["jumplist"];
+
+    A._onParseEvent({
+      type: "parse_started",
+      artifacts: ["jumplist"],
+      analysis_artifacts: [],
+      sequence: 1,
+    }, owner);
+    A._onParseEvent({
+      type: "parse_warning",
+      artifact_key: "jumplist",
+      level: "WARNING",
+      message: "Recoverable parser warning",
+      sequence: 2,
+    }, owner);
+    A._onParseEvent({
+      type: "parse_failed",
+      error: "Parsing failed before completion: parser exploded",
+      sequence: 3,
+    }, owner);
+
+    expect(A.st.parse.fail).toBe(true);
+    expect(A.st.parse.rows.jumplist.tdS.textContent).toBe("failed");
+    expect(A.el.parseProgress.value).toBe(100);
+  });
 });
 
 // ── Parse button states ─────────────────────────────────────────────────────
@@ -327,7 +396,7 @@ describe("parse SSE ownership and retry state", () => {
         },
       },
     };
-    return { tdR };
+    return { tdS, tdR };
   }
 
   test("multi-image SSE retry attempts persist across reconnects", () => {
@@ -370,6 +439,67 @@ describe("parse SSE ownership and retry state", () => {
 
     expect(tdR.textContent).toBe("5");
     expect(A.st.imageParse.img1.sseState.seq).toBe(5);
+  });
+
+  test("recoverable parser warning is visible without failing multi-image parse", () => {
+    A.setCaseId("case-warning");
+    const owner = A.newRunOwner("case-warning", "parse");
+    const { tdS } = installImageParseState(A, owner);
+    mustGet("parse-image-sections").innerHTML = `
+      <div class="parse-image-section" data-image-id="img1">
+        <span class="parse-image-status">Parsing...</span>
+        <p class="parse-image-error" hidden></p>
+      </div>
+    `;
+
+    A._onImageParseEvent("img1", {
+      type: "parse_warning",
+      artifact_key: "evtx",
+      level: "WARNING",
+      message: "Failed to parse LNK file from directory a",
+      sequence: 1,
+    }, owner);
+
+    const section = mustQuery(document, '.parse-image-section[data-image-id="img1"]');
+    expect(A.st.imageParse.img1.run).toBe(true);
+    expect(A.st.imageParse.img1.fail).toBe(false);
+    expect(tdS.textContent).toBe("warning");
+    expect(section.querySelector(".parse-image-status").textContent).toBe("warning");
+    expect(section.querySelector(".parse-image-error").hidden).toBe(false);
+    expect(section.querySelector(".parse-image-error").dataset.status).toBe("warning");
+  });
+
+  test("terminal multi-image parse failure replaces warning row state", () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-warning-fail");
+    const owner = A.newRunOwner("case-warning-fail", "parse");
+    const { tdS } = installImageParseState(A, owner);
+    mustGet("parse-image-sections").innerHTML = `
+      <div class="parse-image-section" data-image-id="img1">
+        <span class="parse-image-status">Parsing...</span>
+        <p class="parse-image-error" hidden></p>
+      </div>
+    `;
+
+    A._onImageParseEvent("img1", {
+      type: "parse_warning",
+      artifact_key: "evtx",
+      level: "WARNING",
+      message: "Recoverable parser warning",
+      sequence: 1,
+    }, owner);
+    A._onImageParseEvent("img1", {
+      type: "parse_failed",
+      error: "Parsing failed before completion: parser exploded",
+      sequence: 2,
+    }, owner);
+    jest.runOnlyPendingTimers();
+
+    const section = mustQuery(document, '.parse-image-section[data-image-id="img1"]');
+    expect(A.st.imageParse.img1.fail).toBe(true);
+    expect(tdS.textContent).toBe("failed");
+    expect(section.querySelector(".parse-image-status").textContent).toBe("failed");
+    expect(A.el.parseProgress.value).toBe(100);
   });
 
   test("old parse run events do not mutate the current case", () => {

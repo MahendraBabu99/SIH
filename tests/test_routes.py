@@ -1711,6 +1711,7 @@ class RoutesTests(unittest.TestCase):
             self.assertIn("Context Block:", str(first_call["user_prompt"]))
             self.assertIn("New User Question:", str(first_call["user_prompt"]))
             self.assertIn("Retrieved CSV data for this question", str(first_call["user_prompt"]))
+            self.assertIn("Current date and time (UTC):", str(first_call["user_prompt"]))
             # 20% of ai_max_tokens (2222) is allocated for the AI response.
             self.assertEqual(first_call["max_tokens"], int(2222 * 0.2))
 

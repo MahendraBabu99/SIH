@@ -23,6 +23,7 @@ import copy
 import inspect
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -72,6 +73,84 @@ __all__ = [
 ]
 
 LOGGER = logging.getLogger(__name__)
+DISSECT_PROGRESS_WARNING_LOGGER = "dissect"
+MAX_PARSE_WARNING_EVENTS = 50
+MAX_PARSE_WARNING_MESSAGE_LENGTH = 600
+
+
+class _ParseProgressLogHandler(logging.Handler):
+    """Forward recoverable parser log warnings to parse SSE progress."""
+
+    def __init__(self, progress_key: str) -> None:
+        """Create a warning handler for one parse progress stream."""
+        super().__init__(level=logging.WARNING)
+        self.progress_key = progress_key
+        self.thread_id = threading.get_ident()
+        self.artifact_key = ""
+        self.emitted = 0
+        self.suppressed = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Emit a bounded progress warning for a Dissect log record."""
+        if record.thread != self.thread_id:
+            return
+        if not record.name.startswith(DISSECT_PROGRESS_WARNING_LOGGER):
+            return
+        if self.emitted >= MAX_PARSE_WARNING_EVENTS:
+            self.suppressed += 1
+            return
+        try:
+            message = self.format(record)
+        except Exception:
+            message = record.getMessage()
+        message = _truncate_parse_warning(str(message))
+        payload: dict[str, Any] = {
+            "type": "parse_warning",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": message,
+        }
+        if self.artifact_key:
+            payload["artifact_key"] = self.artifact_key
+        try:
+            emit_progress(PARSE_PROGRESS, self.progress_key, payload)
+        except Exception:
+            self.handleError(record)
+            return
+        self.emitted += 1
+
+    def emit_suppressed_summary(self) -> None:
+        """Emit one summary event when warning output was capped."""
+        if self.suppressed <= 0:
+            return
+        try:
+            emit_progress(
+                PARSE_PROGRESS,
+                self.progress_key,
+                {
+                    "type": "parse_warning",
+                    "level": "WARNING",
+                    "logger": LOGGER.name,
+                    "message": (
+                        f"{self.suppressed} additional Dissect warning/error "
+                        "messages were suppressed for this parse run."
+                    ),
+                },
+            )
+        except Exception:
+            LOGGER.warning(
+                "Failed to emit suppressed parser warning summary for %s",
+                self.progress_key,
+                exc_info=True,
+            )
+
+
+def _truncate_parse_warning(message: str) -> str:
+    """Keep parser warning events compact enough for the GUI."""
+    normalized = " ".join(message.split())
+    if len(normalized) <= MAX_PARSE_WARNING_MESSAGE_LENGTH:
+        return normalized
+    return f"{normalized[:MAX_PARSE_WARNING_MESSAGE_LENGTH - 3]}..."
 
 
 # ---------------------------------------------------------------------------
@@ -384,96 +463,106 @@ def run_parse_loop(
     if _supports_keyword(ForensicParser, "max_records_per_artifact"):
         parser_kwargs["max_records_per_artifact"] = max_records_per_artifact
 
-    with ForensicParser(**parser_kwargs) as parser:
-        results: list[dict[str, Any]] = []
-        total = len(parse_artifacts)
+    parse_log_handler = _ParseProgressLogHandler(progress_key)
+    dissect_logger = logging.getLogger(DISSECT_PROGRESS_WARNING_LOGGER)
+    dissect_logger.addHandler(parse_log_handler)
+    try:
+        with ForensicParser(**parser_kwargs) as parser:
+            results: list[dict[str, Any]] = []
+            total = len(parse_artifacts)
 
-        for index, artifact in enumerate(parse_artifacts, start=1):
-            if cancel_check is not None and cancel_check():
-                LOGGER.info(
-                    "Parsing cancelled for case %s before artifact %s",
-                    case_id, artifact,
-                )
-                return None
+            for index, artifact in enumerate(parse_artifacts, start=1):
+                if cancel_check is not None and cancel_check():
+                    LOGGER.info(
+                        "Parsing cancelled for case %s before artifact %s",
+                        case_id, artifact,
+                    )
+                    return None
 
-            emit_progress(
-                PARSE_PROGRESS, progress_key,
-                {"type": "artifact_started", "artifact_key": artifact,
-                 "index": index, "total": total},
-            )
-
-            def _progress_callback(
-                *args: Any, _art: str = artifact, **_kwargs: Any,
-            ) -> None:
-                """Emit per-artifact parse progress events.
-
-                Args:
-                    *args: Parser callback arguments containing progress
-                        details.
-                    _art: Artifact key bound for the current parse loop item.
-                    **_kwargs: Ignored parser callback keyword arguments.
-                """
-                artifact_key, record_count = extract_parse_progress(_art, args)
+                parse_log_handler.artifact_key = artifact
                 emit_progress(
                     PARSE_PROGRESS, progress_key,
-                    {"type": "artifact_progress",
-                     "artifact_key": artifact_key,
-                     "record_count": record_count},
+                    {"type": "artifact_started", "artifact_key": artifact,
+                     "index": index, "total": total},
                 )
 
-            try:
-                parse_signature = inspect.signature(parser.parse_artifact)
-                if "cancel_check" in parse_signature.parameters:
-                    result = parser.parse_artifact(
-                        artifact,
-                        progress_callback=_progress_callback,
-                        cancel_check=cancel_check,
-                    )
-                else:
-                    result = parser.parse_artifact(
-                        artifact,
-                        progress_callback=_progress_callback,
-                    )
-            except ParserCancelledError:
-                LOGGER.info("Parsing cancelled for case %s during artifact %s", case_id, artifact)
-                return None
-            if cancel_check is not None and cancel_check():
-                LOGGER.info("Parsing cancelled for case %s after artifact %s", case_id, artifact)
-                return None
-            result_entry = {"artifact_key": artifact, **result}
-            results.append(result_entry)
+                def _progress_callback(
+                    *args: Any, _art: str = artifact, **_kwargs: Any,
+                ) -> None:
+                    """Emit per-artifact parse progress events.
 
-            parse_succeeded = _parse_result_succeeded(result)
-            usable_output = _parse_result_has_usable_output(result)
-            message = result.get("message")
-            if parse_succeeded and not message and result.get("error"):
-                message = result.get("error")
-            emit_progress(
-                PARSE_PROGRESS, progress_key,
-                {
-                    "type": (
-                        "artifact_completed"
-                        if parse_succeeded
-                        else "artifact_failed"
-                    ),
-                    "artifact_key": artifact,
-                    "record_count": safe_int(result.get("record_count", 0)),
-                    "duration_seconds": float(
-                        result.get("duration_seconds", 0.0),
-                    ),
-                    "csv_path": str(result.get("csv_path", "")),
-                    "has_usable_output": usable_output,
-                    "message": message,
-                    "error": (
-                        None
-                        if parse_succeeded
-                        else result.get("error") or "Parser returned no successful result."
-                    ),
-                },
-            )
+                    Args:
+                        *args: Parser callback arguments containing progress
+                            details.
+                        _art: Artifact key bound for the current parse loop item.
+                        **_kwargs: Ignored parser callback keyword arguments.
+                    """
+                    artifact_key, record_count = extract_parse_progress(_art, args)
+                    emit_progress(
+                        PARSE_PROGRESS, progress_key,
+                        {"type": "artifact_progress",
+                         "artifact_key": artifact_key,
+                         "record_count": record_count},
+                    )
 
-        csv_map = build_csv_map(results)
-        return results, csv_map
+                try:
+                    parse_signature = inspect.signature(parser.parse_artifact)
+                    if "cancel_check" in parse_signature.parameters:
+                        result = parser.parse_artifact(
+                            artifact,
+                            progress_callback=_progress_callback,
+                            cancel_check=cancel_check,
+                        )
+                    else:
+                        result = parser.parse_artifact(
+                            artifact,
+                            progress_callback=_progress_callback,
+                        )
+                except ParserCancelledError:
+                    LOGGER.info("Parsing cancelled for case %s during artifact %s", case_id, artifact)
+                    return None
+                if cancel_check is not None and cancel_check():
+                    LOGGER.info("Parsing cancelled for case %s after artifact %s", case_id, artifact)
+                    return None
+                result_entry = {"artifact_key": artifact, **result}
+                results.append(result_entry)
+
+                parse_succeeded = _parse_result_succeeded(result)
+                usable_output = _parse_result_has_usable_output(result)
+                message = result.get("message")
+                if parse_succeeded and not message and result.get("error"):
+                    message = result.get("error")
+                emit_progress(
+                    PARSE_PROGRESS, progress_key,
+                    {
+                        "type": (
+                            "artifact_completed"
+                            if parse_succeeded
+                            else "artifact_failed"
+                        ),
+                        "artifact_key": artifact,
+                        "record_count": safe_int(result.get("record_count", 0)),
+                        "duration_seconds": float(
+                            result.get("duration_seconds", 0.0),
+                        ),
+                        "csv_path": str(result.get("csv_path", "")),
+                        "has_usable_output": usable_output,
+                        "message": message,
+                        "error": (
+                            None
+                            if parse_succeeded
+                            else result.get("error") or "Parser returned no successful result."
+                        ),
+                    },
+                )
+                parse_log_handler.artifact_key = ""
+
+            csv_map = build_csv_map(results)
+            return results, csv_map
+    finally:
+        parse_log_handler.artifact_key = ""
+        dissect_logger.removeHandler(parse_log_handler)
+        parse_log_handler.emit_suppressed_summary()
 
 
 # ---------------------------------------------------------------------------
