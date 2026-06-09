@@ -373,6 +373,20 @@ def _read_stream_field(payload: Any, field_name: str) -> Any:
     value = getattr(payload, field_name, None)
     if value is None and isinstance(payload, dict):
         value = payload.get(field_name)
+    if value is None:
+        if isinstance(payload, dict):
+            model_extra = payload.get("model_extra")
+        else:
+            model_extra = getattr(payload, "model_extra", None)
+        if isinstance(model_extra, dict):
+            value = model_extra.get(field_name)
+    if value is None:
+        if isinstance(payload, dict):
+            pydantic_extra = payload.get("__pydantic_extra__")
+        else:
+            pydantic_extra = getattr(payload, "__pydantic_extra__", None)
+        if isinstance(pydantic_extra, dict):
+            value = pydantic_extra.get(field_name)
     return value
 
 
@@ -513,16 +527,12 @@ def _extract_openai_text(response: Any) -> str:
         return ""
 
     first_choice = choices[0]
-    message = getattr(first_choice, "message", None)
-    if message is None and isinstance(first_choice, dict):
-        message = first_choice.get("message")
+    message = _read_stream_field(first_choice, "message")
 
     if message is None:
         return ""
 
-    content = getattr(message, "content", None)
-    if content is None and isinstance(message, dict):
-        content = message.get("content")
+    content = _read_stream_field(message, "content")
 
     if isinstance(content, str):
         stripped_content = content.strip()
@@ -553,9 +563,7 @@ def _extract_openai_text(response: Any) -> str:
     # The ``refusal`` field is set by OpenAI when the model declines a
     # request.  Returning refusal text as valid analysis output would cause
     # it to appear in forensic reports, so raise an error instead.
-    refusal_value = getattr(message, "refusal", None)
-    if refusal_value is None and isinstance(message, dict):
-        refusal_value = message.get("refusal")
+    refusal_value = _read_stream_field(message, "refusal")
     refusal_text = _coerce_openai_text(refusal_value).strip()
     if refusal_text:
         from .base import AIProviderError
@@ -579,9 +587,7 @@ def _extract_openai_delta_text(delta: Any, field_names: tuple[str, ...]) -> str:
         return ""
 
     for field_name in field_names:
-        value = getattr(delta, field_name, None)
-        if value is None and isinstance(delta, dict):
-            value = delta.get(field_name)
+        value = _read_stream_field(delta, field_name)
         text = _coerce_openai_text(value)
         if text:
             return text
@@ -600,9 +606,7 @@ def _extract_openai_delta_refusal_text(delta: Any) -> str:
     if delta is None:
         return ""
 
-    refusal_value = getattr(delta, "refusal", None)
-    if refusal_value is None and isinstance(delta, dict):
-        refusal_value = delta.get("refusal")
+    refusal_value = _read_stream_field(delta, "refusal")
     return _coerce_openai_text(refusal_value).strip()
 
 
@@ -634,17 +638,12 @@ def _extract_openai_stream_chunk_delta(chunk: Any) -> Any | None:
         The first choice's delta payload, or ``None`` if the chunk has no
         usable delta.
     """
-    choices = getattr(chunk, "choices", None)
-    if choices is None and isinstance(chunk, dict):
-        choices = chunk.get("choices")
+    choices = _read_stream_field(chunk, "choices")
     if not choices:
         return None
 
     choice = choices[0]
-    delta = getattr(choice, "delta", None)
-    if delta is None and isinstance(choice, dict):
-        delta = choice.get("delta")
-    return delta
+    return _read_stream_field(choice, "delta")
 
 
 def _split_openai_stream_delta_text(delta: Any) -> StreamedResponseChunk:

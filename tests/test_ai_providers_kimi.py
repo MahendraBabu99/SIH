@@ -18,6 +18,7 @@ from app.ai_providers import (
 from app.ai_providers.base import (
     DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
+    _RATE_LIMIT_STATE,
     RATE_LIMIT_MAX_RETRIES,
 )
 
@@ -27,6 +28,12 @@ def _make_openai_response(text: str) -> SimpleNamespace:
     message = SimpleNamespace(content=text)
     choice = SimpleNamespace(message=message)
     return SimpleNamespace(choices=[choice])
+
+
+def _raise_after_chunks(chunks: list[SimpleNamespace], error: Exception):
+    """Yield stream chunks and then raise an error."""
+    yield from chunks
+    raise error
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +89,184 @@ class TestKimiProvider(unittest.TestCase):
         kwargs = mock_client.chat.completions.create.call_args.kwargs
         self.assertTrue(kwargs["stream"])
         self.assertEqual(kwargs["max_tokens"], 16384)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_streams_reasoning_content(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(reasoning_content="Kimi thinking. "),
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="Final answer."),
+                    )
+                ]
+            ),
+        ]
+
+        progress_updates: list[dict[str, str]] = []
+        provider = KimiProvider(api_key="sk-test")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=lambda payload: progress_updates.append(payload),
+        )
+
+        self.assertEqual(result, "Final answer.")
+        self.assertTrue(progress_updates)
+        self.assertEqual(progress_updates[-1]["status"], "thinking")
+        self.assertIn("Kimi thinking.", progress_updates[-1]["thinking_text"])
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertTrue(kwargs["stream"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_reads_reasoning_content_from_model_extra(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        reasoning_delta = SimpleNamespace(content=None)
+        reasoning_delta.model_extra = {"reasoning_content": "extra reasoning"}
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(choices=[SimpleNamespace(delta=reasoning_delta)]),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Final answer."))]
+            ),
+        ]
+
+        progress_updates: list[dict[str, str]] = []
+        provider = KimiProvider(api_key="sk-test")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=lambda payload: progress_updates.append(payload),
+        )
+
+        self.assertEqual(result, "Final answer.")
+        self.assertIn("extra reasoning", progress_updates[-1]["thinking_text"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_inlines_attachments_for_streaming(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="Streamed result."))
+                ]
+            )
+        ]
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+            attachments = [
+                {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+            ]
+
+            provider = KimiProvider(api_key="sk-test")
+            result = provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=lambda _payload: None,
+                attachments=attachments,
+            )
+
+        self.assertEqual(result, "Streamed result.")
+        self.assertEqual(mock_client.files.create.call_count, 0)
+        self.assertEqual(mock_client.responses.create.call_count, 0)
+        stream_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertTrue(stream_kwargs["stream"])
+        stream_prompt = stream_kwargs["messages"][1]["content"]
+        self.assertIn("File attachments were unavailable", stream_prompt)
+        self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", stream_prompt)
+        self.assertIn("ts,name", stream_prompt)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_no_callback_delegates_to_attachment_mode(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            "Kimi non-progress result"
+        )
+
+        provider = KimiProvider(api_key="sk-test")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=None,
+        )
+
+        self.assertEqual(result, "Kimi non-progress result")
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("stream", kwargs)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_rate_limit_after_reasoning_does_not_retry(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        class _FakeRateLimitError(Exception):
+            """Fake rate-limit error for progress retry tests."""
+
+        _RATE_LIMIT_STATE.pop("Kimi", None)
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        error = _FakeRateLimitError("rate limited after reasoning")
+        mock_client.chat.completions.create.return_value = _raise_after_chunks(
+            [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                reasoning_content="Kimi thinking before failure"
+                            )
+                        )
+                    ]
+                ),
+            ],
+            error,
+        )
+        progress_updates: list[dict[str, str]] = []
+
+        with patch("openai.RateLimitError", _FakeRateLimitError), patch(
+            "app.ai_providers.base.time.sleep"
+        ) as mock_sleep:
+            provider = KimiProvider(api_key="sk-test")
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=progress_updates.append,
+                )
+
+        self.assertIn("partial output", str(ctx.exception))
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+        self.assertFalse(mock_sleep.called)
+        self.assertTrue(
+            any(
+                "Kimi thinking before failure" in item.get("thinking_text", "")
+                for item in progress_updates
+            )
+        )
+        _RATE_LIMIT_STATE.pop("Kimi", None)
 
     @patch("openai.OpenAI")
     def test_analyze_stream_empty_response_raises(self, mock_openai_cls: MagicMock) -> None:

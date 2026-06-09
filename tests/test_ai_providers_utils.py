@@ -296,6 +296,46 @@ class TestExtractOpenAIDeltaText(unittest.TestCase):
             "reason",
         )
 
+    def test_extracts_from_model_extra(self) -> None:
+        """OpenAI SDK extra fields are available through model_extra."""
+        delta = SimpleNamespace(content=None)
+        delta.model_extra = {"reasoning_content": "extra reason"}
+        self.assertEqual(
+            _extract_openai_delta_text(delta, ("content", "reasoning_content")),
+            "extra reason",
+        )
+
+    def test_extracts_from_dict_model_extra(self) -> None:
+        """Dict-shaped SDK payloads may preserve extra fields in model_extra."""
+        delta = {
+            "content": None,
+            "model_extra": {"reasoning_content": "dict extra reason"},
+        }
+        self.assertEqual(
+            _extract_openai_delta_text(delta, ("content", "reasoning_content")),
+            "dict extra reason",
+        )
+
+    def test_extracts_from_pydantic_extra(self) -> None:
+        """Older SDK object shapes may expose unknown fields as pydantic extra."""
+        delta = SimpleNamespace(content=None)
+        setattr(delta, "__pydantic_extra__", {"reasoning_content": "pydantic reason"})
+        self.assertEqual(
+            _extract_openai_delta_text(delta, ("content", "reasoning_content")),
+            "pydantic reason",
+        )
+
+    def test_extracts_from_dict_pydantic_extra(self) -> None:
+        """Dict-shaped SDK payloads may preserve extra fields in pydantic extra."""
+        delta = {
+            "content": None,
+            "__pydantic_extra__": {"reasoning_content": "dict pydantic reason"},
+        }
+        self.assertEqual(
+            _extract_openai_delta_text(delta, ("content", "reasoning_content")),
+            "dict pydantic reason",
+        )
+
     def test_returns_empty_when_no_match(self) -> None:
         """Verify the behavior described by this test name."""
         delta = SimpleNamespace(other="something")

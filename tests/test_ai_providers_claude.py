@@ -16,6 +16,7 @@ from app.ai_providers import (
 from app.ai_providers.base import (
     DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
+    _RATE_LIMIT_STATE,
     RATE_LIMIT_MAX_RETRIES,
 )
 from app.ai_providers.utils import _extract_anthropic_text
@@ -25,6 +26,12 @@ def _make_anthropic_response(text: str) -> SimpleNamespace:
     """Build a minimal Anthropic-style response object."""
     block = SimpleNamespace(text=text)
     return SimpleNamespace(content=[block])
+
+
+def _raise_after_chunks(chunks: list[SimpleNamespace], error: Exception):
+    """Yield stream chunks and then raise an error."""
+    yield from chunks
+    raise error
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +72,190 @@ class TestClaudeProvider(unittest.TestCase):
         self.assertEqual(chunks, ["Chunk 1 ", "Chunk 2"])
         kwargs = mock_client.messages.create.call_args.kwargs
         self.assertTrue(kwargs["stream"])
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_streams_thinking_and_returns_final_text(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="Claude thinking. "),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="Final answer."),
+            ),
+        ]
+
+        progress_updates: list[dict[str, str]] = []
+        provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=lambda payload: progress_updates.append(payload),
+        )
+
+        self.assertEqual(result, "Final answer.")
+        self.assertTrue(progress_updates)
+        self.assertEqual(progress_updates[-1]["status"], "thinking")
+        self.assertIn("Claude thinking.", progress_updates[-1]["thinking_text"])
+        kwargs = mock_client.messages.create.call_args.kwargs
+        self.assertTrue(kwargs["stream"])
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_uses_attachment_blocks_for_streaming(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="Streamed result."),
+            ),
+        ]
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+            attachments = [
+                {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+            ]
+
+            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+            result = provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=lambda _payload: None,
+                attachments=attachments,
+            )
+
+        self.assertEqual(result, "Streamed result.")
+        kwargs = mock_client.messages.create.call_args.kwargs
+        self.assertTrue(kwargs["stream"])
+        content = kwargs["messages"][0]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[1]["type"], "text")
+        self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", content[1]["text"])
+        self.assertIn("ts,name", content[1]["text"])
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_falls_back_when_attachment_blocks_unsupported(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = [
+            RuntimeError("unsupported document input"),
+            [
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text="Inline fallback result."),
+                ),
+            ],
+        ]
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+            attachments = [
+                {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+            ]
+
+            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+            result = provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=lambda _payload: None,
+                attachments=attachments,
+            )
+
+        self.assertEqual(result, "Inline fallback result.")
+        self.assertEqual(mock_client.messages.create.call_count, 2)
+        first_content = mock_client.messages.create.call_args_list[0].kwargs["messages"][0]["content"]
+        second_content = mock_client.messages.create.call_args_list[1].kwargs["messages"][0]["content"]
+        self.assertIsInstance(first_content, list)
+        self.assertIsInstance(second_content, str)
+        self.assertIn("File attachments were unavailable", second_content)
+        self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", second_content)
+        self.assertIn("ts,name", second_content)
+        self.assertFalse(provider._csv_attachment_supported)
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_no_callback_delegates_to_attachment_mode(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.return_value = _make_anthropic_response(
+            "Claude non-progress result"
+        )
+
+        provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=None,
+        )
+
+        self.assertEqual(result, "Claude non-progress result")
+        kwargs = mock_client.messages.create.call_args.kwargs
+        self.assertNotIn("stream", kwargs)
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_rate_limit_after_reasoning_does_not_retry(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        class _FakeRateLimitError(Exception):
+            """Fake rate-limit error for progress retry tests."""
+
+        _RATE_LIMIT_STATE.pop("Claude", None)
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        error = _FakeRateLimitError("rate limited after reasoning")
+        mock_client.messages.create.return_value = _raise_after_chunks(
+            [
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(
+                        type="thinking_delta",
+                        thinking="Claude thinking before failure",
+                    ),
+                ),
+            ],
+            error,
+        )
+        progress_updates: list[dict[str, str]] = []
+
+        with patch("anthropic.RateLimitError", _FakeRateLimitError), patch(
+            "app.ai_providers.base.time.sleep"
+        ) as mock_sleep:
+            provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=progress_updates.append,
+                )
+
+        self.assertIn("partial output", str(ctx.exception))
+        self.assertEqual(mock_client.messages.create.call_count, 1)
+        self.assertFalse(mock_sleep.called)
+        self.assertTrue(
+            any(
+                "Claude thinking before failure" in item.get("thinking_text", "")
+                for item in progress_updates
+            )
+        )
+        _RATE_LIMIT_STATE.pop("Claude", None)
 
     @patch("anthropic.Anthropic")
     def test_get_model_info(self, _mock: MagicMock) -> None:
