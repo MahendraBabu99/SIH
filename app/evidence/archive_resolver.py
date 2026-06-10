@@ -153,15 +153,40 @@ def resolve_archive_descriptor(
 ) -> EvidenceDescriptor:
     """Resolve an archive to the descriptor AIFT should analyze and hash.
 
-    Dissect-openable archives are used directly. Archives that Dissect cannot
-    open are safely extracted and selected using the same target-aware
-    discovery contract as automation mode.
+    Per SPEC Sections 4.4 and 19.5 the archive is first probed with Dissect.
+    When Dissect can open the archive directly, the archive itself is the
+    target and no extraction (and therefore no extraction-safety validation)
+    takes place. When the probe fails, the archive is validated for safe
+    extraction before any member content is written, then safely extracted
+    and selected using the same target-aware discovery contract as
+    automation mode.
+
+    Args:
+        archive_path: Archive file to resolve.
+        destination: Extraction directory, or a zero-argument callable
+            returning one, used only when fallback extraction is required.
+        limits: Extraction limit values enforced by the pre-extraction
+            safety pass and fallback extraction.
+        source_mode: Source provenance mode recorded on the descriptor.
+
+    Returns:
+        Descriptor for the directly loadable archive, or for the selected
+        extracted target with archive provenance.
+
+    Raises:
+        ValueError: If the archive is invalid, empty, unsafe to extract, or
+            yields no selectable target. Unsafe archives raise messages
+            starting with ``"Archive rejected:"`` before any of their member
+            content is written; an unsafe nested archive additionally aborts
+            the outer extraction and removes the extraction destination.
+        OSError: If extraction or cleanup filesystem operations fail.
     """
     resolved_archive = Path(archive_path).resolve()
-    validate_archive_safety(resolved_archive, limits=limits)
 
     if can_open_with_dissect(resolved_archive):
         return descriptor_for_path(resolved_archive, source_mode=source_mode)
+
+    validate_archive_safety(resolved_archive, limits=limits)
 
     try:
         extraction_destination = (

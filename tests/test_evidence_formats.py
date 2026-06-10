@@ -664,6 +664,59 @@ class TestExtractTar(unittest.TestCase):
         with self.assertRaises(ValueError):
             _resolve_archive_fallback_descriptor(tar_path, dest)
 
+    def _make_tar_with_symlink_member(self, name: str) -> Path:
+        """Build a tar holding one regular file plus one symlink member.
+
+        Args:
+            name: Tar file name to create inside the test root.
+
+        Returns:
+            Path to the created tar archive.
+        """
+        tar_path = self.root / name
+        with tarfile.open(tar_path, "w") as tf:
+            data = b"forensic-host"
+            info = tarfile.TarInfo(name="etc/hostname")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+            link = tarfile.TarInfo(name="etc/localtime")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../usr/share/zoneinfo/UTC"
+            tf.addfile(link)
+        return tar_path
+
+    def test_tar_symlink_member_direct_open_uses_archive_descriptor(self) -> None:
+        """Dissect-openable tars with symlinks are targets as-is (SPEC 4.4)."""
+        tar_path = self._make_tar_with_symlink_member("rootfs.tar")
+        dest = self.root / "extracted"
+
+        with patch(
+            "app.evidence.archive_resolver.can_open_with_dissect",
+            return_value=True,
+        ):
+            result = extract_archive_descriptor(tar_path, dest)
+
+        resolved_tar = tar_path.resolve()
+        self.assertEqual(result.dissect_path, resolved_tar)
+        self.assertEqual(result.source_path, resolved_tar)
+        self.assertEqual(result.files_to_hash, (resolved_tar,))
+        self.assertIsNone(result.extracted_from)
+        self.assertIsNone(result.extraction_root)
+        self.assertFalse(dest.exists())
+
+    def test_tar_symlink_member_still_rejected_when_probe_fails(self) -> None:
+        """Symlink members still reject fallback extraction (SPEC 4.4)."""
+        tar_path = self._make_tar_with_symlink_member("rootfs.tar")
+        dest = self.root / "extracted"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Archive rejected: contains unsafe file paths",
+        ):
+            _resolve_archive_fallback_descriptor(tar_path, dest)
+
+        self.assertFalse(dest.exists())
+
 
 class TestExtract7z(unittest.TestCase):
     """Test 7z extraction with various content types."""

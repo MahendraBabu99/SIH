@@ -14,6 +14,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from app import create_app
@@ -125,7 +126,12 @@ class EvidenceAndArtifactRouteTests(RouteRegressionTestBase):
     """Tests for evidence archive rejection and artifact validation."""
 
     def test_evidence_intake_rejects_unsafe_archive_paths(self) -> None:
-        """Evidence intake rejects traversal entries inside archives."""
+        """Evidence intake rejects traversal entries before fallback extraction.
+
+        Per SPEC Section 4.4 the extraction-safety pass applies only to
+        archives that Dissect cannot open directly, so the direct-open probe
+        is forced to fail to exercise the fallback rejection surface.
+        """
         case_response = self.client.post("/api/cases", json={"case_name": "Archive Case"})
         self.assertEqual(case_response.status_code, 201)
         case_id = case_response.get_json()["case_id"]
@@ -133,10 +139,14 @@ class EvidenceAndArtifactRouteTests(RouteRegressionTestBase):
         with ZipFile(archive_path, "w") as archive:
             archive.writestr("../escape.E01", b"evidence")
 
-        response = self.client.post(
-            f"/api/cases/{case_id}/evidence",
-            json={"path": str(archive_path)},
-        )
+        with patch(
+            "app.evidence.archive_resolver.can_open_with_dissect",
+            return_value=False,
+        ):
+            response = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(archive_path)},
+            )
 
         self.assertEqual(response.status_code, 400)
         body = response.get_json()

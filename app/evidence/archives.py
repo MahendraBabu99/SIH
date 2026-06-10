@@ -319,9 +319,11 @@ def validate_archive_safety(
 ) -> None:
     """Validate archive metadata without extracting member contents.
 
-    Directly loadable archives still need the same member-name, link, collision,
-    and metadata-size checks as fallback extraction. This helper performs that
-    safety pass while leaving the archive contents in place.
+    This is the pre-extraction safety pass for fallback extraction (SPEC
+    Sections 4.4 and 19.5): archives that Dissect cannot open directly are
+    checked for unsafe member names, links, collisions, and metadata-declared
+    sizes before any member content is written to disk. Archives that Dissect
+    opens directly are used as targets as-is and do not require this pass.
 
     Args:
         archive_path: ZIP, tar/tar.gz, or 7z archive to validate.
