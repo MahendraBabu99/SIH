@@ -1889,6 +1889,107 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(details.get("expected_sha256"), "a" * 64)
             self.assertTrue(details.get("match"))
 
+    def test_report_generation_persists_hash_verification_to_live_state(self) -> None:
+        """Report hash verification annotates live image_states hash records.
+
+        Regression test: verification used to annotate only the deep-copied
+        report snapshot, so live state kept intake-only hash records and the
+        chat context resolved them as UNAVAILABLE, contradicting the report.
+        Only the verification annotation keys may be persisted; report-only
+        presentation keys (case_id/image_id/label) must not leak into live
+        state, and intake fields must stay untouched so re-running report
+        generation remains safe.
+        """
+        evidence_path = Path(self.temp_dir.name) / "sample.E01"
+        evidence_path.write_bytes(b"demo")
+
+        with self._evidence_patches(
+            report_cls=FakeReportGenerator,
+            verify_rv=(True, "a" * 64),
+        ):
+            create_resp = self.client.post("/api/cases", json={"case_name": "Hash Persist"})
+            self.assertEqual(create_resp.status_code, 201)
+            case_id = create_resp.get_json()["case_id"]
+            evidence_resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(evidence_path)},
+            )
+            self.assertEqual(evidence_resp.status_code, 200)
+            image_id = first_case_image_id(case_id)
+
+            with routes_state.STATE_LOCK:
+                live_before = dict(
+                    routes_state.CASE_STATES[case_id]["image_states"][image_id]["evidence_hashes"]
+                )
+                _install_minimal_canonical_analysis(case_id)
+            self.assertNotIn("verification_status", live_before)
+
+            with self.app.app_context():
+                result = routes_evidence.generate_case_report(case_id)
+            self.assertTrue(result["success"])
+            self.assertTrue(result["hash_ok"])
+
+            with routes_state.STATE_LOCK:
+                live_after = dict(
+                    routes_state.CASE_STATES[case_id]["image_states"][image_id]["evidence_hashes"]
+                )
+            self.assertEqual(live_after.get("verification_status"), "PASS")
+            self.assertEqual(live_after.get("status"), "PASS")
+            self.assertIs(live_after.get("hash_verified"), True)
+            self.assertEqual(live_after.get("expected_sha256"), "a" * 64)
+            self.assertEqual(live_after.get("reverified_sha256"), "a" * 64)
+            self.assertEqual(live_after.get("computed_sha256"), "a" * 64)
+            # Report-only presentation keys must NOT be persisted.
+            self.assertNotIn("case_id", live_after)
+            self.assertNotIn("image_id", live_after)
+            self.assertNotIn("label", live_after)
+            # Intake fields stay untouched.
+            self.assertEqual(live_after.get("sha256"), "a" * 64)
+            self.assertEqual(live_after.get("md5"), "b" * 32)
+
+            # Re-running report generation against the annotated live
+            # state re-verifies from the intake sha256 and stays PASS.
+            with self.app.app_context():
+                rerun = routes_evidence.generate_case_report(case_id)
+            self.assertTrue(rerun["success"])
+            self.assertTrue(rerun["hash_ok"])
+            with routes_state.STATE_LOCK:
+                live_rerun = dict(
+                    routes_state.CASE_STATES[case_id]["image_states"][image_id]["evidence_hashes"]
+                )
+            self.assertEqual(live_rerun.get("verification_status"), "PASS")
+
+    def test_report_generation_persists_skipped_hash_status_to_live_state(self) -> None:
+        """Skip-hashing intake persists SKIPPED to live state after a report."""
+        evidence_path = Path(self.temp_dir.name) / "sample.E01"
+        evidence_path.write_bytes(b"demo")
+
+        with self._evidence_patches(report_cls=FakeReportGenerator):
+            create_resp = self.client.post("/api/cases", json={"case_name": "Skip Hash"})
+            self.assertEqual(create_resp.status_code, 201)
+            case_id = create_resp.get_json()["case_id"]
+            evidence_resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(evidence_path), "skip_hashing": True},
+            )
+            self.assertEqual(evidence_resp.status_code, 200)
+            image_id = first_case_image_id(case_id)
+
+            with routes_state.STATE_LOCK:
+                _install_minimal_canonical_analysis(case_id)
+
+            with self.app.app_context():
+                result = routes_evidence.generate_case_report(case_id)
+            self.assertTrue(result["success"])
+
+            with routes_state.STATE_LOCK:
+                live_after = dict(
+                    routes_state.CASE_STATES[case_id]["image_states"][image_id]["evidence_hashes"]
+                )
+            self.assertEqual(live_after.get("verification_status"), "SKIPPED")
+            self.assertEqual(live_after.get("hash_verified"), "skipped")
+            self.assertEqual(live_after.get("sha256"), "N/A (skipped)")
+
     def test_archive_descriptor_without_image_returns_directory_target(self) -> None:
         zip_path = Path(self.temp_dir.name) / "triage.zip"
         destination = Path(self.temp_dir.name) / "triage_extract"

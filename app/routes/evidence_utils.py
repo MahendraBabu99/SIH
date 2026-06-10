@@ -1,13 +1,17 @@
 """Shared evidence-handling utilities used by both evidence and images routes.
 
 Provides common logic for computing evidence hashes, checking whether hashing
-should be skipped, opening a Dissect forensic target, and safety-checked
-directory removal.  These functions were extracted from duplicated code in
+should be skipped, persisting report hash-verification results to live case
+state, opening a Dissect forensic target, and safety-checked directory
+removal.  These functions were extracted from duplicated code in
 :mod:`~app.routes.evidence` and :mod:`~app.routes.images` to ensure
 consistent behaviour.
 
 Attributes:
     LOGGER: Module-level logger instance.
+    HASH_VERIFICATION_ANNOTATION_KEYS: Hash-record keys written by
+        :func:`app.utils.hasher.apply_hash_verification_result` that report
+        generation persists back into live per-image case state.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,18 +27,31 @@ from flask import request
 
 from ..analyzer.constants import DEDUPLICATED_PARSED_DIRNAME
 from ..chat.csv_retrieval import invalidate_header_cache
+from .state import STATE_LOCK, get_case
 
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
+    "HASH_VERIFICATION_ANNOTATION_KEYS",
     "clear_analysis_outputs",
     "cleanup_parsed_data",
     "compute_evidence_hashes",
     "has_current_canonical_analysis_results",
     "open_dissect_target",
+    "persist_hash_verification_annotations",
     "safe_rmtree",
     "should_skip_hashing",
 ]
+
+HASH_VERIFICATION_ANNOTATION_KEYS: tuple[str, ...] = (
+    "verification_status",
+    "status",
+    "hash_verified",
+    "expected_sha256",
+    "reverified_sha256",
+    "computed_sha256",
+    "verification_detail",
+)
 
 _TRUE_VALUES = {"1", "true", "yes", "y", "on"}
 _FALSE_VALUES = {"", "0", "false", "no", "n", "off"}
@@ -382,6 +400,53 @@ def compute_evidence_hashes(
     hashes["filename"] = source_path.name
     hashes["_source_path"] = str(source_path)
     return hashes, []
+
+
+def persist_hash_verification_annotations(
+    case_id: str,
+    hashes_by_image_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Copy report hash-verification annotations into live case state.
+
+    Report generation verifies hashes against a deep-copied case snapshot,
+    so the annotations written by
+    :func:`app.utils.hasher.apply_hash_verification_result` never reach the
+    live ``image_states`` records on their own.  Consumers of live state
+    (for example the chat context builder) would then resolve those records
+    as ``UNAVAILABLE`` even though the report shows PASS/FAIL/SKIPPED.
+    This helper writes only the verification annotation keys
+    (:data:`HASH_VERIFICATION_ANNOTATION_KEYS`) back into
+    ``image_states[<image_id>]["evidence_hashes"]`` under ``STATE_LOCK``.
+
+    Report-only presentation keys (``case_id``, ``image_id``, ``label``)
+    are intentionally not persisted, and intake fields such as ``sha256``
+    are never touched, so re-running report generation against the
+    annotated live state re-verifies from the intake hash and simply
+    overwrites the annotations.
+
+    Args:
+        case_id: UUID of the case whose live state should be updated.
+        hashes_by_image_id: Annotated per-image hash records produced by
+            the report hash-verification loop, keyed by image ID.
+    """
+    case = get_case(case_id)
+    if case is None:
+        return
+    with STATE_LOCK:
+        image_states = case.get("image_states")
+        if not isinstance(image_states, dict):
+            return
+        for img_id, annotated_hashes in hashes_by_image_id.items():
+            image_state = image_states.get(img_id)
+            if not isinstance(image_state, dict):
+                # Image removed between snapshot and write-back.
+                continue
+            live_hashes = image_state.get("evidence_hashes")
+            if not isinstance(live_hashes, dict):
+                continue
+            for key in HASH_VERIFICATION_ANNOTATION_KEYS:
+                if key in annotated_hashes:
+                    live_hashes[key] = annotated_hashes[key]
 
 
 def open_dissect_target(

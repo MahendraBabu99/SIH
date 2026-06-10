@@ -1116,10 +1116,26 @@ class ChatManager:
         image_record: Mapping[str, Any],
         hashes: Mapping[str, Any] | None = None,
     ) -> str:
-        """Return normalized hash-verification status from a report image record."""
+        """Return normalized hash-verification status from a report image record.
+
+        Args:
+            image_record: Normalized report image record that may carry an
+                explicit ``hash_verification`` row, a ``hash_row`` mapping,
+                or the raw ``hashes`` record.
+            hashes: Optional raw hash record consulted as a final fallback
+                when the image record itself carries no hash data.
+
+        Returns:
+            ``PASS``, ``FAIL``, or ``SKIPPED`` when the first resolvable
+            hash data yields a definite status.  Returns an empty string
+            for ``UNAVAILABLE`` (or when no hash data exists at all) so
+            chat context omits the hash-verification section instead of
+            asserting that no verification data was provided.
+        """
         row = image_record.get("hash_verification")
         if isinstance(row, Mapping):
-            return _stringify(row.get("label") or row.get("status"))
+            status = _stringify(row.get("label") or row.get("status"))
+            return "" if status.upper() == "UNAVAILABLE" else status
         for candidate in (
             image_record.get("hash_row"),
             image_record.get("hashes"),
@@ -1127,6 +1143,8 @@ class ChatManager:
         ):
             if isinstance(candidate, Mapping) and candidate:
                 status = _stringify(resolve_hash_verification(candidate).get("label"))
+                if status.upper() == "UNAVAILABLE":
+                    return ""
                 if status:
                     return status
         return ""

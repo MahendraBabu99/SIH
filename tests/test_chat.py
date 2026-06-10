@@ -867,6 +867,117 @@ class ChatManagerTests(unittest.TestCase):
             self.assertIn("Hash Verification:", context)
             self.assertIn("Status: PASS", context)
 
+    def test_build_chat_context_omits_hash_section_for_intake_only_records(self) -> None:
+        """Intake-only hash records (no verification keys) omit the hash section.
+
+        Regression test: before report generation persists verification
+        annotations, live hash records carry only intake fields and used to
+        resolve as UNAVAILABLE, priming the chat AI with the false claim
+        that no hash verification data was provided.
+        """
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            context = mgr.build_chat_context(
+                analysis_results=self._make_analysis_results(),
+                investigation_context="ctx",
+                metadata={
+                    "img1": {
+                        "hostname": "HOST-IMG1",
+                        "os_version": "Windows 11",
+                    },
+                },
+                evidence_hashes={
+                    "img1": {
+                        "sha256": "a" * 64,
+                        "md5": "b" * 32,
+                        "size_bytes": 4,
+                    },
+                },
+            )
+            self.assertNotIn("Hash Verification", context)
+            self.assertNotIn("UNAVAILABLE", context)
+
+    def test_build_chat_context_keeps_verified_pass_status(self) -> None:
+        """Records annotated with verification_status PASS render Status: PASS."""
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            context = mgr.build_chat_context(
+                analysis_results=self._make_analysis_results(),
+                investigation_context="ctx",
+                metadata={"img1": {"hostname": "HOST-IMG1"}},
+                evidence_hashes={
+                    "img1": {
+                        "sha256": "a" * 64,
+                        "verification_status": "PASS",
+                    },
+                },
+            )
+            self.assertIn("Hash Verification:", context)
+            self.assertIn("Status: PASS", context)
+
+    def test_build_chat_context_keeps_skipped_status(self) -> None:
+        """Records annotated with verification_status SKIPPED render Status: SKIPPED."""
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            context = mgr.build_chat_context(
+                analysis_results=self._make_analysis_results(),
+                investigation_context="ctx",
+                metadata={"img1": {"hostname": "HOST-IMG1"}},
+                evidence_hashes={
+                    "img1": {
+                        "sha256": "N/A (skipped)",
+                        "verification_status": "SKIPPED",
+                    },
+                },
+            )
+            self.assertIn("Hash Verification:", context)
+            self.assertIn("Status: SKIPPED", context)
+
+    def test_build_chat_context_multi_image_hash_line_omitted_when_unavailable(self) -> None:
+        """Multi-image context keeps PASS lines and omits UNAVAILABLE ones."""
+        with TemporaryDirectory(prefix="aift-chat-") as tmp:
+            mgr = ChatManager(tmp)
+            context = mgr.build_chat_context(
+                analysis_results={
+                    "images": {
+                        "img1": {
+                            "label": "PC01",
+                            "summary": "Summary one.",
+                            "per_artifact": [
+                                {"artifact_name": "shimcache", "analysis": "Short."},
+                            ],
+                        },
+                        "img2": {
+                            "label": "PC02",
+                            "summary": "Summary two.",
+                            "per_artifact": [
+                                {"artifact_name": "prefetch", "analysis": "Short."},
+                            ],
+                        },
+                    },
+                    "cross_image_summary": "Cross summary.",
+                },
+                investigation_context="ctx",
+                metadata={
+                    "img1": {"hostname": "PC01"},
+                    "img2": {"hostname": "PC02"},
+                },
+                evidence_hashes={
+                    "img1": {
+                        "sha256": "a" * 64,
+                        "verification_status": "PASS",
+                    },
+                    "img2": {
+                        "sha256": "c" * 64,
+                        "md5": "d" * 32,
+                        "size_bytes": 4,
+                    },
+                },
+            )
+            self.assertIn("Hash Verification: PASS", context)
+            self.assertEqual(context.count("Hash Verification:"), 1)
+            self.assertNotIn("UNAVAILABLE", context)
+
     def test_build_chat_context_includes_normalized_processing_notes(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-") as tmp:
             mgr = ChatManager(tmp)

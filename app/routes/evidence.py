@@ -45,7 +45,10 @@ from .state import (
     mark_case_status,
     success_response,
 )
-from .evidence_utils import has_current_canonical_analysis_results
+from .evidence_utils import (
+    has_current_canonical_analysis_results,
+    persist_hash_verification_annotations,
+)
 
 __all__ = [
     "evidence_bp",
@@ -61,7 +64,6 @@ __all__ = [
 ]
 
 LOGGER = logging.getLogger(__name__)
-
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +507,11 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
 
     For multi-image cases, per-image metadata and hashes are collected
     from ``image_states`` so the report correctly represents all images.
+    After re-verification, the hash-verification annotation keys are
+    persisted back into the live ``image_states`` hash records (see
+    :func:`app.routes.evidence_utils.persist_hash_verification_annotations`)
+    so later consumers such as the chat context reflect the verified
+    status.
 
     Args:
         case_id: UUID of the case.
@@ -629,6 +636,10 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
                 "image_count": len(ordered_image_ids),
             },
         )
+
+        # Persist the verification annotations to live state so chat and
+        # other live-state consumers report the same status as the report.
+        persist_hash_verification_annotations(case_id, hashes_by_image_id)
 
         image_metadata_arg = metadata_by_image_id
         evidence_hashes_arg = hashes_by_image_id
