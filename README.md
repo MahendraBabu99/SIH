@@ -7,9 +7,13 @@
 
 # AIFT - AI Forensic Triage V2.0
 
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10--3.13-blue)](https://www.python.org/downloads/)
+[![Latest release](https://img.shields.io/github/v/release/FlipForensics/AIFT)](https://github.com/FlipForensics/AIFT/releases)
+
 **Automated Windows and Linux forensic triage, powered by AI.**
 
-AIFT is a GUI/CLI/MCP/API tool that helps DFIR analysts get oriented quickly. Point it at disk images, VM images, forensic archives, or triage packages; AIFT discovers what can be opened, parses artifacts with [Dissect](https://github.com/fox-it/dissect), and uses AI to turn parsed data into evidence-linked leads, timelines, correlations, questions, and gaps for the investigator to verify. Go from evidence to actionable results in less than an hour.
+AIFT is a GUI, CLI, REST API, and MCP tool that helps DFIR analysts get oriented quickly. Point it at disk images, VM images, forensic archives, or triage packages; AIFT discovers what can be opened, parses artifacts with [Dissect](https://github.com/fox-it/dissect), and uses AI to turn parsed data into evidence-linked leads, timelines, correlations, questions, and gaps for the investigator to verify. Go from evidence to actionable results in under an hour.
 
 AIFT has a GUI that even non-DFIR team members can operate. It also has CLI, REST API, and optional MCP modes for repeatable runs, integrations, or AI-client-driven automation.
 
@@ -43,8 +47,8 @@ These are example triage outputs, not final forensic reports and not universal b
 
 | Model | Cost | Runtime | Output |
 |---|---:|---:|---|
-| Kimi | $0.20 | ~5 min | [View output](https://flipforensics.github.io/AIFT/example_reports/KIMI.html) |
-| OpenAI GPT | $0.94 | ~8 min | [View output](https://flipforensics.github.io/AIFT/example_reports/ChatGPT5.2.html) |
+| Kimi K2 Turbo | $0.20 | ~5 min | [View output](https://flipforensics.github.io/AIFT/example_reports/KIMI.html) |
+| OpenAI GPT-5.2 | $0.94 | ~8 min | [View output](https://flipforensics.github.io/AIFT/example_reports/ChatGPT5.2.html) |
 | Claude Opus 4.6 | $3.01 | ~20 min | [View output](https://flipforensics.github.io/AIFT/example_reports/Opus4.6.html) |
 | Local: qwen3:8b | $0 | ~2.5h | [View output](https://flipforensics.github.io/AIFT/example_reports/qwen-3-8b.html) |
 | Local: gpt-oss 120b | $0 | ~20 min | [View output](https://flipforensics.github.io/AIFT/example_reports/gpt-oss-120b.html) |
@@ -69,7 +73,7 @@ These are example triage outputs, not final forensic reports and not universal b
 | Interface | Entry Point | Best For |
 |---|---|---|
 | **GUI** | `python aift.py` | Everyday guided triage, upload/path intake, artifact selection, streaming progress, report chat |
-| **CLI** | `python aift_cli.py ...` | Same power as GUI mode, right there in the terminal. Batch processing, scheduled jobs, CI-style workflows |
+| **CLI** | `python aift_cli.py ...` | The full triage pipeline in your terminal. Batch processing, scheduled jobs, CI-style workflows |
 | **REST API** | `POST /api/automation/run` | Advanced internal tooling, SOAR/lab integrations, orchestration on a trusted local server |
 | **MCP server** | `python aift_mcp.py` | Advanced MCP-capable AI clients that should discover evidence, start runs, poll status, and retrieve triage outputs |
 
@@ -81,18 +85,13 @@ All interfaces share the same core pipeline: evidence discovery, hashing, parsin
 
 ### Install
 
+Python 3.10 through 3.13 is required (3.14+ is currently unsupported because of upstream `dissect.target` compatibility). A virtual environment is recommended.
+
 ```bash
 git clone https://github.com/FlipForensics/AIFT.git
 cd AIFT
 python -m pip install -r requirements.txt
 ```
-
-Python 3.10 through 3.13 is required. Python 3.14+ is currently unsupported because of upstream `dissect.target` compatibility.
-
-### Configure AI
-Configure a provider in `config/config.yaml` or via the GUI.
-
-Local models use an OpenAI-compatible endpoint, for example `http://localhost:11434/v1`.
 
 ### Run the Web UI
 
@@ -101,6 +100,12 @@ python aift.py
 ```
 
 AIFT opens the configured local URL (`http://127.0.0.1:5000` by default) and creates `config/config.yaml` on first run. From the browser you can upload evidence, point to a local path, scan a directory, select artifacts or profiles, parse, analyze, chat with the results, and download the triage output.
+
+### Configure AI
+
+Configure a provider in the GUI settings or in `config/config.yaml` (created on first run).
+
+Local models use an OpenAI-compatible endpoint, for example `http://localhost:11434/v1`.
 
 ---
 
@@ -124,7 +129,7 @@ python aift_cli.py --evidence /evidence/folder --prompt @prompt.txt
 python aift_cli.py --evidence /evidence/disk.E01 --prompt "Check malware activity" --date-start 2026-04-01 --date-end 2026-04-15
 ```
 
-CLI profile arguments can be a built-in profile name or a path to a JSON artifact profile.
+CLI profile arguments can be a profile name (built-in or saved from the GUI) or a path to a JSON artifact profile.
 
 ---
 
@@ -273,8 +278,6 @@ When using a cloud AI provider, parsed artifact data is sent to external servers
 
 ## License
 
-AIFT is released as open source by Flip Forensics and made available at https://github.com/FlipForensics/AIFT.
-
-License terms: AGPL-3.0 (https://www.gnu.org/licenses/agpl-3.0.html).
+AIFT is open source, released by Flip Forensics under the [AGPL-3.0](LICENSE) license.
 
 Contact: info@FlipForensics.com
