@@ -480,11 +480,25 @@ class RoutesTests(unittest.TestCase):
 
     def test_evidence_upload_includes_split_ewf_segments(self) -> None:
         class CapturingParser(FakeParser):
+            """FakeParser that records each evidence path it is opened with.
+
+            Attributes:
+                opened_paths: Class-level list of stringified evidence
+                    paths passed to the constructor.
+            """
+
             opened_paths: list[str] = []
 
-            def __init__(self, evidence_path: str | Path, case_dir: str | Path, audit_logger: object) -> None:
+            def __init__(
+                self,
+                evidence_path: str | Path,
+                case_dir: str | Path,
+                audit_logger: object,
+                **kwargs: object,
+            ) -> None:
+                """Record the opened evidence path, then delegate to FakeParser."""
                 CapturingParser.opened_paths.append(str(evidence_path))
-                super().__init__(evidence_path, case_dir, audit_logger)
+                super().__init__(evidence_path, case_dir, audit_logger, **kwargs)
 
         with (
             patch.object(routes_state, "CASES_ROOT", self.cases_root),
@@ -566,11 +580,21 @@ class RoutesTests(unittest.TestCase):
     def test_evidence_upload_linux_returns_os_type(self) -> None:
         """Evidence intake with a Linux image should return os_type='linux'."""
         class LinuxParser(FakeParser):
-            def __init__(self, evidence_path: str | Path, case_dir: str | Path, audit_logger: object) -> None:
-                super().__init__(evidence_path, case_dir, audit_logger)
+            """FakeParser double reporting a Linux OS with Linux artifacts."""
+
+            def __init__(
+                self,
+                evidence_path: str | Path,
+                case_dir: str | Path,
+                audit_logger: object,
+                **kwargs: object,
+            ) -> None:
+                """Delegate to FakeParser and report a Linux OS type."""
+                super().__init__(evidence_path, case_dir, audit_logger, **kwargs)
                 self.os_type = "linux"
 
             def get_image_metadata(self) -> dict[str, str]:
+                """Return canned Linux host metadata."""
                 return {
                     "hostname": "linux-host",
                     "os_version": "Ubuntu 22.04",
@@ -581,6 +605,7 @@ class RoutesTests(unittest.TestCase):
                 }
 
             def get_available_artifacts(self) -> list[dict[str, object]]:
+                """Return two available Linux artifact descriptors."""
                 return [
                     {"key": "bash_history", "name": "Bash History", "available": True},
                     {"key": "syslog", "name": "Syslog", "available": True},
@@ -632,8 +657,17 @@ class RoutesTests(unittest.TestCase):
     def test_evidence_upload_unknown_os_returns_warning(self) -> None:
         """Evidence intake with unknown OS should include os_warning."""
         class UnknownOsParser(FakeParser):
-            def __init__(self, evidence_path: str | Path, case_dir: str | Path, audit_logger: object) -> None:
-                super().__init__(evidence_path, case_dir, audit_logger)
+            """FakeParser double reporting an undetectable OS type."""
+
+            def __init__(
+                self,
+                evidence_path: str | Path,
+                case_dir: str | Path,
+                audit_logger: object,
+                **kwargs: object,
+            ) -> None:
+                """Delegate to FakeParser and report an unknown OS type."""
+                super().__init__(evidence_path, case_dir, audit_logger, **kwargs)
                 self.os_type = "unknown"
 
         with (

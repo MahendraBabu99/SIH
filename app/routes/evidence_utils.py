@@ -454,17 +454,30 @@ def open_dissect_target(
     case_dir: Any,
     audit_logger: Any,
     case_id: str,
+    *,
+    parsed_dir: str | Path | None = None,
 ) -> tuple[dict[str, str], list[dict[str, Any]], str]:
     """Open a Dissect target and extract metadata and available artifacts.
 
     On failure, returns degraded defaults so the caller can still present
     a meaningful response to the user.
 
+    ``ForensicParser`` creates its CSV output directory during construction
+    (before ``Target.open()``) and defaults it to ``<case_dir>/parsed``.
+    The supported case layout is image-scoped (SPEC Section 10.3;
+    ``SPECs/reference/case-directory-layout.txt``) and contains no
+    root-level ``parsed/`` directory, so intake callers must forward the
+    image-scoped directory via *parsed_dir* to keep this metadata probe
+    from creating one at the case root.
+
     Args:
         dissect_path: Path to the evidence for Dissect.
         case_dir: Case directory path (passed to ``ForensicParser``).
         audit_logger: Audit logger instance (passed to ``ForensicParser``).
         case_id: UUID of the case (used only in log messages).
+        parsed_dir: Optional CSV output directory forwarded to
+            ``ForensicParser``.  When omitted, the parser's own default
+            (``<case_dir>/parsed``) applies.
 
     Returns:
         A ``(metadata, available_artifacts, os_type)`` tuple.  *metadata*
@@ -472,12 +485,16 @@ def open_dissect_target(
     """
     from ..parser.core import ForensicParser
 
+    parser_kwargs: dict[str, Any] = {
+        "evidence_path": dissect_path,
+        "case_dir": case_dir,
+        "audit_logger": audit_logger,
+    }
+    if parsed_dir is not None:
+        parser_kwargs["parsed_dir"] = parsed_dir
+
     try:
-        with ForensicParser(
-            evidence_path=dissect_path,
-            case_dir=case_dir,
-            audit_logger=audit_logger,
-        ) as parser:
+        with ForensicParser(**parser_kwargs) as parser:
             metadata = parser.get_image_metadata()
             available_artifacts = parser.get_available_artifacts()
             detected_os_type = parser.os_type

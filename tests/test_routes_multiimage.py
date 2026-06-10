@@ -836,6 +836,95 @@ class MultiImageRoutesTests(unittest.TestCase):
             self.assertTrue(csv1.is_file(), f"Expected {csv1} to exist")
             self.assertTrue(csv2.is_file(), f"Expected {csv2} to exist")
 
+    def test_second_image_intake_does_not_create_root_parsed_dir(self) -> None:
+        """Evidence intake never leaves a root-level cases/<case_id>/parsed/.
+
+        Regression test: the intake metadata probe used to construct
+        ``ForensicParser`` without an image-scoped ``parsed_dir``, so the
+        parser constructor created ``cases/<case_id>/parsed/`` at the case
+        root.  When another image already holds parse results, intake skips
+        case-level cleanup and the empty root directory persisted,
+        contradicting the supported image-scoped case layout (SPEC Section
+        10.3; SPECs/reference/case-directory-layout.txt has no root-level
+        ``parsed/`` entry).  The probe's image-scoped directory itself is
+        removed again by ``cleanup_parsed_data`` within the same request,
+        so this test asserts the forwarded ``parsed_dir`` argument instead
+        of that directory's existence.
+        """
+        ev1 = Path(self.temp_dir.name) / "pc01.E01"
+        ev2 = Path(self.temp_dir.name) / "pc02.E01"
+        ev1.write_bytes(b"evidence-1")
+        ev2.write_bytes(b"evidence-2")
+
+        forwarded_parsed_dirs: list[Path | None] = []
+
+        class CapturingParser(FakeParser):
+            """FakeParser recording the ``parsed_dir`` constructor argument."""
+
+            def __init__(
+                self,
+                *args: object,
+                parsed_dir: str | Path | None = None,
+                **kwargs: object,
+            ) -> None:
+                """Record *parsed_dir*, then delegate to ``FakeParser``.
+
+                Args:
+                    *args: Positional arguments passed through unchanged.
+                    parsed_dir: Optional parsed-CSV directory override;
+                        recorded for assertions before delegation.
+                    **kwargs: Keyword arguments passed through unchanged.
+                """
+                forwarded_parsed_dirs.append(
+                    Path(parsed_dir) if parsed_dir is not None else None
+                )
+                super().__init__(*args, parsed_dir=parsed_dir, **kwargs)
+
+        with self._patch_context():
+            case_id = self._create_case("Root Parsed Regression")
+            case_dir = self.cases_root / case_id
+
+            r1 = self.client.post(f"/api/cases/{case_id}/images", json={"label": "PC01"})
+            r2 = self.client.post(f"/api/cases/{case_id}/images", json={"label": "PC02"})
+            img1 = r1.get_json()["image_id"]
+            img2 = r2.get_json()["image_id"]
+
+            # First image: intake + parse so it holds results, making the
+            # second intake skip case-level cleanup -- the exact scenario in
+            # which the old probe's root-level parsed/ directory survived.
+            e1 = self.client.post(
+                f"/api/cases/{case_id}/images/{img1}/evidence",
+                json={"path": str(ev1)},
+            )
+            self.assertEqual(e1.status_code, 200)
+            p1 = self.client.post(
+                f"/api/cases/{case_id}/images/{img1}/parse",
+                json=canonical_parse_payload("runkeys"),
+            )
+            self.assertEqual(p1.status_code, 202)
+
+            # Second image intake with a capturing metadata-probe parser.
+            with patch("app.parser.core.ForensicParser", CapturingParser):
+                e2 = self.client.post(
+                    f"/api/cases/{case_id}/images/{img2}/evidence",
+                    json={"path": str(ev2)},
+                )
+            self.assertEqual(e2.status_code, 200)
+
+            # (a) The probe received the image-scoped parsed directory.
+            expected_parsed_dir = (
+                case_dir / "images" / img2 / "parsed"
+            ).resolve()
+            self.assertEqual(
+                [
+                    path.resolve() if path is not None else None
+                    for path in forwarded_parsed_dirs
+                ],
+                [expected_parsed_dir],
+            )
+            # (b) No root-level parsed/ directory exists after intake.
+            self.assertFalse((case_dir / "parsed").exists())
+
     def test_add_image_empty_label(self) -> None:
         """Adding an image with no label uses empty string."""
         with self._patch_context():

@@ -236,6 +236,71 @@ class TestOpenDissectTarget(unittest.TestCase):
         self.assertEqual(artifacts, [])
         self.assertEqual(os_type, "unknown")
 
+    @staticmethod
+    def _make_context_manager_parser() -> MagicMock:
+        """Build a MagicMock parser usable as a context manager.
+
+        Returns:
+            A MagicMock whose ``__enter__`` returns itself and whose
+            metadata/artifact accessors return canned values.
+        """
+        mock_parser = MagicMock()
+        mock_parser.__enter__ = MagicMock(return_value=mock_parser)
+        mock_parser.__exit__ = MagicMock(return_value=False)
+        mock_parser.get_image_metadata.return_value = {
+            "hostname": "WS01",
+            "os_version": "Windows 10",
+            "domain": "CORP",
+        }
+        mock_parser.get_available_artifacts.return_value = []
+        mock_parser.os_type = "windows"
+        return mock_parser
+
+    @patch("app.parser.core.ForensicParser")
+    def test_explicit_parsed_dir_forwarded_to_parser(
+        self, mock_parser_cls: MagicMock,
+    ) -> None:
+        """An explicit parsed_dir is forwarded to ForensicParser unchanged.
+
+        Regression test: evidence intake passes the image-scoped
+        ``images/<image_id>/parsed`` directory so the metadata probe never
+        creates a root-level ``cases/<case_id>/parsed/`` directory.  The
+        supported case layout is image-scoped (SPEC Section 10.3;
+        SPECs/reference/case-directory-layout.txt has no root-level
+        ``parsed/`` entry).
+        """
+        mock_parser_cls.return_value = self._make_context_manager_parser()
+
+        image_parsed_dir = Path("/fake/case/images/img-1234/parsed")
+        open_dissect_target(
+            dissect_path=Path("/fake/path.E01"),
+            case_dir=Path("/fake/case"),
+            audit_logger=MagicMock(),
+            case_id="test-case-id",
+            parsed_dir=image_parsed_dir,
+        )
+
+        self.assertEqual(
+            mock_parser_cls.call_args.kwargs.get("parsed_dir"),
+            image_parsed_dir,
+        )
+
+    @patch("app.parser.core.ForensicParser")
+    def test_omitted_parsed_dir_is_not_forwarded(
+        self, mock_parser_cls: MagicMock,
+    ) -> None:
+        """Without parsed_dir, the parser is constructed exactly as before."""
+        mock_parser_cls.return_value = self._make_context_manager_parser()
+
+        open_dissect_target(
+            dissect_path=Path("/fake/path.E01"),
+            case_dir=Path("/fake/case"),
+            audit_logger=MagicMock(),
+            case_id="test-case-id",
+        )
+
+        self.assertNotIn("parsed_dir", mock_parser_cls.call_args.kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()
