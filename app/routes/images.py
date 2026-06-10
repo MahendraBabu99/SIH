@@ -475,6 +475,48 @@ def list_images(case_id: str) -> tuple[Response, int] | Response:
     return success_response({"images": info["images"]})
 
 
+def _prune_stale_discovery_workspaces() -> None:
+    """Best-effort removal of stale Scan Directory extraction workspaces.
+
+    Every ``POST /api/evidence/discover`` request may extract
+    non-Dissect-loadable archives into a fresh
+    ``cases/_managed_discovery/discovery_<uuid>`` workspace.  Those
+    extractions are only needed until the GUI starts intake: evidence intake
+    re-extracts the original archive into the image evidence directory and
+    never adopts discovery paths as case evidence.  AIFT is single-process /
+    single-user, so deleting every existing sibling workspace immediately
+    before a new scan creates its own workspace bounds total disk usage to
+    at most one retained workspace (the most recent scan's).
+
+    Only directories named ``discovery_*`` located directly under the
+    ``_managed_discovery`` root are removed; nothing outside that root is
+    ever touched.  All filesystem errors are ignored (best effort).
+    """
+    discovery_root = CASES_ROOT / "_managed_discovery"
+    try:
+        candidates = list(discovery_root.iterdir())
+    except OSError:
+        return
+    for entry in candidates:
+        if entry.name.startswith("discovery_") and entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+
+
+def _remove_discovery_workspace(workspace: Path | None) -> None:
+    """Remove a single discovery workspace directory, ignoring errors.
+
+    Used by the discovery route's failure paths so a failed scan does not
+    leak a partially populated extraction workspace under
+    ``cases/_managed_discovery``.
+
+    Args:
+        workspace: Workspace directory created for the current scan, or
+            ``None`` when the request failed before one was assigned.
+    """
+    if workspace is not None:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 @images_bp.post("/api/evidence/discover")
 def discover_evidence_paths() -> tuple[Response, int]:
     """Discover supported evidence targets from a local path.
@@ -482,6 +524,11 @@ def discover_evidence_paths() -> tuple[Response, int]:
     This endpoint exposes the same recursive evidence discovery used by
     automation/CLI mode so the GUI can populate one image card per found
     forensic image before normal evidence intake.
+
+    Stale extraction workspaces left by previous scans are pruned before a
+    new scan workspace is created, and the failure paths remove the
+    workspace created for this request, so disk usage under
+    ``cases/_managed_discovery`` stays bounded to the most recent scan.
 
     Returns:
         ``(Response, 200)`` with discovered evidence entries, or an error.
@@ -496,8 +543,10 @@ def discover_evidence_paths() -> tuple[Response, int]:
             "Field 'path' is required and must be a non-empty string.", 400,
         )
 
+    discovery_workspace: Path | None = None
     try:
         source_path = validate_evidence_path(path_value)
+        _prune_stale_discovery_workspaces()
         discovery_workspace = (
             CASES_ROOT
             / "_managed_discovery"
@@ -508,9 +557,11 @@ def discover_evidence_paths() -> tuple[Response, int]:
             workspace_dir=discovery_workspace,
         )
     except (FileNotFoundError, ValueError) as error:
+        _remove_discovery_workspace(discovery_workspace)
         return error_response(str(error), 400)
     except Exception:
         LOGGER.exception("GUI evidence discovery failed for path %r", path_value)
+        _remove_discovery_workspace(discovery_workspace)
         return error_response(
             "Evidence discovery failed due to an unexpected error. "
             "Confirm the directory is readable and try again.",

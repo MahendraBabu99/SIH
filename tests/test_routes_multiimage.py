@@ -96,6 +96,23 @@ class MultiImageRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 201)
         return resp.get_json()["case_id"]
 
+    def _managed_discovery_workspaces(self) -> list[Path]:
+        """Return ``discovery_*`` workspace directories under the managed root.
+
+        Returns:
+            Sorted list of ``discovery_*`` directories directly under the
+            test cases root's ``_managed_discovery`` directory; empty when
+            the managed root does not exist.
+        """
+        managed_root = self.cases_root / "_managed_discovery"
+        if not managed_root.is_dir():
+            return []
+        return sorted(
+            entry
+            for entry in managed_root.iterdir()
+            if entry.name.startswith("discovery_") and entry.is_dir()
+        )
+
     def test_create_case_creates_images_directory(self) -> None:
         """POST /api/cases creates the images/ subdirectory."""
         with self._patch_context():
@@ -175,11 +192,12 @@ class MultiImageRoutesTests(unittest.TestCase):
         ev2.write_bytes(b"evidence-2")
         notes.write_text("not evidence", encoding="utf-8")
 
-        with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
-            resp = self.client.post(
-                "/api/evidence/discover",
-                json={"path": str(evidence_dir)},
-            )
+        with self._patch_context():
+            with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(evidence_dir)},
+                )
 
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
@@ -197,11 +215,12 @@ class MultiImageRoutesTests(unittest.TestCase):
         for segment in range(1, 3):
             (evidence_dir / f"pc01.E{segment:02d}").write_bytes(b"segment")
 
-        with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
-            resp = self.client.post(
-                "/api/evidence/discover",
-                json={"path": str(evidence_dir)},
-            )
+        with self._patch_context():
+            with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(evidence_dir)},
+                )
 
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
@@ -221,6 +240,57 @@ class MultiImageRoutesTests(unittest.TestCase):
         resp = self.client.post("/api/evidence/discover", json={})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("path", resp.get_json()["error"])
+
+    def test_discover_evidence_failure_cleans_up_managed_workspace(self) -> None:
+        """A failed discovery leaves no discovery_* workspace behind."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        (evidence_dir / "pc01.E01").write_bytes(b"evidence-1")
+
+        def _fail_discovery(source_path, *, workspace_dir=None, **_kwargs):
+            """Simulate a discovery that partially extracts, then fails."""
+            workspace = Path(workspace_dir)
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "partial.bin").write_bytes(b"partial")
+            raise ValueError("simulated discovery failure")
+
+        with self._patch_context():
+            with patch.object(
+                routes_images, "discover_evidence", side_effect=_fail_discovery,
+            ):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(evidence_dir)},
+                )
+
+            self.assertEqual(resp.status_code, 400)
+            self.assertIn("simulated discovery failure", resp.get_json()["error"])
+            self.assertEqual(self._managed_discovery_workspaces(), [])
+
+    def test_discover_evidence_unexpected_error_cleans_up_managed_workspace(self) -> None:
+        """An unexpected discovery error removes this scan's workspace."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        (evidence_dir / "pc01.E01").write_bytes(b"evidence-1")
+
+        def _crash_discovery(source_path, *, workspace_dir=None, **_kwargs):
+            """Simulate a discovery that partially extracts, then crashes."""
+            workspace = Path(workspace_dir)
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / "partial.bin").write_bytes(b"partial")
+            raise RuntimeError("unexpected discovery crash")
+
+        with self._patch_context():
+            with patch.object(
+                routes_images, "discover_evidence", side_effect=_crash_discovery,
+            ):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(evidence_dir)},
+                )
+
+            self.assertEqual(resp.status_code, 500)
+            self.assertEqual(self._managed_discovery_workspaces(), [])
 
     def test_discover_evidence_archive_uses_managed_workspace(self) -> None:
         """Archive fallback paths returned to the GUI remain under CASES_ROOT."""
@@ -377,6 +447,72 @@ class MultiImageRoutesTests(unittest.TestCase):
         descriptor = intake_resp.get_json()["evidence_descriptor"]
         self.assertTrue(Path(descriptor["dissect_path"]).exists())
         self.assertNotIn("_managed_discovery", Path(descriptor["dissect_path"]).parts)
+
+    def test_second_discover_scan_prunes_previous_managed_workspace(self) -> None:
+        """A new scan removes the prior workspace; old descriptors still intake."""
+        archive_path = Path(self.temp_dir.name) / "bundle.zip"
+        with ZipFile(archive_path, "w") as zip_file:
+            zip_file.writestr("nested/pc01.E01", b"image")
+
+        with self._patch_context():
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                first_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+                self.assertEqual(first_resp.status_code, 200)
+                first_entry = first_resp.get_json()["evidence"][0]
+                first_root = Path(first_entry["extraction_root"])
+                self.assertTrue(first_root.exists())
+
+                second_resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(archive_path)},
+                )
+                self.assertEqual(second_resp.status_code, 200)
+                second_entry = second_resp.get_json()["evidence"][0]
+
+            # The first scan's workspace was pruned; only the second remains.
+            self.assertFalse(first_root.exists())
+            self.assertFalse(Path(first_entry["path"]).exists())
+            self.assertTrue(Path(second_entry["path"]).exists())
+            remaining = self._managed_discovery_workspaces()
+            self.assertEqual(len(remaining), 1)
+            self.assertTrue(
+                Path(second_entry["extraction_root"])
+                .resolve()
+                .is_relative_to(remaining[0].resolve())
+            )
+
+            # The first descriptor still completes intake via re-extraction.
+            case_id = self._create_case()
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images",
+                json={"label": first_entry["label"]},
+            )
+            image_id = add_resp.get_json()["image_id"]
+
+            with patch(
+                "app.automation.discovery.Target.open",
+                side_effect=Exception("not loadable"),
+            ):
+                intake_resp = self.client.post(
+                    f"/api/cases/{case_id}/images/{image_id}/evidence",
+                    json={
+                        "path": first_entry["path"],
+                        "evidence_descriptor": first_entry,
+                    },
+                )
+
+        self.assertEqual(intake_resp.status_code, 200)
+        intake_descriptor = intake_resp.get_json()["evidence_descriptor"]
+        self.assertTrue(Path(intake_descriptor["dissect_path"]).exists())
+        self.assertNotIn(
+            "_managed_discovery", Path(intake_descriptor["dissect_path"]).parts,
+        )
 
     def test_archive_discovery_descriptor_rejects_forged_extraction_root(self) -> None:
         """Forged descriptors cannot point targets outside their extraction root."""
