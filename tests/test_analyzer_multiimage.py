@@ -35,13 +35,27 @@ from conftest import FakeAuditLogger, FakeProvider
 
 
 def _load_analysis_schema() -> dict[str, Any]:
-    """Load the public analysis_results schema."""
+    """Load the public analysis_results schema.
+
+    Returns:
+        Parsed JSON schema as a dictionary.
+
+    Raises:
+        Skipped: Via ``pytest.skip`` when the schema file is absent from
+            this checkout (``SPECs/`` is gitignored and not part of the
+            public repository, so fresh clones and CI checkouts do not
+            contain it).
+    """
     schema_path = (
         Path(__file__).resolve().parents[1]
         / "SPECs"
         / "reference"
         / "analysis-results.schema.json"
     )
+    if not schema_path.is_file():
+        pytest.skip(
+            f"SPECs/reference schema not available in this checkout: {schema_path.name}"
+        )
     return json.loads(schema_path.read_text(encoding="utf-8"))
 
 

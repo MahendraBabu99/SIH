@@ -37,8 +37,24 @@ _ENGINE = "app.automation.engine"
 
 
 def _load_schema(name: str) -> dict[str, Any]:
-    """Load a JSON schema from SPECs/reference."""
+    """Load a JSON schema from SPECs/reference.
+
+    Args:
+        name: Schema filename under ``SPECs/reference``.
+
+    Returns:
+        Parsed JSON schema as a dictionary.
+
+    Raises:
+        unittest.SkipTest: If the schema file is absent from this checkout
+            (``SPECs/`` is gitignored and not part of the public repository,
+            so fresh clones and CI checkouts do not contain it).
+    """
     path = Path(__file__).resolve().parents[1] / "SPECs" / "reference" / name
+    if not path.is_file():
+        raise unittest.SkipTest(
+            f"SPECs/reference schema not available in this checkout: {name}"
+        )
     return json.loads(path.read_text(encoding="utf-8"))
 
 
