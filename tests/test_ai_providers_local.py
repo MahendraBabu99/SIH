@@ -1029,57 +1029,6 @@ class TestLocalProvider(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# LocalProvider._process_stream_chunk
-# ---------------------------------------------------------------------------
-
-class TestLocalProviderProcessStreamChunk(unittest.TestCase):
-    """Grouped tests for TestLocalProviderProcessStreamChunk behavior."""
-    def test_returns_none_for_no_choices(self) -> None:
-        """Verify the behavior described by this test name."""
-        chunk = SimpleNamespace(choices=[])
-        self.assertIsNone(LocalProvider._process_stream_chunk(chunk))
-
-    def test_returns_none_for_none_delta(self) -> None:
-        """Verify the behavior described by this test name."""
-        chunk = SimpleNamespace(choices=[SimpleNamespace(delta=None)])
-        self.assertIsNone(LocalProvider._process_stream_chunk(chunk))
-
-    def test_extracts_thinking_and_answer(self) -> None:
-        """Verify the behavior described by this test name."""
-        chunk = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    delta=SimpleNamespace(
-                        content="answer",
-                        reasoning="thinking",
-                    ),
-                )
-            ]
-        )
-        result = LocalProvider._process_stream_chunk(chunk)
-        self.assertIsNotNone(result)
-        thinking, answer = result
-        self.assertEqual(thinking, "thinking")
-        self.assertEqual(answer, "answer")
-
-    def test_returns_none_for_empty_deltas(self) -> None:
-        """Verify the behavior described by this test name."""
-        chunk = SimpleNamespace(
-            choices=[SimpleNamespace(delta=SimpleNamespace())]
-        )
-        self.assertIsNone(LocalProvider._process_stream_chunk(chunk))
-
-    def test_handles_dict_choice(self) -> None:
-        """Verify the behavior described by this test name."""
-        chunk = SimpleNamespace(choices=[{"delta": {"content": "from dict"}}])
-        result = LocalProvider._process_stream_chunk(chunk)
-        self.assertIsNotNone(result)
-        thinking, answer = result
-        self.assertEqual(answer, "from dict")
-        self.assertEqual(thinking, "")
-
-
-# ---------------------------------------------------------------------------
 # LocalProvider._emit_progress_if_needed
 # ---------------------------------------------------------------------------
 

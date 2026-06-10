@@ -31,10 +31,7 @@ from .base import (
 )
 from .openai_compatible import OpenAICompatibleChatMixin
 from .utils import (
-    _LeadingReasoningStreamSplitter,
     _clean_streamed_answer_text,
-    _extract_openai_stream_chunk_delta,
-    _split_openai_stream_delta_text,
     _strip_leading_reasoning_blocks,
     stream_chunk_answer_text,
     stream_chunk_reasoning_text,
@@ -428,107 +425,6 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
         for _chunk in stream:
             pass
         return self._finalize_stream_response(thinking_parts, answer_parts)
-
-    def _build_stream_or_result(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        max_tokens: int,
-        attachments: list[Mapping[str, str]] | None,
-    ) -> Any | str:
-        """Set up the streaming request, returning a stream or a final string.
-
-        Attempts CSV file attachment first. If that succeeds, returns the
-        completed text directly. Otherwise creates a streaming chat completion.
-        Falls back to non-streaming if the endpoint rejects streaming.
-
-        Args:
-            system_prompt: The system-level instruction text.
-            user_prompt: The user-facing prompt text.
-            max_tokens: Maximum completion tokens.
-            attachments: Optional list of attachment descriptors.
-
-        Returns:
-            A streaming response object, or a ``str`` if the result was
-            obtained without streaming (attachment path or fallback).
-
-        Raises:
-            AIProviderError: If the non-streaming fallback also fails.
-        """
-        attachment_response = self._request_with_csv_attachments(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            attachments=attachments,
-        )
-        if attachment_response:
-            cleaned = _strip_leading_reasoning_blocks(attachment_response)
-            if cleaned:
-                return cleaned
-            self._raise_openai_compatible_empty_response(
-                None,
-                "Local AI provider returned an empty response",
-            )
-
-        prompt_for_completion = self._build_chat_completion_prompt(
-            user_prompt=user_prompt,
-            attachments=attachments,
-        )
-
-        try:
-            return self._create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt_for_completion},
-                ],
-                max_tokens=max_tokens,
-                stream=True,
-            )
-        except self._openai.BadRequestError as error:
-            if self._is_stream_unsupported_error(error):
-                return self._request_non_stream(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    max_tokens=max_tokens,
-                    attachments=attachments,
-                )
-            raise
-
-    @staticmethod
-    def _process_stream_chunk(
-        chunk: Any,
-        content_splitter: _LeadingReasoningStreamSplitter | None = None,
-    ) -> tuple[str, str] | None:
-        """Extract thinking and answer deltas from a single stream chunk.
-
-        Args:
-            chunk: A streaming response chunk from the OpenAI SDK.
-            content_splitter: Optional stateful splitter that moves leading
-                local-model reasoning markup out of content deltas.
-
-        Returns:
-            A ``(thinking_delta, answer_delta)`` tuple, or ``None`` if the
-            chunk contains no usable text.
-        """
-        choices = getattr(chunk, "choices", None)
-        if not choices:
-            return None
-        delta = _extract_openai_stream_chunk_delta(chunk)
-        if delta is None:
-            return None
-
-        delta_text = _split_openai_stream_delta_text(delta)
-        if content_splitter is None:
-            answer_delta = delta_text.answer_text
-            thinking_delta = delta_text.reasoning_text
-        else:
-            answer_split = content_splitter.split(delta_text.answer_text)
-            answer_delta = answer_split.answer_text
-            thinking_delta = delta_text.reasoning_text + answer_split.reasoning_text
-
-        if not answer_delta and not thinking_delta:
-            return None
-        return (thinking_delta, answer_delta)
 
     @staticmethod
     def _emit_progress_if_needed(
