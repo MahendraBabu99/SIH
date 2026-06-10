@@ -672,6 +672,182 @@ describe("multi-image analysis rendering behavior", () => {
   });
 });
 
+// ── Single-image duplicate rendering regression (P4-F1 / P8-F1) ─────────────
+
+describe("single-image analysis_completed does not duplicate streamed rows", () => {
+  /** Count direct-child <details> only: reasoning panels nest a second
+      <details> inside each findings entry, so querySelectorAll("details")
+      would over-count. */
+  function topLevelFindingsDetails() {
+    return Array.from(A.el.findings.children).filter((c) => c.tagName === "DETAILS");
+  }
+
+  test("canonical images mapping merges into bare streamed keys and keeps reasoning", () => {
+    // Replay the exact single-image backend sequence: streamed result
+    // payloads carry NO image context (app/routes/tasks.py strips
+    // image_id/image_label when include_image_context is False), then the
+    // terminal analysis_completed carries the canonical one-entry
+    // image-scoped images mapping with multi_image:false.
+    A.st.analysis.run = true;
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, multi_image: false, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      artifact_key: "runkeys",
+      result: { artifact_key: "runkeys", artifact_name: "Run/RunOnce Keys", model: "m" },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_thinking",
+      artifact_key: "runkeys",
+      result: { artifact_key: "runkeys", artifact_name: "Run/RunOnce Keys", thinking_text: "hidden model reasoning" },
+      sequence: 2,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "runkeys",
+      status: "complete",
+      result: { artifact_key: "runkeys", artifact_name: "Run/RunOnce Keys", analysis: "Persistence found." },
+      sequence: 3,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_summary",
+      summary: "S",
+      model_info: {},
+      multi_image: false,
+      image_scoped: true,
+      images: { "img-uuid-1": { label: "Image 1", summary: "S" } },
+      cross_image_summary: "",
+      skipped_images: [],
+      sequence: 4,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_completed",
+      artifact_count: 1,
+      multi_image: false,
+      image_scoped: true,
+      images: {
+        "img-uuid-1": {
+          label: "Image 1",
+          per_artifact: [{
+            artifact_key: "runkeys",
+            artifact_name: "Run/RunOnce Keys",
+            analysis: "Persistence found.",
+            analysis_text: "Persistence found.",
+          }],
+          summary: "S",
+        },
+      },
+      cross_image_summary: "",
+      skipped_images: [],
+      sequence: 5,
+    });
+
+    // Exactly one tracked entry per artifact: no duplicate composite key.
+    expect(A.st.analysis.order).toEqual(["runkeys"]);
+    expect(Object.keys(A.st.analysis.byKey)).toEqual(["runkeys"]);
+
+    // Exactly one analysis card in Step 4 live results.
+    const cards = A.el.analysisList.querySelectorAll(".analysis-card");
+    expect(cards).toHaveLength(1);
+    expect(cards[0].textContent).toContain("Persistence found.");
+
+    // Exactly one top-level findings <details> in Step 5.
+    const findingsEntries = topLevelFindingsDetails();
+    expect(findingsEntries).toHaveLength(1);
+    expect(findingsEntries[0].textContent).toContain("Persistence found.");
+
+    // Streamed reasoning text (artifact_analysis_thinking) survives completion.
+    expect(A.st.analysis.byKey["runkeys"].thinkingText).toBe("hidden model reasoning");
+    const cardReasoning = mustQuery(cards[0], ".analysis-reasoning-panel .analysis-reasoning-text");
+    expect(cardReasoning.textContent).toBe("hidden model reasoning");
+    const findingsReasoning = mustQuery(findingsEntries[0], ".analysis-reasoning-panel .analysis-reasoning-text");
+    expect(findingsReasoning.textContent).toBe("hidden model reasoning");
+  });
+
+  test("single-image completion with no streamed events recovers onto bare keys", () => {
+    // Recovery path (e.g. SSE reconnect missed the streamed events): the
+    // analysis_completed flatten must still create rows, keyed bare so they
+    // are consistent with streamed single-image keys.
+    A.st.analysis.run = true;
+    A._onAnalysisEvent({
+      type: "analysis_completed",
+      artifact_count: 1,
+      multi_image: false,
+      image_scoped: true,
+      images: {
+        "img-uuid-1": {
+          label: "Image 1",
+          per_artifact: [{ artifact_key: "runkeys", artifact_name: "Run/RunOnce Keys", analysis: "Persistence found." }],
+          summary: "S",
+        },
+      },
+      cross_image_summary: "",
+      skipped_images: [],
+      sequence: 1,
+    });
+
+    expect(A.st.analysis.order).toEqual(["runkeys"]);
+    expect(A.el.analysisList.querySelectorAll(".analysis-card")).toHaveLength(1);
+    expect(A.el.analysisList.textContent).toContain("Persistence found.");
+    expect(topLevelFindingsDetails()).toHaveLength(1);
+  });
+
+  test("multi-image completion keeps composite keys and per-image grouping unchanged", () => {
+    // Control: streamed multi-image events carry image context, so the
+    // canonical completion payload must keep matching composite keys with
+    // one card per image even when images share the same artifact_key.
+    A.st.analysis.run = true;
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 2, multi_image: true, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "evtx",
+      image_id: "img1",
+      image_label: "Workstation",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", image_id: "img1", image_label: "Workstation", analysis: "Suspicious service install." },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "evtx",
+      image_id: "img2",
+      image_label: "Server",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", image_id: "img2", image_label: "Server", analysis: "Unexpected executable." },
+      sequence: 2,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_completed",
+      artifact_count: 2,
+      multi_image: true,
+      image_scoped: true,
+      images: {
+        img1: {
+          label: "Workstation",
+          per_artifact: [{ artifact_key: "evtx", artifact_name: "Event Logs", analysis: "Suspicious service install." }],
+          summary: "W",
+        },
+        img2: {
+          label: "Server",
+          per_artifact: [{ artifact_key: "evtx", artifact_name: "Event Logs", analysis: "Unexpected executable." }],
+          summary: "S",
+        },
+      },
+      cross_image_summary: "Linked activity.",
+      skipped_images: [],
+      sequence: 3,
+    });
+
+    expect(A.st.analysis.order).toEqual(["img1::evtx", "img2::evtx"]);
+    const groups = A.el.analysisList.querySelectorAll(".analysis-image-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0].querySelectorAll(".analysis-card")).toHaveLength(1);
+    expect(groups[1].querySelectorAll(".analysis-card")).toHaveLength(1);
+    expect(groups[0].textContent).toContain("Workstation");
+    expect(groups[0].textContent).toContain("Suspicious service install.");
+    expect(groups[1].textContent).toContain("Server");
+    expect(groups[1].textContent).toContain("Unexpected executable.");
+  });
+});
+
 describe("analysis navigation prerequisites", () => {
   test("step 5 is blocked when analysis not done", () => {
     A.setCaseId("test-case");

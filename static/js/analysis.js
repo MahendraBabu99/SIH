@@ -231,7 +231,23 @@
       }
       const finalArtifacts = flattenImageScopedArtifacts(p.images);
       finalArtifacts.forEach((entry) => {
-        if (A.isObj(entry)) upsertAnalysis(entry);
+        if (!A.isObj(entry)) return;
+        /* Single-image runs stream per-artifact SSE rows WITHOUT image
+           context (the backend strips image_id/image_label when only one
+           image is analyzed), so streamed rows are keyed by the bare
+           artifact key. st.analysis.multiImage was recomputed above from
+           this event's multi_image flag and images key count; when it is
+           false, strip the image context injected by the flatten so this
+           final upsert merges into the streamed row (preserving its
+           reasoning text) instead of appending a duplicate composite-key
+           row. With no streamed rows (e.g. SSE reconnect), recovery
+           entries then land on the same bare keys. Multi-image entries
+           keep their composite keys untouched. */
+        if (!st.analysis.multiImage) {
+          delete entry.image_id;
+          delete entry.image_label;
+        }
+        upsertAnalysis(entry);
       });
       finalizeAnyThinkingArtifacts();
       renderAnalysis();
@@ -303,11 +319,12 @@
   // ── Analysis data upserts ──────────────────────────────────────────────────
 
   /**
-   * Extract the common key, name, and model from an analysis SSE payload,
-   * and ensure the key is tracked in st.analysis.order.
+   * Flatten the canonical image-scoped `images` mapping into a flat list
+   * of per-artifact entries, injecting image_id/image_label from the
+   * mapping key into each copied entry.
    *
-   * @param {Object} r - Raw event payload.
-   * @returns {{key: string, name: string, model: string, current: Object, imageId: string, imageLabel: string}}
+   * @param {Object} images - Mapping of image_id to {label, per_artifact}.
+   * @returns {Array<Object>} Per-artifact entry copies with image context.
    */
   function flattenImageScopedArtifacts(images) {
     if (!A.isObj(images)) return [];
@@ -327,6 +344,13 @@
     return rows;
   }
 
+  /**
+   * Extract the common key, name, and model from an analysis SSE payload,
+   * and ensure the key is tracked in st.analysis.order.
+   *
+   * @param {Object} r - Raw event payload.
+   * @returns {{key: string, name: string, model: string, current: Object, imageId: string, imageLabel: string}}
+   */
   function extractAnalysisIdentifiers(r) {
     const rawKey = String(r.artifact_key || r.key || `artifact_${st.analysis.order.length + 1}`);
     const name = String(r.artifact_name || A.artifactName(rawKey));

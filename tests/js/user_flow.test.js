@@ -213,41 +213,76 @@ describe("mocked final browser flow", () => {
     const analysisSource = window.__AIFT_TEST_OPEN_EVENT_SOURCES__
       .find((source) => source.url === "/api/cases/case-final/analyze/progress");
     expect(analysisSource).toBeTruthy();
-    emit(analysisSource, { type: "analysis_started", analysis_artifact_count: 1, multi_image: true, sequence: 1 });
+    // Genuine backend sequence for the request asserted above: the analyze
+    // payload contains exactly ONE image entry (img-1 is parse-only), so
+    // app/routes/tasks.py computes display_multi_image=False, emits
+    // multi_image:false, and strips image_id/image_label from streamed
+    // result payloads (include_image_context=False).
+    emit(analysisSource, {
+      type: "analysis_started",
+      prompt_provided: true,
+      analysis_artifact_count: 1,
+      multi_image: false,
+      image_scoped: true,
+      image_count: 1,
+      sequence: 1,
+    });
     emit(analysisSource, {
       type: "artifact_analysis_completed",
-      image_id: "img-2",
-      image_label: "Server",
       artifact_key: "runkeys",
-      artifact_name: "Run/RunOnce Keys",
-      analysis: "Persistence in Run keys.",
+      status: "complete",
+      result: {
+        artifact_key: "runkeys",
+        artifact_name: "Run/RunOnce Keys",
+        analysis: "Persistence in Run keys.",
+      },
       sequence: 2,
     });
     emit(analysisSource, {
       type: "analysis_summary",
-      summary: "Server persistence summary.",
+      summary: "Run keys reviewed.",
       model_info: { provider: "local", model: "mock-model" },
-      multi_image: true,
-      cross_image_summary: "Only the AI-enabled image was analyzed.",
+      multi_image: false,
+      image_scoped: true,
       images: { "img-2": { label: "Server", summary: "Run keys reviewed." } },
+      cross_image_summary: "",
+      skipped_images: [],
       sequence: 3,
     });
+    // Canonical analysis_completed payload as emitted by
+    // app/routes/tasks.py: the per-artifact results arrive inside the
+    // image-scoped "images" mapping, never as a top-level per_artifact array.
     emit(analysisSource, {
       type: "analysis_completed",
-      multi_image: true,
-      per_artifact: [{
-        image_id: "img-2",
-        image_label: "Server",
-        artifact_key: "runkeys",
-        artifact_name: "Run/RunOnce Keys",
-        analysis: "Persistence in Run keys.",
-      }],
+      artifact_count: 1,
+      multi_image: false,
+      image_scoped: true,
+      images: {
+        "img-2": {
+          label: "Server",
+          per_artifact: [{
+            artifact_key: "runkeys",
+            artifact_name: "Run/RunOnce Keys",
+            analysis: "Persistence in Run keys.",
+            analysis_text: "Persistence in Run keys.",
+          }],
+          summary: "Run keys reviewed.",
+        },
+      },
+      cross_image_summary: "",
+      skipped_images: [],
       sequence: 4,
     });
 
     expect(A.st.step).toBe(5);
     expect(document.getElementById("analysis-results-list").textContent).toContain("Persistence in Run keys");
-    expect(document.getElementById("artifact-findings").textContent).toContain("Server");
+    expect(document.getElementById("artifact-findings").textContent).toContain("Run/RunOnce Keys");
+    expect(document.getElementById("artifact-findings").textContent).toContain("Persistence in Run keys.");
+    // The completion payload must merge into the bare-keyed streamed row
+    // (single-image runs stream without image context), not render a
+    // duplicate composite-key card for the same artifact.
+    expect(A.st.analysis.order).toEqual(["runkeys"]);
+    expect(document.querySelectorAll("#analysis-results-list .analysis-card")).toHaveLength(1);
 
     document.getElementById("download-report").click();
     await nextTick();
