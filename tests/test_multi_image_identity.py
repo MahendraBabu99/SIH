@@ -332,6 +332,42 @@ def test_grouped_chat_csv_retrieval_returns_false_for_scoped_miss(tmp_path: Path
     assert result == {"retrieved": False, "scoped": True}
 
 
+def test_grouped_chat_csv_retrieval_notes_budget_omitted_artifacts(tmp_path: Path) -> None:
+    """Budget exhaustion must not silently drop later images' matches.
+
+    When the first image's same-named CSV consumes the entire shared row
+    budget, the second image's artifact must still be listed and an
+    explicit "rows omitted" note block must appear in the data, while
+    ``rows_returned`` stays exact.
+    """
+    img1_csv = tmp_path / "img1" / "runkeys.csv"
+    img2_csv = tmp_path / "img2" / "runkeys.csv"
+    img1_csv.parent.mkdir(parents=True, exist_ok=True)
+    img2_csv.parent.mkdir(parents=True, exist_ok=True)
+    img1_csv.write_text(
+        "value\n" + "\n".join(f"img1-row-{index}" for index in range(8)) + "\n",
+        encoding="utf-8",
+    )
+    img2_csv.write_text("value\nimg2-row\n", encoding="utf-8")
+
+    result = ChatManager._retrieve_grouped_csv_data(
+        question="Show runkeys entries",
+        csv_path_groups=[
+            ("img1", "PC01", [img1_csv]),
+            ("img2", "PC02", [img2_csv]),
+        ],
+        row_limit=5,
+    )
+
+    assert result["retrieved"] is True
+    assert result["artifacts"] == ["PC01/runkeys.csv", "PC02/runkeys.csv"]
+    assert result["rows_returned"] == 5
+    assert "showing first 5" in result["data"]
+    assert "Artifact: PC02/runkeys.csv" in result["data"]
+    assert "rows omitted" in result["data"]
+    assert "img2-row" not in result["data"]
+
+
 class RecordingMultiImageAnalyzer:
     """Analyzer fake that records multi-image descriptors from routes_state.
 

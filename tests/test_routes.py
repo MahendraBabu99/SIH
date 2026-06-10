@@ -1720,6 +1720,18 @@ class RoutesTests(unittest.TestCase):
         self.assertIn("chat_message_sent", audit_actions)
         self.assertIn("chat_response_received", audit_actions)
         self.assertIn("chat_data_retrieval", audit_actions)
+        retrieval_entries = [
+            entry
+            for entry in audit_entries
+            if str(entry.get("action", "")) == "chat_data_retrieval"
+        ]
+        self.assertEqual(len(retrieval_entries), 1)
+        retrieval_details = retrieval_entries[0].get("details", {})
+        self.assertEqual(retrieval_details.get("artifacts"), ["runkeys.csv"])
+        # The audit entry records the exact number of CSV data rows injected
+        # into the AI prompt (FakeParser writes one data row), not a newline
+        # count of the formatted prompt text.
+        self.assertEqual(retrieval_details.get("rows_returned"), 1)
 
     def test_parse_uses_configured_csv_output_directory(self) -> None:
         evidence_path = Path(self.temp_dir.name) / "configured-output.E01"

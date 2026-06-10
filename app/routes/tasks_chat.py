@@ -450,7 +450,10 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
                 {
                     "message_index": message_index,
                     "artifacts": list(retrieved_artifacts),
-                    "rows_returned": retrieved_data.count("\n"),
+                    # Exact CSV data rows injected into the prompt, as
+                    # computed by the retrieval layer (not a newline count
+                    # of the formatted text).
+                    "rows_returned": int(retrieved_payload.get("rows_returned") or 0),
                 },
             )
 

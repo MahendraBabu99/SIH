@@ -13,6 +13,9 @@ Key responsibilities:
   when artifact-name matching finds nothing.
 * **Row sampling** -- Reads up to a configurable limit of rows, compacting
   values and truncating long strings to keep prompt size manageable.
+  Matched files whose rows cannot be included because the row budget was
+  already consumed are reported with an explicit omission note instead of
+  being silently dropped.
 
 Attributes:
     CSV_RETRIEVAL_KEYWORDS: Tuple of lowercase keyword phrases that
@@ -101,8 +104,10 @@ def retrieve_csv_data(
 
     Returns:
         A dictionary with a ``retrieved`` boolean.  When *True*, also
-        includes ``artifacts`` (list of matched CSV filenames) and
-        ``data`` (formatted row text).
+        includes ``artifacts`` (list of matched CSV filenames), ``data``
+        (formatted row text, with explicit omission notes for matched
+        files left out by an exhausted row budget), and ``rows_returned``
+        (exact number of CSV data rows included in ``data``).
     """
     question_text = _stringify(question)
     if not question_text:
@@ -140,7 +145,13 @@ def retrieve_csv_data_from_paths(
 
     Returns:
         A dictionary with a ``retrieved`` boolean.  When *True*, also
-        includes ``artifacts`` and formatted ``data``.
+        includes ``artifacts``, formatted ``data``, and ``rows_returned``
+        (exact number of CSV data rows included in ``data``).  Matched
+        files whose rows are skipped because the row budget is exhausted
+        (including calls made with ``row_limit <= 0``) contribute an
+        explicit "rows omitted" note block to ``data`` and zero rows to
+        ``rows_returned``.  The "No readable rows found" fallback text is
+        reserved for matched files that are genuinely unreadable or empty.
     """
     question_text = _stringify(question)
     if not question_text:
@@ -173,8 +184,13 @@ def retrieve_csv_data_from_paths(
     rows_returned = 0
 
     for csv_path in target_paths:
+        display_name = display_names.get(csv_path, csv_path.name)
         if rows_remaining <= 0:
-            break
+            # The shared row budget is exhausted, but the file still
+            # matched: surface an explicit omission note instead of
+            # silently dropping it (SPEC 6.2 transparency).
+            formatted_blocks.append(_format_budget_omission_block(display_name))
+            continue
         headers, rows, total_row_count = _read_csv_rows(csv_path, limit=rows_remaining)
         if not headers and not rows:
             continue
@@ -183,7 +199,7 @@ def retrieve_csv_data_from_paths(
         rows_returned += len(rows)
         formatted_blocks.append(
             _format_csv_block(
-                display_names.get(csv_path, csv_path.name),
+                display_name,
                 headers,
                 rows,
                 total_row_count,
@@ -453,3 +469,26 @@ def _format_csv_block(
     else:
         block_lines.append("Rows: none")
     return "\n".join(block_lines)
+
+
+def _format_budget_omission_block(filename: str) -> str:
+    """Format an explicit note for a matched CSV omitted by the row budget.
+
+    Used when a CSV file matched the user's question but no rows could
+    be read for it because earlier matched files already consumed the
+    shared retrieval row budget.  The note keeps the omission visible to
+    the AI and the analyst instead of silently dropping the artifact.
+
+    Args:
+        filename: Display name of the omitted CSV file (may include an
+            image label prefix in multi-image cases).
+
+    Returns:
+        A two-line text block naming the artifact and stating that its
+        rows were omitted because the retrieval row budget was exhausted.
+    """
+    return (
+        f"Artifact: {filename}\n"
+        "Note: rows omitted - the chat CSV retrieval row budget was "
+        "exhausted by earlier matched files."
+    )

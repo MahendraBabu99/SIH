@@ -12,6 +12,7 @@ from app.chat.csv_retrieval import (
     build_csv_aliases,
     contains_heuristic_term,
     retrieve_csv_data,
+    retrieve_csv_data_from_paths,
     _read_csv_headers,
     _read_csv_rows,
     _format_csv_block,
@@ -257,6 +258,109 @@ class ChatManagerTests(unittest.TestCase):
             )
 
         self.assertEqual(result, {"retrieved": False})
+
+    def test_grouped_retrieve_csv_data_reports_exact_rows_returned(self) -> None:
+        """Grouped retrieval payload carries the exact CSV data row count."""
+        with TemporaryDirectory(prefix="aift-chat-grouped-rows-test-") as temp_dir:
+            root = Path(temp_dir)
+            img1_dir = root / "pc01"
+            img2_dir = root / "pc02"
+            img1_dir.mkdir(parents=True, exist_ok=True)
+            img2_dir.mkdir(parents=True, exist_ok=True)
+            self._write_csv(
+                img1_dir / "runkeys.csv",
+                "name,value",
+                ["alpha,1", "beta,2", "gamma,3"],
+            )
+            self._write_csv(img2_dir / "prefetch.csv", "name", ["delta"])
+
+            manager = ChatManager(temp_dir)
+            result = manager.retrieve_csv_data(
+                question="Show runkeys entries",
+                parsed_dir=img1_dir,
+                csv_path_groups=[
+                    ("img1", "PC01", [img1_dir / "runkeys.csv"]),
+                    ("img2", "PC02", [img2_dir / "prefetch.csv"]),
+                ],
+            )
+
+        self.assertTrue(result["retrieved"])
+        self.assertEqual(result["artifacts"], ["PC01/runkeys.csv"])
+        self.assertEqual(result["rows_returned"], 3)
+
+    def test_retrieve_csv_data_merges_rows_returned_across_additional_dirs(self) -> None:
+        """The additional_parsed_dirs merge sums exact per-directory row counts."""
+        with TemporaryDirectory(prefix="aift-chat-merge-rows-test-") as temp_dir:
+            root = Path(temp_dir)
+            primary_dir = root / "primary"
+            extra_dir = root / "extra"
+            primary_dir.mkdir(parents=True, exist_ok=True)
+            extra_dir.mkdir(parents=True, exist_ok=True)
+            self._write_csv(
+                primary_dir / "runkeys.csv",
+                "name",
+                ["primary-1", "primary-2"],
+            )
+            self._write_csv(
+                extra_dir / "runkeys.csv",
+                "name",
+                ["extra-1", "extra-2", "extra-3"],
+            )
+
+            manager = ChatManager(temp_dir)
+            result = manager.retrieve_csv_data(
+                question="Show runkeys entries",
+                parsed_dir=primary_dir,
+                additional_parsed_dirs=[extra_dir],
+            )
+
+        self.assertTrue(result["retrieved"])
+        self.assertEqual(result["artifacts"], ["runkeys.csv"])
+        self.assertEqual(result["rows_returned"], 5)
+
+    def test_grouped_retrieval_budget_exhaustion_notes_omitted_artifacts(self) -> None:
+        """Same-named artifacts in later images are listed with an omission note.
+
+        Regression test: when the first image's CSV consumes the entire
+        shared row budget, the second image's same-named artifact must
+        still be listed in ``artifacts`` and reported in ``data`` via an
+        explicit "rows omitted" note block, while ``rows_returned`` stays
+        exact (omission blocks contribute zero rows).
+        """
+        with TemporaryDirectory(prefix="aift-chat-budget-test-") as temp_dir:
+            root = Path(temp_dir)
+            img1_dir = root / "pc01"
+            img2_dir = root / "pc02"
+            img1_dir.mkdir(parents=True, exist_ok=True)
+            img2_dir.mkdir(parents=True, exist_ok=True)
+            # More rows than the shared 500-row budget in the first image.
+            self._write_csv(
+                img1_dir / "runkeys.csv",
+                "value",
+                [f"img1-row-{index}" for index in range(600)],
+            )
+            self._write_csv(img2_dir / "runkeys.csv", "value", ["img2-row"])
+
+            manager = ChatManager(temp_dir)
+            result = manager.retrieve_csv_data(
+                question="Show runkeys entries",
+                parsed_dir=img1_dir,
+                csv_path_groups=[
+                    ("img1", "PC01", [img1_dir / "runkeys.csv"]),
+                    ("img2", "PC02", [img2_dir / "runkeys.csv"]),
+                ],
+            )
+
+        self.assertTrue(result["retrieved"])
+        self.assertEqual(
+            result["artifacts"],
+            ["PC01/runkeys.csv", "PC02/runkeys.csv"],
+        )
+        self.assertEqual(result["rows_returned"], 500)
+        self.assertIn("showing first 500", result["data"])
+        self.assertIn("Artifact: PC02/runkeys.csv", result["data"])
+        self.assertIn("rows omitted", result["data"])
+        self.assertNotIn("img2-row", result["data"])
 
     def test_estimate_token_count_and_max_context_tokens(self) -> None:
         with TemporaryDirectory(prefix="aift-chat-token-test-") as temp_dir:
@@ -1553,6 +1657,57 @@ class RetrieveCsvDataEdgeCasesTests(unittest.TestCase):
             self.assertTrue(result["retrieved"])
             self.assertIn("showing first 5", result["data"])
             self.assertIn("Total rows: 20", result["data"])
+
+    def test_budget_exhaustion_within_matched_files_notes_omission(self) -> None:
+        """A matched file left without budget gets an explicit omission note."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            first = Path(tmp) / "runkeys.csv"
+            second = Path(tmp) / "runkeys_part2.csv"
+            first.write_text(
+                "col\n" + "\n".join(f"a{i}" for i in range(3)) + "\n",
+                encoding="utf-8",
+            )
+            second.write_text("col\nb0\n", encoding="utf-8")
+            result = retrieve_csv_data("show me runkeys rows", tmp, row_limit=3)
+            self.assertTrue(result["retrieved"])
+            self.assertEqual(
+                result["artifacts"],
+                ["runkeys.csv", "runkeys_part2.csv"],
+            )
+            self.assertEqual(result["rows_returned"], 3)
+            self.assertIn("Artifact: runkeys_part2.csv", result["data"])
+            self.assertIn("rows omitted", result["data"])
+            self.assertNotIn("b0", result["data"])
+
+    def test_zero_row_limit_with_match_produces_omission_note(self) -> None:
+        """row_limit <= 0 with matched files yields omission notes, not the fallback."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            csv_path = Path(tmp) / "shimcache.csv"
+            csv_path.write_text("path\nfile.exe\n", encoding="utf-8")
+            result = retrieve_csv_data_from_paths(
+                question="show me shimcache rows",
+                csv_paths=[csv_path],
+                row_limit=0,
+            )
+            self.assertTrue(result["retrieved"])
+            self.assertEqual(result["artifacts"], ["shimcache.csv"])
+            self.assertEqual(result["rows_returned"], 0)
+            self.assertIn("rows omitted", result["data"])
+            self.assertNotIn("No readable rows found", result["data"])
+
+    def test_matched_unreadable_csv_keeps_no_readable_rows_fallback(self) -> None:
+        """The no-readable-rows fallback stays reserved for unreadable files."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            csv_path = Path(tmp) / "shimcache.csv"
+            csv_path.write_text("", encoding="utf-8")
+            result = retrieve_csv_data("show me shimcache rows", tmp)
+            self.assertTrue(result["retrieved"])
+            self.assertEqual(
+                result["data"],
+                "No readable rows found in selected CSV files.",
+            )
+            self.assertEqual(result["rows_returned"], 0)
+            self.assertNotIn("rows omitted", result["data"])
 
 
 class CsvRetrievalKeywordsTests(unittest.TestCase):

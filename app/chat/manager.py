@@ -384,8 +384,10 @@ class ChatManager:
 
         Returns:
             A dictionary with a ``retrieved`` boolean.  When *True*, also
-            includes ``artifacts`` (list of matched CSV filenames) and
-            ``data`` (formatted row text).
+            includes ``artifacts`` (list of matched CSV filenames),
+            ``data`` (formatted row text), and ``rows_returned`` (exact
+            total number of CSV data rows included in ``data``, summed
+            across all searched directories or image groups).
         """
         if csv_path_groups:
             grouped_result = self._retrieve_grouped_csv_data(
@@ -401,8 +403,11 @@ class ChatManager:
 
         all_artifacts: list[str] = list(primary.get("artifacts", []))
         data_parts: list[str] = []
-        if primary.get("retrieved") and str(primary.get("data", "")).strip():
-            data_parts.append(str(primary["data"]).strip())
+        total_rows_returned = 0
+        if primary.get("retrieved"):
+            total_rows_returned += int(primary.get("rows_returned") or 0)
+            if str(primary.get("data", "")).strip():
+                data_parts.append(str(primary["data"]).strip())
 
         for extra_dir in additional_parsed_dirs:
             if not extra_dir:
@@ -412,6 +417,7 @@ class ChatManager:
                 continue
             extra_result = _retrieve_csv_data(question, extra_path)
             if extra_result.get("retrieved"):
+                total_rows_returned += int(extra_result.get("rows_returned") or 0)
                 for artifact in extra_result.get("artifacts", []):
                     if artifact and artifact not in all_artifacts:
                         all_artifacts.append(artifact)
@@ -426,23 +432,37 @@ class ChatManager:
             "retrieved": True,
             "artifacts": all_artifacts,
             "data": "\n\n".join(data_parts),
+            "rows_returned": total_rows_returned,
         }
 
     @staticmethod
     def _retrieve_grouped_csv_data(
         question: str,
         csv_path_groups: list[tuple[str, list[Path]] | tuple[str, str, list[Path]]],
+        row_limit: int = _CSV_ROW_LIMIT,
     ) -> dict[str, Any]:
         """Retrieve CSV rows from image-scoped path groups.
+
+        All groups share a single *row_limit* budget.  Every group is
+        evaluated even after the budget is exhausted so that matched
+        artifacts from later images are still listed and reported with an
+        explicit "rows omitted" note block instead of being silently
+        dropped.  Genuinely non-matching groups are skipped as before.
 
         Args:
             question: The user's chat question text.
             csv_path_groups: List of ``(image_label, csv_paths)`` or
                 ``(image_id, image_label, csv_paths)`` tuples.
+            row_limit: Maximum total CSV data rows to include across all
+                groups.  Defaults to
+                :data:`~app.chat.csv_retrieval.CSV_ROW_LIMIT`.
 
         Returns:
             A merged retrieval payload that keeps image labels in artifact
-            names and data block headings.
+            names and data block headings.  When ``retrieved`` is *True*,
+            also includes ``artifacts``, ``data``, ``scoped``, and
+            ``rows_returned`` (exact total number of CSV data rows
+            included in ``data``; omission note blocks contribute zero).
         """
         normalized_groups: list[tuple[str, str, list[Path]]] = []
         for group in csv_path_groups:
@@ -479,10 +499,13 @@ class ChatManager:
         all_artifacts: list[str] = []
         data_parts: list[str] = []
 
-        rows_remaining = _CSV_ROW_LIMIT
+        rows_remaining = row_limit
+        total_rows_returned = 0
         for image_id, label, paths in groups_to_search:
-            if rows_remaining <= 0:
-                break
+            # Keep evaluating groups after the budget is exhausted:
+            # retrieve_csv_data_from_paths still runs artifact/header
+            # matching with row_limit <= 0 and emits explicit omission
+            # note blocks for matched files instead of reading rows.
             valid_paths = [Path(path) for path in paths if Path(path).is_file()]
             if not valid_paths:
                 continue
@@ -511,7 +534,9 @@ class ChatManager:
             )
             if not result.get("retrieved"):
                 continue
-            rows_remaining -= int(result.get("rows_returned") or 0)
+            group_rows_returned = int(result.get("rows_returned") or 0)
+            rows_remaining -= group_rows_returned
+            total_rows_returned += group_rows_returned
             all_artifacts.extend(
                 str(item)
                 for item in result.get("artifacts", [])
@@ -532,6 +557,7 @@ class ChatManager:
             "artifacts": all_artifacts,
             "data": "\n\n".join(data_parts),
             "scoped": group_alias_filter_active,
+            "rows_returned": total_rows_returned,
         }
 
     # ------------------------------------------------------------------
