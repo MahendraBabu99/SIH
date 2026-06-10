@@ -44,7 +44,7 @@ from .constants import (
 )
 from .data_prep import (
     ArtifactPrepResult, build_artifact_csv_attachment, build_full_data_csv, compute_statistics,
-    deduplicate_rows_for_analysis, prepare_artifact_data,
+    deduplicate_rows_for_analysis, prepare_artifact_data, resolve_analysis_input_output_dir,
 )
 from .multi_image import run_multi_image_analysis
 from .ioc import build_priority_directives, extract_ioc_targets, format_ioc_targets
@@ -1225,8 +1225,12 @@ class ForensicAnalyzer:
         """Concatenate multiple CSV files into a single combined CSV.
 
         All input files are assumed to share the same schema (column names).
-        The combined file is written to the case's ``parsed/`` directory (or
-        next to the first input file) with a ``_combined`` suffix.
+        The combined file is a derived AI analysis input, so it is written
+        with a ``_combined`` suffix into the ``parsed_deduplicated/``
+        directory resolved by :func:`resolve_analysis_input_output_dir` for
+        the first input file — never into the ``parsed/`` source directory,
+        which must hold only non-lossy parser output (SPEC 5.4 parsed-data
+        retention invariant).
 
         Args:
             artifact_key: Artifact identifier (used for the output filename).
@@ -1237,7 +1241,10 @@ class ForensicAnalyzer:
         """
         import csv as csv_mod
 
-        output_dir = csv_paths[0].parent
+        output_dir = resolve_analysis_input_output_dir(
+            case_dir=self.case_dir, source_csv_path=csv_paths[0],
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
         safe_key = sanitize_filename(artifact_key)
         combined_path = output_dir / f"{safe_key}_combined.csv"
 

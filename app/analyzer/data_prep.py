@@ -420,16 +420,36 @@ def build_full_data_csv(
 # ---------------------------------------------------------------------------
 
 def resolve_analysis_input_output_dir(case_dir: Path | None, source_csv_path: Path) -> Path:
-    """Determine the output directory for deduplicated/projected CSV files.
+    """Determine the output directory for derived analysis-input CSV files.
+
+    Derived AI analysis inputs (projected, deduplicated, or combined CSVs)
+    belong in a ``parsed_deduplicated/`` directory, never alongside the
+    non-lossy parser output in ``parsed/`` (SPEC 5.4).  Resolution order:
+
+    1. If the source CSV already lives in a ``parsed_deduplicated/``
+       directory (e.g. a derived ``<artifact>_combined.csv``), reuse that
+       directory unchanged so image-scoped derived files stay under the
+       image's ``parsed_deduplicated/`` instead of falling through to a
+       case-root ``parsed_deduplicated/``, which SPEC 10.3 forbids
+       creating for image-scoped cases.
+    2. If the source CSV lives in a ``parsed/`` directory, use the
+       ``parsed_deduplicated/`` sibling of that directory.
+    3. Otherwise use ``case_dir/parsed_deduplicated`` when a case
+       directory is known, or a ``parsed_deduplicated/`` subdirectory of
+       the source CSV's parent as a last resort.
 
     Args:
         case_dir: Optional case directory path.
-        source_csv_path: Path to the original parsed CSV file.
+        source_csv_path: Path to the source CSV file (an original parsed
+            CSV, or an already-derived analysis input such as a combined
+            split-artifact CSV).
 
     Returns:
         A ``Path`` to the output directory.
     """
     parent = source_csv_path.parent
+    if parent.name.strip().lower() == DEDUPLICATED_PARSED_DIRNAME:
+        return parent
     if parent.name.strip().lower() == "parsed":
         return parent.parent / DEDUPLICATED_PARSED_DIRNAME
     if case_dir is not None:
@@ -452,6 +472,39 @@ def _analysis_input_filename(source_csv_path: Path, analysis_scope_id: str | Non
         return source_csv_path.name
     suffix = source_csv_path.suffix or ".csv"
     return f"{build_scoped_artifact_stem(analysis_scope_id, source_csv_path.stem)}{suffix}"
+
+
+def _non_colliding_analysis_input_path(output_path: Path, source_csv_path: Path) -> Path:
+    """Return an analysis-input output path that never overwrites its source.
+
+    With no ``analysis_scope_id``, :func:`_analysis_input_filename` returns
+    the source CSV's own filename.  When the source already lives in a
+    ``parsed_deduplicated/`` directory (e.g. a derived
+    ``<artifact>_combined.csv`` for a split artifact),
+    :func:`resolve_analysis_input_output_dir` reuses that directory, so the
+    resolved output path would be the source file itself and writing it
+    would clobber the combined source in place.  Production flows always
+    set a scope id, but direct unscoped ``analyze_artifact()`` calls must
+    stay non-destructive, so this guard disambiguates the filename with an
+    ``_analysis_input`` stem suffix instead.
+
+    Args:
+        output_path: Candidate analysis-input output path.
+        source_csv_path: Source CSV the analysis input is derived from.
+
+    Returns:
+        ``output_path`` unchanged when it does not collide with
+        ``source_csv_path``, otherwise a sibling path with
+        ``_analysis_input`` appended to the stem.
+    """
+    try:
+        collides = output_path.resolve() == source_csv_path.resolve()
+    except OSError:
+        collides = output_path == source_csv_path
+    if not collides:
+        return output_path
+    suffix = output_path.suffix or ".csv"
+    return output_path.with_name(f"{output_path.stem}_analysis_input{suffix}")
 
 
 def _unique_column_name(candidate: str, used_columns: set[str]) -> str:
@@ -498,6 +551,12 @@ def write_analysis_input_csv(
 ) -> Path:
     """Write deduplicated/projected rows to a new CSV file for audit.
 
+    The output never overwrites ``source_csv_path``: when the resolved
+    output path collides with the source (an unscoped run whose source CSV
+    already lives in ``parsed_deduplicated/``, such as a derived combined
+    split-artifact CSV), the filename is disambiguated via
+    :func:`_non_colliding_analysis_input_path` so the source survives.
+
     Args:
         source_csv_path: Path to the original parsed CSV.
         rows: Row dicts to write.
@@ -514,7 +573,10 @@ def write_analysis_input_csv(
     """
     output_dir = resolve_analysis_input_output_dir(case_dir=case_dir, source_csv_path=source_csv_path)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / _analysis_input_filename(source_csv_path, analysis_scope_id)
+    output_path = _non_colliding_analysis_input_path(
+        output_path=output_dir / _analysis_input_filename(source_csv_path, analysis_scope_id),
+        source_csv_path=source_csv_path,
+    )
 
     write_columns = [column for column in columns if column != "row_ref"]
     write_columns = ["row_ref", *write_columns]

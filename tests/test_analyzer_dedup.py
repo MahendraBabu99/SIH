@@ -184,6 +184,23 @@ class TestResolveAnalysisInputOutputDir(unittest.TestCase):
         result = resolve_analysis_input_output_dir(None, Path("/some/other/art.csv"))
         self.assertEqual(result, Path("/some/other/parsed_deduplicated"))
 
+    def test_source_already_in_parsed_deduplicated_with_case_dir(self) -> None:
+        """A derived source in an image-scoped parsed_deduplicated/ stays there (no case-root dir)."""
+        from app.analyzer.data_prep import resolve_analysis_input_output_dir
+        result = resolve_analysis_input_output_dir(
+            Path("/case"),
+            Path("/case/images/img1/parsed_deduplicated/evtx_combined.csv"),
+        )
+        self.assertEqual(result, Path("/case/images/img1/parsed_deduplicated"))
+
+    def test_source_already_in_parsed_deduplicated_without_case_dir(self) -> None:
+        """A derived source in parsed_deduplicated/ reuses that directory unchanged."""
+        from app.analyzer.data_prep import resolve_analysis_input_output_dir
+        result = resolve_analysis_input_output_dir(
+            None, Path("/some/parsed_deduplicated/art.csv"),
+        )
+        self.assertEqual(result, Path("/some/parsed_deduplicated"))
+
 
 class TestWriteAnalysisInputCsv(unittest.TestCase):
     """Tests for data_prep.write_analysis_input_csv."""
@@ -201,6 +218,26 @@ class TestWriteAnalysisInputCsv(unittest.TestCase):
             content = result.read_text(encoding="utf-8")
             self.assertIn("ts,name", content)
             self.assertIn("test", content)
+
+    def test_unscoped_write_never_overwrites_source_in_parsed_deduplicated(self) -> None:
+        """The collision guard keeps an unscoped write from clobbering its own source."""
+        from app.analyzer.data_prep import write_analysis_input_csv
+        with TemporaryDirectory(prefix="aift-write-") as tmp_dir:
+            source = Path(tmp_dir) / "parsed_deduplicated" / "evtx_combined.csv"
+            source.parent.mkdir(parents=True)
+            source_content = "ts,name\n2026-01-15,original\n"
+            source.write_text(source_content, encoding="utf-8")
+            rows = [{"ts": "2026-01-15", "name": "projected", "_row_ref": "1"}]
+            result = write_analysis_input_csv(
+                source, rows, ["ts", "name"], case_dir=Path(tmp_dir),
+            )
+            self.assertNotEqual(result, source)
+            self.assertEqual(result.parent, source.parent)
+            self.assertEqual(result.name, "evtx_combined_analysis_input.csv")
+            self.assertTrue(result.exists())
+            # The combined source CSV must survive byte-for-byte.
+            self.assertEqual(source.read_text(encoding="utf-8"), source_content)
+            self.assertIn("projected", result.read_text(encoding="utf-8"))
 
 
 class TestBuildArtifactCsvAttachment(unittest.TestCase):
@@ -637,6 +674,9 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
                 )
             combined = analyzer._combine_csv_files("evtx", [csv1, csv2])
             self.assertTrue(combined.exists())
+            # Derived combined CSV goes to parsed_deduplicated/, not next to
+            # the source parts (SPEC 5.4 parsed-data retention invariant).
+            self.assertEqual(combined.parent, Path(tmpdir) / "parsed_deduplicated")
             lines = combined.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(lines[0], "ts,msg")
             self.assertEqual(len(lines), 4)  # header + 3 data rows
@@ -653,6 +693,7 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
             with patch("app.analyzer.core.create_provider", return_value=fake_provider):
                 analyzer = ForensicAnalyzer()
             combined = analyzer._combine_csv_files("evtx", [csv1, csv2])
+            self.assertEqual(combined.parent, Path(tmpdir) / "parsed_deduplicated")
             lines = combined.read_text(encoding="utf-8").strip().splitlines()
             self.assertIn("extra", lines[0])
             self.assertEqual(len(lines), 3)  # header + 2 data rows
@@ -668,19 +709,28 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
         self.assertIsInstance(analyzer.artifact_csv_paths["evtx"], list)
         self.assertEqual(len(analyzer.artifact_csv_paths["evtx"]), 2)
 
+    @staticmethod
+    def _write_minimal_prompts(prompts_dir: Path) -> None:
+        """Write minimal prompt templates so analyze_artifact runs offline.
+
+        Args:
+            prompts_dir: Directory to create and populate with templates.
+        """
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        (prompts_dir / "artifact_analysis.md").write_text(
+            "Key={{artifact_key}}\nData:\n{{data_csv}}\n", encoding="utf-8",
+        )
+        (prompts_dir / "artifact_analysis_small_context.md").write_text(
+            "Key={{artifact_key}}\nData:\n{{data_csv}}\n", encoding="utf-8",
+        )
+        (prompts_dir / "system_prompt.md").write_text("SYS", encoding="utf-8")
+        (prompts_dir / "summary_prompt.md").write_text("SUM", encoding="utf-8")
+
     def test_analyze_artifact_uses_all_split_csvs(self) -> None:
         """analyze_artifact combines split CSVs before sending to the AI."""
         with TemporaryDirectory() as tmpdir:
             prompts_dir = Path(tmpdir) / "prompts"
-            prompts_dir.mkdir()
-            (prompts_dir / "artifact_analysis.md").write_text(
-                "Key={{artifact_key}}\nData:\n{{data_csv}}\n", encoding="utf-8",
-            )
-            (prompts_dir / "artifact_analysis_small_context.md").write_text(
-                "Key={{artifact_key}}\nData:\n{{data_csv}}\n", encoding="utf-8",
-            )
-            (prompts_dir / "system_prompt.md").write_text("SYS", encoding="utf-8")
-            (prompts_dir / "summary_prompt.md").write_text("SUM", encoding="utf-8")
+            self._write_minimal_prompts(prompts_dir)
 
             csv1 = Path(tmpdir) / "evtx_Security.csv"
             csv2 = Path(tmpdir) / "evtx_System.csv"
@@ -702,6 +752,111 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
             prompt_sent = fake_provider.calls[0]["user_prompt"]
             self.assertIn("2025-01-01", prompt_sent)
             self.assertIn("2025-02-01", prompt_sent)
+
+    def test_split_artifact_combined_csv_written_to_image_parsed_deduplicated(self) -> None:
+        """Split-artifact analysis keeps parsed/ pristine; derived CSVs go to parsed_deduplicated/.
+
+        SPEC 5.4: the combined CSV is a derived AI analysis input, so after
+        an image-scoped analysis the image's parsed/ directory must contain
+        only the per-part parser CSVs while the combined CSV and the
+        projected/deduplicated analysis-input CSV both live under the
+        image's parsed_deduplicated/ sibling.  SPEC 10.3: no case-root
+        parsed_deduplicated/ may be created for image-scoped cases.
+        """
+        with TemporaryDirectory() as tmpdir:
+            case_dir = Path(tmpdir)
+            prompts_dir = case_dir / "prompts"
+            self._write_minimal_prompts(prompts_dir)
+
+            parsed_dir = case_dir / "images" / "img1" / "parsed"
+            parsed_dir.mkdir(parents=True)
+            csv1 = parsed_dir / "evtx_Security.csv"
+            csv2 = parsed_dir / "evtx_System.csv"
+            csv1.write_text("ts,msg\n2025-01-01,logon\n", encoding="utf-8")
+            csv2.write_text("ts,msg\n2025-02-01,start\n", encoding="utf-8")
+
+            fake_provider = FakeProvider(responses=["AI analysis of split artifact"])
+            with patch("app.analyzer.core.create_provider", return_value=fake_provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=case_dir,
+                    artifact_csv_paths={"evtx": [str(csv1), str(csv2)]},
+                    prompts_dir=prompts_dir,
+                )
+                analyzer.ai_provider = fake_provider
+            # Mimic the production image-scoped flow, which always sets a scope.
+            analyzer._analysis_scope_id = "img1"
+            result = analyzer.analyze_artifact("evtx", "test investigation")
+
+            self.assertEqual(result.get("status"), "success")
+            # parsed/ holds only the non-lossy per-part parser CSVs.
+            self.assertEqual(
+                {p.name for p in parsed_dir.iterdir()},
+                {"evtx_Security.csv", "evtx_System.csv"},
+            )
+            dedup_dir = case_dir / "images" / "img1" / "parsed_deduplicated"
+            combined = dedup_dir / "evtx_combined.csv"
+            self.assertTrue(combined.exists())
+            # The analysis-input CSV lands in the same image-scoped directory.
+            analysis_csv = Path(result["analysis_csv"])
+            self.assertEqual(analysis_csv.parent, dedup_dir)
+            self.assertTrue(analysis_csv.exists())
+            self.assertNotEqual(analysis_csv, combined)
+            # SPEC 10.3: no case-root parsed_deduplicated/ for image-scoped cases.
+            self.assertFalse((case_dir / "parsed_deduplicated").exists())
+
+    def test_unscoped_analyze_artifact_does_not_clobber_combined_csv(self) -> None:
+        """Unscoped analysis must not overwrite the combined source CSV in place.
+
+        Without an analysis scope id the analysis-input filename equals the
+        combined filename, so the write_analysis_input_csv collision guard
+        must route the analysis-input CSV to a disambiguated sibling path
+        and leave the combined source intact.
+        """
+        with TemporaryDirectory() as tmpdir:
+            case_dir = Path(tmpdir)
+            prompts_dir = case_dir / "prompts"
+            self._write_minimal_prompts(prompts_dir)
+
+            parsed_dir = case_dir / "images" / "img1" / "parsed"
+            parsed_dir.mkdir(parents=True)
+            csv1 = parsed_dir / "evtx_Security.csv"
+            csv2 = parsed_dir / "evtx_System.csv"
+            csv1.write_text("ts,msg\n2025-01-01,logon\n", encoding="utf-8")
+            csv2.write_text("ts,msg\n2025-02-01,start\n", encoding="utf-8")
+
+            fake_provider = FakeProvider(responses=["AI analysis of split artifact"])
+            with patch("app.analyzer.core.create_provider", return_value=fake_provider):
+                analyzer = ForensicAnalyzer(
+                    case_dir=case_dir,
+                    artifact_csv_paths={"evtx": [str(csv1), str(csv2)]},
+                    prompts_dir=prompts_dir,
+                )
+                analyzer.ai_provider = fake_provider
+            # No analysis scope id: direct unscoped analyze_artifact() call.
+            result = analyzer.analyze_artifact("evtx", "test investigation")
+
+            self.assertEqual(result.get("status"), "success")
+            dedup_dir = case_dir / "images" / "img1" / "parsed_deduplicated"
+            combined = dedup_dir / "evtx_combined.csv"
+            self.assertTrue(combined.exists())
+            # The combined source survives as the plain concatenation of the
+            # parts: original header (no row_ref column) and one row per part.
+            combined_lines = combined.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(combined_lines[0], "ts,msg")
+            self.assertEqual(len(combined_lines), 3)  # header + 2 data rows
+            # The analysis-input CSV is written to a distinct sibling path.
+            analysis_csv = Path(result["analysis_csv"])
+            self.assertNotEqual(analysis_csv, combined)
+            self.assertEqual(analysis_csv.parent, dedup_dir)
+            self.assertEqual(analysis_csv.name, "evtx_combined_analysis_input.csv")
+            self.assertTrue(analysis_csv.exists())
+            analysis_header = analysis_csv.read_text(encoding="utf-8").splitlines()[0]
+            self.assertTrue(analysis_header.startswith("row_ref,"))
+            # parsed/ still holds only the per-part parser CSVs.
+            self.assertEqual(
+                {p.name for p in parsed_dir.iterdir()},
+                {"evtx_Security.csv", "evtx_System.csv"},
+            )
 
 
 class TestResolveArtifactMetadata(unittest.TestCase):
