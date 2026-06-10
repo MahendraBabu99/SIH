@@ -456,6 +456,38 @@ class ForensicAnalyzer:
         """
         return load_artifact_instruction_prompts(self.prompts_dir, os_type=self.os_type)
 
+    def set_active_os_type(self, os_type: str) -> None:
+        """Switch the analyzer's active OS type and reload OS-dependent data.
+
+        Two analyzer inputs loaded once at ``__init__`` depend on the OS
+        type: :attr:`artifact_instruction_prompts` (read from
+        ``artifact_instructions/`` or ``artifact_instructions_linux/``)
+        and :attr:`artifact_ai_column_projections` (OS-suffixed keys such
+        as ``services_linux`` are filtered by the OS active at load time).
+        Multi-image analysis swaps the analyzer between images that may
+        run different operating systems (SPEC 6.8), so swapping
+        :attr:`os_type` alone would leave both dicts serving the previous
+        image's OS guidance and column projections.  This method keeps all
+        three in sync by reloading both dicts whenever the OS actually
+        changes.
+
+        When the normalized value equals the current :attr:`os_type` the
+        method does nothing, avoiding redundant disk reads and preserving
+        any caller-customized dict contents.
+
+        Args:
+            os_type: Operating system identifier (e.g. ``"windows"``,
+                ``"linux"``).  Normalized via
+                :func:`app.utils.os_utils.normalize_os_type` before
+                comparison and assignment.
+        """
+        normalized_os_type = normalize_os_type(os_type)
+        if normalized_os_type == self.os_type:
+            return
+        self.os_type = normalized_os_type
+        self.artifact_instruction_prompts = self._load_artifact_instruction_prompts()
+        self.artifact_ai_column_projections = self._load_artifact_ai_column_projections()
+
     # ------------------------------------------------------------------
     # AI provider
     # ------------------------------------------------------------------

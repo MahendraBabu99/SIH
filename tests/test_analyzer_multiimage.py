@@ -1229,3 +1229,296 @@ class TestProgressEventsIncludeImageContext:
         assert image_ids == {"img1", "img2"}, (
             f"Expected started events for img1 and img2, got {image_ids}"
         )
+
+
+class TestMixedOsGuidanceAndProjectionPerImage:
+    """Regression tests for OS-dependent guidance/projection reload (P5-F1).
+
+    Multi-image analysis swaps ``analyzer.os_type`` per image; the analyzer
+    must also reload ``artifact_instruction_prompts`` and
+    ``artifact_ai_column_projections`` so each image receives OS-correct
+    artifact guidance and column projections (SPEC 6.8 / SPEC 6.2 step 1).
+    Before the fix, a Windows-first mixed-OS case projected the Linux
+    image's ``services`` artifact with the Windows column list (silently
+    dropping ``Service_ExecStart`` and friends) and sent the Windows
+    registry-services guidance for systemd units.
+
+    Attributes:
+        WINDOWS_MARKER: Distinct Windows services guidance marker text.
+        LINUX_MARKER: Distinct Linux services guidance marker text.
+    """
+
+    WINDOWS_MARKER = "WINDOWS-SERVICES-GUIDANCE registry services EVTX Event ID 7045"
+    LINUX_MARKER = "LINUX-SERVICES-GUIDANCE systemd units ExecStart persistence"
+
+    def _write_prompt_templates(self, prompts_dir: Path) -> None:
+        """Write standard prompt templates plus OS-distinct services guidance.
+
+        Args:
+            prompts_dir: Directory that receives the template files and the
+                ``artifact_instructions``/``artifact_instructions_linux``
+                sub-directories.
+        """
+        template = (
+            "Key={{artifact_key}}\n"
+            "Context={{investigation_context}}\n"
+            "Instructions={{analysis_instructions}}\n"
+            "Data:\n{{data_csv}}\n"
+        )
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        (prompts_dir / "artifact_analysis.md").write_text(template, encoding="utf-8")
+        (prompts_dir / "artifact_analysis_small_context.md").write_text(template, encoding="utf-8")
+        (prompts_dir / "system_prompt.md").write_text("SYSTEM PROMPT", encoding="utf-8")
+        (prompts_dir / "summary_prompt.md").write_text(
+            "SummaryContext={{investigation_context}}\nFindings:\n{{per_artifact_findings}}\n",
+            encoding="utf-8",
+        )
+        windows_dir = prompts_dir / "artifact_instructions"
+        windows_dir.mkdir(parents=True, exist_ok=True)
+        (windows_dir / "services.md").write_text(self.WINDOWS_MARKER, encoding="utf-8")
+        linux_dir = prompts_dir / "artifact_instructions_linux"
+        linux_dir.mkdir(parents=True, exist_ok=True)
+        (linux_dir / "services.md").write_text(self.LINUX_MARKER, encoding="utf-8")
+
+    def _write_projection_yaml(self, tmp_path: Path) -> Path:
+        """Write a temp AI column projection YAML with OS-distinct keys.
+
+        Args:
+            tmp_path: Directory that receives the YAML file.
+
+        Returns:
+            Path to the written YAML config file.
+        """
+        yaml_path = tmp_path / "artifact_ai_columns.yaml"
+        yaml_path.write_text(
+            "artifact_ai_columns:\n"
+            "  services: [ts, name, imagepath]\n"
+            "  services_linux: [ts, name, type, Service_ExecStart, Service_User,"
+            " Install_WantedBy, \"*\"]\n",
+            encoding="utf-8",
+        )
+        return yaml_path
+
+    def _build_mixed_os_analyzer(
+        self, tmp_path: Path,
+    ) -> tuple[ForensicAnalyzer, FakeProvider, FakeAuditLogger]:
+        """Build a Windows-first analyzer with temp prompts and projections.
+
+        Args:
+            tmp_path: Test-scoped temporary directory (used as case dir).
+
+        Returns:
+            A ``(analyzer, provider, audit)`` tuple wired with a
+            ``FakeProvider`` and ``FakeAuditLogger``.
+        """
+        prompts_dir = tmp_path / "prompt_templates"
+        self._write_prompt_templates(prompts_dir)
+        yaml_path = self._write_projection_yaml(tmp_path)
+        config = {
+            "ai": {"provider": "local", "local": {"base_url": "http://localhost/v1", "model": "test", "api_key": "x"}},
+            "analysis": {
+                "ai_max_tokens": 128000,
+                "artifact_ai_columns_config_path": str(yaml_path),
+            },
+        }
+        audit = FakeAuditLogger()
+        analyzer = ForensicAnalyzer(
+            case_dir=str(tmp_path),
+            config=config,
+            audit_logger=audit,
+            prompts_dir=str(prompts_dir),
+            os_type="windows",
+        )
+        analyzer.artifact_deduplication_enabled = False
+        provider = FakeProvider(responses=["resp"] * 10)
+        analyzer.ai_provider = provider
+        analyzer.model_info = provider.get_model_info()
+        return analyzer, provider, audit
+
+    def _make_services_image(
+        self,
+        tmp_path: Path,
+        image_id: str,
+        os_type: str,
+        label: str,
+        columns: list[str],
+        row: dict[str, str],
+    ) -> dict[str, Any]:
+        """Create an image descriptor with a single-row services CSV.
+
+        Args:
+            tmp_path: Test-scoped temporary directory.
+            image_id: Unique image identifier.
+            os_type: Image operating system type.
+            label: Human-readable image label.
+            columns: CSV column names.
+            row: Single CSV data row keyed by column name.
+
+        Returns:
+            An image descriptor dict for ``run_multi_image_analysis``.
+        """
+        parsed_dir = tmp_path / "images" / image_id / "parsed"
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = parsed_dir / "services.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            writer.writerow(row)
+        return {
+            "image_id": image_id,
+            "label": label,
+            "os_type": os_type,
+            "metadata": {"hostname": label, "os_type": os_type},
+            "artifact_keys": ["services"],
+            "parsed_dir": str(parsed_dir),
+        }
+
+    def _make_mixed_os_images(self, tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Create a Windows image and a Linux image sharing the services key.
+
+        Args:
+            tmp_path: Test-scoped temporary directory.
+
+        Returns:
+            A ``(windows_image, linux_image)`` descriptor tuple.
+        """
+        windows_image = self._make_services_image(
+            tmp_path, "img_win", "windows", "Workstation-WIN",
+            columns=["ts", "name", "imagepath", "start"],
+            row={
+                "ts": "2026-01-15T10:00:00Z",
+                "name": "EvilSvc",
+                "imagepath": r"C:\Users\Public\evil.exe",
+                "start": "auto",
+            },
+        )
+        linux_image = self._make_services_image(
+            tmp_path, "img_lin", "linux", "Server-LIN",
+            columns=[
+                "ts", "name", "type", "Service_ExecStart", "Service_User",
+                "Install_WantedBy", "Unit_After",
+            ],
+            row={
+                "ts": "2026-01-16T10:00:00Z",
+                "name": "evil.service",
+                "type": "unit",
+                "Service_ExecStart": "/tmp/.hidden/payload.sh",
+                "Service_User": "root",
+                "Install_WantedBy": "multi-user.target",
+                "Unit_After": "network.target",
+            },
+        )
+        return windows_image, linux_image
+
+    def test_windows_then_linux_gets_os_correct_guidance_and_projection(self, tmp_path: Path) -> None:
+        """Each image's prompt, analysis CSV, and audit columns match its own OS."""
+        analyzer, provider, audit = self._build_mixed_os_analyzer(tmp_path)
+        windows_image, linux_image = self._make_mixed_os_images(tmp_path)
+
+        pre_os_type = analyzer.os_type
+        pre_instruction_prompts = analyzer.artifact_instruction_prompts
+        pre_column_projections = analyzer.artifact_ai_column_projections
+
+        analyzer.run_multi_image_analysis(
+            images=[windows_image, linux_image],
+            investigation_context="Investigate persistence across systems.",
+        )
+
+        windows_prompt = provider.calls[0]["user_prompt"]
+        linux_prompt = provider.calls[1]["user_prompt"]
+
+        # Windows image keeps the Windows guidance and projection.
+        assert self.WINDOWS_MARKER in windows_prompt
+        assert self.LINUX_MARKER not in windows_prompt
+        assert "imagepath" in windows_prompt
+        assert "Service_ExecStart" not in windows_prompt
+
+        # Linux image gets the Linux guidance and the services_linux
+        # projection, including the Service_ExecStart evidence column.
+        assert self.LINUX_MARKER in linux_prompt
+        assert self.WINDOWS_MARKER not in linux_prompt
+        assert "Service_ExecStart" in linux_prompt
+        assert "/tmp/.hidden/payload.sh" in linux_prompt
+
+        # Analysis-input CSVs under parsed_deduplicated/ carry the
+        # OS-correct projected columns.
+        windows_csv = tmp_path / "images" / "img_win" / "parsed_deduplicated" / "img_win__services.csv"
+        linux_csv = tmp_path / "images" / "img_lin" / "parsed_deduplicated" / "img_lin__services.csv"
+        assert windows_csv.exists()
+        assert linux_csv.exists()
+        windows_header = windows_csv.read_text(encoding="utf-8").splitlines()[0].split(",")
+        linux_header = linux_csv.read_text(encoding="utf-8").splitlines()[0].split(",")
+        assert "imagepath" in windows_header
+        assert "start" not in windows_header, "Windows projection should drop unselected columns"
+        assert "Service_ExecStart" in linux_header
+        assert "Service_User" in linux_header
+        assert "Install_WantedBy" in linux_header
+        assert "Unit_After" in linux_header, "wildcard '*' should pass through extra Linux columns"
+
+        # artifact_ai_projection audit entries list OS-correct columns per image.
+        projection_entries = [
+            details for action, details in audit.entries
+            if action == "artifact_ai_projection" and details.get("artifact_key") == "services"
+        ]
+        windows_entries = [d for d in projection_entries if "img_win" in str(d.get("analysis_csv", ""))]
+        linux_entries = [d for d in projection_entries if "img_lin" in str(d.get("analysis_csv", ""))]
+        assert len(windows_entries) == 1
+        assert len(linux_entries) == 1
+        assert windows_entries[0]["projection_columns"] == ["ts", "name", "imagepath"]
+        assert linux_entries[0]["projection_columns"] == [
+            "ts", "name", "type", "Service_ExecStart", "Service_User",
+            "Install_WantedBy", "Unit_After",
+        ]
+
+        # Analyzer state is restored after the run: original os_type and the
+        # exact saved dict objects (not reloaded replacements).
+        assert analyzer.os_type == pre_os_type == "windows"
+        assert analyzer.artifact_instruction_prompts is pre_instruction_prompts
+        assert analyzer.artifact_ai_column_projections is pre_column_projections
+
+    def test_patched_dicts_are_used_and_restored_as_same_objects(self, tmp_path: Path) -> None:
+        """Caller-patched guidance/projection dicts survive a mixed-OS run."""
+        analyzer, provider, _audit = self._build_mixed_os_analyzer(tmp_path)
+        windows_image, linux_image = self._make_mixed_os_images(tmp_path)
+
+        patched_prompts = {"services": "PATCHED-SERVICES-GUIDANCE"}
+        patched_projections = dict(analyzer.artifact_ai_column_projections)
+        analyzer.artifact_instruction_prompts = patched_prompts
+        analyzer.artifact_ai_column_projections = patched_projections
+
+        analyzer.run_multi_image_analysis(
+            images=[windows_image, linux_image],
+            investigation_context="Patched-dict regression run.",
+        )
+
+        # The first image matches the analyzer's current OS, so the patched
+        # guidance is used as-is; the Linux image triggers an OS switch and
+        # loads the on-disk Linux guidance.
+        assert "PATCHED-SERVICES-GUIDANCE" in provider.calls[0]["user_prompt"]
+        assert self.LINUX_MARKER in provider.calls[1]["user_prompt"]
+
+        # The finally block must put back the exact patched objects rather
+        # than reloading from disk (which would clobber the patches).
+        assert analyzer.os_type == "windows"
+        assert analyzer.artifact_instruction_prompts is patched_prompts
+        assert analyzer.artifact_ai_column_projections is patched_projections
+
+    def test_set_active_os_type_reloads_dicts_only_on_change(self, tmp_path: Path) -> None:
+        """set_active_os_type is a no-op for same OS and reloads on change."""
+        analyzer, _provider, _audit = self._build_mixed_os_analyzer(tmp_path)
+        original_prompts = analyzer.artifact_instruction_prompts
+        original_projections = analyzer.artifact_ai_column_projections
+        assert self.WINDOWS_MARKER in original_prompts["services"]
+        assert original_projections["services"] == ("ts", "name", "imagepath")
+
+        analyzer.set_active_os_type("  Windows ")
+        assert analyzer.os_type == "windows"
+        assert analyzer.artifact_instruction_prompts is original_prompts
+        assert analyzer.artifact_ai_column_projections is original_projections
+
+        analyzer.set_active_os_type("  Linux ")
+        assert analyzer.os_type == "linux"
+        assert analyzer.artifact_instruction_prompts is not original_prompts
+        assert self.LINUX_MARKER in analyzer.artifact_instruction_prompts["services"]
+        assert "Service_ExecStart" in analyzer.artifact_ai_column_projections["services"]
+        assert "*" in analyzer.artifact_ai_column_projections["services"]

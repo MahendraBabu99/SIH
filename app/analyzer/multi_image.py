@@ -16,11 +16,13 @@ Single-image cases skip Phase 3 and return ``cross_image_summary=None``.
 Attributes:
     LOGGER: Module-level logger instance.
     _ANALYZER_LOCK: Threading lock that guards shared analyzer state
-        (``os_type``, ``artifact_csv_paths``, ``analysis_date_range``)
-        during multi-image analysis.  Held for each full per-image pass
-        (state swap + all ``analyze_artifact()`` calls) so that a
-        concurrent thread on the same ``ForensicAnalyzer`` instance
-        cannot corrupt the state mid-analysis.
+        (``os_type``, ``artifact_instruction_prompts``,
+        ``artifact_ai_column_projections``, ``artifact_csv_paths``,
+        ``analysis_date_range``) during multi-image analysis.  Held for
+        each full per-image pass (state swap + all ``analyze_artifact()``
+        calls) so that a concurrent thread on the same
+        ``ForensicAnalyzer`` instance cannot corrupt the state
+        mid-analysis.
     DEFAULT_CROSS_IMAGE_PROMPT_TEMPLATE: Fallback template used when
         ``prompts/cross_image_prompt.md`` cannot be loaded.
 """
@@ -50,7 +52,8 @@ from ..utils.os_utils import normalize_os_type
 
 LOGGER = logging.getLogger(__name__)
 
-# Guards shared analyzer state (os_type, artifact_csv_paths, analysis_date_range)
+# Guards shared analyzer state (os_type, artifact_instruction_prompts,
+# artifact_ai_column_projections, artifact_csv_paths, analysis_date_range)
 # during multi-image analysis.  Held for each full per-image pass (state swap +
 # all analyze_artifact() calls) so concurrent threads cannot corrupt each other.
 _ANALYZER_LOCK = threading.Lock()
@@ -452,6 +455,19 @@ def run_multi_image_analysis(
         saved_prep_metadata = deepcopy(getattr(analyzer, "_analysis_prep_metadata", {}))
         saved_date_range = analyzer.analysis_date_range
         saved_scope_id = getattr(analyzer, "_analysis_scope_id", None)
+        # Capture the OS-dependent dicts (when present) so the finally
+        # block can restore the exact saved objects.  Restoring the
+        # objects directly — rather than reloading via
+        # set_active_os_type(saved_os_type) — preserves any
+        # caller/test-customized dict contents.
+        has_saved_instruction_prompts = hasattr(analyzer, "artifact_instruction_prompts")
+        saved_instruction_prompts = (
+            analyzer.artifact_instruction_prompts if has_saved_instruction_prompts else None
+        )
+        has_saved_column_projections = hasattr(analyzer, "artifact_ai_column_projections")
+        saved_column_projections = (
+            analyzer.artifact_ai_column_projections if has_saved_column_projections else None
+        )
 
         try:
             for image in images:
@@ -469,7 +485,16 @@ def run_multi_image_analysis(
                 # Update the analyzer's os_type and host metadata for
                 # the current image so that OS-specific analysis logic
                 # and prompt host context use the correct values.
-                analyzer.os_type = normalize_os_type(os_type)
+                # Prefer set_active_os_type(), which also reloads the
+                # OS-dependent artifact instruction prompts and AI column
+                # projections (SPEC 6.8); fall back to a bare attribute
+                # assignment for lightweight test doubles that only carry
+                # an ``os_type`` attribute.
+                set_active_os_type = getattr(analyzer, "set_active_os_type", None)
+                if callable(set_active_os_type):
+                    set_active_os_type(os_type)
+                else:
+                    analyzer.os_type = normalize_os_type(os_type)
                 analyzer._host_metadata = metadata
                 analyzer._analysis_scope_id = analysis_scope_id
 
@@ -545,9 +570,15 @@ def run_multi_image_analysis(
         finally:
             # Restore analyzer state before the lock is released so the
             # caller (and Phase 2 summaries) always see the original
-            # os_type and artifact_csv_paths, regardless of whether the
-            # loop succeeded or raised.
+            # os_type, OS-dependent dicts, and artifact_csv_paths,
+            # regardless of whether the loop succeeded or raised.  The
+            # saved dict objects are restored directly (NOT via
+            # set_active_os_type) so customized/patched dicts survive.
             analyzer.os_type = saved_os_type
+            if has_saved_instruction_prompts:
+                analyzer.artifact_instruction_prompts = saved_instruction_prompts
+            if has_saved_column_projections:
+                analyzer.artifact_ai_column_projections = saved_column_projections
             analyzer.artifact_csv_paths = saved_csv_paths
             if hasattr(analyzer, "_analysis_prep_metadata"):
                 analyzer._analysis_prep_metadata = saved_prep_metadata
