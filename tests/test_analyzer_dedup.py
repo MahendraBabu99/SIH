@@ -675,7 +675,7 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
             combined = analyzer._combine_csv_files("evtx", [csv1, csv2])
             self.assertTrue(combined.exists())
             # Derived combined CSV goes to parsed_deduplicated/, not next to
-            # the source parts (SPEC 5.4 parsed-data retention invariant).
+            # the source parts (parsed-data retention invariant).
             self.assertEqual(combined.parent, Path(tmpdir) / "parsed_deduplicated")
             lines = combined.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(lines[0], "ts,msg")
@@ -756,11 +756,11 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
     def test_split_artifact_combined_csv_written_to_image_parsed_deduplicated(self) -> None:
         """Split-artifact analysis keeps parsed/ pristine; derived CSVs go to parsed_deduplicated/.
 
-        SPEC 5.4: the combined CSV is a derived AI analysis input, so after
+        The combined CSV is a derived AI analysis input, so after
         an image-scoped analysis the image's parsed/ directory must contain
         only the per-part parser CSVs while the combined CSV and the
         projected/deduplicated analysis-input CSV both live under the
-        image's parsed_deduplicated/ sibling.  SPEC 10.3: no case-root
+        image's parsed_deduplicated/ sibling.  No case-root
         parsed_deduplicated/ may be created for image-scoped cases.
         """
         with TemporaryDirectory() as tmpdir:
@@ -801,7 +801,7 @@ class TestSplitArtifactCsvHandling(unittest.TestCase):
             self.assertEqual(analysis_csv.parent, dedup_dir)
             self.assertTrue(analysis_csv.exists())
             self.assertNotEqual(analysis_csv, combined)
-            # SPEC 10.3: no case-root parsed_deduplicated/ for image-scoped cases.
+            # No case-root parsed_deduplicated/ for image-scoped cases.
             self.assertFalse((case_dir / "parsed_deduplicated").exists())
 
     def test_unscoped_analyze_artifact_does_not_clobber_combined_csv(self) -> None:

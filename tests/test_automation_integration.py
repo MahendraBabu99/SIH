@@ -31,6 +31,7 @@ from tests.conftest import (
     FakeAuditLogger,
     FakeParser as _BaseFakeParser,
     FakeReportGenerator,
+    load_reference_schema,
     require_symlink_support,
 )
 
@@ -38,25 +39,20 @@ _ENGINE = "app.automation.engine"
 
 
 def _load_schema(name: str) -> dict[str, Any]:
-    """Load a JSON schema from SPECs/reference.
+    """Load a local reference JSON schema by filename.
 
     Args:
-        name: Schema filename under ``SPECs/reference``.
+        name: Schema filename in the local reference-schema directory.
 
     Returns:
         Parsed JSON schema as a dictionary.
 
     Raises:
-        unittest.SkipTest: If the schema file is absent from this checkout
-            (``SPECs/`` is gitignored and not part of the public repository,
-            so fresh clones and CI checkouts do not contain it).
+        Skipped: Via ``pytest.skip`` when the schema file is not present
+            locally (reference schemas are not part of the public
+            repository, so fresh clones and CI checkouts skip).
     """
-    path = Path(__file__).resolve().parents[1] / "SPECs" / "reference" / name
-    if not path.is_file():
-        raise unittest.SkipTest(
-            f"SPECs/reference schema not available in this checkout: {name}"
-        )
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_reference_schema(name)
 
 
 # ---------------------------------------------------------------------------

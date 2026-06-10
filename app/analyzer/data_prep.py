@@ -424,14 +424,14 @@ def resolve_analysis_input_output_dir(case_dir: Path | None, source_csv_path: Pa
 
     Derived AI analysis inputs (projected, deduplicated, or combined CSVs)
     belong in a ``parsed_deduplicated/`` directory, never alongside the
-    non-lossy parser output in ``parsed/`` (SPEC 5.4).  Resolution order:
+    non-lossy parser output in ``parsed/``.  Resolution order:
 
     1. If the source CSV already lives in a ``parsed_deduplicated/``
        directory (e.g. a derived ``<artifact>_combined.csv``), reuse that
        directory unchanged so image-scoped derived files stay under the
        image's ``parsed_deduplicated/`` instead of falling through to a
-       case-root ``parsed_deduplicated/``, which SPEC 10.3 forbids
-       creating for image-scoped cases.
+       case-root ``parsed_deduplicated/``, which must never be created
+       for image-scoped cases.
     2. If the source CSV lives in a ``parsed/`` directory, use the
        ``parsed_deduplicated/`` sibling of that directory.
     3. Otherwise use ``case_dir/parsed_deduplicated`` when a case

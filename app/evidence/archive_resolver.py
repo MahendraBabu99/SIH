@@ -153,7 +153,7 @@ def resolve_archive_descriptor(
 ) -> EvidenceDescriptor:
     """Resolve an archive to the descriptor AIFT should analyze and hash.
 
-    Per SPEC Sections 4.4 and 19.5 the archive is first probed with Dissect.
+    The archive is first probed with Dissect.
     When Dissect can open the archive directly, the archive itself is the
     target and no extraction (and therefore no extraction-safety validation)
     takes place. When the probe fails, the archive is validated for safe

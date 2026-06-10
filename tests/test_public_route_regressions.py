@@ -128,7 +128,7 @@ class EvidenceAndArtifactRouteTests(RouteRegressionTestBase):
     def test_evidence_intake_rejects_unsafe_archive_paths(self) -> None:
         """Evidence intake rejects traversal entries before fallback extraction.
 
-        Per SPEC Section 4.4 the extraction-safety pass applies only to
+        The extraction-safety pass applies only to
         archives that Dissect cannot open directly, so the direct-open probe
         is forced to fail to exercise the fallback rejection surface.
         """

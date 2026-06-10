@@ -465,7 +465,7 @@ class ForensicAnalyzer:
         and :attr:`artifact_ai_column_projections` (OS-suffixed keys such
         as ``services_linux`` are filtered by the OS active at load time).
         Multi-image analysis swaps the analyzer between images that may
-        run different operating systems (SPEC 6.8), so swapping
+        run different operating systems, so swapping
         :attr:`os_type` alone would leave both dicts serving the previous
         image's OS guidance and column projections.  This method keeps all
         three in sync by reloading both dicts whenever the OS actually
@@ -1229,7 +1229,7 @@ class ForensicAnalyzer:
         with a ``_combined`` suffix into the ``parsed_deduplicated/``
         directory resolved by :func:`resolve_analysis_input_output_dir` for
         the first input file — never into the ``parsed/`` source directory,
-        which must hold only non-lossy parser output (SPEC 5.4 parsed-data
+        which must hold only non-lossy parser output (parsed-data
         retention invariant).
 
         Args:

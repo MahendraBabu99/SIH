@@ -3,8 +3,8 @@
 When artifact CSV data exceeds the AI model's context window, this module
 splits the data into row-boundary-aligned chunks, analyses each chunk
 independently, and hierarchically merges the per-chunk findings via
-additional AI calls until a single consolidated analysis remains
-(SPEC Section 6.7). The bottom-up merge implementation lives in
+additional AI calls until a single consolidated analysis remains.
+The bottom-up merge implementation lives in
 :mod:`app.analyzer.chunk_merge`; this module re-exports its historical
 helpers so existing imports keep working.
 

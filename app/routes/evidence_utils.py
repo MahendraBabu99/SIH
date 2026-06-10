@@ -464,8 +464,7 @@ def open_dissect_target(
 
     ``ForensicParser`` creates its CSV output directory during construction
     (before ``Target.open()``) and defaults it to ``<case_dir>/parsed``.
-    The supported case layout is image-scoped (SPEC Section 10.3;
-    ``SPECs/reference/case-directory-layout.txt``) and contains no
+    The supported case layout is image-scoped and contains no
     root-level ``parsed/`` directory, so intake callers must forward the
     image-scoped directory via *parsed_dir* to keep this metadata probe
     from creating one at the case root.

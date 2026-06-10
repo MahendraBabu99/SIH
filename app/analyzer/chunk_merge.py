@@ -1,14 +1,14 @@
 """Hierarchical merge of per-chunk analysis findings.
 
-Implements SPEC Section 6.7 step 3: per-chunk findings are merged
+Per-chunk findings are merged
 bottom-up with a per-round budget that accounts for merge template
 overhead, until a single consolidated analysis remains. When the merge
 cannot complete within budget -- the configured merge-round limit is
 exhausted, or a merge batch prompt would exceed the reserved input token
 budget -- the merge falls back to truncated concatenation surfaced as a
 visible processing warning and audit entry instead of failing the
-artifact, preserving the already-completed chunk analyses per SPEC
-Section 6.7 step 4 (completeness).
+artifact, preserving the already-completed chunk analyses for
+completeness.
 
 This module was split out of :mod:`app.analyzer.chunking` to keep both
 files within the project file-size limits; ``chunking`` re-exports the
@@ -175,11 +175,11 @@ def _merge_batch_overflows_budget(
 ) -> bool:
     """Return whether a merge batch prompt would exceed the input budget.
 
-    Implements the SPEC 6.7 step 3 per-round budget check ahead of the
+    Implements the per-round budget check ahead of the
     provider call, so over-budget merge batches (e.g. the all-singleton
     collapse, or a lone finding larger than the input budget) can be
     routed to the truncated-concatenation fallback instead of raising and
-    discarding the completed chunk analyses (SPEC 6.7 step 4).
+    discarding the completed chunk analyses.
 
     Args:
         batch: Finding texts that would be merged in one provider call.
@@ -238,7 +238,7 @@ def _concatenation_merge_fallback(
 ) -> str:
     """Merge the remaining findings via truncated concatenation in one call.
 
-    This is the SPEC 6.7 step 3 fallback: when the bottom-up hierarchical
+    This is the over-budget fallback: when the bottom-up hierarchical
     merge cannot finish within its per-round budget (the configured
     merge-round limit is exhausted, or a merge batch prompt would exceed
     the reserved input token budget), the remaining findings are
@@ -246,8 +246,7 @@ def _concatenation_merge_fallback(
     single provider call. The truncation is surfaced as a visible
     ``chunk_merge_truncated`` processing warning and a
     ``chunked_analysis_merge_fallback`` audit entry rather than failing
-    the artifact, preserving the completed chunk analyses (SPEC 6.7
-    step 4 completeness).
+    the artifact, preserving the completed chunk analyses.
 
     Args:
         current_findings: Remaining finding texts to concatenate and merge.
@@ -408,14 +407,13 @@ def _hierarchical_merge_findings(
 ) -> str:
     """Merge chunk findings hierarchically until one result remains.
 
-    Implements the SPEC 6.7 step 3 bottom-up merge with a per-round
+    Implements the bottom-up merge with a per-round
     budget that accounts for template overhead. When the merge cannot
     proceed within budget -- the configured round limit is exhausted, or
     a merge batch prompt would exceed the reserved input token budget --
     the merge routes to :func:`_concatenation_merge_fallback` (truncated
     concatenation surfaced as a visible warning) instead of raising, so
-    the completed chunk analyses are never discarded (SPEC 6.7 step 4
-    completeness).
+    the completed chunk analyses are never discarded.
 
     Args:
         chunk_findings: List of per-chunk finding texts to merge.
@@ -521,8 +519,8 @@ def _hierarchical_merge_findings(
 
         if len(batches) >= len(current_findings):
             # Batching could not reduce the finding count; collapse all
-            # findings into one batch so the round still converges
-            # (SPEC 6.7 step 3 bottom-up merge). The over-budget guard
+            # findings into one batch so the round still converges.
+            # The over-budget guard
             # below decides whether the collapsed prompt actually fits.
             batches = [current_findings]
 
@@ -540,14 +538,13 @@ def _hierarchical_merge_findings(
             for batch in batches
         )
         if oversized_batch_exists:
-            # SPEC 6.7 step 3 per-round budget: this round contains a merge
+            # This round contains a merge
             # batch whose prompt exceeds the reserved input token budget
             # (e.g. the all-singleton collapse above, or a lone finding
             # larger than the input budget when ai_response_max_tokens
-            # exceeds the input budget). Route to the SPEC-required
+            # exceeds the input budget). Route to the
             # truncated-concatenation fallback with a visible warning
-            # instead of raising, preserving the completed chunk analyses
-            # (SPEC 6.7 step 4 completeness).
+            # instead of raising, preserving the completed chunk analyses.
             LOGGER.warning(
                 "Hierarchical merge for %s built an over-budget merge batch in "
                 "round %d with %d findings remaining. Falling back to concatenation.",

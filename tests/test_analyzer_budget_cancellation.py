@@ -358,8 +358,8 @@ def test_all_singleton_merge_collapse_over_budget_uses_truncation_fallback() -> 
 
     Three findings sized so every pair exceeds the findings budget force
     all-singleton batches, and their combined size exceeds the input token
-    budget, so the collapsed single-batch merge prompt cannot fit. Per
-    SPEC 6.7 steps 3-4 the merge must route to the truncated-concatenation
+    budget, so the collapsed single-batch merge prompt cannot fit.
+    The merge must route to the truncated-concatenation
     fallback with a visible warning instead of discarding the completed
     chunk analyses with a ValueError, and the warning must not claim the
     merge-round limit was reached.

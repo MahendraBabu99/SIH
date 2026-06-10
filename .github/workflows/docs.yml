@@ -10,8 +10,6 @@ on:
       - 'aift_mcp.py'
       - 'runtime_compat.py'
       - 'requirements-mcp.txt'
-      - 'SPECs/reference/case-directory-layout.txt'
-      - 'SPECs/reference/mcp-server-examples.md'
       - 'example_reports/**'
   workflow_dispatch:
 

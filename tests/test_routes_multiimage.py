@@ -844,9 +844,9 @@ class MultiImageRoutesTests(unittest.TestCase):
         parser constructor created ``cases/<case_id>/parsed/`` at the case
         root.  When another image already holds parse results, intake skips
         case-level cleanup and the empty root directory persisted,
-        contradicting the supported image-scoped case layout (SPEC Section
-        10.3; SPECs/reference/case-directory-layout.txt has no root-level
-        ``parsed/`` entry).  The probe's image-scoped directory itself is
+        contradicting the supported image-scoped case layout, which has
+        no root-level
+        ``parsed/`` entry.  The probe's image-scoped directory itself is
         removed again by ``cleanup_parsed_data`` within the same request,
         so this test asserts the forwarded ``parsed_dir`` argument instead
         of that directory's existence.

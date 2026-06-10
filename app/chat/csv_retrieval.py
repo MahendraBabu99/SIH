@@ -188,7 +188,7 @@ def retrieve_csv_data_from_paths(
         if rows_remaining <= 0:
             # The shared row budget is exhausted, but the file still
             # matched: surface an explicit omission note instead of
-            # silently dropping it (SPEC 6.2 transparency).
+            # silently dropping it, so the AI knows data was withheld.
             formatted_blocks.append(_format_budget_omission_block(display_name))
             continue
         headers, rows, total_row_count = _read_csv_rows(csv_path, limit=rows_remaining)

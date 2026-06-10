@@ -9,7 +9,6 @@ and prompt construction.
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 from typing import Any
 
@@ -31,32 +30,21 @@ from app.analyzer.multi_image import (
 # Test helpers
 # ---------------------------------------------------------------------------
 
-from conftest import FakeAuditLogger, FakeProvider
+from conftest import FakeAuditLogger, FakeProvider, load_reference_schema
 
 
 def _load_analysis_schema() -> dict[str, Any]:
-    """Load the public analysis_results schema.
+    """Load the analysis_results reference schema.
 
     Returns:
         Parsed JSON schema as a dictionary.
 
     Raises:
-        Skipped: Via ``pytest.skip`` when the schema file is absent from
-            this checkout (``SPECs/`` is gitignored and not part of the
-            public repository, so fresh clones and CI checkouts do not
-            contain it).
+        Skipped: Via ``pytest.skip`` when the schema file is not present
+            locally (reference schemas are not part of the public
+            repository, so fresh clones and CI checkouts skip).
     """
-    schema_path = (
-        Path(__file__).resolve().parents[1]
-        / "SPECs"
-        / "reference"
-        / "analysis-results.schema.json"
-    )
-    if not schema_path.is_file():
-        pytest.skip(
-            f"SPECs/reference schema not available in this checkout: {schema_path.name}"
-        )
-    return json.loads(schema_path.read_text(encoding="utf-8"))
+    return load_reference_schema("analysis-results.schema.json")
 
 
 def _write_artifact_csv(parsed_dir: Path, artifact_key: str, rows: list[dict[str, str]]) -> Path:
@@ -1237,7 +1225,7 @@ class TestMixedOsGuidanceAndProjectionPerImage:
     Multi-image analysis swaps ``analyzer.os_type`` per image; the analyzer
     must also reload ``artifact_instruction_prompts`` and
     ``artifact_ai_column_projections`` so each image receives OS-correct
-    artifact guidance and column projections (SPEC 6.8 / SPEC 6.2 step 1).
+    artifact guidance and column projections.
     Before the fix, a Windows-first mixed-OS case projected the Linux
     image's ``services`` artifact with the Windows column list (silently
     dropping ``Service_ExecStart`` and friends) and sent the Windows

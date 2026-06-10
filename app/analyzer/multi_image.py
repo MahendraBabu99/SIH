@@ -487,7 +487,7 @@ def run_multi_image_analysis(
                 # and prompt host context use the correct values.
                 # Prefer set_active_os_type(), which also reloads the
                 # OS-dependent artifact instruction prompts and AI column
-                # projections (SPEC 6.8); fall back to a bare attribute
+                # projections; fall back to a bare attribute
                 # assignment for lightweight test doubles that only carry
                 # an ``os_type`` attribute.
                 set_active_os_type = getattr(analyzer, "set_active_os_type", None)

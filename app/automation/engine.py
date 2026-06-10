@@ -773,7 +773,7 @@ def _log_evidence_intake(
 
     Every evidence descriptor processed by automation receives exactly one
     ``evidence_intake`` record, mirroring GUI intake behavior so headless
-    runs keep audit parity across entry points (SPEC Sections 9.2 and 4.5).
+    runs keep audit parity across entry points.
     Placeholder hash values such as ``"N/A (skipped)"`` and
     ``"N/A (directory)"`` are audited verbatim when nothing was hashed.
 
@@ -1059,7 +1059,7 @@ def run_automation(
     immediately after case creation, so every failure path after the case
     directory exists writes an ``automation_failed`` entry and every
     cancellation writes an ``automation_cancelled`` entry to the case's
-    ``audit.jsonl`` (SPEC Sections 1.1 and 9.2).  Failures before case
+    ``audit.jsonl``.  Failures before case
     creation (input validation, config/profile errors, explicit output
     directory errors) have no case directory and write no audit entry.
 
@@ -1189,8 +1189,8 @@ def run_automation(
     case_dir = cases_dir / case_id
     # Construct the case audit logger immediately after case creation so
     # every later failure or cancellation is recorded in the case audit
-    # trail (SPEC Sections 1.1 and 9.2) — including the early-return paths
-    # between case creation and discovery completion.
+    # trail — including the early-return paths between case creation and
+    # discovery completion.
     audit_logger = AuditLogger(case_directory=case_dir, tool_version=TOOL_VERSION)
     discovery_workspace = case_dir / "evidence"
     discovery_workspace.mkdir(parents=True, exist_ok=True)

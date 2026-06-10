@@ -6,12 +6,19 @@ directly or subclass them when specialised behaviour is needed.
 
 Attributes:
     FAKE_HASHES: Standard fake hash dict reusable across tests.
+    REFERENCE_SCHEMA_DIR_ENV: Environment variable naming the local
+        reference-schema directory.
+    DEFAULT_REFERENCE_SCHEMA_DIR: Fallback reference-schema directory,
+        relative to the project root, used when the environment variable
+        is unset.
     _SYMLINK_CAPABILITY_CACHE: Cached symlink probe results keyed by target
         type.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -33,6 +40,45 @@ FAKE_HASHES: dict[str, object] = {
 
 _SYMLINK_CAPABILITY_CACHE: dict[bool, bool] = {}
 """Cached symlink support results keyed by ``target_is_directory``."""
+
+REFERENCE_SCHEMA_DIR_ENV = "AIFT_REFERENCE_SCHEMA_DIR"
+"""Environment variable pointing at the local reference-schema directory."""
+
+DEFAULT_REFERENCE_SCHEMA_DIR = Path("local_tests") / "reference_schemas"
+"""Fallback reference-schema directory relative to the project root."""
+
+
+def load_reference_schema(name: str) -> dict:
+    """Load a local (non-committed) JSON reference schema by filename.
+
+    Reference schemas are maintained outside the public repository.  The
+    schema directory is resolved from the ``AIFT_REFERENCE_SCHEMA_DIR``
+    environment variable (absolute, or relative to the project root),
+    falling back to ``local_tests/reference_schemas`` when unset.
+
+    Args:
+        name: Schema filename, e.g. ``"audit-entry.schema.json"``.
+
+    Returns:
+        Parsed JSON schema as a dictionary.
+
+    Raises:
+        Skipped: Via ``pytest.skip`` when the schema file is not present
+            locally, so public checkouts and CI runs skip schema-validation
+            assertions instead of failing.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    configured = os.environ.get(REFERENCE_SCHEMA_DIR_ENV, "").strip()
+    schema_dir = Path(configured) if configured else DEFAULT_REFERENCE_SCHEMA_DIR
+    if not schema_dir.is_absolute():
+        schema_dir = project_root / schema_dir
+    path = schema_dir / name
+    if not path.is_file():
+        pytest.skip(
+            f"Reference schema not available locally: {name} "
+            f"(set {REFERENCE_SCHEMA_DIR_ENV} to the schema directory)"
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def first_case_image_id(case_id: str) -> str:

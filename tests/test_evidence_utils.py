@@ -265,9 +265,8 @@ class TestOpenDissectTarget(unittest.TestCase):
         Regression test: evidence intake passes the image-scoped
         ``images/<image_id>/parsed`` directory so the metadata probe never
         creates a root-level ``cases/<case_id>/parsed/`` directory.  The
-        supported case layout is image-scoped (SPEC Section 10.3;
-        SPECs/reference/case-directory-layout.txt has no root-level
-        ``parsed/`` entry).
+        supported case layout is image-scoped and has no root-level
+        ``parsed/`` entry.
         """
         mock_parser_cls.return_value = self._make_context_manager_parser()
 

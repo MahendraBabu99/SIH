@@ -820,7 +820,7 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
 
         # Forward the image-scoped parsed directory so the metadata probe
         # never creates a root-level cases/<case_id>/parsed/ directory; the
-        # supported case layout is image-scoped (SPEC Section 10.3).
+        # supported case layout is image-scoped.
         metadata, available_artifacts, detected_os_type = _open_dissect_target(
             dissect_path, case_dir, audit_logger, case_id,
             parsed_dir=image_dir / "parsed",

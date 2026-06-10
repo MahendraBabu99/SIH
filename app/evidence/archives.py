@@ -319,8 +319,8 @@ def validate_archive_safety(
 ) -> None:
     """Validate archive metadata without extracting member contents.
 
-    This is the pre-extraction safety pass for fallback extraction (SPEC
-    Sections 4.4 and 19.5): archives that Dissect cannot open directly are
+    This is the pre-extraction safety pass for fallback extraction:
+    archives that Dissect cannot open directly are
     checked for unsafe member names, links, collisions, and metadata-declared
     sizes before any member content is written to disk. Archives that Dissect
     opens directly are used as targets as-is and do not require this pass.

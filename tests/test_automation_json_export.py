@@ -24,32 +24,27 @@ from app.automation.json_export import (
     _resolve_confidence,
     export_json_report,
 )
+from tests.conftest import load_reference_schema
 
 SAMPLE_CASE_ID = "test-case-001"
 SAMPLE_CASE_NAME = "Unit Test Case"
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_schema(name: str) -> dict[str, Any]:
-    """Load a JSON schema from SPECs/reference.
+    """Load a local reference JSON schema by filename.
 
     Args:
-        name: Schema filename under ``SPECs/reference``.
+        name: Schema filename in the local reference-schema directory.
 
     Returns:
         Parsed JSON schema as a dictionary.
 
     Raises:
-        unittest.SkipTest: If the schema file is absent from this checkout
-            (``SPECs/`` is gitignored and not part of the public repository,
-            so fresh clones and CI checkouts do not contain it).
+        Skipped: Via ``pytest.skip`` when the schema file is not present
+            locally (reference schemas are not part of the public
+            repository, so fresh clones and CI checkouts skip).
     """
-    path = PROJECT_ROOT / "SPECs" / "reference" / name
-    if not path.is_file():
-        raise unittest.SkipTest(
-            f"SPECs/reference schema not available in this checkout: {name}"
-        )
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_reference_schema(name)
 
 
 def _assert_valid(schema_name: str, instance: dict[str, Any]) -> None:

@@ -686,7 +686,7 @@ class TestExtractTar(unittest.TestCase):
         return tar_path
 
     def test_tar_symlink_member_direct_open_uses_archive_descriptor(self) -> None:
-        """Dissect-openable tars with symlinks are targets as-is (SPEC 4.4)."""
+        """Dissect-openable tars with symlinks are targets as-is."""
         tar_path = self._make_tar_with_symlink_member("rootfs.tar")
         dest = self.root / "extracted"
 
@@ -705,7 +705,7 @@ class TestExtractTar(unittest.TestCase):
         self.assertFalse(dest.exists())
 
     def test_tar_symlink_member_still_rejected_when_probe_fails(self) -> None:
-        """Symlink members still reject fallback extraction (SPEC 4.4)."""
+        """Symlink members still reject fallback extraction."""
         tar_path = self._make_tar_with_symlink_member("rootfs.tar")
         dest = self.root / "extracted"
 
