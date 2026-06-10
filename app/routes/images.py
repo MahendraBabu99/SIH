@@ -1086,6 +1086,13 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
 def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
     """Start background parsing of selected artifacts for a specific image.
 
+    If the background worker fails to start, all mutated state is rolled
+    back: the case dict is restored from a deep-copied snapshot, the
+    per-image progress entry is restored (or removed), and the case-level
+    aggregate progress entry has its pre-attempt ``status``/``error``
+    scalars restored in place so previously emitted SSE events survive and
+    the case is not left reported as actively parsing.
+
     Args:
         case_id: UUID of the case.
         image_id: UUID of the image.
@@ -1172,7 +1179,21 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
             return error_response("Cannot start parsing while another case operation is running.", 409)
         case_snapshot = copy.deepcopy({k: v for k, v in case.items() if k != "audit"})
         previous_image_progress = PARSE_PROGRESS.get(progress_key)
-        previous_case_progress = PARSE_PROGRESS.get(case_id)
+        # Capture the case-level aggregate rollback state BY VALUE, not by
+        # reference: the aggregate entry is mutated in place below (to keep
+        # prior SSE events alive), so snapshotting the dict object would
+        # alias the very entry flipped to "running" and the failure rollback
+        # would restore an already-mutated object, wedging the case as
+        # permanently active. Progress entries hold a non-copyable
+        # ``threading.Event``, so scalar fields are captured instead
+        # (mirroring the analysis route's capture-then-restore semantics).
+        previous_case_progress_existed = case_id in PARSE_PROGRESS
+        previous_case_progress_status = ""
+        previous_case_progress_error: str | None = None
+        if previous_case_progress_existed:
+            previous_case_entry = PARSE_PROGRESS[case_id]
+            previous_case_progress_status = str(previous_case_entry.get("status"))
+            previous_case_progress_error = previous_case_entry.get("error")
         PARSE_PROGRESS[progress_key] = new_progress(status="running")
 
         # Keep one stable case-level aggregate progress store; do not
@@ -1295,10 +1316,17 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
                 PARSE_PROGRESS.pop(progress_key, None)
             else:
                 PARSE_PROGRESS[progress_key] = previous_image_progress
-            if previous_case_progress is None:
+            if not previous_case_progress_existed:
                 PARSE_PROGRESS.pop(case_id, None)
             else:
-                PARSE_PROGRESS[case_id] = previous_case_progress
+                # Restore the captured scalar fields onto the live aggregate
+                # entry rather than reassigning the (aliased) snapshot dict;
+                # this reverts the "running" flip while preserving the SSE
+                # events already emitted to the surviving entry.
+                case_entry = PARSE_PROGRESS.get(case_id)
+                if case_entry is not None:
+                    case_entry["status"] = previous_case_progress_status
+                    case_entry["error"] = previous_case_progress_error
         return error_response("Failed to start parsing. Case state was restored.", 500)
 
     response_payload: dict[str, Any] = {

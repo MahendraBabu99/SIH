@@ -14,6 +14,7 @@ import json
 import logging
 import threading
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -23,12 +24,24 @@ import pytest
 
 from app import create_app
 from app.logging.audit import ACTION_TYPES
+from app.logging.case_logging import unregister_all_case_log_handlers
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.parser.core import ForensicParser, ParserCancelledError
+import app.routes.evidence as routes_evidence
+import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.state as routes_state
 import app.routes.tasks as routes_tasks
-from tests.conftest import FAKE_HASHES, FakeAnalyzer, FakeAuditLogger, FakeParser, ImmediateThread
+from tests.conftest import (
+    FAKE_HASHES,
+    FakeAnalyzer,
+    FakeAuditLogger,
+    FakeParser,
+    ImmediateThread,
+    canonical_parse_payload,
+    first_case_image_id,
+    first_image_parse_url,
+)
 
 _ENGINE = "app.automation.engine"
 _PATCH_TARGET_OPEN = "app.parser.core.Target.open"
@@ -1257,6 +1270,175 @@ class RouteParseValidationStateTests(unittest.TestCase):
         stream_data = stream_response.get_data(as_text=True)
         self.assertIn('"type":"parse_cancel_requested"', stream_data)
         self.assertIn('"type":"parse_cancelled"', stream_data)
+
+
+class _StartFailingThread(threading.Thread):
+    """Thread substitute whose ``start()`` always fails.
+
+    Simulates ``threading.Thread.start()`` raising ``RuntimeError`` under
+    thread/resource exhaustion so route-level worker-start failure rollback
+    paths can be exercised deterministically.
+    """
+
+    def start(self) -> None:
+        """Raise instead of starting a worker thread.
+
+        Raises:
+            RuntimeError: Always, mimicking thread-creation failure.
+        """
+        raise RuntimeError("can't start new thread")
+
+
+class ParseStartRollbackAliasingTests(unittest.TestCase):
+    """Regression tests for the parse-start failure rollback (P2-F1).
+
+    A failed worker-thread start on re-parse must restore the case-level
+    aggregate ``PARSE_PROGRESS`` entry to its previous terminal state. The
+    historical bug snapshotted that entry by reference, mutated the same
+    dict to ``"running"``, and then "restored" the already-mutated object,
+    wedging the case as permanently active (every parse/analysis/chat/
+    delete route returned 409) until TTL eviction or restart.
+
+    Attributes:
+        temp_dir: Temporary directory holding the cases root and config.
+        cases_root: Patched ``CASES_ROOT`` for this test app.
+        config_path: Path to the temporary application config file.
+        app: Isolated Flask application under test.
+        client: Flask test client with the CSRF header pre-set.
+    """
+
+    def setUp(self) -> None:
+        """Create an isolated Flask app and clear shared route state."""
+        self.temp_dir = TemporaryDirectory(prefix="aift-parse-rollback-")
+        self.cases_root = Path(self.temp_dir.name) / "cases"
+        self.config_path = Path(self.temp_dir.name) / "config.yaml"
+        self.app = create_app(str(self.config_path))
+        self.app.testing = True
+        self.client = self.app.test_client()
+        self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.app.config["CSRF_TOKEN"]
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
+        unregister_all_case_log_handlers()
+
+    def tearDown(self) -> None:
+        """Clear shared route state and remove temporary files."""
+        unregister_all_case_log_handlers()
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
+        self.temp_dir.cleanup()
+
+    def _patches(self) -> list:
+        """Return the common intake/parse patches (without a Thread patch).
+
+        The worker-thread class is patched per request so the same case can
+        run a successful parse, a failed-start re-parse, and a retry.
+
+        Returns:
+            List of un-started ``unittest.mock`` patchers.
+        """
+        return [
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_tasks, "ForensicParser", FakeParser),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", return_value=dict(FAKE_HASHES)),
+            patch("app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)),
+            patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64)),
+        ]
+
+    def _create_case_and_intake(self) -> str:
+        """Create a case and intake path-mode evidence.
+
+        Returns:
+            The created case's UUID.
+        """
+        resp = self.client.post("/api/cases", json={"case_name": "Rollback Test"})
+        self.assertEqual(resp.status_code, 201)
+        case_id = resp.get_json()["case_id"]
+
+        evidence_path = Path(self.temp_dir.name) / "rollback.E01"
+        evidence_path.write_bytes(b"demo")
+        ev_resp = self.client.post(
+            f"/api/cases/{case_id}/evidence",
+            json={"path": str(evidence_path)},
+        )
+        self.assertEqual(ev_resp.status_code, 200)
+        return case_id
+
+    def _post_parse(self, case_id: str) -> Any:
+        """POST the per-image parse route for the case's first image.
+
+        Args:
+            case_id: UUID of the case whose first image should be parsed.
+
+        Returns:
+            The Flask test-client response.
+        """
+        return self.client.post(
+            first_image_parse_url(case_id),
+            json=canonical_parse_payload("runkeys"),
+        )
+
+    def test_failed_thread_start_on_reparse_restores_case_progress(self) -> None:
+        """A failed worker start must not leave the aggregate entry running."""
+        with ExitStack() as stack:
+            for patcher in self._patches():
+                stack.enter_context(patcher)
+
+            case_id = self._create_case_and_intake()
+
+            # (a) First parse succeeds synchronously; the case-level
+            # aggregate progress entry ends in a terminal state.
+            with patch.object(routes_images.threading, "Thread", ImmediateThread):
+                first = self._post_parse(case_id)
+            self.assertEqual(first.status_code, 202)
+            with routes_state.STATE_LOCK:
+                aggregate = routes_state.PARSE_PROGRESS[case_id]
+                self.assertEqual(aggregate["status"], "completed")
+                events_before_failure = len(aggregate["events"])
+            self.assertGreater(events_before_failure, 0)
+
+            # (b) Re-parse whose worker thread fails to start.
+            with patch.object(routes_images.threading, "Thread", _StartFailingThread):
+                failed = self._post_parse(case_id)
+            self.assertEqual(failed.status_code, 500)
+            self.assertEqual(
+                failed.get_json()["error"],
+                "Failed to start parsing. Case state was restored.",
+            )
+
+            # (c) The case-level entry must be back in its pre-attempt
+            # terminal state — not "running"/"cancelling" — with its SSE
+            # events preserved, and no operation may be reported active.
+            with routes_state.STATE_LOCK:
+                aggregate = routes_state.PARSE_PROGRESS[case_id]
+                aggregate_status = aggregate["status"]
+                aggregate_events = len(aggregate["events"])
+                image_progress = routes_state.PARSE_PROGRESS[
+                    f"{case_id}::{first_case_image_id(case_id)}"
+                ]
+                case_status = routes_state.CASE_STATES[case_id]["status"]
+            self.assertNotIn(aggregate_status, ("running", "cancelling"))
+            self.assertEqual(aggregate_status, "completed")
+            self.assertEqual(aggregate_events, events_before_failure)
+            self.assertEqual(image_progress["status"], "completed")
+            self.assertEqual(case_status, "parsed")
+            self.assertEqual(routes_state.active_operations_for_case(case_id), [])
+
+            # A follow-up parse is not blocked by a phantom operation.
+            with patch.object(routes_images.threading, "Thread", ImmediateThread):
+                retry = self._post_parse(case_id)
+            self.assertEqual(retry.status_code, 202)
+            with routes_state.STATE_LOCK:
+                self.assertEqual(
+                    routes_state.PARSE_PROGRESS[case_id]["status"], "completed"
+                )
 
 
 class _AutomationParser:
