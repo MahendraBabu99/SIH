@@ -764,6 +764,36 @@ def _cleanup_uncommitted_upload_staging(upload_staging_path: str | Path | None) 
         shutil.rmtree(target, ignore_errors=True)
 
 
+def _log_evidence_intake(
+    audit_logger: AuditLogger,
+    descriptor: EvidenceDescriptor,
+    hash_record: dict[str, Any],
+) -> None:
+    """Write the per-evidence ``evidence_intake`` audit entry.
+
+    Every evidence descriptor processed by automation receives exactly one
+    ``evidence_intake`` record, mirroring GUI intake behavior so headless
+    runs keep audit parity across entry points (SPEC Sections 9.2 and 4.5).
+    Placeholder hash values such as ``"N/A (skipped)"`` and
+    ``"N/A (directory)"`` are audited verbatim when nothing was hashed.
+
+    Args:
+        audit_logger: Case audit logger receiving the entry.
+        descriptor: Evidence descriptor that was processed.
+        hash_record: Aggregate hash record providing the audited ``sha256``,
+            ``md5``, ``size_bytes``, and ``evidence_file_hashes`` values.
+    """
+    audit_logger.log("evidence_intake", {
+        "file": str(descriptor.source_path),
+        "dissect_path": str(descriptor.dissect_path),
+        "source_mode": descriptor.source_mode,
+        "sha256": hash_record.get("sha256", ""),
+        "md5": hash_record.get("md5", ""),
+        "size_bytes": hash_record.get("size_bytes", 0),
+        "evidence_file_hashes": list(hash_record.get("evidence_file_hashes", [])),
+    })
+
+
 def _hash_evidence_descriptor(
     descriptor: EvidenceDescriptor,
     *,
@@ -772,10 +802,17 @@ def _hash_evidence_descriptor(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Compute intake hash records for an evidence descriptor.
 
+    Logs one ``evidence_intake`` audit entry on every return path —
+    including the skip-hashing and directory-evidence paths, where the
+    audited hashes are the ``"N/A (skipped)"`` / ``"N/A (directory)"``
+    placeholders — plus one ``evidence_intake_file_hashed`` entry per
+    actually hashed file.
+
     Args:
         descriptor: Evidence descriptor to hash.
         skip_hashing: Whether hashing was disabled for this run.
-        audit_logger: Audit logger that receives per-file hash events.
+        audit_logger: Audit logger that receives intake and per-file
+            hash events.
 
     Returns:
         Tuple of aggregate hash record and per-file hash records.
@@ -810,6 +847,7 @@ def _hash_evidence_descriptor(
             ),
         )
         base_entry["evidence_file_hashes"] = []
+        _log_evidence_intake(audit_logger, descriptor, base_entry)
         return base_entry, []
 
     files_to_hash = list(descriptor.files_to_hash)
@@ -825,6 +863,7 @@ def _hash_evidence_descriptor(
             detail="Hash verification is unavailable for directory evidence.",
         )
         base_entry["evidence_file_hashes"] = []
+        _log_evidence_intake(audit_logger, descriptor, base_entry)
         return base_entry, []
 
     file_hashes: list[dict[str, Any]] = []
@@ -848,15 +887,7 @@ def _hash_evidence_descriptor(
         "verification_status": "UNAVAILABLE",
         "evidence_file_hashes": file_hashes,
     })
-    audit_logger.log("evidence_intake", {
-        "file": str(source_path),
-        "dissect_path": str(descriptor.dissect_path),
-        "source_mode": descriptor.source_mode,
-        "sha256": base_entry["sha256"],
-        "md5": base_entry["md5"],
-        "size_bytes": base_entry["size_bytes"],
-        "evidence_file_hashes": file_hashes,
-    })
+    _log_evidence_intake(audit_logger, descriptor, base_entry)
     return base_entry, file_hashes
 
 
@@ -1024,6 +1055,14 @@ def run_automation(
     - If report generation fails: return failure but include
       ``analysis_results.json`` in the case directory.
 
+    The case :class:`~app.logging.audit.AuditLogger` is constructed
+    immediately after case creation, so every failure path after the case
+    directory exists writes an ``automation_failed`` entry and every
+    cancellation writes an ``automation_cancelled`` entry to the case's
+    ``audit.jsonl`` (SPEC Sections 1.1 and 9.2).  Failures before case
+    creation (input validation, config/profile errors, explicit output
+    directory errors) have no case directory and write no audit entry.
+
     Args:
         request: Automation parameters dataclass.
         progress_callback: Optional callback for progress updates.
@@ -1148,6 +1187,11 @@ def run_automation(
     case_id = case_manager.create_case(case_name=case_name)
     result.case_id = case_id
     case_dir = cases_dir / case_id
+    # Construct the case audit logger immediately after case creation so
+    # every later failure or cancellation is recorded in the case audit
+    # trail (SPEC Sections 1.1 and 9.2) — including the early-return paths
+    # between case creation and discovery completion.
+    audit_logger = AuditLogger(case_directory=case_dir, tool_version=TOOL_VERSION)
     discovery_workspace = case_dir / "evidence"
     discovery_workspace.mkdir(parents=True, exist_ok=True)
 
@@ -1165,6 +1209,11 @@ def run_automation(
             _cleanup_uncommitted_upload_staging(request.upload_staging_path)
             result.errors.append(f"Upload evidence commit failed: {exc}")
             result.duration_seconds = time.monotonic() - start_time
+            audit_logger.log("automation_failed", {
+                "case_id": case_id,
+                "errors": list(result.errors),
+                "duration_seconds": round(result.duration_seconds, 2),
+            })
             return result
 
     if output_dir is None:
@@ -1172,6 +1221,11 @@ def run_automation(
         if output_dir_error is not None:
             result.errors.append(output_dir_error)
             result.duration_seconds = time.monotonic() - start_time
+            audit_logger.log("automation_failed", {
+                "case_id": case_id,
+                "errors": list(result.errors),
+                "duration_seconds": round(result.duration_seconds, 2),
+            })
             return result
     assert output_dir is not None
 
@@ -1186,6 +1240,11 @@ def run_automation(
     except (FileNotFoundError, ValueError) as exc:
         result.errors.append(f"Evidence discovery failed: {exc}")
         result.duration_seconds = time.monotonic() - start_time
+        audit_logger.log("automation_failed", {
+            "case_id": case_id,
+            "errors": list(result.errors),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
         return result
 
     evidence_descriptors = [
@@ -1195,6 +1254,11 @@ def run_automation(
     if not evidence_descriptors:
         result.errors.append("No evidence files found at the specified path.")
         result.duration_seconds = time.monotonic() - start_time
+        audit_logger.log("automation_failed", {
+            "case_id": case_id,
+            "errors": list(result.errors),
+            "duration_seconds": round(result.duration_seconds, 2),
+        })
         return result
 
     result.evidence_files = [
@@ -1211,7 +1275,6 @@ def run_automation(
     if cancelled is not None:
         return cancelled
 
-    audit_logger = AuditLogger(case_directory=case_dir, tool_version=TOOL_VERSION)
     audit_logger.log("automation_started", {
         "evidence_path": str(evidence_path),
         "profile": request.profile_name or DEFAULT_PROFILE_NAME,
@@ -1338,6 +1401,10 @@ def run_automation(
                         status="UNAVAILABLE",
                         detail=f"Hash computation failed during intake: {exc}",
                     )
+                    # The hashing failure aborted _hash_evidence_descriptor
+                    # before its evidence_intake entry; audit the synthesized
+                    # record so this evidence still has an intake entry.
+                    _log_evidence_intake(audit_logger, descriptor, hashes_entry)
 
                 cancelled = _stop_if_cancelled()
                 if cancelled is not None:

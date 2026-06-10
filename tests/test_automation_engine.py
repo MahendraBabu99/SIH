@@ -28,6 +28,7 @@ import app.utils.artifact_profiles as artifact_profiles
 from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.evidence.descriptor import descriptor_for_path
+from app.logging.audit import AuditLogger as RealAuditLogger
 from tests.conftest import (
     FAKE_HASHES,
     FakeAnalyzer,
@@ -591,6 +592,28 @@ class TestRunAutomation(unittest.TestCase):
         }
         defaults.update(overrides)
         return AutomationRequest(**defaults)
+
+    def _use_real_audit_logger(self) -> None:
+        """Route the engine's audit logging to the real append-only logger."""
+        self.mocks["AuditLogger"].side_effect = (
+            lambda **kwargs: RealAuditLogger(**kwargs)
+        )
+
+    def _read_audit_entries(self, case_id: str) -> list[dict[str, Any]]:
+        """Read parsed audit entries for a case.
+
+        Args:
+            case_id: Case ID whose ``audit.jsonl`` is read.
+
+        Returns:
+            List of parsed audit entry dicts in file order.
+        """
+        audit_path = self.cases_dir / case_id / "audit.jsonl"
+        return [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
 
     def _capture_json_report_kwargs(self) -> dict[str, Any]:
         """Capture JSON report export kwargs while still writing a stub file."""
@@ -1478,10 +1501,80 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(CapturingAnalyzer.seen_cancel_check())
 
     def test_skip_hashing(self) -> None:
-        """skip_hashing=True skips hash computation."""
+        """skip_hashing=True skips hashing but still audits evidence_intake."""
+        self._use_real_audit_logger()
+
         result = run_automation(self._make_request(skip_hashing=True))
+
         self.assertTrue(result.success)
         self.mocks["compute_hashes"].assert_not_called()
+
+        entries = self._read_audit_entries(result.case_id)
+        intake = [e for e in entries if e["action"] == "evidence_intake"]
+        self.assertEqual(len(intake), 1)
+        details = intake[0]["details"]
+        self.assertEqual(details["file"], str(self.evidence_file))
+        self.assertEqual(details["dissect_path"], str(self.evidence_file))
+        self.assertEqual(details["source_mode"], "path")
+        self.assertEqual(details["sha256"], "N/A (skipped)")
+        self.assertEqual(details["md5"], "N/A (skipped)")
+        self.assertEqual(details["evidence_file_hashes"], [])
+        self.assertEqual(
+            [e for e in entries if e["action"] == "evidence_intake_file_hashed"],
+            [],
+        )
+
+    def test_folder_evidence_run_audits_evidence_intake_per_evidence(self) -> None:
+        """Directory evidence gets one evidence_intake entry with placeholders.
+
+        Mirrors the multi-evidence fixtures of ``test_successful_folder_run``
+        but mixes a hashable file with directory evidence (an extracted
+        acquire/KAPE-style folder) and asserts exactly one ``evidence_intake``
+        audit entry per processed evidence, with ``"N/A (directory)"`` hash
+        placeholders for the directory.
+        """
+        self._use_real_audit_logger()
+        folder_evidence = self.root / "extracted_collection"
+        (folder_evidence / "C").mkdir(parents=True)
+
+        self.mocks["discover_evidence"].return_value = [
+            self.evidence_file, folder_evidence,
+        ]
+        self.mock_cm.add_image.side_effect = ["img-001", "img-002"]
+        img_dir2 = self.cases_dir / "case-001" / "images" / "img-002"
+        img_dir2.mkdir(parents=True, exist_ok=True)
+        self.mock_cm.get_image_dir.side_effect = [
+            self.cases_dir / "case-001" / "images" / "img-001",
+            img_dir2,
+        ]
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        entries = self._read_audit_entries(result.case_id)
+        intake = [e for e in entries if e["action"] == "evidence_intake"]
+        self.assertEqual(len(intake), 2)
+        by_file = {e["details"]["file"]: e["details"] for e in intake}
+
+        file_details = by_file[str(self.evidence_file)]
+        self.assertEqual(file_details["sha256"], FAKE_HASHES["sha256"])
+        self.assertEqual(file_details["md5"], FAKE_HASHES["md5"])
+        self.assertEqual(file_details["dissect_path"], str(self.evidence_file))
+        self.assertEqual(file_details["source_mode"], "path")
+        self.assertEqual(len(file_details["evidence_file_hashes"]), 1)
+
+        folder_details = by_file[str(folder_evidence)]
+        self.assertEqual(folder_details["sha256"], "N/A (directory)")
+        self.assertEqual(folder_details["md5"], "N/A (directory)")
+        self.assertEqual(folder_details["dissect_path"], str(folder_evidence))
+        self.assertEqual(folder_details["source_mode"], "path")
+        self.assertEqual(folder_details["evidence_file_hashes"], [])
+
+        hashed = [
+            e for e in entries if e["action"] == "evidence_intake_file_hashed"
+        ]
+        self.assertEqual(len(hashed), 1)
+        self.assertEqual(hashed[0]["details"]["path"], str(self.evidence_file))
 
     def test_date_range_passed_to_analyzer(self) -> None:
         """Date range from request reaches the analyzer."""

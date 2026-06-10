@@ -22,6 +22,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from app.logging.audit import AuditLogger as RealAuditLogger
+from app.logging.case_manager import CaseManager as RealCaseManager
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
 from app.automation.json_export import DISCLAIMER_TEXT
 from tests.conftest import (
@@ -810,6 +811,114 @@ class TestAuditIntegration(_IntegrationTestBase):
         details = cancelled[0]["details"]
         self.assertEqual(details["case_id"], "case-integ-001")
         self.assertIn("duration_seconds", details)
+        self.assertIsInstance(details["duration_seconds"], (int, float))
+
+    def _use_real_case_manager_and_audit_logger(self) -> None:
+        """Route case creation and audit logging to the real implementations.
+
+        The real ``CaseManager`` writes the ``case_created`` entry and the
+        real ``AuditLogger`` writes the engine's lifecycle entries, so tests
+        can assert the on-disk ``audit.jsonl`` contents for early-return
+        paths between case creation and discovery completion.
+        """
+        self.mocks["AuditLogger"].side_effect = (
+            lambda **kwargs: RealAuditLogger(**kwargs)
+        )
+        self.mocks["CaseManager"].side_effect = (
+            lambda **kwargs: RealCaseManager(**kwargs)
+        )
+
+    def _read_audit_entries(self, case_id: str) -> list[dict[str, Any]]:
+        """Read parsed audit entries for a case.
+
+        Args:
+            case_id: Case ID whose ``audit.jsonl`` is read.
+
+        Returns:
+            List of parsed audit entry dicts in file order.
+        """
+        audit_path = self.cases_dir / case_id / "audit.jsonl"
+        return [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_discovery_failure_logs_automation_failed_with_real_audit_logger(
+        self,
+    ) -> None:
+        """A run failing at discovery audits case_created plus automation_failed.
+
+        Regression test: the case audit logger must exist before discovery so
+        a discovery failure (e.g. an unsupported evidence file) leaves an
+        ``automation_failed`` lifecycle record instead of an audit trail that
+        ends at ``case_created``.
+        """
+        self._use_real_case_manager_and_audit_logger()
+        self.mocks["discover_evidence"].side_effect = ValueError(
+            "Unsupported evidence file"
+        )
+
+        result = run_automation(self._make_request())
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.case_id)
+        entries = self._read_audit_entries(result.case_id)
+        actions = [entry["action"] for entry in entries]
+        self.assertIn("case_created", actions)
+        failed = [
+            entry for entry in entries
+            if entry["action"] == "automation_failed"
+        ]
+        self.assertEqual(len(failed), 1)
+        details = failed[0]["details"]
+        self.assertEqual(details["case_id"], result.case_id)
+        self.assertTrue(
+            any("Evidence discovery failed" in error for error in details["errors"])
+        )
+        self.assertIsInstance(details["duration_seconds"], (int, float))
+
+    def test_cancel_before_automation_started_logs_automation_cancelled(
+        self,
+    ) -> None:
+        """Cancelling after case creation but before automation_started audits.
+
+        Regression test: a cancellation detected before the
+        ``automation_started`` entry is written (here triggered as soon as
+        ``case_created`` exists) must still write an ``automation_cancelled``
+        record to the case audit trail.
+        """
+        self._use_real_case_manager_and_audit_logger()
+
+        def _cancel_after_case_created() -> bool:
+            """Return True once any case audit trail records case_created."""
+            for audit_file in self.cases_dir.glob("*/audit.jsonl"):
+                for line in audit_file.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    if json.loads(line).get("action") == "case_created":
+                        return True
+            return False
+
+        result = run_automation(
+            self._make_request(),
+            cancel_check=_cancel_after_case_created,
+        )
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.case_id)
+        self.assertTrue(any("cancelled" in e.lower() for e in result.errors))
+        entries = self._read_audit_entries(result.case_id)
+        actions = [entry["action"] for entry in entries]
+        self.assertIn("case_created", actions)
+        self.assertNotIn("automation_started", actions)
+        cancelled = [
+            entry for entry in entries
+            if entry["action"] == "automation_cancelled"
+        ]
+        self.assertEqual(len(cancelled), 1)
+        details = cancelled[0]["details"]
+        self.assertEqual(details["case_id"], result.case_id)
         self.assertIsInstance(details["duration_seconds"], (int, float))
 
 
