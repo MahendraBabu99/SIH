@@ -11,6 +11,3 @@ Output format — no preamble, just the list:
 - artifact_name: compressed findings with key evidence preserved.
 - artifact_name: compressed findings...
 - artifact_name: No suspicious findings.
-
-## Findings to Compress
-{{per_artifact_findings}}

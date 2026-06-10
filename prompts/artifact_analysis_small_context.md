@@ -60,4 +60,4 @@ The CSV values below are the artifact evidence rows for this analysis.
 
 ## Final Analysis Rules
 
-Follow the output format above. Use the provided evidence, cite row references and timestamps, and mark unsupported claims as data gaps.
+Follow the Output Format above. Cite the row_ref value and timestamp for every finding.

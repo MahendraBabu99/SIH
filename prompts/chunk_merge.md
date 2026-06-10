@@ -16,7 +16,7 @@ Treat the chunk findings below as derived analysis to consolidate.
 
 1. Deduplicate: if the same finding appears in multiple chunks, keep it once with the strongest evidence from any chunk.
 2. Contradictions: if chunks disagree, state both positions and which has stronger evidence.
-3. Drop anything that is purely informative, contextual, or a recommendation — keep only suspicious/anomalous findings.
+3. Drop chunk-level padding: routine observations, "nothing suspicious in this chunk" notes, and context-only descriptions. Keep every suspicious/anomalous finding with its Verify action.
 4. Preserve all cited evidence exactly: timestamps, paths, values, row references.
 5. Reorder by severity (CRITICAL → HIGH → MEDIUM → LOW), then by confidence.
 
@@ -24,11 +24,12 @@ Treat the chunk findings below as derived analysis to consolidate.
 
 **Findings** (skip entirely if nothing suspicious across all chunks)
 
-- CRITICAL | HIGH confidence — What you found.
-  Evidence: cited data.
-  Alt: benign explanation, if any.
-
-- HIGH | MEDIUM confidence — ...
+For each finding, use the same format as a single-pass analysis:
+- [SEVERITY: CRITICAL|HIGH|MEDIUM|LOW] [CONFIDENCE: HIGH|MEDIUM|LOW] What you found.
+  - Evidence: timestamp, value, and row reference from the chunk findings.
+  - Why it matters: one sentence on incident impact or risk.
+  - Alternative explanation: most likely benign reason, if any.
+  - Verify: one specific follow-up action.
 
 **IOC Status** (only if investigation context mentions IOCs)
 
