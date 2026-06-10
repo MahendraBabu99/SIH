@@ -3,7 +3,10 @@
 When artifact CSV data exceeds the AI model's context window, this module
 splits the data into row-boundary-aligned chunks, analyses each chunk
 independently, and hierarchically merges the per-chunk findings via
-additional AI calls until a single consolidated analysis remains.
+additional AI calls until a single consolidated analysis remains
+(SPEC Section 6.7). The bottom-up merge implementation lives in
+:mod:`app.analyzer.chunk_merge`; this module re-exports its historical
+helpers so existing imports keep working.
 
 Attributes:
     LOGGER: Module-level logger instance.
@@ -12,15 +15,22 @@ Attributes:
 from __future__ import annotations
 
 import csv
-import inspect
 import io
 import logging
 import re
 from typing import Any
 
 from .cancellation import raise_if_cancelled
-from .constants import CSV_DATA_SECTION_RE, CSV_TRAILING_FENCE_RE, TOKEN_CHAR_RATIO
-from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
+# _build_merge_prompt and _estimate_prompt_tokens are re-exported for
+# backward-compatible imports from this module (see module docstring).
+from .chunk_merge import (
+    _build_merge_prompt,  # noqa: F401  (re-export)
+    _call_with_retry,
+    _ensure_prompt_fits_budget,
+    _estimate_prompt_tokens,  # noqa: F401  (re-export)
+    _hierarchical_merge_findings,
+)
+from .constants import CSV_DATA_SECTION_RE, CSV_TRAILING_FENCE_RE
 from .utils import sanitize_filename, emit_analysis_progress
 
 LOGGER = logging.getLogger(__name__)
@@ -48,91 +58,6 @@ def _serialize_row(row: list[str]) -> str:
     writer = csv.writer(buf)
     writer.writerow(row)
     return buf.getvalue().rstrip("\r\n")
-
-
-def _estimate_prompt_tokens(
-    system_prompt: str,
-    user_prompt: str,
-    estimate_tokens_fn: Any | None,
-) -> int:
-    """Estimate tokens for a provider request.
-
-    Args:
-        system_prompt: System prompt text sent with the provider call.
-        user_prompt: User prompt text sent with the provider call.
-        estimate_tokens_fn: Optional analyzer token estimator.
-
-    Returns:
-        Estimated input token count for the combined prompts.
-    """
-    text = f"{system_prompt}\n{user_prompt}"
-    if callable(estimate_tokens_fn):
-        return int(estimate_tokens_fn(text))
-    return max(1, len(text) // TOKEN_CHAR_RATIO)
-
-
-def _ensure_prompt_fits_budget(
-    *,
-    system_prompt: str,
-    user_prompt: str,
-    input_token_budget: int | None,
-    estimate_tokens_fn: Any | None,
-    label: str,
-) -> None:
-    """Raise a controlled error if a provider prompt exceeds input budget.
-
-    Args:
-        system_prompt: System prompt text sent with the provider call.
-        user_prompt: User prompt text sent with the provider call.
-        input_token_budget: Reserved input token budget, or ``None`` to skip.
-        estimate_tokens_fn: Optional analyzer token estimator.
-        label: Human-readable prompt label for error messages.
-
-    Raises:
-        ValueError: If the prompt exceeds ``input_token_budget``.
-    """
-    if input_token_budget is None or input_token_budget <= 0:
-        return
-    token_estimate = _estimate_prompt_tokens(system_prompt, user_prompt, estimate_tokens_fn)
-    if token_estimate > input_token_budget:
-        raise ValueError(
-            f"{label} is too large for the reserved input token budget "
-            f"({token_estimate} > {input_token_budget})."
-        )
-
-
-def _call_with_retry(
-    call_ai_with_retry_fn: Any,
-    provider_call: Any,
-    cancel_check: Any | None,
-) -> str:
-    """Invoke the retry wrapper while preserving cancellation support.
-
-    Args:
-        call_ai_with_retry_fn: Retry wrapper supplied by the analyzer.
-        provider_call: Zero-argument callable that invokes the provider.
-        cancel_check: Optional cancellation probe.
-
-    Returns:
-        The provider response text.
-
-    Raises:
-        AnalysisCancelledError: If cancellation has been requested.
-    """
-    raise_if_cancelled(cancel_check)
-    try:
-        signature = inspect.signature(call_ai_with_retry_fn)
-    except (TypeError, ValueError):
-        signature = None
-    accepts_cancel_check = False
-    if signature is not None:
-        accepts_cancel_check = "cancel_check" in signature.parameters or any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in signature.parameters.values()
-        )
-    if accepts_cancel_check:
-        return call_ai_with_retry_fn(provider_call, cancel_check=cancel_check)
-    return call_ai_with_retry_fn(provider_call)
 
 
 def _suffix_start(text: str) -> int:
@@ -604,306 +529,3 @@ def analyze_artifact_chunked(
         artifact_key, total_chunks,
     )
     return merged_text
-
-
-def _build_merge_prompt(
-    findings_text: str,
-    batch_count: int,
-    artifact_key: str,
-    artifact_name: str,
-    investigation_context: str,
-    chunk_merge_prompt_template: str,
-) -> str:
-    """Fill the chunk-merge template with the given findings.
-
-    Args:
-        findings_text: Combined text of per-chunk findings to merge.
-        batch_count: Number of chunks/batches.
-        artifact_key: Unique identifier for the artifact.
-        artifact_name: Human-readable artifact name.
-        investigation_context: The user's investigation context text.
-        chunk_merge_prompt_template: The merge template string.
-
-    Returns:
-        The fully rendered merge prompt string.
-    """
-    wrapped_findings = wrap_prompt_section(
-        "per_chunk_findings",
-        (
-            "[Model-generated intermediate chunk analyses.]\n"
-            f"{findings_text}"
-        ),
-        default="No chunk findings available.",
-    )
-    prompt = chunk_merge_prompt_template
-    for placeholder, value in {
-        "chunk_count": str(batch_count),
-        "investigation_context": wrap_prompt_section(
-            "investigation_context",
-            investigation_context,
-            default="No investigation context provided.",
-        ),
-        "artifact_name": artifact_name,
-        "artifact_key": artifact_key,
-        "per_chunk_findings": wrapped_findings,
-    }.items():
-        prompt = prompt.replace(f"{{{{{placeholder}}}}}", value)
-    return append_analysis_prompt_footer(prompt)
-
-
-def _hierarchical_merge_findings(
-    chunk_findings: list[str],
-    artifact_key: str,
-    artifact_name: str,
-    investigation_context: str,
-    model: str,
-    *,
-    system_prompt: str,
-    ai_response_max_tokens: int,
-    chunk_csv_budget: int,
-    input_token_budget: int | None = None,
-    estimate_tokens_fn: Any | None = None,
-    chunk_merge_prompt_template: str,
-    max_merge_rounds: int,
-    call_ai_with_retry_fn: Any,
-    ai_provider: Any,
-    save_case_prompt_fn: Any = None,
-    prompt_filename_stem: str | None = None,
-    progress_callback: Any | None = None,
-    cancel_check: Any | None = None,
-    warning_collector: list[dict[str, Any]] | None = None,
-    audit_log_fn: Any = None,
-) -> str:
-    """Merge chunk findings hierarchically until one result remains.
-
-    Args:
-        chunk_findings: List of per-chunk finding texts to merge.
-        artifact_key: Unique identifier for the artifact.
-        artifact_name: Human-readable artifact name.
-        investigation_context: The user's investigation context text.
-        model: AI model identifier for progress reporting.
-        system_prompt: The system prompt sent to the AI provider.
-        ai_response_max_tokens: Token budget for the AI response.
-        chunk_csv_budget: Character budget for CSV data per chunk.
-        chunk_merge_prompt_template: Template for merging findings.
-        max_merge_rounds: Maximum merge iterations.
-        call_ai_with_retry_fn: Callable wrapping AI calls with retry.
-        ai_provider: The AI provider instance.
-        save_case_prompt_fn: Optional callable for saving prompts.
-        progress_callback: Optional callback for streaming progress.
-        cancel_check: Optional callable or event-like cancellation probe.
-        warning_collector: Optional list that receives structured processing
-            warnings produced during chunk merge fallback.
-        audit_log_fn: Optional callable ``(action, details)`` for audit.
-
-    Returns:
-        A single merged analysis text.
-
-    Raises:
-        AnalysisCancelledError: If cancellation has been requested.
-    """
-    raise_if_cancelled(cancel_check)
-    overhead = len(chunk_merge_prompt_template) + len(system_prompt) + 500
-    findings_budget = chunk_csv_budget - overhead
-    if findings_budget <= 0:
-        raise ValueError(
-            f"Merge prompt overhead for {artifact_key} leaves no room for findings "
-            "within the reserved input token budget."
-        )
-    current_findings = list(chunk_findings)
-    merge_round = 0
-
-    while len(current_findings) > 1:
-        raise_if_cancelled(cancel_check)
-        merge_round += 1
-
-        if merge_round > max_merge_rounds:
-            LOGGER.warning(
-                "Hierarchical merge for %s hit %d-round limit with %d findings remaining. "
-                "Falling back to concatenation.",
-                artifact_key, max_merge_rounds, len(current_findings),
-            )
-            if progress_callback is not None:
-                emit_analysis_progress(
-                    progress_callback, artifact_key, "thinking",
-                    {
-                        "artifact_key": artifact_key,
-                        "artifact_name": artifact_name,
-                        "thinking_text": (
-                            f"Merge round limit reached ({max_merge_rounds}). "
-                            f"Concatenating {len(current_findings)} remaining findings..."
-                        ),
-                        "partial_text": "",
-                        "model": model,
-                    },
-                )
-                raise_if_cancelled(cancel_check)
-            total_chars = sum(len(f) for f in current_findings)
-            text_truncated = False
-            if total_chars > findings_budget:
-                per_finding_budget = max(200, findings_budget // len(current_findings))
-                capped = []
-                for f in current_findings:
-                    if len(f) > per_finding_budget:
-                        capped.append(f[:per_finding_budget] + "\n[... truncated ...]")
-                        text_truncated = True
-                    else:
-                        capped.append(f)
-                concatenated = "\n\n".join(capped)
-            else:
-                concatenated = "\n\n".join(current_findings)
-
-            warning = {
-                "category": "chunk_merge_truncated",
-                "severity": "warning",
-                "artifact_key": artifact_key,
-                "artifact_name": artifact_name,
-                "message": (
-                    f"Chunk merge for {artifact_name} reached the configured "
-                    f"{max_merge_rounds}-round limit with {len(current_findings)} "
-                    "remaining finding batches; intermediate findings were "
-                    + ("truncated to fit the merge budget." if text_truncated else "merged through fallback concatenation.")
-                ),
-                "remaining_batch_count": len(current_findings),
-                "findings_budget": findings_budget,
-                "max_merge_rounds": max_merge_rounds,
-                "merge_rounds_completed": max_merge_rounds,
-                "text_truncated": text_truncated,
-            }
-            if warning_collector is not None:
-                warning_collector.append(warning)
-            if audit_log_fn is not None:
-                audit_log_fn(
-                    "chunked_analysis_merge_fallback",
-                    {
-                        "artifact_key": artifact_key,
-                        "artifact_name": artifact_name,
-                        "remaining_batch_count": len(current_findings),
-                        "findings_budget": findings_budget,
-                        "max_merge_rounds": max_merge_rounds,
-                        "text_truncated": text_truncated,
-                    },
-                )
-
-            merge_prompt = _build_merge_prompt(
-                findings_text=concatenated,
-                batch_count=len(current_findings),
-                artifact_key=artifact_key,
-                artifact_name=artifact_name,
-                investigation_context=investigation_context,
-                chunk_merge_prompt_template=chunk_merge_prompt_template,
-            )
-            safe_key = prompt_filename_stem or sanitize_filename(artifact_key)
-            if save_case_prompt_fn is not None:
-                save_case_prompt_fn(
-                    f"artifact_{safe_key}_merge_fallback.md",
-                    system_prompt,
-                    merge_prompt,
-                )
-            _ensure_prompt_fits_budget(
-                system_prompt=system_prompt,
-                user_prompt=merge_prompt,
-                input_token_budget=input_token_budget,
-                estimate_tokens_fn=estimate_tokens_fn,
-                label=f"Merge fallback for {artifact_key}",
-            )
-            return _call_with_retry(
-                call_ai_with_retry_fn,
-                lambda prompt=merge_prompt: ai_provider.analyze(
-                    system_prompt=system_prompt,
-                    user_prompt=prompt,
-                    max_tokens=ai_response_max_tokens,
-                ),
-                cancel_check,
-            )
-
-        batches: list[list[str]] = []
-        current_batch: list[str] = []
-        current_batch_size = 0
-
-        for finding in current_findings:
-            entry_size = len(finding) + 2
-            if current_batch and current_batch_size + entry_size > findings_budget:
-                batches.append(current_batch)
-                current_batch = []
-                current_batch_size = 0
-            current_batch.append(finding)
-            current_batch_size += entry_size
-
-        if current_batch:
-            batches.append(current_batch)
-
-        if len(batches) == 1 and merge_round == 1:
-            pass
-
-        if len(batches) >= len(current_findings):
-            batches = [current_findings]
-
-        total_batches = len(batches)
-        label_prefix = f"merge round {merge_round}" if merge_round > 1 else "merge"
-
-        LOGGER.info(
-            "Hierarchical %s for %s: %d batches from %d findings (budget %d chars).",
-            label_prefix, artifact_key, total_batches,
-            len(current_findings), findings_budget,
-        )
-
-        if progress_callback is not None:
-            emit_analysis_progress(
-                progress_callback, artifact_key, "thinking",
-                {
-                    "artifact_key": artifact_key,
-                    "artifact_name": artifact_name,
-                    "thinking_text": (
-                        f"Merging findings ({label_prefix}: "
-                        f"{len(current_findings)} findings into {total_batches} groups)..."
-                    ),
-                    "partial_text": "",
-                    "model": model,
-                },
-            )
-            raise_if_cancelled(cancel_check)
-
-        next_findings: list[str] = []
-        for batch_index, batch in enumerate(batches, start=1):
-            raise_if_cancelled(cancel_check)
-            batch_text = "\n\n".join(batch)
-            merge_prompt = _build_merge_prompt(
-                findings_text=batch_text,
-                batch_count=len(batch),
-                artifact_key=artifact_key,
-                artifact_name=artifact_name,
-                investigation_context=investigation_context,
-                chunk_merge_prompt_template=chunk_merge_prompt_template,
-            )
-
-            safe_key = prompt_filename_stem or sanitize_filename(artifact_key)
-            if save_case_prompt_fn is not None:
-                save_case_prompt_fn(
-                    f"artifact_{safe_key}_merge_r{merge_round}_b{batch_index}.md",
-                    system_prompt,
-                    merge_prompt,
-                )
-
-            _ensure_prompt_fits_budget(
-                system_prompt=system_prompt,
-                user_prompt=merge_prompt,
-                input_token_budget=input_token_budget,
-                estimate_tokens_fn=estimate_tokens_fn,
-                label=f"Merge batch {batch_index} for {artifact_key}",
-            )
-            merged = _call_with_retry(
-                call_ai_with_retry_fn,
-                lambda prompt=merge_prompt: ai_provider.analyze(
-                    system_prompt=system_prompt,
-                    user_prompt=prompt,
-                    max_tokens=ai_response_max_tokens,
-                ),
-                cancel_check,
-            )
-            next_findings.append(f"### Merged batch {batch_index}\n{merged}")
-            raise_if_cancelled(cancel_check)
-
-        current_findings = next_findings
-
-    return current_findings[0] if current_findings else ""

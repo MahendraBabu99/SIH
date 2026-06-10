@@ -392,11 +392,11 @@ class TestCitationValidationUsesAnalysisInputCsv(unittest.TestCase):
 
 
 class TestBuildMergePrompt(unittest.TestCase):
-    """Tests for chunking._build_merge_prompt."""
+    """Tests for chunk_merge._build_merge_prompt."""
 
     def test_fills_template(self) -> None:
         """Merge prompts delimit context and findings as analysis sections."""
-        from app.analyzer.chunking import _build_merge_prompt
+        from app.analyzer.chunk_merge import _build_merge_prompt
         template = "Chunks: {{chunk_count}}\nContext: {{investigation_context}}\nArtifact: {{artifact_name}} ({{artifact_key}})\n{{per_chunk_findings}}"
         result = _build_merge_prompt(
             findings_text="finding1\nfinding2",
@@ -415,7 +415,8 @@ class TestBuildMergePrompt(unittest.TestCase):
         self.assertTrue(result.rstrip().endswith("mark unsupported claims as data gaps."))
 
     def test_empty_context(self) -> None:
-        from app.analyzer.chunking import _build_merge_prompt
+        """Empty investigation context renders the default placeholder."""
+        from app.analyzer.chunk_merge import _build_merge_prompt
         template = "{{investigation_context}}"
         result = _build_merge_prompt(
             findings_text="f", batch_count=1, artifact_key="k",
@@ -608,7 +609,7 @@ class TestAnalyzeArtifactChunked(unittest.TestCase):
 
     def test_merge_round_fallback_records_structured_truncation_warning(self) -> None:
         """Merge fallback truncation is deterministic metadata, not model-dependent."""
-        from app.analyzer.chunking import _hierarchical_merge_findings
+        from app.analyzer.chunk_merge import _hierarchical_merge_findings
 
         chunk_findings = [
             f"### Chunk {index}\n" + ("finding " * 30)
