@@ -48,6 +48,7 @@ from .state import (
 from .evidence_utils import (
     has_current_canonical_analysis_results,
     persist_hash_verification_annotations,
+    with_unanalyzed_skip_entries,
 )
 
 __all__ = [
@@ -506,7 +507,8 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
     tasks (for example, auto-generation after analysis).
 
     For multi-image cases, per-image metadata and hashes are collected
-    from ``image_states`` so the report correctly represents all images.
+    from ``image_states`` so the report represents all images; ingested
+    images absent from the analysis render as skipped evidence entries.
     After re-verification, the hash-verification annotation keys are
     persisted back into the live ``image_states`` hash records (see
     :func:`app.routes.evidence_utils.persist_hash_verification_annotations`)
@@ -640,6 +642,7 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
         # Persist the verification annotations to live state so chat and
         # other live-state consumers report the same status as the report.
         persist_hash_verification_annotations(case_id, hashes_by_image_id)
+        analysis_results = with_unanalyzed_skip_entries(analysis_results, metadata_by_image_id)
 
         image_metadata_arg = metadata_by_image_id
         evidence_hashes_arg = hashes_by_image_id

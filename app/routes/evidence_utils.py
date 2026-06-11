@@ -12,6 +12,8 @@ Attributes:
     HASH_VERIFICATION_ANNOTATION_KEYS: Hash-record keys written by
         :func:`app.utils.hasher.apply_hash_verification_result` that report
         generation persists back into live per-image case state.
+    NOT_ANALYZED_SKIP_REASON: Skip reason recorded for images that were
+        ingested into a case but never included in AI analysis.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "HASH_VERIFICATION_ANNOTATION_KEYS",
+    "NOT_ANALYZED_SKIP_REASON",
     "clear_analysis_outputs",
     "cleanup_parsed_data",
     "compute_evidence_hashes",
@@ -41,6 +44,7 @@ __all__ = [
     "persist_hash_verification_annotations",
     "safe_rmtree",
     "should_skip_hashing",
+    "with_unanalyzed_skip_entries",
 ]
 
 HASH_VERIFICATION_ANNOTATION_KEYS: tuple[str, ...] = (
@@ -51,6 +55,10 @@ HASH_VERIFICATION_ANNOTATION_KEYS: tuple[str, ...] = (
     "reverified_sha256",
     "computed_sha256",
     "verification_detail",
+)
+
+NOT_ANALYZED_SKIP_REASON = (
+    "Evidence was ingested but not included in AI analysis."
 )
 
 _TRUE_VALUES = {"1", "true", "yes", "y", "on"}
@@ -482,6 +490,79 @@ def persist_hash_verification_annotations(
             for key in HASH_VERIFICATION_ANNOTATION_KEYS:
                 if key in annotated_hashes:
                     live_hashes[key] = annotated_hashes[key]
+
+
+def with_unanalyzed_skip_entries(
+    analysis_results: Mapping[str, Any],
+    ingested_records: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return an analysis copy listing ingested-but-not-analyzed images as skipped.
+
+    Report and chat-context generation receive metadata/hash records for
+    every ingested image, but the canonical analysis results only contain
+    images that were actually analyzed plus any recorded
+    ``skipped_images``.  Records for any other ingested image would get
+    no evidence or hash-verification row and would surface only as
+    confusing "did not match any analyzed or skipped image" notes.  This
+    helper appends a synthetic skipped-image entry for each such image so
+    the existing skipped-image machinery renders its evidence placeholder
+    and its hash PASS/FAIL/SKIPPED row.
+
+    The returned value is a shallow copy with a freshly built
+    ``skipped_images`` list; neither *analysis_results* nor its existing
+    skip entries are mutated.  Callers therefore pass a report-time or
+    chat-time snapshot without persisting synthetic entries to
+    ``analysis_results.json`` or live case state.
+
+    Args:
+        analysis_results: Canonical image-scoped analysis results.
+        ingested_records: Per-image metadata or hash records keyed by
+            image ID covering the ingested images; a record's ``label``
+            value (when present) becomes the synthetic entry label.
+
+    Returns:
+        Shallow-copied analysis results whose ``skipped_images`` list also
+        covers ingested-but-not-analyzed images.
+    """
+    analysis = dict(analysis_results or {})
+    images = analysis.get("images")
+    analyzed_ids = (
+        {str(image_id).strip() for image_id in images}
+        if isinstance(images, Mapping)
+        else set()
+    )
+
+    skipped_entries: list[Any] = []
+    skipped_ids: set[str] = set()
+    raw_skipped = analysis.get("skipped_images")
+    if isinstance(raw_skipped, Sequence) and not isinstance(raw_skipped, (str, bytes)):
+        for raw_entry in raw_skipped:
+            if isinstance(raw_entry, Mapping):
+                entry = dict(raw_entry)
+                skipped_ids.add(str(entry.get("image_id", "")).strip())
+                skipped_entries.append(entry)
+            else:
+                skipped_entries.append(raw_entry)
+
+    appended = False
+    for image_id_raw, record in ingested_records.items():
+        image_id = str(image_id_raw).strip()
+        if not image_id or image_id in analyzed_ids or image_id in skipped_ids:
+            continue
+        label = ""
+        if isinstance(record, Mapping):
+            label = str(record.get("label") or "").strip()
+        skipped_entries.append({
+            "image_id": image_id,
+            "label": label or image_id,
+            "reason": NOT_ANALYZED_SKIP_REASON,
+        })
+        skipped_ids.add(image_id)
+        appended = True
+
+    if appended:
+        analysis["skipped_images"] = skipped_entries
+    return analysis
 
 
 def open_dissect_target(

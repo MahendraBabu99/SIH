@@ -378,6 +378,90 @@ class GenerateCaseReportTests(unittest.TestCase):
         finally:
             _exit_patches(patches)
 
+    def test_ingested_but_not_analyzed_image_appears_in_report_tables(self) -> None:
+        """Non-analyzed ingested images get evidence/hash rows and a skip note."""
+        patches = _common_patches(self.cases_root)
+        _enter_patches(patches)
+        try:
+            evidence_path = Path(self.temp_dir.name) / "sample.E01"
+            evidence_path.write_bytes(b"demo")
+            case_id = _run_full_flow(self.client, evidence_path)
+
+            # Add a second image that was ingested (hashes + metadata) but
+            # never included in the AI analysis.
+            second_evidence = Path(self.temp_dir.name) / "second.E01"
+            second_evidence.write_bytes(b"more")
+            case = routes_state.CASE_STATES[case_id]
+            with routes_state.STATE_LOCK:
+                case["images"].append({"image_id": "img-b", "label": "Second Image"})
+                case["image_states"]["img-b"] = {
+                    "label": "Second Image",
+                    "evidence_hashes": {
+                        "sha256": "c" * 64,
+                        "md5": "d" * 32,
+                        "size_bytes": 4,
+                        "filename": "second.E01",
+                        "_source_path": str(second_evidence),
+                    },
+                    "image_metadata": {"hostname": "second-host"},
+                }
+
+            analysis_path = self.cases_root / case_id / "analysis_results.json"
+            analysis_before = analysis_path.read_text(encoding="utf-8")
+
+            with self.app.app_context():
+                result = routes_evidence.generate_case_report(case_id)
+
+            self.assertTrue(result["success"])
+            json_report = json.loads(
+                Path(result["json_report_path"]).read_text(encoding="utf-8")
+            )
+
+            # Evidence table includes the not-analyzed image with its hashes
+            # and a skip marker.
+            evidence_by_id = {
+                entry["image_id"]: entry for entry in json_report["evidence"]
+            }
+            self.assertIn("img-b", evidence_by_id)
+            entry_b = evidence_by_id["img-b"]
+            self.assertTrue(entry_b.get("skipped"))
+            self.assertIn("not included in AI analysis", entry_b.get("skip_reason", ""))
+            self.assertEqual(entry_b["label"], "Second Image")
+            self.assertEqual(entry_b["hashes"]["sha256"], "c" * 64)
+
+            # Hash verification table includes the image's re-verification
+            # result (the patched verifier reports a match).
+            hash_rows = {
+                row["image_id"]: row for row in json_report["hash_verification"]
+            }
+            self.assertIn("img-b", hash_rows)
+            self.assertEqual(hash_rows["img-b"]["status"], "PASS")
+            self.assertTrue(hash_rows["img-b"]["passed"])
+
+            # Processing notes explain the image was not analyzed, and no
+            # unmatched-record warnings remain for legitimate case images.
+            note_messages = [
+                str(note.get("message", ""))
+                for note in json_report["processing_notes"]
+            ]
+            self.assertTrue(
+                any("not included in AI analysis" in message for message in note_messages),
+                f"Expected a not-analyzed note, got: {note_messages}",
+            )
+            for message in note_messages:
+                self.assertNotIn("did not match any analyzed or skipped image", message)
+
+            # Synthetic skip entries are report-time only: neither the
+            # persisted analysis results nor live state gain them.
+            self.assertEqual(analysis_path.read_text(encoding="utf-8"), analysis_before)
+            with routes_state.STATE_LOCK:
+                self.assertNotIn(
+                    "skipped_images",
+                    routes_state.CASE_STATES[case_id]["analysis_results"],
+                )
+        finally:
+            _exit_patches(patches)
+
 
 class AutoReportAfterAnalysisTests(unittest.TestCase):
     """Tests that analysis completion auto-generates a report."""

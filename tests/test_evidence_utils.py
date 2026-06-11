@@ -1,8 +1,9 @@
 ﻿"""Unit tests for the shared evidence-handling utilities module.
 
 Validates :func:`~app.routes.evidence_utils.compute_evidence_hashes`,
-:func:`~app.routes.evidence_utils.should_skip_hashing`, and
-:func:`~app.routes.evidence_utils.open_dissect_target`.
+:func:`~app.routes.evidence_utils.should_skip_hashing`,
+:func:`~app.routes.evidence_utils.open_dissect_target`, and
+:func:`~app.routes.evidence_utils.with_unanalyzed_skip_entries`.
 
 These functions were extracted from duplicated code in the evidence and
 images route modules in commit 943849a.  Tests here ensure the shared
@@ -17,9 +18,11 @@ from unittest.mock import MagicMock, patch
 
 from app import create_app
 from app.routes.evidence_utils import (
+    NOT_ANALYZED_SKIP_REASON,
     compute_evidence_hashes,
     open_dissect_target,
     should_skip_hashing,
+    with_unanalyzed_skip_entries,
 )
 
 
@@ -299,6 +302,67 @@ class TestOpenDissectTarget(unittest.TestCase):
         )
 
         self.assertNotIn("parsed_dir", mock_parser_cls.call_args.kwargs)
+
+
+# ---------------------------------------------------------------------------
+# with_unanalyzed_skip_entries
+# ---------------------------------------------------------------------------
+
+
+class TestWithUnanalyzedSkipEntries(unittest.TestCase):
+    """Tests for the ``with_unanalyzed_skip_entries`` utility."""
+
+    def test_appends_entry_for_unanalyzed_image(self) -> None:
+        """Ingested images missing from analysis become skipped entries."""
+        analysis = {"images": {"img-a": {"label": "A"}}}
+        records = {
+            "img-a": {"label": "A"},
+            "img-b": {"label": "B"},
+        }
+
+        result = with_unanalyzed_skip_entries(analysis, records)
+
+        self.assertEqual(
+            result["skipped_images"],
+            [{"image_id": "img-b", "label": "B", "reason": NOT_ANALYZED_SKIP_REASON}],
+        )
+        # The input analysis mapping is never mutated.
+        self.assertNotIn("skipped_images", analysis)
+
+    def test_label_falls_back_to_image_id(self) -> None:
+        """A record without a label uses the image ID as the entry label."""
+        result = with_unanalyzed_skip_entries(
+            {"images": {"img-a": {}}},
+            {"img-b": {}},
+        )
+        self.assertEqual(result["skipped_images"][0]["label"], "img-b")
+
+    def test_existing_skipped_entries_are_preserved_and_deduplicated(self) -> None:
+        """Recorded skip entries stay first and suppress synthetic duplicates."""
+        existing = [{"image_id": "img-b", "label": "B", "reason": "No parsed output."}]
+        analysis = {
+            "images": {"img-a": {}},
+            "skipped_images": existing,
+        }
+        records = {"img-b": {"label": "B"}, "img-c": {"label": "C"}}
+
+        result = with_unanalyzed_skip_entries(analysis, records)
+
+        self.assertEqual(result["skipped_images"][0], existing[0])
+        self.assertIsNot(result["skipped_images"][0], existing[0])
+        self.assertEqual(
+            result["skipped_images"][1],
+            {"image_id": "img-c", "label": "C", "reason": NOT_ANALYZED_SKIP_REASON},
+        )
+        # The original list is untouched.
+        self.assertEqual(analysis["skipped_images"], existing)
+
+    def test_no_skipped_key_added_when_all_images_analyzed(self) -> None:
+        """Fully analyzed cases return an equivalent copy without skip entries."""
+        analysis = {"images": {"img-a": {}}}
+        result = with_unanalyzed_skip_entries(analysis, {"img-a": {"label": "A"}})
+        self.assertNotIn("skipped_images", result)
+        self.assertEqual(result, analysis)
 
 
 if __name__ == "__main__":

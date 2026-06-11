@@ -34,6 +34,7 @@ from .state import (
     set_progress_status,
 )
 from .evidence import collect_case_image_csv_paths
+from .evidence_utils import with_unanalyzed_skip_entries
 from .artifacts import sanitize_prompt
 
 __all__ = [
@@ -376,6 +377,15 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
             record_source,
             "evidence_hashes",
         )
+        if isinstance(analysis_results, Mapping):
+            # Represent ingested-but-not-analyzed images as skipped entries
+            # in the chat-time analysis snapshot so their metadata/hash
+            # records match a placeholder instead of producing
+            # unmatched-record notes in the chat context.
+            analysis_results = with_unanalyzed_skip_entries(
+                analysis_results,
+                {**evidence_hashes, **image_metadata},
+            )
 
         context_block = chat_manager.build_chat_context(
             analysis_results=analysis_results,

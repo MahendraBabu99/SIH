@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import unittest
 
+from app.ai_providers import StreamedResponseChunk
 from app.chat.manager import ChatManager, _stringify as manager_stringify, VALID_ROLES
 from app.chat.csv_retrieval import (
     _stringify as csv_stringify,
@@ -22,6 +24,8 @@ from app.chat.csv_retrieval import (
 )
 from app.reporter.normalization import normalize_per_artifact_findings
 from app.routes.tasks_chat import _collect_image_scoped_case_records
+import app.routes.tasks as routes_tasks
+import app.routes.tasks_chat as routes_tasks_chat
 
 
 class ChatManagerTests(unittest.TestCase):
@@ -1731,6 +1735,109 @@ class ValidRolesTests(unittest.TestCase):
         self.assertIn("user", VALID_ROLES)
         self.assertIn("assistant", VALID_ROLES)
         self.assertEqual(len(VALID_ROLES), 2)
+
+
+class _PromptRecordingChatProvider:
+    """Provider stub that records chat prompts and streams one answer.
+
+    Attributes:
+        user_prompts: User prompts received by ``analyze_stream``.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the recorded prompt list."""
+        self.user_prompts: list[str] = []
+
+    def analyze_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 4096,
+    ) -> Iterator[StreamedResponseChunk]:
+        """Record the user prompt and yield a single answer chunk.
+
+        Args:
+            system_prompt: System prompt supplied by the chat task.
+            user_prompt: User prompt supplied by the chat task.
+            max_tokens: Maximum answer token budget.
+
+        Yields:
+            A single answer-text stream chunk.
+        """
+        del system_prompt, max_tokens
+        self.user_prompts.append(user_prompt)
+        yield StreamedResponseChunk(answer_text="Answer about the case.")
+
+
+class RunChatUnanalyzedImageContextTests(unittest.TestCase):
+    """run_chat context handling for ingested-but-not-analyzed images."""
+
+    def test_context_has_no_unmatched_record_notes_for_ingested_image(self) -> None:
+        """Chat context marks non-analyzed images as skipped, not unmatched."""
+        with TemporaryDirectory(prefix="aift-chat-unanalyzed-") as temp_dir:
+            case_dir = Path(temp_dir)
+            parsed_dir = case_dir / "parsed"
+            parsed_dir.mkdir()
+            case = {
+                "case_dir": str(case_dir),
+                "audit": MagicMock(),
+                "image_states": {
+                    "img-a": {
+                        "label": "Analyzed Image",
+                        "image_metadata": {"hostname": "host-a"},
+                        "evidence_hashes": {"sha256": "a" * 64, "md5": "b" * 32},
+                    },
+                    "img-b": {
+                        "label": "Ingested Image",
+                        "image_metadata": {"hostname": "host-b"},
+                        "evidence_hashes": {"sha256": "c" * 64, "md5": "d" * 32},
+                    },
+                },
+            }
+            analysis_results = {
+                "images": {
+                    "img-a": {
+                        "label": "Analyzed Image",
+                        "summary": "Analyzed image summary.",
+                        "per_artifact": [],
+                    },
+                },
+                "cross_image_summary": None,
+            }
+            provider = _PromptRecordingChatProvider()
+
+            with (
+                patch.object(routes_tasks_chat, "get_case", return_value=case),
+                patch.object(routes_tasks_chat, "get_cancel_event", return_value=None),
+                patch.object(
+                    routes_tasks_chat, "set_progress_status", lambda *_a, **_k: None
+                ),
+                patch.object(routes_tasks_chat, "emit_progress", lambda *_a, **_k: None),
+                patch.object(routes_tasks_chat, "create_provider", return_value=provider),
+                patch.object(
+                    routes_tasks, "load_case_analysis_results", return_value=analysis_results
+                ),
+                patch.object(
+                    routes_tasks, "resolve_case_investigation_context", return_value=""
+                ),
+                patch.object(routes_tasks, "resolve_case_parsed_dir", return_value=parsed_dir),
+                patch.object(
+                    routes_tasks_chat, "collect_case_image_csv_paths", return_value=[]
+                ),
+            ):
+                routes_tasks_chat.run_chat(
+                    case_id="case-unanalyzed",
+                    message="What happened?",
+                    config_snapshot={"analysis": {"ai_max_tokens": 1000}},
+                )
+
+            self.assertEqual(len(provider.user_prompts), 1)
+            prompt = provider.user_prompts[0]
+            self.assertNotIn("did not match any analyzed or skipped image", prompt)
+            self.assertIn(
+                "Evidence was ingested but not included in AI analysis.", prompt
+            )
+            self.assertIn("Ingested Image", prompt)
 
 
 if __name__ == "__main__":
