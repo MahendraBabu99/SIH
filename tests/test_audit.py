@@ -398,6 +398,11 @@ class ActionTypesTests(unittest.TestCase):
         for action in ACTION_TYPES:
             self.assertIsInstance(action, str)
 
+    def test_report_lifecycle_actions_are_allowed(self) -> None:
+        """Both report outcomes logged by the report route must be accepted."""
+        self.assertIn("report_generated", ACTION_TYPES)
+        self.assertIn("report_generation_failed", ACTION_TYPES)
+
 
 if __name__ == "__main__":
     unittest.main()

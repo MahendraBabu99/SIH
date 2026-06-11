@@ -89,6 +89,7 @@ ACTION_TYPES = frozenset(
         "chat_data_retrieval",
         "chat_history_cleared",
         "report_generated",
+        "report_generation_failed",
         "hash_verification",
         "config_changed",
         "image_added",

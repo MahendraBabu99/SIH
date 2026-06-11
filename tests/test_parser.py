@@ -17,9 +17,7 @@ from app.parser.core import (
 )
 from app.parser.registry import (
     get_artifact_registry,
-    _artifact_prompt_name_candidates,
-    _load_artifact_guidance_prompt,
-    _apply_artifact_guidance_from_prompts,
+    load_artifact_prompt_file,
     parse_artifact_prompt_text,
 )
 
@@ -1727,112 +1725,6 @@ class OpenEvtxWriterTests(unittest.TestCase):
                 state["handle"].close()
 
 
-class ArtifactPromptNameCandidatesTests(unittest.TestCase):
-    """Tests for registry._artifact_prompt_name_candidates."""
-
-    def test_simple_key(self) -> None:
-        candidates = _artifact_prompt_name_candidates("runkeys")
-        self.assertIn("runkeys", candidates)
-
-    def test_dotted_key_generates_underscore_variant(self) -> None:
-        candidates = _artifact_prompt_name_candidates("browser.history")
-        self.assertIn("browser.history", candidates)
-        self.assertIn("browser_history", candidates)
-
-    def test_underscore_key_generates_dot_variant(self) -> None:
-        candidates = _artifact_prompt_name_candidates("sru_network")
-        self.assertIn("sru_network", candidates)
-        self.assertIn("sru.network", candidates)
-
-    def test_empty_key_returns_empty_list(self) -> None:
-        self.assertEqual(_artifact_prompt_name_candidates(""), [])
-
-    def test_whitespace_only_returns_empty_list(self) -> None:
-        self.assertEqual(_artifact_prompt_name_candidates("   "), [])
-
-    def test_case_insensitive(self) -> None:
-        candidates = _artifact_prompt_name_candidates("RunKeys")
-        self.assertIn("runkeys", candidates)
-
-    def test_no_duplicates(self) -> None:
-        candidates = _artifact_prompt_name_candidates("simple")
-        # "simple" with dots replaced by underscores is still "simple"
-        # so there should be no duplicates
-        self.assertEqual(len(candidates), len(set(candidates)))
-
-
-class LoadArtifactGuidancePromptTests(unittest.TestCase):
-    """Tests for registry._load_artifact_guidance_prompt."""
-
-    def test_returns_prompt_for_known_artifact(self) -> None:
-        """runkeys.md should exist and be loaded."""
-        result = _load_artifact_guidance_prompt("runkeys")
-        self.assertTrue(len(result) > 0)
-
-    def test_returns_empty_for_unknown_artifact(self) -> None:
-        result = _load_artifact_guidance_prompt("nonexistent_artifact_xyz_12345")
-        self.assertEqual(result, "")
-
-    def test_returns_empty_for_empty_key(self) -> None:
-        result = _load_artifact_guidance_prompt("")
-        self.assertEqual(result, "")
-
-
-class ApplyArtifactGuidanceFromPromptsTests(unittest.TestCase):
-    """Tests for registry._apply_artifact_guidance_from_prompts."""
-
-    def test_sets_guidance_from_prompt_file(self) -> None:
-        """If a prompt file exists, artifact_guidance should be populated."""
-        registry = {
-            "runkeys": {
-                "name": "Run Keys",
-                "analysis_hint": "inline hint",
-            }
-        }
-        _apply_artifact_guidance_from_prompts(registry)
-        # runkeys.md exists in the prompts directory
-        self.assertIn("artifact_guidance", registry["runkeys"])
-        self.assertNotEqual(registry["runkeys"]["artifact_guidance"], "")
-
-    def test_falls_back_to_analysis_hint(self) -> None:
-        """When no prompt file exists, falls back to analysis_hint."""
-        registry = {
-            "nonexistent_xyz_99999": {
-                "name": "Fake",
-                "analysis_hint": "use this hint",
-            }
-        }
-        _apply_artifact_guidance_from_prompts(registry)
-        self.assertEqual(
-            registry["nonexistent_xyz_99999"].get("artifact_guidance", ""),
-            "use this hint",
-        )
-
-    def test_falls_back_to_analysis_instructions(self) -> None:
-        """When no prompt file exists, falls back to analysis_instructions."""
-        registry = {
-            "nonexistent_xyz_99998": {
-                "name": "Fake",
-                "analysis_instructions": "detailed instructions",
-            }
-        }
-        _apply_artifact_guidance_from_prompts(registry)
-        self.assertEqual(
-            registry["nonexistent_xyz_99998"].get("artifact_guidance", ""),
-            "detailed instructions",
-        )
-
-    def test_no_guidance_when_nothing_available(self) -> None:
-        """When no prompt file and no hints exist, no guidance is set."""
-        registry = {
-            "nonexistent_xyz_99997": {
-                "name": "Fake",
-            }
-        }
-        _apply_artifact_guidance_from_prompts(registry)
-        self.assertNotIn("artifact_guidance", registry["nonexistent_xyz_99997"])
-
-
 class ArtifactRegistryTests(unittest.TestCase):
     """Tests for the Windows prompt-backed artifact registry."""
 
@@ -2064,15 +1956,6 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
             "No Linux artifacts have 'artifact_guidance' — prompt loading may be broken.",
         )
 
-    def test_apply_guidance_from_linux_prompts_dir(self) -> None:
-        """_apply_artifact_guidance_from_prompts loads from the Linux prompts directory."""
-        with TemporaryDirectory() as tmpdir:
-            prompts_dir = Path(tmpdir)
-            (prompts_dir / "bash_history.md").write_text("LINUX BASH GUIDE", encoding="utf-8")
-            registry = {"bash_history": {"name": "Bash History", "analysis_hint": "fallback"}}
-            _apply_artifact_guidance_from_prompts(registry, prompts_dir)
-            self.assertEqual(registry["bash_history"]["artifact_guidance"], "LINUX BASH GUIDE")
-
     def test_linux_no_duplicate_artifact_keys_with_windows(self) -> None:
         """Linux-only artifacts should not accidentally collide with Windows keys.
 
@@ -2098,18 +1981,19 @@ class LinuxArtifactRegistryTests(unittest.TestCase):
         self.assertIn("runkeys", get_artifact_registry(""))
 
     def test_every_linux_artifact_has_prompt_file(self) -> None:
-        """Every Linux registry entry should have a matching prompt file loaded."""
-        from app.parser.registry import _LINUX_PROMPTS_DIR, _artifact_prompt_name_candidates
+        """Every Linux registry key should originate from a Linux prompt file."""
+        from app.parser.registry import _LINUX_PROMPTS_DIR
 
-        missing: list[str] = []
-        for artifact_key in get_artifact_registry("linux"):
-            candidates = _artifact_prompt_name_candidates(artifact_key)
-            found = any(
-                (_LINUX_PROMPTS_DIR / f"{stem}.md").is_file()
-                for stem in candidates
-            )
-            if not found:
-                missing.append(artifact_key)
+        declared: set[str] = set()
+        for prompt_path in _LINUX_PROMPTS_DIR.glob("*.md"):
+            metadata, _ = load_artifact_prompt_file(prompt_path)
+            key = str(metadata.get("artifact_key", "")).strip() or prompt_path.stem
+            declared.add(key)
+        missing = [
+            artifact_key
+            for artifact_key in get_artifact_registry("linux")
+            if artifact_key not in declared
+        ]
         self.assertEqual(
             missing, [],
             f"Linux artifacts missing prompt files in {_LINUX_PROMPTS_DIR}: {missing}",

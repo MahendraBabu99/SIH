@@ -34,20 +34,6 @@ _DEFAULT_CATEGORY = "Other"
 _DEFAULT_MODE = "parse_and_ai"
 
 
-def _artifact_prompt_name_candidates(artifact_key: str) -> list[str]:
-    """Generate candidate prompt file stems for an artifact key."""
-    base = str(artifact_key).strip().lower()
-    if not base:
-        return []
-
-    candidates: list[str] = []
-    for value in (base, base.replace(".", "_"), base.replace("_", ".")):
-        stem = value.strip()
-        if stem and stem not in candidates:
-            candidates.append(stem)
-    return candidates
-
-
 def parse_artifact_prompt_text(prompt_text: str) -> tuple[dict[str, Any], str]:
     """Split an artifact prompt into front-matter metadata and guidance body."""
     text = str(prompt_text or "")
@@ -78,25 +64,6 @@ def load_artifact_prompt_file(prompt_path: str | Path) -> tuple[dict[str, Any], 
     path = Path(prompt_path)
     text = path.read_text(encoding="utf-8")
     return parse_artifact_prompt_text(text)
-
-
-def _load_artifact_guidance_prompt(
-    artifact_key: str,
-    prompts_dir: Path | None = None,
-) -> str:
-    """Load only the Markdown guidance body for an artifact prompt."""
-    search_dir = prompts_dir if prompts_dir is not None else _ARTIFACT_PROMPTS_DIR
-    for prompt_stem in _artifact_prompt_name_candidates(artifact_key):
-        prompt_path = search_dir / f"{prompt_stem}.md"
-        try:
-            if not prompt_path.is_file():
-                continue
-            _, prompt_text = load_artifact_prompt_file(prompt_path)
-            if prompt_text:
-                return prompt_text
-        except (OSError, UnicodeDecodeError):
-            continue
-    return ""
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -212,25 +179,3 @@ def get_supported_artifact_keys() -> set[str]:
     """Return all artifact keys supported by AIFT prompt metadata."""
     windows_registry, linux_registry = get_all_artifact_registries()
     return set(windows_registry) | set(linux_registry)
-
-
-def _apply_artifact_guidance_from_prompts(
-    registry: dict[str, dict[str, Any]],
-    prompts_dir: Path | None = None,
-) -> None:
-    """Compatibility helper that fills ``artifact_guidance`` from prompt bodies."""
-    for artifact_key, artifact_details in registry.items():
-        prompt_guidance = _load_artifact_guidance_prompt(artifact_key, prompts_dir)
-        if prompt_guidance:
-            artifact_details["artifact_guidance"] = prompt_guidance
-            artifact_details["analysis_instructions"] = prompt_guidance
-            continue
-
-        fallback_guidance = str(
-            artifact_details.get("analysis_instructions")
-            or artifact_details.get("analysis_hint")
-            or ""
-        ).strip()
-        if fallback_guidance:
-            artifact_details["artifact_guidance"] = fallback_guidance
-            artifact_details["analysis_instructions"] = fallback_guidance
