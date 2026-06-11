@@ -1834,9 +1834,13 @@ class TestRunAutomation(unittest.TestCase):
         self.assertEqual(result.html_report_path.parent, expected_dir)
         self.assertEqual(result.json_report_path.parent, expected_dir)
         self.assertEqual(result.case_local_html_report_path.parent, expected_dir)
+        self.assertEqual(result.case_local_html_report_path, result.html_report_path)
         self.assertEqual(result.case_local_json_report_path, result.json_report_path)
         self.assertTrue(result.html_report_path.exists())
         self.assertTrue(result.json_report_path.exists())
+        # The case-local HTML report must not be duplicated under a second
+        # export filename when the output directory is the case reports dir.
+        self.assertEqual(len(list(expected_dir.glob("*.html"))), 1)
         self.assertEqual(list(expected_dir.glob(".aift-write-probe-*")), [])
 
     def test_output_dir_cannot_be_created_returns_error(self) -> None:

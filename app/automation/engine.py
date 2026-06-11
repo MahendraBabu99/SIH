@@ -1726,10 +1726,16 @@ def run_automation(
         result.errors.append(msg)
     else:
         try:
-            dest_html = output_dir / f"{basename}.html"
-            if not _same_resolved_path(html_path, dest_html):
+            # Skip the export copy when the generated case-local report
+            # already lives in the resolved output directory (the default
+            # when no explicit output_dir was requested); copying would
+            # leave two identical HTML reports under different names.
+            if html_path.resolve().parent != output_dir.resolve():
+                dest_html = output_dir / f"{basename}.html"
                 shutil.copy2(str(html_path), str(dest_html))
-            result.html_report_path = dest_html
+                result.html_report_path = dest_html
+            else:
+                result.html_report_path = html_path
         except Exception as exc:
             msg = f"HTML report copy failed: {exc}"
             LOGGER.error(msg, exc_info=True)
