@@ -8,6 +8,16 @@ module is the single shared implementation. Providers keep only the
 provider-specific pieces: how a raw SDK stream is split into chunks and
 which user-facing message describes an empty streamed response.
 
+Exceptions raised by the progress callback are never swallowed here: they
+abort the in-flight stream and propagate (wrapped in
+``ProgressCallbackError`` so the shared retry plumbing can tell them apart
+from provider/SDK failures). This is the mechanism that lets the analyzer
+cancel an analysis mid-stream — its callback raises the cancellation error,
+which must reach the analyzer instead of letting the stream run to
+completion. Best-effort GUI delivery is the analyzer's responsibility: its
+own emit helper already swallows GUI transport errors before they reach a
+provider callback.
+
 Attributes:
     PROGRESS_EMIT_MIN_INTERVAL_SECONDS: Minimum delay between progress
         callback emissions while neither channel grew substantially.
@@ -31,21 +41,52 @@ PROGRESS_EMIT_MIN_INTERVAL_SECONDS = 0.35
 PROGRESS_EMIT_MIN_NEW_CHARS = 80
 
 
+class ProgressCallbackError(Exception):
+    """Marks an exception raised by a provider progress callback.
+
+    The shared stream-retry plumbing must distinguish exceptions raised by
+    the caller-supplied progress callback (most importantly the analyzer's
+    deliberate mid-stream cancellation signal) from provider/SDK stream
+    failures. Callback exceptions are wrapped in this type at the single
+    callback invocation site; ``_run_stream_with_rate_limit_retries``
+    unwraps it and re-raises the original exception unchanged so user
+    cancellation is never misreported as a provider error or retried.
+
+    Attributes:
+        original: The exception raised by the progress callback.
+    """
+
+    def __init__(self, original: BaseException) -> None:
+        """Wrap a progress-callback exception.
+
+        Args:
+            original: The exception raised by the progress callback.
+        """
+        super().__init__(str(original))
+        self.original = original
+
+
 def emit_progress(
     progress_callback: Callable[[dict[str, str]], None],
     *,
     thinking_text: str,
     partial_text: str,
 ) -> None:
-    """Invoke a provider progress callback on a best-effort basis.
+    """Invoke a provider progress callback with the accumulated channels.
 
-    Callback failures are swallowed so a broken GUI transport cannot abort
-    an in-flight provider stream.
+    Exceptions raised by the callback are not swallowed: they abort the
+    in-flight provider stream so mid-stream cancellation takes effect
+    immediately. GUI transport errors never reach this point because the
+    analyzer's emit helper already handles them best-effort.
 
     Args:
         progress_callback: The callable to invoke with progress data.
         thinking_text: Accumulated thinking-channel text so far.
         partial_text: Accumulated answer-channel text so far.
+
+    Raises:
+        ProgressCallbackError: Wrapping any exception the callback raised
+            (for example the analyzer's cancellation signal).
     """
     try:
         progress_callback(
@@ -55,8 +96,8 @@ def emit_progress(
                 "partial_text": partial_text,
             }
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        raise ProgressCallbackError(exc) from exc
 
 
 def emit_progress_if_needed(
@@ -83,6 +124,9 @@ def emit_progress_if_needed(
 
     Returns:
         Updated ``(last_emit_at, last_sent_thinking, last_sent_answer)``.
+
+    Raises:
+        ProgressCallbackError: Wrapping any exception the callback raised.
     """
     if not current_thinking and not current_answer:
         return last_emit_at, last_sent_thinking, last_sent_answer
@@ -122,6 +166,8 @@ def stream_progress_chunks(
     ``emit_progress_if_needed``, and the unmodified chunk is yielded so the
     shared retry plumbing can keep tracking partial output. When the stream
     is exhausted, one final progress update is emitted if any text arrived.
+    Exceptions raised by the progress callback abort the stream without
+    consuming the remaining chunks and propagate to the consumer.
 
     Args:
         chunks: Iterable of string-compatible stream chunks with separated
@@ -132,6 +178,10 @@ def stream_progress_chunks(
 
     Yields:
         The unmodified input chunks.
+
+    Raises:
+        ProgressCallbackError: Wrapping any exception the callback raised;
+            the underlying stream is not consumed further.
     """
     last_emit_at = 0.0
     last_sent_thinking = ""

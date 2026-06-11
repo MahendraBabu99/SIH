@@ -10,6 +10,10 @@ from unittest.mock import patch
 import pytest
 
 from app.ai_providers import AIProviderError
+from app.ai_providers.base import _RATE_LIMIT_STATE, _run_stream_with_rate_limit_retries
+from app.ai_providers.progress import finalize_progress_stream_response, stream_progress_chunks
+from app.ai_providers.utils import StreamedResponseChunk
+from app.analyzer.constants import AI_RETRY_ATTEMPTS
 from app.analyzer.core import ForensicAnalyzer
 from app.analyzer.chunk_merge import _hierarchical_merge_findings
 from app.analyzer.chunking import analyze_artifact_chunked
@@ -513,3 +517,211 @@ def test_retry_backoff_can_be_cancelled_before_full_delay(tmp_path: Path) -> Non
     assert call_count == 1
     assert sleep_calls
     assert max(sleep_calls) < 1.0
+
+
+def test_cancellation_on_final_retry_attempt_is_reported_as_cancelled(tmp_path: Path) -> None:
+    """A cancellation surfacing on the last attempt raises cancelled, not failed.
+
+    Args:
+        tmp_path: Temporary test directory.
+    """
+    provider = CompressingProvider()
+    analyzer = _build_budgeted_analyzer(tmp_path, provider)
+    cancel_state = {"cancelled": False}
+    call_count = 0
+
+    def fail_and_cancel_on_last_attempt() -> str:
+        """Raise a provider error, requesting cancellation on the final attempt.
+
+        Returns:
+            This helper never returns successfully.
+
+        Raises:
+            AIProviderError: Always raised to exhaust every retry attempt.
+        """
+        nonlocal call_count
+        call_count += 1
+        if call_count >= AI_RETRY_ATTEMPTS:
+            cancel_state["cancelled"] = True
+        raise AIProviderError("temporary")
+
+    with patch("app.analyzer.core.sleep"):
+        with pytest.raises(AnalysisCancelledError):
+            analyzer._call_ai_with_retry(
+                fail_and_cancel_on_last_attempt,
+                cancel_check=lambda: cancel_state["cancelled"],
+            )
+
+    assert call_count == AI_RETRY_ATTEMPTS
+
+
+class _NeverRateLimitedError(Exception):
+    """Rate-limit exception type that the streaming test double never raises."""
+
+
+class StreamingProgressProvider:
+    """Provider double that streams through the real shared progress plumbing.
+
+    Mirrors how Claude/Kimi/Local providers wire ``stream_progress_chunks``
+    into ``_run_stream_with_rate_limit_retries`` so analyzer-level tests
+    exercise the genuine mid-stream cancellation propagation path.
+
+    Attributes:
+        pulled_chunks: Number of chunks pulled from the underlying stream.
+        total_chunks: Chunks the stream would produce if fully consumed.
+    """
+
+    _PROVIDER_NAME = "StreamingCancellationTest"
+
+    def __init__(self) -> None:
+        """Initialize the provider double with a three-chunk stream."""
+        self.pulled_chunks = 0
+        self._chunks = [
+            StreamedResponseChunk(reasoning_text="Working through evidence. "),
+            StreamedResponseChunk(answer_text="Partial answer. "),
+            StreamedResponseChunk(answer_text="Rest of answer."),
+        ]
+        self.total_chunks = len(self._chunks)
+
+    def analyze(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
+        """Return canned text for non-streaming calls.
+
+        Args:
+            system_prompt: System prompt text.
+            user_prompt: User prompt text.
+            max_tokens: Maximum response tokens.
+
+        Returns:
+            A canned non-streaming answer.
+        """
+        return "non-streaming answer"
+
+    def get_model_info(self) -> dict[str, str]:
+        """Return fake provider metadata.
+
+        Returns:
+            Dict with ``provider`` and ``model`` keys.
+        """
+        return {"provider": "fake", "model": "stream-cancel-test"}
+
+    def analyze_with_progress(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        progress_callback: Any,
+        max_tokens: int = 4096,
+    ) -> str:
+        """Stream canned chunks through the shared progress/retry plumbing.
+
+        Args:
+            system_prompt: System prompt text.
+            user_prompt: User prompt text.
+            progress_callback: Callable receiving progress dicts.
+            max_tokens: Maximum response tokens.
+
+        Returns:
+            The final streamed answer text.
+
+        Raises:
+            AIProviderError: If the stream produced no answer text.
+            Exception: Any exception raised by ``progress_callback``.
+        """
+        thinking_parts: list[str] = []
+        answer_parts: list[str] = []
+
+        def _stream_factory() -> Any:
+            """Open the recording chunk stream."""
+
+            def _generate():
+                """Yield chunks while counting consumption."""
+                for chunk in self._chunks:
+                    self.pulled_chunks += 1
+                    yield chunk
+
+            return _generate()
+
+        stream = _run_stream_with_rate_limit_retries(
+            stream_factory=_stream_factory,
+            stream_text_iterator=lambda raw: stream_progress_chunks(
+                chunks=raw,
+                progress_callback=progress_callback,
+                thinking_parts=thinking_parts,
+                answer_parts=answer_parts,
+            ),
+            rate_limit_error_type=_NeverRateLimitedError,
+            provider_name=self._PROVIDER_NAME,
+            map_error=lambda exc: AIProviderError(str(exc)),
+            empty_response_message="empty stream",
+        )
+        for _chunk in stream:
+            pass
+        return finalize_progress_stream_response(
+            thinking_parts,
+            answer_parts,
+            empty_response_message="empty stream",
+        )
+
+
+def test_cancel_during_provider_streaming_aborts_stream_mid_flight(tmp_path: Path) -> None:
+    """Cancellation requested during streaming aborts the provider stream.
+
+    Args:
+        tmp_path: Temporary test directory.
+    """
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    artifact_template = (
+        "Artifact={{artifact_key}}\n"
+        "Context={{investigation_context}}\n"
+        "## Full Data (CSV Evidence Rows)\n\n"
+        "```\n"
+        "{{data_csv}}\n"
+        "```\n"
+    )
+    (prompts_dir / "artifact_analysis.md").write_text(artifact_template, encoding="utf-8")
+    (prompts_dir / "artifact_analysis_small_context.md").write_text(
+        artifact_template, encoding="utf-8"
+    )
+    (prompts_dir / "system_prompt.md").write_text("system", encoding="utf-8")
+    (prompts_dir / "summary_prompt.md").write_text("{{per_artifact_findings}}", encoding="utf-8")
+    (prompts_dir / "chunk_merge.md").write_text("{{per_chunk_findings}}", encoding="utf-8")
+
+    csv_path = tmp_path / "custom.csv"
+    csv_path.write_text(
+        "ts,name,detail\n2026-01-15T12:00:00+00:00,Entry1,xxxx\n",
+        encoding="utf-8",
+    )
+
+    provider = StreamingProgressProvider()
+    with patch("app.analyzer.core.create_provider", return_value=provider):
+        analyzer = ForensicAnalyzer(
+            case_dir=tmp_path,
+            config={"ai": {"provider": "local"}},
+            artifact_csv_paths={"custom": csv_path},
+            prompts_dir=prompts_dir,
+        )
+
+    cancel_state = {"cancelled": False}
+
+    def gui_progress(payload: dict[str, Any]) -> None:
+        """Request cancellation once mid-stream progress arrives.
+
+        Args:
+            payload: Progress event payload dict.
+        """
+        if payload.get("status") == "thinking":
+            cancel_state["cancelled"] = True
+
+    try:
+        with pytest.raises(AnalysisCancelledError):
+            analyzer.analyze_artifact(
+                "custom",
+                "investigation context",
+                progress_callback=gui_progress,
+                cancel_check=lambda: cancel_state["cancelled"],
+            )
+    finally:
+        _RATE_LIMIT_STATE.pop(StreamingProgressProvider._PROVIDER_NAME, None)
+
+    assert provider.pulled_chunks == 1
+    assert provider.pulled_chunks < provider.total_chunks

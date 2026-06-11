@@ -308,6 +308,9 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
 
         Raises:
             AIProviderError: On empty response or API failure.
+            Exception: Any exception raised by ``progress_callback`` aborts
+                the stream and propagates unchanged (this is how mid-stream
+                cancellation takes effect).
         """
         if progress_callback is None:
             return self.analyze_with_attachments(

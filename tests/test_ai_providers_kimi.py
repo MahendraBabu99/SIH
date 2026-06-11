@@ -36,6 +36,10 @@ def _raise_after_chunks(chunks: list[SimpleNamespace], error: Exception):
     raise error
 
 
+class _CallbackAbortError(Exception):
+    """Custom exception raised by test progress callbacks to abort streams."""
+
+
 # ---------------------------------------------------------------------------
 # KimiProvider
 # ---------------------------------------------------------------------------
@@ -128,6 +132,55 @@ class TestKimiProvider(unittest.TestCase):
         self.assertIn("Kimi thinking.", progress_updates[-1]["thinking_text"])
         kwargs = mock_client.chat.completions.create.call_args.kwargs
         self.assertTrue(kwargs["stream"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_callback_exception_aborts_stream(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """A raising progress callback aborts the stream mid-flight."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(reasoning_content="Kimi thinking. "),
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Partial answer. "))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Rest of answer."))]
+            ),
+        ]
+        pulled: list[int] = []
+
+        def _recording_stream():
+            """Yield mocked stream chunks while recording consumption."""
+            for index, chunk in enumerate(chunks):
+                pulled.append(index)
+                yield chunk
+
+        mock_client.chat.completions.create.return_value = _recording_stream()
+
+        def cancelling_callback(_payload: dict[str, str]) -> None:
+            """Support test behavior for cancelling_callback."""
+            raise _CallbackAbortError("cancel requested")
+
+        provider = KimiProvider(api_key="sk-test")
+        with self.assertRaises(_CallbackAbortError):
+            provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=cancelling_callback,
+            )
+
+        self.assertEqual(pulled, [0])
+        _RATE_LIMIT_STATE.pop("Kimi", None)
 
     @patch("openai.OpenAI")
     def test_analyze_with_progress_reads_reasoning_content_from_model_extra(

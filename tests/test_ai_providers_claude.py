@@ -34,6 +34,10 @@ def _raise_after_chunks(chunks: list[SimpleNamespace], error: Exception):
     raise error
 
 
+class _CallbackAbortError(Exception):
+    """Custom exception raised by test progress callbacks to abort streams."""
+
+
 # ---------------------------------------------------------------------------
 # ClaudeProvider
 # ---------------------------------------------------------------------------
@@ -105,6 +109,54 @@ class TestClaudeProvider(unittest.TestCase):
         self.assertIn("Claude thinking.", progress_updates[-1]["thinking_text"])
         kwargs = mock_client.messages.create.call_args.kwargs
         self.assertTrue(kwargs["stream"])
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_callback_exception_aborts_stream(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        """A raising progress callback aborts the stream mid-flight."""
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+
+        chunks = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="Claude thinking. "),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="Partial answer. "),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="Rest of answer."),
+            ),
+        ]
+        pulled: list[int] = []
+
+        def _recording_stream():
+            """Yield mocked stream events while recording consumption."""
+            for index, event in enumerate(chunks):
+                pulled.append(index)
+                yield event
+
+        mock_client.messages.create.return_value = _recording_stream()
+
+        def cancelling_callback(_payload: dict[str, str]) -> None:
+            """Support test behavior for cancelling_callback."""
+            raise _CallbackAbortError("cancel requested")
+
+        provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+        with self.assertRaises(_CallbackAbortError):
+            provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=cancelling_callback,
+            )
+
+        self.assertEqual(pulled, [0])
+        _RATE_LIMIT_STATE.pop("Claude", None)
 
     @patch("anthropic.Anthropic")
     def test_analyze_with_progress_uses_attachment_blocks_for_streaming(

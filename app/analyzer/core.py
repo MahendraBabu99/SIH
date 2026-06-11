@@ -586,7 +586,9 @@ class ForensicAnalyzer:
 
         Raises:
             AnalysisCancelledError: If cancellation is requested before a
-                provider call or during retry backoff.
+                provider call, during retry backoff, or by the time the
+                final attempt has failed (so a cancellation surfacing on
+                the last attempt is recorded as cancelled, not failed).
             Exception: The last transient error (including AIProviderError)
                 after all retries are exhausted.
         """
@@ -607,6 +609,7 @@ class ForensicAnalyzer:
                     )
                     raise_if_cancelled(cancel_check)
                     self._sleep_with_cancel(delay, cancel_check)
+        raise_if_cancelled(cancel_check)
         raise last_error  # type: ignore[misc]
 
     # ------------------------------------------------------------------

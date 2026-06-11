@@ -571,6 +571,12 @@ def _run_stream_with_rate_limit_retries(
     reasoning output is visible, automatic retry is unsafe because it can
     duplicate already-delivered text.
 
+    Exceptions raised by the caller-supplied progress callback (delivered by
+    the shared progress plumbing as ``ProgressCallbackError``) are unwrapped
+    and re-raised unchanged before any error mapping, so a user cancellation
+    raised mid-stream aborts the stream cleanly instead of being wrapped
+    into ``AIProviderError`` or misreported as a retryable provider failure.
+
     Args:
         stream_factory: Callable that opens and returns the provider stream.
         stream_text_iterator: Callable that converts a provider stream into
@@ -590,7 +596,11 @@ def _run_stream_with_rate_limit_retries(
         AIProviderError: If the stream is empty, rate limits persist, a
             rate limit occurs after partial output, or another provider error
             is mapped by ``map_error``.
+        Exception: The original exception raised by a progress callback
+            (for example the analyzer's cancellation signal), re-raised
+            unwrapped.
     """
+    from .progress import ProgressCallbackError
     from .utils import stream_chunk_answer_text, stream_chunk_has_text
 
     state = _get_rate_limit_state(provider_name)
@@ -619,6 +629,12 @@ def _run_stream_with_rate_limit_retries(
 
             _reset_rate_limit_state(state)
             return
+        except ProgressCallbackError as callback_error:
+            # Callback-originated abort (most commonly the analyzer's
+            # mid-stream cancellation). Re-raise the original exception
+            # unchanged so it is neither mapped to AIProviderError nor
+            # treated as a retryable provider failure.
+            raise callback_error.original from None
         except rate_limit_error_type as error:
             last_error = error
             retry_after = _record_rate_limit_error(state, error, retry_count)

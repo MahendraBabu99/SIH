@@ -30,11 +30,16 @@ from app.ai_providers.base import (
     RATE_LIMIT_MAX_RETRIES,
     _RATE_LIMIT_STATE,
 )
+from app.ai_providers.progress import ProgressCallbackError
 from app.ai_providers.utils import (
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
     upload_and_request_via_responses_api,
 )
+
+
+class _CallbackAbortError(Exception):
+    """Custom exception raised by test progress callbacks to abort streams."""
 
 
 def _make_openai_response(text: str) -> SimpleNamespace:
@@ -379,6 +384,53 @@ class TestLocalProvider(unittest.TestCase):
         self.assertTrue(progress_updates)
         self.assertEqual(progress_updates[-1]["status"], "thinking")
         self.assertIn("Thinking step 1.", progress_updates[-1]["thinking_text"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_callback_exception_aborts_stream(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """A raising progress callback aborts the stream mid-flight."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(reasoning="Thinking step 1. "))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Partial answer. "))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Rest of answer."))]
+            ),
+        ]
+        pulled: list[int] = []
+
+        def _recording_stream():
+            """Yield mocked stream chunks while recording consumption."""
+            for index, chunk in enumerate(chunks):
+                pulled.append(index)
+                yield chunk
+
+        mock_client.chat.completions.create.return_value = _recording_stream()
+
+        def cancelling_callback(_payload: dict[str, str]) -> None:
+            """Support test behavior for cancelling_callback."""
+            raise _CallbackAbortError("cancel requested")
+
+        provider = LocalProvider(
+            base_url="http://localhost:11434/v1", model="llama3.1:70b"
+        )
+        with self.assertRaises(_CallbackAbortError):
+            provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=cancelling_callback,
+            )
+
+        self.assertEqual(pulled, [0])
+        _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
 
     @patch("openai.OpenAI")
     def test_analyze_with_progress_removes_streamed_reasoning_prefix_from_final_answer(
@@ -1092,22 +1144,25 @@ class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
         callback.assert_not_called()
         self.assertEqual(result[0], now)
 
-    def test_handles_callback_exception(self) -> None:
-        """Verify the behavior described by this test name."""
-        def bad_callback(payload):
-            """Support test behavior for bad_callback."""
-            raise RuntimeError("callback failed")
+    def test_propagates_callback_exception(self) -> None:
+        """A raising callback aborts the emit instead of being swallowed."""
+        original = RuntimeError("callback failed")
+
+        def cancelling_callback(payload):
+            """Support test behavior for cancelling_callback."""
+            raise original
 
         long_text = "x" * 100
-        result = LocalProvider._emit_progress_if_needed(
-            progress_callback=bad_callback,
-            current_thinking=long_text,
-            current_answer="",
-            last_emit_at=0.0,
-            last_sent_thinking="",
-            last_sent_answer="",
-        )
-        self.assertGreater(result[0], 0.0)
+        with self.assertRaises(ProgressCallbackError) as ctx:
+            LocalProvider._emit_progress_if_needed(
+                progress_callback=cancelling_callback,
+                current_thinking=long_text,
+                current_answer="",
+                last_emit_at=0.0,
+                last_sent_thinking="",
+                last_sent_answer="",
+            )
+        self.assertIs(ctx.exception.original, original)
 
 
 # ---------------------------------------------------------------------------

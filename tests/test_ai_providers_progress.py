@@ -1,6 +1,7 @@
 """Tests for the shared AI provider streaming-progress plumbing.
 
-Covers the best-effort progress emitter, the throttled emitter, the shared
+Covers the progress emitter (including callback-exception propagation, the
+mechanism behind mid-stream cancellation), the throttled emitter, the shared
 progress-chunk generator, the final streamed-response validation, and the
 consolidation guarantees that keep Claude, Kimi, and Local providers on the
 same implementation.
@@ -14,6 +15,7 @@ from unittest.mock import MagicMock
 from app.ai_providers.base import AIProviderError
 from app.ai_providers.local_provider import LocalProvider
 from app.ai_providers.progress import (
+    ProgressCallbackError,
     emit_progress,
     emit_progress_if_needed,
     finalize_progress_stream_response,
@@ -23,7 +25,7 @@ from app.ai_providers.utils import StreamedResponseChunk
 
 
 class TestEmitProgress(unittest.TestCase):
-    """Grouped tests for the best-effort progress emitter."""
+    """Grouped tests for the shared progress emitter."""
 
     def test_invokes_callback_with_thinking_payload(self) -> None:
         """The callback receives status plus both text channels."""
@@ -37,13 +39,18 @@ class TestEmitProgress(unittest.TestCase):
             }
         )
 
-    def test_swallows_callback_exception(self) -> None:
-        """A broken callback must not abort the caller."""
-        def bad_callback(payload: dict[str, str]) -> None:
-            """Support test behavior for bad_callback."""
-            raise RuntimeError("callback failed")
+    def test_propagates_callback_exception(self) -> None:
+        """A callback exception aborts the caller via the wrapper type."""
+        original = RuntimeError("callback failed")
 
-        emit_progress(bad_callback, thinking_text="t", partial_text="a")
+        def cancelling_callback(payload: dict[str, str]) -> None:
+            """Support test behavior for cancelling_callback."""
+            raise original
+
+        with self.assertRaises(ProgressCallbackError) as ctx:
+            emit_progress(cancelling_callback, thinking_text="t", partial_text="a")
+        self.assertIs(ctx.exception.original, original)
+        self.assertIs(ctx.exception.__cause__, original)
 
 
 class TestEmitProgressIfNeeded(unittest.TestCase):
@@ -163,6 +170,36 @@ class TestStreamProgressChunks(unittest.TestCase):
             )
         )
         callback.assert_not_called()
+
+    def test_callback_exception_aborts_stream_without_consuming_chunks(self) -> None:
+        """A raising callback stops the stream before remaining chunks are pulled."""
+        chunks = [
+            StreamedResponseChunk(reasoning_text="thinking..."),
+            StreamedResponseChunk(answer_text="Hello "),
+            StreamedResponseChunk(answer_text="world."),
+        ]
+        pulled: list[int] = []
+
+        def _recording_chunks():
+            """Yield chunks while recording how many were pulled."""
+            for index, chunk in enumerate(chunks):
+                pulled.append(index)
+                yield chunk
+
+        def cancelling_callback(payload: dict[str, str]) -> None:
+            """Support test behavior for cancelling_callback."""
+            raise RuntimeError("cancel now")
+
+        with self.assertRaises(ProgressCallbackError):
+            list(
+                stream_progress_chunks(
+                    chunks=_recording_chunks(),
+                    progress_callback=cancelling_callback,
+                    thinking_parts=[],
+                    answer_parts=[],
+                )
+            )
+        self.assertEqual(pulled, [0])
 
 
 class TestFinalizeProgressStreamResponse(unittest.TestCase):
