@@ -31,12 +31,14 @@ from typing import Any, Callable, Iterable, Mapping
 from ..ai_providers import AIProviderError, create_provider
 from ..ai_providers.utils import _inline_attachment_data_into_prompt
 from .cancellation import AnalysisCancelledError as _AnalysisCancelledError, raise_if_cancelled
-from .chunking import analyze_artifact_chunked, split_csv_and_suffix, split_csv_into_chunks
+from .chunking import (
+    analyze_artifact_chunked, find_csv_section_anchor, split_csv_and_suffix, split_csv_into_chunks,
+)
 from .citations import match_column_name, timestamp_found_in_csv, timestamp_lookup_keys, validate_citations
 from .constants import (
     AI_MAX_TOKENS, AI_RETRY_ATTEMPTS, AI_RETRY_BASE_DELAY,
     ARTIFACT_DEDUPLICATION_ENABLED, CITATION_SPOT_CHECK_LIMIT,
-    CSV_DATA_SECTION_RE, DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH, DEFAULT_ARTIFACT_PROMPT_TEMPLATE,
+    DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH, DEFAULT_ARTIFACT_PROMPT_TEMPLATE,
     DEFAULT_ARTIFACT_PROMPT_TEMPLATE_SMALL_CONTEXT, DEFAULT_CHUNK_MERGE_PROMPT_TEMPLATE,
     DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS, DEFAULT_SUMMARY_PROMPT_TEMPLATE,
     DEFAULT_SYSTEM_PROMPT, MAX_MERGE_ROUNDS, PROJECT_ROOT, TOKEN_CHAR_RATIO,
@@ -222,6 +224,15 @@ def _replace_inline_csv_with_attachment_reference(
 ) -> tuple[str, bool]:
     """Replace inline CSV evidence with a file-attachment reference.
 
+    The CSV section heading is located via
+    :func:`app.analyzer.chunking.find_csv_section_anchor`, which anchors on
+    the heading that actually introduces the generated CSV body instead of
+    the first heading-like text. This keeps prompt sections that precede
+    the real CSV section (artifact guidance, task and output-format
+    instructions, host context, statistics) intact even when
+    analyst-provided context or evidence values contain look-alike
+    ``## Full Data (CSV ...)`` lines.
+
     Args:
         user_prompt: Fully rendered artifact prompt that may contain inline
             CSV evidence rows.
@@ -235,7 +246,7 @@ def _replace_inline_csv_with_attachment_reference(
         return user_prompt, False
 
     notice = _format_attachment_evidence_notice(attachments)
-    marker_match = CSV_DATA_SECTION_RE.search(user_prompt)
+    marker_match = find_csv_section_anchor(user_prompt)
     if marker_match is not None:
         prompt_prefix = user_prompt[: marker_match.end()]
         csv_data, context_suffix = split_csv_and_suffix(user_prompt[marker_match.end():])

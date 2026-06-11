@@ -37,6 +37,7 @@ LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "analyze_artifact_chunked",
+    "find_csv_section_anchor",
     "split_csv_and_suffix",
     "split_csv_into_chunks",
 ]
@@ -315,6 +316,45 @@ def split_csv_and_suffix(raw_csv_tail: str) -> tuple[str, str]:
     return csv_data, suffix
 
 
+def find_csv_section_anchor(prompt: str) -> re.Match[str] | None:
+    """Locate the heading match that introduces the genuine inline CSV body.
+
+    The ``## Full Data (CSV ...)`` heading pattern can also appear inside
+    analyst-supplied investigation context or evidence-derived values (for
+    example a re-pasted previous prompt or a statistics line), so the first
+    regex match is not necessarily the real CSV evidence section. Heading
+    matches are scanned from the end of the prompt, and the first candidate
+    whose tail parses to a CSV body starting with the analyzer-generated
+    ``row_ref`` citation header is selected. When no candidate has a
+    ``row_ref`` header, the last candidate with a non-empty CSV body is
+    used; failing that, the last heading match overall.
+
+    Args:
+        prompt: Fully rendered artifact prompt text.
+
+    Returns:
+        The selected heading regex match, or ``None`` when the heading
+        pattern does not match anywhere in the prompt.
+    """
+    matches = list(CSV_DATA_SECTION_RE.finditer(prompt))
+    if not matches:
+        return None
+
+    last_with_data: re.Match[str] | None = None
+    for match in reversed(matches):
+        csv_data, _context_suffix = split_csv_and_suffix(prompt[match.end():])
+        stripped_csv = csv_data.strip()
+        if not stripped_csv:
+            continue
+        if stripped_csv.startswith("row_ref,"):
+            return match
+        if last_with_data is None:
+            last_with_data = match
+    if last_with_data is not None:
+        return last_with_data
+    return matches[-1]
+
+
 def analyze_artifact_chunked(
     artifact_prompt: str,
     artifact_key: str,
@@ -379,7 +419,7 @@ def analyze_artifact_chunked(
         AnalysisCancelledError: If cancellation has been requested.
     """
     raise_if_cancelled(cancel_check)
-    marker_match = CSV_DATA_SECTION_RE.search(artifact_prompt)
+    marker_match = find_csv_section_anchor(artifact_prompt)
     if marker_match is None:
         _ensure_prompt_fits_budget(
             system_prompt=system_prompt,

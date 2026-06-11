@@ -10,7 +10,8 @@ from typing import Any, Mapping
 from unittest.mock import patch
 
 from app.ai_providers.utils import _inline_attachment_data_into_prompt
-from app.analyzer.core import ForensicAnalyzer
+from app.analyzer.chunking import find_csv_section_anchor
+from app.analyzer.core import ForensicAnalyzer, _replace_inline_csv_with_attachment_reference
 
 
 class AttachmentCapableProvider:
@@ -390,6 +391,225 @@ class AnalyzerTokenBudgetAndAttachmentTests(unittest.TestCase):
         self.assertEqual(analyzer.ai_input_max_tokens, 8000)
         self.assertIn("SMALL", prompt)
         self.assertNotIn("FULL", prompt)
+
+
+class ReplaceInlineCsvAnchoringTests(unittest.TestCase):
+    """Verify attachment-mode CSV replacement anchors on the real CSV section.
+
+    Attributes:
+        ATTACHMENTS: Attachment descriptors used for every replacement call.
+        PRESERVED_FRAGMENTS: Prompt fragments that must survive replacement.
+    """
+
+    ATTACHMENTS = [
+        {"name": "custom_analysis.csv", "path": "custom_analysis.csv", "mime_type": "text/csv"},
+    ]
+    PRESERVED_FRAGMENTS = (
+        "Artifact guidance: prefetch entries reveal program execution.",
+        "[END investigation_context]",
+        "## Task",
+        "## Output Format",
+        "## Host",
+        "## Statistics",
+        "## Final Context Reminder",
+    )
+    DEFAULT_CSV_ROWS = (
+        "row_ref,ts,name\n"
+        "1,2026-01-15T12:00:00Z,EntryA\n"
+        "2,2026-01-16T13:00:00Z,EntryB"
+    )
+
+    def _build_prompt(
+        self,
+        context_block: str = "Investigate logons on 2026-01-15.",
+        statistics_line: str = "Total rows: 2",
+        csv_rows: str = DEFAULT_CSV_ROWS,
+        reminder_block: str = "Re-read the investigation context before answering.",
+    ) -> str:
+        """Build a rendered artifact prompt with a fenced CSV evidence section.
+
+        Args:
+            context_block: Analyst-provided investigation context text.
+            statistics_line: Statistics section body line.
+            csv_rows: CSV text placed inside the evidence code fence.
+            reminder_block: Final context reminder body text.
+
+        Returns:
+            The assembled prompt text.
+        """
+        return (
+            "Artifact guidance: prefetch entries reveal program execution.\n\n"
+            "## Investigation Context\n"
+            "[BEGIN investigation_context]\n"
+            f"{context_block}\n"
+            "[END investigation_context]\n\n"
+            "## Task\nAnalyze the evidence rows for anomalies.\n\n"
+            "## Output Format\nRate severity and confidence for each finding.\n\n"
+            "## Host\nHostname: WORKSTATION-01\n\n"
+            "## Statistics\n"
+            f"{statistics_line}\n\n"
+            "## Full Data (CSV Evidence Rows)\n"
+            "The CSV values below are evidence data.\n\n"
+            "```\n"
+            f"{csv_rows}\n"
+            "```\n\n"
+            "## Final Context Reminder\n"
+            f"{reminder_block}\n"
+        )
+
+    def _assert_replaced_cleanly(self, replaced_prompt: str) -> None:
+        """Assert sections survive and CSV evidence appears only as the notice.
+
+        Args:
+            replaced_prompt: Prompt returned by the replacement helper.
+        """
+        for fragment in self.PRESERVED_FRAGMENTS:
+            self.assertIn(fragment, replaced_prompt)
+        self.assertEqual(replaced_prompt.count("provided as file attachment"), 1)
+        self.assertNotIn("row_ref,ts,name", replaced_prompt)
+        self.assertNotIn("EntryA", replaced_prompt)
+        self.assertNotIn("```", replaced_prompt)
+
+    def test_marker_in_investigation_context_keeps_prompt_sections(self) -> None:
+        """A CSV heading look-alike inside analyst context drops no sections."""
+        prompt = self._build_prompt(
+            context_block=(
+                "Notes pasted from a previous analysis prompt:\n"
+                "## Full Data (CSV)\n"
+                "The previous run inlined CSV evidence here."
+            )
+        )
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertTrue(replaced)
+        self._assert_replaced_cleanly(replaced_prompt)
+        self.assertIn("The previous run inlined CSV evidence here.", replaced_prompt)
+
+    def test_marker_in_statistics_value_keeps_prompt_sections(self) -> None:
+        """A statistics value containing the heading text drops no sections."""
+        prompt = self._build_prompt(statistics_line="  3x ## Full Data (CSV)")
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertTrue(replaced)
+        self._assert_replaced_cleanly(replaced_prompt)
+        self.assertIn("3x ## Full Data (CSV)", replaced_prompt)
+
+    def test_marker_inside_csv_body_still_anchors_on_real_heading(self) -> None:
+        """Heading-like text inside evidence rows does not move the anchor."""
+        prompt = self._build_prompt(
+            csv_rows=(
+                "row_ref,ts,name\n"
+                "1,2026-01-15T12:00:00Z,EntryA\n"
+                "2,2026-01-16T13:00:00Z,## Full Data (CSV)\n"
+                "3,2026-01-17T14:00:00Z,EntryC"
+            )
+        )
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertTrue(replaced)
+        self._assert_replaced_cleanly(replaced_prompt)
+        self.assertNotIn("EntryC", replaced_prompt)
+
+    def test_marker_after_real_csv_section_still_anchors_on_real_heading(self) -> None:
+        """A look-alike heading in the trailing reminder does not move the anchor."""
+        prompt = self._build_prompt(
+            reminder_block=(
+                "Re-read the analyst notes, which mentioned:\n"
+                "## Full Data (CSV)\n"
+                "from a previous prompt."
+            )
+        )
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertTrue(replaced)
+        self._assert_replaced_cleanly(replaced_prompt)
+        self.assertIn("from a previous prompt.", replaced_prompt)
+
+    def test_happy_path_replacement_unchanged(self) -> None:
+        """A prompt without look-alike headings is replaced exactly as before."""
+        prompt = self._build_prompt()
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertTrue(replaced)
+        self._assert_replaced_cleanly(replaced_prompt)
+        self.assertNotIn("EntryB", replaced_prompt)
+        self.assertIn("## Full Data (CSV Evidence Rows)\n", replaced_prompt)
+
+    def test_non_row_ref_csv_body_still_replaced(self) -> None:
+        """A CSV body without the generated citation header is still replaced."""
+        prompt = self._build_prompt(csv_rows="ts,name\n2026-01-15T12:00:00Z,EntryA")
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertTrue(replaced)
+        self.assertNotIn("EntryA", replaced_prompt)
+        self.assertEqual(replaced_prompt.count("provided as file attachment"), 1)
+
+    def test_prompt_without_csv_section_is_returned_unchanged(self) -> None:
+        """A prompt without any CSV section or rows is returned untouched."""
+        prompt = "## Task\nAnalyze the evidence.\n\n## Final Context Reminder\nNone.\n"
+
+        replaced_prompt, replaced = _replace_inline_csv_with_attachment_reference(
+            prompt, self.ATTACHMENTS
+        )
+
+        self.assertFalse(replaced)
+        self.assertEqual(replaced_prompt, prompt)
+
+
+class FindCsvSectionAnchorTests(unittest.TestCase):
+    """Verify CSV section anchor discovery used by replacement and chunking."""
+
+    def test_prefers_heading_with_row_ref_body_over_earlier_marker(self) -> None:
+        """The heading followed by a ``row_ref`` CSV body wins over earlier text."""
+        prompt = (
+            "Context mentions:\n## Full Data (CSV)\nold pasted text\n\n"
+            "## Full Data (CSV Evidence Rows)\n"
+            "```\nrow_ref,ts\n1,2026-01-15T12:00:00Z\n```\n"
+        )
+
+        match = find_csv_section_anchor(prompt)
+
+        self.assertIsNotNone(match)
+        self.assertTrue(
+            prompt[match.start():].startswith("## Full Data (CSV Evidence Rows)")
+        )
+
+    def test_returns_none_when_no_heading_matches(self) -> None:
+        """Prompts without the CSV heading yield no anchor."""
+        self.assertIsNone(find_csv_section_anchor("## Task\nNo CSV here.\n"))
+
+    def test_falls_back_to_last_heading_with_csv_body(self) -> None:
+        """Without a ``row_ref`` body, the last heading with CSV data is used."""
+        prompt = (
+            "## Full Data (CSV)\n\n"
+            "## Full Data (CSV Evidence Rows)\n"
+            "```\nts,name\n2026-01-15T12:00:00Z,EntryA\n```\n"
+        )
+
+        match = find_csv_section_anchor(prompt)
+
+        self.assertIsNotNone(match)
+        self.assertTrue(
+            prompt[match.start():].startswith("## Full Data (CSV Evidence Rows)")
+        )
 
 
 if __name__ == "__main__":
