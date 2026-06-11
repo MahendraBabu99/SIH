@@ -16,8 +16,8 @@ from collections.abc import Sequence
 from runtime_compat import UnsupportedPythonVersionError, assert_supported_python_version
 
 _MCP_INSTALL_MESSAGE = (
-    "AIFT MCP support requires the optional 'mcp' package. "
-    "Install it with: pip install -r requirements-mcp.txt"
+    "AIFT MCP support requires the 'mcp' package. "
+    "Install it with: pip install -r requirements.txt"
 )
 _DEFAULT_HTTP_HOST = "127.0.0.1"
 _DEFAULT_HTTP_PORT = 8765

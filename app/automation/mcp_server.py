@@ -19,8 +19,8 @@ from app.utils.version import TOOL_VERSION
 LOGGER = logging.getLogger(__name__)
 
 MCP_INSTALL_MESSAGE = (
-    "AIFT MCP support requires the optional 'mcp' package. "
-    "Install it with: pip install -r requirements-mcp.txt"
+    "AIFT MCP support requires the 'mcp' package. "
+    "Install it with: pip install -r requirements.txt"
 )
 
 MCP_TOOL_NAMES = [

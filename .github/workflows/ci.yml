@@ -62,11 +62,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install core and optional MCP dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install -r requirements-mcp.txt
 
       - name: Check MCP entry point help
         run: python aift_mcp.py --help

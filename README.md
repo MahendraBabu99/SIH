@@ -165,7 +165,6 @@ The automation API accepts JSON path-based runs and multipart uploads. Runs can 
 AIFT includes an optional local Model Context Protocol server for MCP-capable AI clients. It is an adapter over the same headless automation engine used by the CLI and REST API.
 
 ```bash
-python -m pip install -r requirements-mcp.txt
 python aift_mcp.py
 ```
 
@@ -264,7 +263,7 @@ When artifact data exceeds the context budget, AIFT chunks retained CSV data acr
 - Disk space for parsed CSVs and generated outputs; plan for roughly 2x evidence size during active work
 - Optional AI provider credentials or a local OpenAI-compatible model endpoint
 
-Core AIFT dependencies are Python packages only. MCP support is optional and installed separately with `requirements-mcp.txt`.
+All AIFT dependencies are Python packages installed from `requirements.txt`, including the MCP SDK used by the optional `aift_mcp.py` server.
 
 ---
 

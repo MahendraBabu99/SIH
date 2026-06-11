@@ -137,7 +137,7 @@ class TestMCPServerFactory(unittest.TestCase):
             with self.assertRaises(mcp_server.MissingMCPDependencyError) as ctx:
                 mcp_server.build_mcp_server()
 
-        self.assertIn("pip install -r requirements-mcp.txt", str(ctx.exception))
+        self.assertIn("pip install -r requirements.txt", str(ctx.exception))
 
     def test_build_mcp_server_accepts_transport_bind_settings(self) -> None:
         """HTTP bind settings should be passed to the FastMCP constructor."""
@@ -1289,7 +1289,7 @@ class TestAIFTMCPEntryPoint(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         fake_stdout.write.assert_not_called()
         stderr_text = "".join(call.args[0] for call in fake_stderr.write.call_args_list)
-        self.assertIn("pip install -r requirements-mcp.txt", stderr_text)
+        self.assertIn("pip install -r requirements.txt", stderr_text)
 
     def test_help_text_goes_to_stderr_only(self) -> None:
         """Argparse help must not write non-protocol text to stdout."""
@@ -1361,7 +1361,7 @@ class TestAIFTMCPEntryPoint(unittest.TestCase):
             with self.assertRaises(aift_mcp.MCPStartupError) as ctx:
                 aift_mcp._build_and_run_server("stdio")
 
-        self.assertIn("pip install -r requirements-mcp.txt", str(ctx.exception))
+        self.assertIn("pip install -r requirements.txt", str(ctx.exception))
 
 
 class TestMCPProtocolSmoke(unittest.TestCase):
@@ -1378,7 +1378,7 @@ class TestMCPProtocolSmoke(unittest.TestCase):
         except (AttributeError, ImportError) as exc:
             self.skipTest(
                 "optional MCP Python SDK client APIs are not available; "
-                "install/update with pip install -r requirements-mcp.txt "
+                "install/update with pip install -r requirements.txt "
                 f"({type(exc).__name__}: {exc})"
             )
 

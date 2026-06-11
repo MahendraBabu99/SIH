@@ -9,7 +9,7 @@ on:
       - 'aift_cli.py'
       - 'aift_mcp.py'
       - 'runtime_compat.py'
-      - 'requirements-mcp.txt'
+      - 'requirements.txt'
       - 'example_reports/**'
   workflow_dispatch:
 
