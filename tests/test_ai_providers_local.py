@@ -325,15 +325,27 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_context_length_error(self, mock_openai_cls: MagicMock) -> None:
-        """Verify the behavior described by this test name."""
-        class _FakeBadRequestError(Exception):
-            """Grouped tests for _FakeBadRequestError behavior."""
+        """A context-length 400 surfaces the friendly guidance message.
+
+        The fake exception hierarchy mirrors the real ``openai`` SDK, where
+        ``BadRequestError`` subclasses ``APIError``. This pins the fix for the
+        regression where the generic ``APIError`` branch intercepted
+        ``BadRequestError`` before context-length detection could run.
+        """
+        class _FakeAPIError(Exception):
+            """Fake ``openai.APIError`` base, mirroring the real SDK."""
+            pass
+
+        class _FakeBadRequestError(_FakeAPIError):
+            """Fake ``openai.BadRequestError`` subclassing ``APIError`` like the real SDK."""
             pass
 
         mock_client = MagicMock()
         mock_openai_cls.return_value = mock_client
 
-        with patch("openai.BadRequestError", _FakeBadRequestError):
+        with patch("openai.APIError", _FakeAPIError), patch(
+            "openai.BadRequestError", _FakeBadRequestError
+        ):
             provider = LocalProvider(
                 base_url="http://localhost:11434/v1",
                 model="test",
@@ -344,6 +356,49 @@ class TestLocalProvider(unittest.TestCase):
             with self.assertRaises(AIProviderError) as ctx:
                 provider.analyze("system", "user")
             self.assertIn("context length", str(ctx.exception))
+            self.assertIn("Reduce prompt size", str(ctx.exception))
+
+    @patch("openai.OpenAI")
+    def test_non_context_bad_request_error_uses_rejection_message(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """A non-context-length 400 maps to the shared rejection wording.
+
+        With ``BadRequestError`` delegated to the base mapping, generic 400s
+        produce the base 'request was rejected' message rather than the old
+        'Local provider API error' wording, matching the other providers.
+        """
+        class _FakeAPIError(Exception):
+            """Fake ``openai.APIError`` base, mirroring the real SDK."""
+            pass
+
+        class _FakeBadRequestError(_FakeAPIError):
+            """Fake ``openai.BadRequestError`` subclassing ``APIError`` like the real SDK."""
+            pass
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        with patch("openai.APIError", _FakeAPIError), patch(
+            "openai.BadRequestError", _FakeBadRequestError
+        ):
+            provider = LocalProvider(
+                base_url="http://localhost:11434/v1",
+                model="test",
+            )
+            mock_client.chat.completions.create.side_effect = _FakeBadRequestError(
+                "invalid parameter: response_format"
+            )
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze("system", "user")
+            message = str(ctx.exception)
+            self.assertIn(
+                "Local/OpenAI-compatible request was rejected", message
+            )
+            self.assertIn("invalid parameter: response_format", message)
+            self.assertNotIn("context length", message)
+            self.assertNotIn("Local provider API error", message)
 
     @patch("openai.OpenAI")
     def test_analyze_with_progress_streams_thinking_and_returns_final_text(

@@ -125,6 +125,15 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
         timeout detection for connection errors, 404 detection for API
         errors, and local-specific authentication messaging.
 
+        ``BadRequestError`` is delegated to the base mapping BEFORE the
+        generic ``APIError`` branch. In the real ``openai`` SDK,
+        ``BadRequestError`` subclasses ``APIError``, so without this
+        delegation the generic branch would intercept context-length 400s
+        and the user would see a raw API error instead of the actionable
+        context-length guidance. ``NotFoundError`` (404) is not a
+        ``BadRequestError`` subclass, so the missing-``/v1`` base-URL
+        guidance is unaffected.
+
         Args:
             error: The raw SDK or network exception.
 
@@ -137,6 +146,8 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
             return AIProviderError(
                 "Local AI endpoint rejected authentication. Check `ai.local.api_key` if your server requires one."
             )
+        if isinstance(error, self._openai.BadRequestError):
+            return super()._map_api_error(error)
         if isinstance(error, self._openai.APIError):
             return self._make_api_error(error)
         return super()._map_api_error(error)
