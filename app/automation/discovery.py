@@ -24,6 +24,7 @@ from app.evidence.archives import ARCHIVE_EXTENSIONS
 from app.evidence.constants import DISSECT_EVIDENCE_EXTENSIONS
 from app.evidence.segments import (
     collect_segment_group_paths,
+    extend_segment_group_with_lettered,
     segment_identity,
     validate_segment_group_paths,
 )
@@ -121,7 +122,13 @@ def _is_hidden_or_skipped(path: Path) -> bool:
 
 
 def _has_supported_extension(path: Path) -> bool:
-    """Return True if *path* has a supported evidence extension."""
+    """Return True if *path* has a supported evidence extension.
+
+    Lettered EWF continuation segments (``.EAA`` and beyond) are
+    deliberately not matched here because their pattern overlaps common
+    unrelated extensions; they are pulled into discovery results through
+    their numeric anchor segment's sibling group instead.
+    """
     return (
         path.suffix.lower() in DISSECT_EVIDENCE_EXTENSIONS
         or segment_identity(path) is not None
@@ -162,7 +169,13 @@ def _deduplicate_segments(
     *,
     source_mode: str,
 ) -> list[EvidenceDescriptor]:
-    """Return descriptors for files, deduplicating split-image segments."""
+    """Return descriptors for files, deduplicating split-image segments.
+
+    Numeric split-image candidates are grouped and validated; groups whose
+    numeric run reaches segment 99 additionally pull in lettered EWF
+    continuation siblings (``.EAA`` and beyond) so every segment file is
+    hashed, even though lettered names never become standalone candidates.
+    """
     groups: dict[tuple[str, str], list[Path]] = {}
     non_segments: list[Path] = []
 
@@ -179,7 +192,9 @@ def _deduplicate_segments(
         descriptor_for_path(path, source_mode=source_mode) for path in non_segments
     ]
     for group in groups.values():
-        ordered_group = validate_segment_group_paths(group)
+        ordered_group = extend_segment_group_with_lettered(
+            validate_segment_group_paths(group)
+        )
         descriptors.append(
             descriptor_for_path(
                 ordered_group[0],

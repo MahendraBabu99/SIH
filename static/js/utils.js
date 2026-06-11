@@ -35,7 +35,7 @@ window.AIFT = (() => {
     ".tar", ".gz", ".tgz", ".zip", ".7z",
   ];
   const EVIDENCE_ACCEPT = EVIDENCE_ACCEPT_EXTENSIONS.join(",");
-  const DROP_HELP = "Drag and drop evidence here (.E01-.E99, .dd, .raw, .vmdk, .vhd, .vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...)";
+  const DROP_HELP = "Drag and drop evidence here (.E01-.E99, .dd, .raw, .vmdk, .vhd, .vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...). For split sets that continue past .E99 (.EAA and beyond), use Local Path or Scan Directory mode.";
   const CONFIDENCE_TOKEN_PATTERN = /\bconfidence\b(?:\s+level)?\s*(?::|=|-|\bis\b)?\s*(?:\*\*|__|\*|_|`|<strong>|<em>|<code>)*(CRITICAL|HIGH|MEDIUM|LOW)(?![A-Za-z0-9])(?:\*\*|__|\*|_|`|<\/strong>|<\/em>|<\/code>)*/gi;
   const AI_MAX_TOKENS_WARNING_THRESHOLD = 32000;
   const CONFIDENCE_CLASS_MAP = {

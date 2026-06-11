@@ -596,6 +596,55 @@ class TestDiscoverEvidence(unittest.TestCase):
         self.assertNotIn("case_b.E02", names)
         self.assertEqual(len(result), 2)
 
+    def test_segment_descriptor_includes_lettered_continuations(self) -> None:
+        """A >99-segment EWF set yields one descriptor hashing lettered files."""
+        for segment in range(1, 100):
+            self._touch(f"image.E{segment:02d}")
+        self._touch("image.EAA")
+        self._touch("image.EAB")
+
+        result = self._discover_with_dissect_fail(self.root)
+
+        self.assertEqual(len(result), 1)
+        descriptor = result[0]
+        self.assertEqual(descriptor.dissect_path.name, "image.E01")
+        names = [path.name for path in descriptor.files_to_hash]
+        self.assertEqual(len(names), 101)
+        self.assertEqual(names[0], "image.E01")
+        self.assertEqual(names[-2:], ["image.EAA", "image.EAB"])
+
+    def test_lettered_lookalike_sibling_stays_standalone_below_99(self) -> None:
+        """A same-stem .img beside a small EWF set is separate evidence."""
+        self._touch("image.E01")
+        self._touch("image.E02")
+        self._touch("image.img")
+
+        result = self._discover_with_dissect_fail(self.root)
+
+        names = sorted(descriptor.dissect_path.name for descriptor in result)
+        self.assertEqual(names, ["image.E01", "image.img"])
+        segment_descriptor = next(
+            descriptor
+            for descriptor in result
+            if descriptor.dissect_path.name == "image.E01"
+        )
+        self.assertEqual(
+            [path.name for path in segment_descriptor.files_to_hash],
+            ["image.E01", "image.E02"],
+        )
+
+    def test_lone_lettered_segment_file_remains_unsupported(self) -> None:
+        """Pointing discovery directly at a lettered segment still raises."""
+        lettered = self._touch("image.EAA")
+        with self.assertRaises(ValueError):
+            discover_evidence(lettered)
+
+    def test_orphan_lettered_file_ignored_in_directory_scan(self) -> None:
+        """A lettered file with no numeric anchor is not discovered."""
+        self._touch("image.EAA")
+        result = self._discover_with_dissect_fail(self.root)
+        self.assertEqual(result, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -197,8 +197,13 @@ def unique_destination(path: Path) -> Path:
 def resolve_uploaded_dissect_path(uploaded_paths: list[Path]) -> Path:
     """Determine the primary Dissect target path from uploaded files.
 
-    Handles single files, split EWF/raw segment sets, and rejects mixed
-    archive-plus-segment uploads.
+    Handles single files, split EWF/raw segment sets (including lettered
+    EWF continuation segments such as ``.EAA`` when uploaded together with
+    their numeric anchors), and rejects mixed archive-plus-segment uploads.
+    Lettered continuation files (which overlap unrelated extensions such as
+    ``.iso`` or ``.img``) are resolved against the numeric anchor group by
+    ``validate_segment_group_paths``; an upload containing only lettered
+    names is rejected as not forming a recognized segment set.
 
     Args:
         uploaded_paths: List of uploaded evidence file paths.
@@ -226,10 +231,9 @@ def resolve_uploaded_dissect_path(uploaded_paths: list[Path]) -> Path:
     segment_groups: dict[tuple[str, str], list[tuple[int, Path]]] = {}
     for path in uploaded_paths:
         identity = segment_identity(path)
-        if identity is None:
-            continue
-        kind, base_name, segment_number = identity
-        segment_groups.setdefault((kind, base_name), []).append((segment_number, path))
+        if identity is not None:
+            kind, base_name, segment_number = identity
+            segment_groups.setdefault((kind, base_name), []).append((segment_number, path))
 
     if segment_groups:
         if len(segment_groups) > 1:

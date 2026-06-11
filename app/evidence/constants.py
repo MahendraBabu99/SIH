@@ -53,6 +53,11 @@ def _range_extensions(prefix: str, start: int, end: int, width: int) -> tuple[st
     return tuple(f"{prefix}{index:0{width}d}" for index in range(start, end + 1))
 
 
+# Lettered EWF continuation extensions (.EAA and beyond, used past segment
+# 99) are intentionally not enumerated here: the convention spans hundreds
+# of letter combinations. The backend accepts them when they accompany
+# their numeric anchor segments; the help text directs users with such
+# sets to Local Path or Scan Directory intake.
 EVIDENCE_UI_ACCEPT_EXTENSIONS = (
     *_range_extensions(".e", 1, 99, 2),
     *_range_extensions(".E", 1, 99, 2),
@@ -72,7 +77,9 @@ EVIDENCE_UI_ACCEPT_EXTENSIONS = (
 EVIDENCE_UI_ACCEPT = ",".join(EVIDENCE_UI_ACCEPT_EXTENSIONS)
 EVIDENCE_UI_HELP_TEXT = (
     "Drag and drop evidence here (.E01-.E99, .dd, .raw, .vmdk, .vhd, "
-    ".vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...)"
+    ".vhdx, .vdi, .qcow2, .zip, .7z, .tar, ...). For split sets that "
+    "continue past .E99 (.EAA and beyond), use Local Path or Scan "
+    "Directory mode."
 )
 
 
