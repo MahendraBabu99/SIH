@@ -179,10 +179,17 @@ def safe_rmtree(
 ) -> bool:
     """Remove a directory only if it passes safety checks.
 
-    Guards against accidentally deleting filesystem roots or directories
-    outside the known *cases_root* (or any of the *additional_allowed_roots*).
-    This is the single implementation of the safety-checked removal logic
-    shared by evidence cleanup and stale parsed-data purging.
+    Guards against accidentally deleting filesystem roots, shallow system
+    paths, or directories outside the known *cases_root* (or any of the
+    *additional_allowed_roots*).  This is the single implementation of the
+    safety-checked removal logic shared by evidence cleanup and stale
+    parsed-data purging.
+
+    A minimum-depth guard refuses any resolved target with two or fewer
+    path components (e.g. ``/tmp`` -> ``("/", "tmp")`` or ``C:/out`` ->
+    ``("C:\\\\", "out")``), because every legitimate deletion target is at
+    least three components deep (``cases/<case_id>/.../parsed`` or
+    ``<configured_root>/<case_id>/parsed``).
 
     Args:
         target_dir: The directory to remove.  Must already exist on disk
@@ -210,6 +217,15 @@ def safe_rmtree(
     if resolved == Path(resolved.root) or resolved == Path(resolved.anchor):
         LOGGER.warning(
             "Refusing to remove directory at filesystem root: %s",
+            resolved,
+        )
+        return False
+
+    # Refuse to delete shallow paths (e.g. "/tmp", "C:/out").  Legitimate
+    # parse-output targets are always at least three components deep.
+    if len(resolved.parts) <= 2:
+        LOGGER.warning(
+            "Refusing to remove shallow directory path: %s",
             resolved,
         )
         return False
@@ -247,6 +263,12 @@ def cleanup_parsed_data(
     evidence modules.  Handles the default ``case_dir/parsed`` directory,
     per-image parsed directories found in *image_states*, and any external
     CSV output directory from a prior parse run.
+
+    An external previous output directory is only removed when its final
+    path component is a recognised parse-output name (``parsed`` or the
+    deduplicated-output directory name).  This prevents an arbitrary
+    stored path from being deleted just because its own parent is passed
+    to :func:`safe_rmtree` as an allowed root.
 
     Args:
         case_dir: Path to the case directory.
@@ -307,12 +329,25 @@ def cleanup_parsed_data(
             return
     except (TypeError, ValueError):
         return
+    # Safety: only delete an external previous output directory when its
+    # final path component is a recognised parse-output name.  The allowed
+    # deletion root below is the target's own parent, so without this
+    # constraint any previously stored path would authorise its own
+    # removal (the parent of any path trivially contains it).
+    prev_name = resolved_prev.name.strip().lower()
+    if prev_name not in ("parsed", DEDUPLICATED_PARSED_DIRNAME.lower()):
+        LOGGER.warning(
+            "Refusing to remove previous CSV output directory that is not "
+            "a recognised parse-output directory: %s",
+            resolved_prev,
+        )
+        return
     safe_rmtree(
         prev_path,
         cases_root,
         additional_allowed_roots=[resolved_prev.parent],
     )
-    if prev_path.name.strip().lower() == "parsed":
+    if prev_name == "parsed":
         safe_rmtree(
             prev_path.parent / DEDUPLICATED_PARSED_DIRNAME,
             cases_root,

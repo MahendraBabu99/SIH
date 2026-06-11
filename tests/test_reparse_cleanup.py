@@ -6,7 +6,8 @@ disk and in-memory state, covering:
 * ``cleanup_parsed_data`` â€” removes default and external CSV directories.
 * ``clear_analysis_outputs`` â€” removes analysis/chat artifacts.
 * ``start_parse`` integration â€” clears in-memory state and on-disk data.
-* Safety guards â€” refuses to delete filesystem roots or short paths.
+* Safety guards â€” refuses filesystem roots, shallow paths, and external
+  previous output dirs whose name is not a recognised parse-output name.
 
 Attributes:
     HASH_STUBS: Reusable patch targets for evidence hash helpers.
@@ -161,20 +162,62 @@ class PurgeStaleDataTests(unittest.TestCase):
         # Default dir still cleaned
         self.assertFalse((self.case_dir / "parsed").exists())
 
+    def _make_fake_dir_target(self, resolved: Path) -> MagicMock:
+        """Build a Path-like mock that exists and resolves to *resolved*.
+
+        Using a mock target keeps the safety-guard tests hermetic: the
+        fabricated path is never probed on, and can never touch, the real
+        filesystem.
+
+        Args:
+            resolved: The path that the mock's ``resolve()`` returns.
+
+        Returns:
+            A ``MagicMock`` specced as :class:`~pathlib.Path` whose
+            ``is_dir()`` returns ``True``.
+        """
+        target = MagicMock(spec=Path)
+        target.is_dir.return_value = True
+        target.resolve.return_value = resolved
+        return target
+
     def test_refuses_filesystem_root(self) -> None:
         """Safety: refuse to delete a filesystem root path."""
-        self._make_parsed_dir()
-        # Passing "/" as external dir should be refused
-        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "/")
-        # Default parsed dir should still be cleaned
-        self.assertFalse((self.case_dir / "parsed").exists())
+        root = Path(Path(self.temp_dir.name).anchor)
+        target = self._make_fake_dir_target(root)
+        with patch.object(evidence_utils.shutil, "rmtree") as fake_rmtree:
+            removed = evidence_utils.safe_rmtree(
+                target,
+                Path(self.temp_dir.name),
+                additional_allowed_roots=[root],
+            )
+        self.assertFalse(removed)
+        fake_rmtree.assert_not_called()
 
     def test_refuses_short_path(self) -> None:
-        """Safety: refuse to delete paths with <= 2 components."""
-        self._make_parsed_dir()
-        evidence_utils.cleanup_parsed_data(self.case_dir, {}, "/tmp")
-        # Default parsed dir cleaned; /tmp not deleted
-        self.assertFalse((self.case_dir / "parsed").exists())
+        """Safety: refuse to delete shallow paths with <= 2 components."""
+        for shallow_text in ("/tmp", "C:/out"):
+            with self.subTest(path=shallow_text):
+                shallow = Path(shallow_text)
+                target = self._make_fake_dir_target(shallow)
+                with patch.object(evidence_utils.shutil, "rmtree") as fake_rmtree:
+                    removed = evidence_utils.safe_rmtree(
+                        target,
+                        Path(self.temp_dir.name),
+                        additional_allowed_roots=[shallow.parent],
+                    )
+                self.assertFalse(removed)
+                fake_rmtree.assert_not_called()
+
+    def test_refuses_external_dir_without_parse_output_name(self) -> None:
+        """External cleanup skips previous dirs not named like parse output."""
+        ext_dir = Path(self.temp_dir.name) / "external" / "case-001" / "exports"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "runkeys.csv").write_text("data\n", encoding="utf-8")
+
+        evidence_utils.cleanup_parsed_data(self.case_dir, {}, str(ext_dir))
+        self.assertTrue(ext_dir.is_dir())
+        self.assertTrue((ext_dir / "runkeys.csv").is_file())
 
 
 # â”€â”€ Unit tests: clear_analysis_outputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
