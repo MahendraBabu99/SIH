@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import json
+import shutil
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -95,11 +96,24 @@ def discover_evidence(
     source_path: str | Path,
     *,
     workspace_dir: str | Path | None = None,
+    limits: Any | None = None,
 ) -> list[Any]:
-    """Lazy proxy for canonical evidence discovery."""
+    """Lazy proxy for canonical evidence discovery.
+
+    Args:
+        source_path: Evidence file or directory path to scan.
+        workspace_dir: Optional archive fallback extraction workspace root.
+        limits: Optional ``ArchiveExtractionLimits`` applied to archive
+            fallback extraction; ``None`` uses the canonical defaults.
+
+    Returns:
+        Discovered evidence descriptors.
+    """
     from app.automation.discovery import discover_evidence as _discover
 
-    return _discover(source_path, workspace_dir=workspace_dir)
+    if limits is None:
+        return _discover(source_path, workspace_dir=workspace_dir)
+    return _discover(source_path, workspace_dir=workspace_dir, limits=limits)
 
 
 def descriptor_to_payload(descriptor: Any) -> dict[str, Any]:
@@ -504,32 +518,167 @@ def _descriptor_payload(descriptor: Any) -> dict[str, Any]:
     return payload
 
 
+def _archive_limits_for_config_path(config_path: str | None) -> tuple[Any, list[str]]:
+    """Build archive extraction limits from an optional config path.
+
+    Loads the supplied YAML config (or AIFT's default config when omitted)
+    and converts the optional ``evidence.archive_max_*`` keys into the shared
+    extraction limits. Loading failures fall back to the default limits with
+    a model-visible warning instead of failing the calling tool.
+
+    Args:
+        config_path: Optional path to a YAML config file.
+
+    Returns:
+        Tuple of ``(limits, warnings)`` where ``limits`` is an
+        ``ArchiveExtractionLimits`` instance and ``warnings`` lists any
+        config-loading fallbacks.
+    """
+    from app.evidence.archive_config import archive_limits_from_config
+    from app.utils.config import load_config
+
+    warnings: list[str] = []
+    resolved: Path | None = None
+    if config_path is not None:
+        resolved = Path(config_path).expanduser().resolve()
+        if not resolved.is_file():
+            warnings.append(
+                f"Config path not found: {resolved}. "
+                "Using default archive extraction limits."
+            )
+            resolved = None
+    try:
+        config: dict[str, Any] = load_config(resolved)
+    except Exception:
+        LOGGER.exception("Failed to load config for MCP discovery limits")
+        warnings.append(
+            "Failed to load configuration for archive extraction limits. "
+            "Using default archive extraction limits."
+        )
+        config = {}
+    return archive_limits_from_config(config), warnings
+
+
+def _prune_stale_default_discovery_workspaces() -> None:
+    """Best-effort removal of stale managed MCP discovery workspaces.
+
+    Removes directories named ``discovery_*`` located directly under the
+    managed ``cases/_mcp_discovery`` root before a new default workspace is
+    created, mirroring the GUI Scan Directory lifecycle so disk usage stays
+    bounded to at most the most recent call's workspace. Nothing outside the
+    managed root is ever touched, caller-supplied workspaces are never
+    pruned, and all filesystem errors are ignored.
+    """
+    try:
+        candidates = list(_DEFAULT_DISCOVERY_ROOT.iterdir())
+    except OSError:
+        return
+    for entry in candidates:
+        try:
+            is_stale_workspace = (
+                entry.name.startswith("discovery_") and entry.is_dir()
+            )
+        except OSError:
+            continue
+        if is_stale_workspace:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
+def _remove_default_discovery_workspace(workspace: Path | None) -> None:
+    """Best-effort removal of a managed workspace after a failed discovery.
+
+    Only removes ``discovery_*`` directories located directly under the
+    managed default discovery root; anything else (in particular
+    caller-supplied workspace paths) is left untouched. All filesystem
+    errors are ignored.
+
+    Args:
+        workspace: Workspace directory created for the current call under
+            the managed default discovery root, or ``None`` when the call
+            used a caller-supplied workspace or failed before one was
+            assigned.
+    """
+    if workspace is None:
+        return
+    try:
+        resolved = workspace.resolve()
+        managed_root = _DEFAULT_DISCOVERY_ROOT.resolve()
+    except OSError:
+        return
+    if resolved.parent != managed_root or not resolved.name.startswith("discovery_"):
+        return
+    shutil.rmtree(resolved, ignore_errors=True)
+
+
 def _discover_evidence_payload(
     evidence_path: str,
     workspace_dir: str | None = None,
+    config_path: str | None = None,
 ) -> dict[str, Any]:
-    """Run canonical evidence discovery and return MCP-shaped descriptors."""
+    """Run canonical evidence discovery and return MCP-shaped descriptors.
+
+    Archive fallback extraction honors the configured
+    ``evidence.archive_max_*`` extraction limits loaded from ``config_path``
+    (or AIFT's default config when omitted). The byte budget applies per
+    extracted archive, not as an aggregate bound across the whole call.
+
+    Default workspace retention: when the caller does not supply
+    ``workspace_dir``, the extraction workspace is created under the managed
+    ``cases/_mcp_discovery`` root. Stale ``discovery_*`` sibling workspaces
+    from previous calls are pruned first, and the failure paths remove the
+    workspace created for this call, so at most the most recent successful
+    workspace is retained on disk (its extracted paths stay usable as
+    ``aift_start_triage`` inputs). Because MCP runs are asynchronous, a new
+    discovery call prunes the previous workspace even if an in-flight
+    ``aift_start_triage`` run still references extracted paths inside it;
+    this is accepted under AIFT's single-user design, matching the GUI Scan
+    Directory lifecycle. Caller-supplied ``workspace_dir`` paths are owned
+    by the caller and are never pruned or deleted.
+
+    Args:
+        evidence_path: Required filesystem path to scan for evidence.
+        workspace_dir: Optional explicit extraction workspace directory.
+        config_path: Optional YAML config path supplying archive extraction
+            limit overrides.
+
+    Returns:
+        Stable MCP tool payload with discovered evidence descriptors.
+    """
+    created_default_workspace: Path | None = None
     try:
         source_path = validate_evidence_path(
             _required_text(evidence_path, "evidence_path")
         )
         workspace_text = _optional_text(workspace_dir, "workspace_dir")
-        workspace_root = (
-            Path(workspace_text).expanduser().resolve()
-            if workspace_text is not None
-            else _DEFAULT_DISCOVERY_ROOT / f"discovery_{uuid4().hex[:12]}"
+        if workspace_text is not None:
+            workspace_root = Path(workspace_text).expanduser().resolve()
+        else:
+            _prune_stale_default_discovery_workspaces()
+            workspace_root = (
+                _DEFAULT_DISCOVERY_ROOT / f"discovery_{uuid4().hex[:12]}"
+            )
+            created_default_workspace = workspace_root
+        limits, limit_warnings = _archive_limits_for_config_path(
+            _optional_text(config_path, "config_path")
         )
-        evidence = discover_evidence(source_path, workspace_dir=workspace_root)
+        evidence = discover_evidence(
+            source_path,
+            workspace_dir=workspace_root,
+            limits=limits,
+        )
         return _ok({
             "source_path": str(source_path),
             "workspace_dir": str(workspace_root),
             "evidence": [_descriptor_payload(item) for item in evidence],
             "count": len(evidence),
+            "warnings": limit_warnings,
         })
     except (FileNotFoundError, ValueError) as exc:
+        _remove_default_discovery_workspace(created_default_workspace)
         return _error(str(exc), extra={"evidence": []})
     except Exception:
         LOGGER.exception("Unexpected MCP evidence discovery failure")
+        _remove_default_discovery_workspace(created_default_workspace)
         return _error(
             "Evidence discovery failed due to an unexpected error. "
             "Confirm the path is readable and try again.",
@@ -1022,16 +1171,18 @@ def build_mcp_server(
         name="aift_discover_evidence",
         description=(
             "Discover supported forensic evidence targets. Archive fallback "
-            "may extract files into a managed workspace."
+            "may extract files into a managed workspace; stale managed "
+            "workspaces left by previous calls are pruned first."
         ),
         structured_output=True,
     )
     def aift_discover_evidence(
         evidence_path: str,
         workspace_dir: str | None = None,
+        config_path: str | None = None,
     ) -> dict[str, Any]:
         """Discover evidence descriptors for a path."""
-        return _discover_evidence_payload(evidence_path, workspace_dir)
+        return _discover_evidence_payload(evidence_path, workspace_dir, config_path)
 
     @mcp.tool(
         name="aift_start_triage",

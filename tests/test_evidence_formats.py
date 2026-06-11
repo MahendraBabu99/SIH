@@ -21,7 +21,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
-from zipfile import ZipFile, ZipInfo
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import py7zr
 import pytest
@@ -420,6 +420,40 @@ class TestExtractZip(unittest.TestCase):
         _assert_archive_descriptor(self, result, zip_path, dest)
         self.assertEqual(result.dissect_path.name, "Disk.E01")
         self.assertTrue(result.dissect_path.is_relative_to(dest.resolve()))
+
+    def test_zip_nested_archive_rejected_by_supplied_total_byte_limit(self) -> None:
+        """Supplied byte limits bound nested archive extraction as well.
+
+        The nested archive's compressed container fits the configured
+        total-byte limit, so only the nested extraction (which inflates past
+        the limit) trips it; the rejection aborts the outer extraction and
+        removes the destination.
+        """
+        zip_path = self.root / "outer-nested-limit.zip"
+        dest = self.root / "extracted"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w", ZIP_DEFLATED) as inner:
+            inner.writestr("nested/Disk.E01", b"A" * 4096)
+        with ZipFile(zip_path, "w") as outer:
+            outer.writestr("inner.zip", inner_bytes.getvalue())
+        self.assertLess(len(inner_bytes.getvalue()), 1024)
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "total extracted size"):
+                _resolve_archive_fallback_descriptor(
+                    zip_path,
+                    dest,
+                    limits=ArchiveExtractionLimits(
+                        max_members=10,
+                        max_total_bytes=1024,
+                        max_member_bytes=8192,
+                    ),
+                )
+
+        self.assertFalse(dest.exists())
 
     def test_zip_rejects_unsafe_nested_archive_and_cleans_destination(self) -> None:
         """Reject unsafe nested ZIP extraction instead of falling back."""

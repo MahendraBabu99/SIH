@@ -16,11 +16,12 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
 from app.automation.discovery import discover_evidence, validate_evidence_path
+from app.evidence.archives import ArchiveExtractionLimits
 from app.evidence.descriptor import EvidenceDescriptor
 from tests.conftest import require_symlink_support
 
@@ -409,6 +410,62 @@ class TestDiscoverEvidence(unittest.TestCase):
             descriptor.dissect_path.is_relative_to(descriptor.extraction_root)
         )
         self.assertTrue(descriptor.extraction_root.is_relative_to(workspace.resolve()))
+
+    def test_nested_archive_rejected_by_supplied_total_byte_limit(self) -> None:
+        """Supplied extraction limits also bound nested archive extraction.
+
+        The nested archive's compressed container stays under the configured
+        total-byte limit, so only the nested extraction (which inflates well
+        past the limit) can trip it. This proves discovery threads the
+        supplied limits through to nested archive fallback extraction.
+        """
+        archive = self.root / "outer.zip"
+        workspace = self.root / "case" / "evidence"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w", ZIP_DEFLATED) as inner_zip:
+            inner_zip.writestr("nested/disk.E01", b"A" * 4096)
+        with ZipFile(archive, "w") as outer_zip:
+            outer_zip.writestr("inner.zip", inner_bytes.getvalue())
+        self.assertLess(len(inner_bytes.getvalue()), 1024)
+
+        limits = ArchiveExtractionLimits(
+            max_members=10,
+            max_total_bytes=1024,
+            max_member_bytes=8192,
+        )
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "total extracted size"):
+                discover_evidence(archive, workspace_dir=workspace, limits=limits)
+
+        # The rejected outer extraction is cleaned up; no extracted files
+        # may remain anywhere under the workspace.
+        leftover_files = (
+            [path for path in workspace.rglob("*") if path.is_file()]
+            if workspace.exists()
+            else []
+        )
+        self.assertEqual(leftover_files, [])
+
+    def test_nested_archive_allowed_by_default_limits(self) -> None:
+        """The same nested archive extracts fine without restrictive limits."""
+        archive = self.root / "outer.zip"
+        workspace = self.root / "case" / "evidence"
+        inner_bytes = io.BytesIO()
+        with ZipFile(inner_bytes, "w", ZIP_DEFLATED) as inner_zip:
+            inner_zip.writestr("nested/disk.E01", b"A" * 4096)
+        with ZipFile(archive, "w") as outer_zip:
+            outer_zip.writestr("inner.zip", inner_bytes.getvalue())
+
+        result = self._discover_with_dissect_fail(
+            archive,
+            workspace_dir=workspace,
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].dissect_path.name, "disk.E01")
 
     def test_archive_descriptor_hashes_original_container(self) -> None:
         """Archive fallback descriptors verify the archive, not extracted file."""

@@ -53,6 +53,7 @@ from .state import (
 )
 from ..chat.csv_retrieval import invalidate_header_cache
 from ..automation import discover_evidence, validate_evidence_path
+from ..evidence.archive_config import archive_limits_from_config
 from .evidence import rebuild_case_parse_artifacts
 
 __all__ = ["images_bp", "get_case_manager"]
@@ -670,6 +671,8 @@ def discover_evidence_paths() -> tuple[Response, int]:
     new scan workspace is created, and the failure paths remove the
     workspace created for this request, so disk usage under
     ``cases/_managed_discovery`` stays bounded to the most recent scan.
+    Archive fallback extraction honors the configured
+    ``evidence.archive_max_*`` extraction limits.
 
     Returns:
         ``(Response, 200)`` with discovered evidence entries, or an error.
@@ -696,6 +699,9 @@ def discover_evidence_paths() -> tuple[Response, int]:
         evidence_descriptors = discover_evidence(
             source_path,
             workspace_dir=discovery_workspace,
+            limits=archive_limits_from_config(
+                current_app.config.get("AIFT_CONFIG", {})
+            ),
         )
     except (FileNotFoundError, ValueError) as error:
         _remove_discovery_workspace(discovery_workspace)

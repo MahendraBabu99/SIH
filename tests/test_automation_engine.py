@@ -27,6 +27,7 @@ import app.automation.engine as engine_module
 import app.utils.artifact_profiles as artifact_profiles
 from app.analyzer.core import ForensicAnalyzer
 from app.automation.engine import AutomationRequest, AutomationResult, run_automation
+from app.evidence.archives import ArchiveExtractionLimits, DEFAULT_ARCHIVE_LIMITS
 from app.evidence.descriptor import descriptor_for_path
 from app.logging.audit import AuditLogger as RealAuditLogger
 from tests.conftest import (
@@ -1012,6 +1013,49 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(any("config" in w.lower() for w in result.warnings))
 
+    def test_configured_archive_limits_reach_discovery(self) -> None:
+        """Configured evidence.archive_max_* keys reach evidence discovery."""
+
+        def _config_with_limits(path: Any) -> dict[str, Any]:
+            """Return a config carrying archive extraction limit overrides.
+
+            Args:
+                path: Ignored config path argument.
+
+            Returns:
+                Minimal config dict with evidence archive limit keys.
+            """
+            config = _fake_load_config(path)
+            config["evidence"] = {
+                "archive_max_members": 5,
+                "archive_max_total_bytes": 1024,
+                "archive_max_member_bytes": 512,
+            }
+            return config
+
+        self.mocks["load_config"].side_effect = _config_with_limits
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        _args, kwargs = self.mocks["discover_evidence"].call_args
+        self.assertEqual(
+            kwargs.get("limits"),
+            ArchiveExtractionLimits(
+                max_members=5,
+                max_total_bytes=1024,
+                max_member_bytes=512,
+            ),
+        )
+
+    def test_default_archive_limits_reach_discovery_without_overrides(self) -> None:
+        """Without override keys, discovery receives the default limits."""
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        _args, kwargs = self.mocks["discover_evidence"].call_args
+        self.assertEqual(kwargs.get("limits"), DEFAULT_ARCHIVE_LIMITS)
+
     def test_invalid_profile_falls_back_to_recommended(self) -> None:
         """Unknown profile name triggers fallback with warning."""
         result = run_automation(self._make_request(profile_name="nonexistent"))
@@ -1850,10 +1894,12 @@ class TestRunAutomation(unittest.TestCase):
             *,
             workspace_dir: str | Path | None = None,
             source_mode: str = "path",
+            limits: Any | None = None,
         ) -> list[Any]:
             captured["source_path"] = Path(source_path)
             captured["workspace_dir"] = Path(workspace_dir) if workspace_dir else None
             captured["source_mode"] = source_mode
+            captured["limits"] = limits
             return [descriptor_for_path(source_path, source_mode=source_mode)]
 
         self.mocks["discover_evidence"].side_effect = _discover

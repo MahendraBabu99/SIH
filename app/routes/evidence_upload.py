@@ -36,7 +36,7 @@ from ..evidence.segments import (
     segment_identity,
     validate_segment_group_paths,
 )
-from ..evidence.archives import DEFAULT_ARCHIVE_LIMITS, ArchiveExtractionLimits
+from ..evidence.archive_config import archive_limits_from_config
 from ..evidence.constants import ARCHIVE_EVIDENCE_EXTENSIONS
 from .evidence_archive import extract_archive_descriptor
 from .state import safe_name
@@ -60,35 +60,6 @@ __all__ = [
 ]
 
 SAVE_CHUNK_SIZE = 4 * 1024 * 1024  # 4 MiB
-
-
-def _archive_limits_from_config(config: dict[str, Any]) -> ArchiveExtractionLimits:
-    evidence_config = config.get("evidence", {}) if isinstance(config, dict) else {}
-    if not isinstance(evidence_config, dict):
-        return DEFAULT_ARCHIVE_LIMITS
-
-    def _positive_int(name: str, default: int) -> int:
-        value = evidence_config.get(name, default)
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return default
-        return parsed if parsed > 0 else default
-
-    return ArchiveExtractionLimits(
-        max_members=_positive_int(
-            "archive_max_members",
-            DEFAULT_ARCHIVE_LIMITS.max_members,
-        ),
-        max_total_bytes=_positive_int(
-            "archive_max_total_bytes",
-            DEFAULT_ARCHIVE_LIMITS.max_total_bytes,
-        ),
-        max_member_bytes=_positive_int(
-            "archive_max_member_bytes",
-            DEFAULT_ARCHIVE_LIMITS.max_member_bytes,
-        ),
-    )
 
 
 def _cleanup_created_paths(paths: list[Path], root: Path) -> None:
@@ -436,7 +407,7 @@ def resolve_evidence_payload(case_dir: Path) -> dict[str, Any]:
         uploaded_files = collect_uploaded_files()
         uploaded_paths: list[Path] = []
         aift_config = current_app.config.get("AIFT_CONFIG", {})
-        archive_limits = _archive_limits_from_config(aift_config)
+        archive_limits = archive_limits_from_config(aift_config)
         if uploaded_files:
             evidence_config = aift_config.get("evidence", {}) if isinstance(aift_config, dict) else {}
             threshold_mb = evidence_config.get("large_file_threshold_mb", 0)

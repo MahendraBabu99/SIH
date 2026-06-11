@@ -92,12 +92,34 @@ def can_open_with_dissect(path: Path) -> bool:
 
 def discover_extracted_archive_descriptors(
     destination: Path,
+    *,
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
 ) -> list[EvidenceDescriptor]:
-    """Return Dissect-aware descriptors discovered under an extraction root."""
+    """Return Dissect-aware descriptors discovered under an extraction root.
+
+    Args:
+        destination: Extraction root directory to scan for evidence targets.
+        limits: Extraction limit values forwarded to discovery so nested
+            archives found under the extraction root are extracted with the
+            same bounds as the outer archive.
+
+    Returns:
+        Discovered evidence descriptors, or an empty list when discovery
+        fails for reasons other than an archive safety rejection.
+
+    Raises:
+        ValueError: If a nested archive is rejected as unsafe or exceeds the
+            supplied extraction limits (messages starting with
+            ``"Archive rejected:"`` are re-raised, not swallowed).
+    """
     try:
         from app.automation.discovery import discover_evidence
 
-        discovered = discover_evidence(destination, workspace_dir=destination)
+        discovered = discover_evidence(
+            destination,
+            workspace_dir=destination,
+            limits=limits,
+        )
     except ValueError as error:
         if str(error).startswith("Archive rejected:"):
             raise
@@ -135,7 +157,10 @@ def _resolve_extracted_archive_descriptor(
     )
     selected = select_best_extracted_descriptor(
         extracted_root,
-        discovered_descriptors=discover_extracted_archive_descriptors(extracted_root),
+        discovered_descriptors=discover_extracted_archive_descriptors(
+            extracted_root,
+            limits=limits,
+        ),
     )
     return selected.with_archive_source(
         archive_path,

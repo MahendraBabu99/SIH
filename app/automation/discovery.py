@@ -20,7 +20,11 @@ from app.evidence.archive_resolver import (
     resolve_archive_descriptor,
 )
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
-from app.evidence.archives import ARCHIVE_EXTENSIONS
+from app.evidence.archives import (
+    ARCHIVE_EXTENSIONS,
+    ArchiveExtractionLimits,
+    DEFAULT_ARCHIVE_LIMITS,
+)
 from app.evidence.constants import DISSECT_EVIDENCE_EXTENSIONS
 from app.evidence.segments import (
     collect_segment_group_paths,
@@ -41,13 +45,24 @@ SKIP_NAMES_CASEFOLD: frozenset[str] = frozenset(
 
 @dataclass
 class _DiscoveryContext:
-    """Mutable state shared across a recursive discovery run."""
+    """Mutable state shared across a recursive discovery run.
+
+    Attributes:
+        source_root: Resolved root of the selected evidence path.
+        workspace_root: Root directory for archive fallback extraction.
+        source_mode: Evidence provenance label for produced descriptors.
+        extraction_count: Number of extraction directories handed out.
+        visited_directories: Resolved directories already scanned.
+        limits: Archive extraction safety limits applied to every archive
+            fallback extraction (outer and nested) in this run.
+    """
 
     source_root: Path | None = None
     workspace_root: Path | None = None
     source_mode: str = "path"
     extraction_count: int = 0
     visited_directories: set[Path] = field(default_factory=set)
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS
 
     def next_extraction_dir(self, source_path: Path) -> Path:
         """Return a fresh extraction directory for *source_path*."""
@@ -250,6 +265,7 @@ def _discover_file(
         resolve_archive_descriptor(
             path,
             lambda: context.next_extraction_dir(path),
+            limits=context.limits,
             source_mode=context.source_mode,
         )
     ]
@@ -329,6 +345,7 @@ def discover_evidence(
     *,
     workspace_dir: str | Path | None = None,
     source_mode: str = "path",
+    limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
 ) -> list[EvidenceDescriptor]:
     """Discover all forensic evidence targets at the given path.
 
@@ -342,6 +359,11 @@ def discover_evidence(
             Automation passes the case evidence directory here so extracted
             files become stable case-owned evidence targets.
         source_mode: Evidence provenance label for returned descriptors.
+        limits: Archive extraction safety limits applied to every archive
+            fallback extraction in this run, including nested archives found
+            inside extraction roots. The byte budget is enforced per
+            extracted archive (each extraction has its own total counter),
+            not as an aggregate bound across the whole run.
 
     Returns:
         Sorted list of unique evidence descriptors, each pointing to a viable
@@ -350,7 +372,8 @@ def discover_evidence(
     Raises:
         FileNotFoundError: If source_path does not exist.
         ValueError: If source_path is a file but has no supported extension, or
-            if archive fallback extraction rejects unsafe member paths.
+            if archive fallback extraction rejects unsafe member paths or
+            exceeds the supplied extraction limits.
     """
     resolved = Path(source_path).resolve()
 
@@ -364,6 +387,7 @@ def discover_evidence(
         source_root=resolved,
         workspace_root=workspace_root,
         source_mode=source_mode,
+        limits=limits,
     )
     result = _discover_path(resolved, context, strict_extension=True)
     result = sorted(set(result), key=lambda item: str(item.dissect_path))

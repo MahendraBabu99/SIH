@@ -31,6 +31,7 @@ from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.logging.case_manager import CaseManager
 from app.utils.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
+from app.evidence.archive_config import archive_limits_from_config
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
 from app.utils.hasher import (
     apply_hash_verification_result,
@@ -1230,12 +1231,15 @@ def run_automation(
     assert output_dir is not None
 
     # --- 5. Discover evidence ---
+    # Archive fallback extraction during discovery honors the configured
+    # evidence.archive_max_* limits, matching GUI evidence intake behavior.
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)
     try:
         discovered_evidence = discover_evidence(
             evidence_path,
             workspace_dir=discovery_workspace,
             source_mode=discovery_source_mode,
+            limits=archive_limits_from_config(config),
         )
     except (FileNotFoundError, ValueError) as exc:
         result.errors.append(f"Evidence discovery failed: {exc}")
