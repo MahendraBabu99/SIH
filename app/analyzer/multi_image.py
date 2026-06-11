@@ -11,7 +11,9 @@ correlation.  The three-phase workflow is:
 3. **Cross-image correlation** — (multi-image only) sends all per-image
    summaries to the AI for cross-system correlation.
 
-Single-image cases skip Phase 3 and return ``cross_image_summary=None``.
+Single-image cases skip Phase 3 and return ``cross_image_summary=None``
+with ``cross_image_summary_status`` and ``cross_image_summary_error``
+also ``None``.
 
 Attributes:
     LOGGER: Module-level logger instance.
@@ -390,7 +392,8 @@ def run_multi_image_analysis(
     3. **Cross-image correlation** (only if more than one image).
 
     For single-image cases, Phase 3 is skipped and
-    ``cross_image_summary`` is ``None``.
+    ``cross_image_summary``, ``cross_image_summary_status``, and
+    ``cross_image_summary_error`` are all ``None``.
 
     Args:
         analyzer: A ``ForensicAnalyzer`` instance with an initialized
@@ -430,8 +433,15 @@ def run_multi_image_analysis(
                     ...
                 },
                 "cross_image_summary": str | None,
+                "cross_image_summary_status": str | None,
+                "cross_image_summary_error": str | None,
                 "model_info": dict,
             }
+
+        ``cross_image_summary_status`` is ``"success"`` when Phase 3
+        completed, ``"failed"`` when the correlation call failed (with
+        ``cross_image_summary_error`` carrying the error text), and
+        ``None`` when Phase 3 did not run (single-image cases).
 
     Raises:
         AnalysisCancelledError: If *cancel_check* returns ``True``.
@@ -652,11 +662,13 @@ def run_multi_image_analysis(
     # Phase 3: Cross-image correlation (only if > 1 image)
     # ------------------------------------------------------------------
     cross_image_summary: str | None = None
+    cross_image_summary_status: str | None = None
+    cross_image_summary_error: str | None = None
 
     if len(images) > 1:
         raise_if_cancelled(cancel_check)
 
-        cross_image_summary = _run_cross_image_correlation(
+        correlation = _run_cross_image_correlation(
             analyzer=analyzer,
             images=images,
             image_results=image_results,
@@ -664,6 +676,9 @@ def run_multi_image_analysis(
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         )
+        cross_image_summary = correlation["summary"]
+        cross_image_summary_status = correlation["status"]
+        cross_image_summary_error = correlation["error"]
 
     # ------------------------------------------------------------------
     # Build return value
@@ -683,6 +698,8 @@ def run_multi_image_analysis(
     return {
         "images": output_images,
         "cross_image_summary": cross_image_summary,
+        "cross_image_summary_status": cross_image_summary_status,
+        "cross_image_summary_error": cross_image_summary_error,
         "model_info": dict(analyzer.model_info),
     }
 
@@ -759,11 +776,13 @@ def _run_cross_image_correlation(
     investigation_context: str,
     progress_callback: Any | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Execute Phase 3: cross-image correlation analysis.
 
     Loads the cross-image prompt template, fills it with per-image
-    summaries and metadata, and sends it to the AI provider.
+    summaries and metadata, and sends it to the AI provider.  Provider
+    failures are converted into a fixed data-gap summary with a
+    structured failure status instead of propagating.
 
     Args:
         analyzer: The ``ForensicAnalyzer`` instance.
@@ -774,7 +793,13 @@ def _run_cross_image_correlation(
         cancel_check: Optional callable or event-like cancellation probe.
 
     Returns:
-        The AI-generated cross-image correlation summary text.
+        A dict with the keys:
+
+        - ``summary`` (str): The AI-generated cross-image correlation
+          summary text, or a fixed data-gap message on failure.
+        - ``status`` (str): ``"success"`` or ``"failed"``.
+        - ``error`` (str | None): The provider error text when the
+          correlation call failed, otherwise ``None``.
 
     Raises:
         AnalysisCancelledError: If cancellation has been requested.
@@ -850,6 +875,8 @@ def _run_cross_image_correlation(
     )
 
     start_time = perf_counter()
+    correlation_status = "success"
+    correlation_error: str | None = None
     try:
         raise_if_cancelled(cancel_check)
         summary = _call_with_optional_cancel(
@@ -876,6 +903,8 @@ def _run_cross_image_correlation(
             raise
         duration_seconds = perf_counter() - start_time
         summary = "Cross-image correlation unavailable; recorded as a data gap."
+        correlation_status = "failed"
+        correlation_error = str(error)
         analyzer._audit_log("analysis_completed", {
             "artifact_key": artifact_key,
             "artifact_name": artifact_name,
@@ -895,4 +924,8 @@ def _run_cross_image_correlation(
         )
         raise_if_cancelled(cancel_check)
 
-    return summary
+    return {
+        "summary": summary,
+        "status": correlation_status,
+        "error": correlation_error,
+    }

@@ -538,6 +538,28 @@ def summary_analysis_unavailable(image_data: Mapping[str, Any]) -> bool:
     return False
 
 
+def cross_image_summary_unavailable(analysis: Mapping[str, Any]) -> bool:
+    """Return whether cross-image correlation is explicitly unavailable.
+
+    Args:
+        analysis: Top-level analysis results mapping that may carry
+            ``cross_image_summary_status`` and
+            ``cross_image_summary_error`` fields.
+
+    Returns:
+        ``True`` when the structured status marks the cross-image
+        correlation as failed/unavailable or a correlation error is
+        recorded. Results without the structured fields (single-image
+        cases and older analysis outputs) return ``False``.
+    """
+    status = stringify(analysis.get("cross_image_summary_status")).strip().lower()
+    if status in UNAVAILABLE_ARTIFACT_STATUSES:
+        return True
+    if stringify(analysis.get("cross_image_summary_error")):
+        return True
+    return False
+
+
 def _coerce_image_mapping(value: Any) -> dict[str, Any]:
     """Coerce a raw image analysis value to a plain mapping.
 
@@ -781,6 +803,18 @@ def normalize_report_inputs(
             warnings,
             category="processing_warning",
             message=warning,
+        )
+
+    if cross_image_summary_unavailable(analysis):
+        append_processing_note(
+            processing_notes,
+            warnings,
+            category="cross_image_summary_unavailable",
+            severity="warning",
+            message=(
+                "Cross-image correlation analysis was unavailable and is "
+                "recorded as a data gap."
+            ),
         )
 
     image_entries = _build_known_image_entries(images_data, skipped_images)

@@ -126,6 +126,8 @@ class TestSingleImageAnalysis:
         assert "images" in result
         assert "img1" in result["images"]
         assert result["cross_image_summary"] is None
+        assert result["cross_image_summary_status"] is None
+        assert result["cross_image_summary_error"] is None
         assert result["model_info"]["provider"] == "fake"
 
         img_data = result["images"]["img1"]
@@ -227,6 +229,8 @@ class TestMultiImageAnalysis:
         assert "img2" in result["images"]
         assert result["cross_image_summary"] is not None
         assert result["cross_image_summary"] == "cross-image-correlation-result"
+        assert result["cross_image_summary_status"] == "success"
+        assert result["cross_image_summary_error"] is None
         # 2 artifacts + 2 summaries + 1 cross-image = 5 AI calls
         assert provider.call_count == 5
 
@@ -667,6 +671,38 @@ class TestCrossImageCorrelationFailure:
         assert result["cross_image_summary"] is not None
         assert result["cross_image_summary"] == "Cross-image correlation unavailable; recorded as a data gap."
         assert "AI service unavailable" not in result["cross_image_summary"]
+        # The failure is also recorded as a structured status alongside the
+        # data-gap summary text.
+        assert result["cross_image_summary_status"] == "failed"
+        assert result["cross_image_summary_error"] == "AI service unavailable"
+
+    def test_failed_correlation_result_matches_reference_schema(self, tmp_path: Path) -> None:
+        """A failed Phase 3 result still validates against the reference schema."""
+        call_idx = 0
+
+        class FailOnCrossImageProvider(FakeProvider):
+            """Provider that fails on all cross-image correlation calls."""
+
+            def analyze(self, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
+                """Succeed for the first 4 calls, fail on all subsequent."""
+                nonlocal call_idx
+                call_idx += 1
+                if call_idx > 4:
+                    raise RuntimeError("AI service unavailable")
+                return f"resp-{call_idx}"
+
+        analyzer = _build_analyzer(tmp_path)
+        analyzer.ai_provider = FailOnCrossImageProvider()
+
+        img1 = _make_image(tmp_path, "img1", "WS01", ["runkeys"])
+        img2 = _make_image(tmp_path, "img2", "SRV01", ["services"])
+
+        result = analyzer.run_multi_image_analysis(
+            images=[img1, img2],
+            investigation_context="Test",
+        )
+
+        Draft202012Validator(_load_analysis_schema()).validate(result)
 
 
 class TestPerImageSummaryProgressPayload:

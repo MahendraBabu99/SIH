@@ -2012,8 +2012,10 @@ class ForensicAnalyzer:
         executes three phases: per-artifact analysis, per-image summary,
         and cross-image correlation (when more than one image is present).
 
-        For single-image cases, ``cross_image_summary`` is ``None`` and
-        behaviour is equivalent to :meth:`run_full_analysis`.
+        For single-image cases, ``cross_image_summary``,
+        ``cross_image_summary_status``, and ``cross_image_summary_error``
+        are ``None`` and behaviour is equivalent to
+        :meth:`run_full_analysis`.
 
         Args:
             images: List of image descriptor dicts.  Each dict contains:
@@ -2032,8 +2034,11 @@ class ForensicAnalyzer:
                 convention.
 
         Returns:
-            A dict with ``images``, ``cross_image_summary``, and
-            ``model_info`` keys.
+            A dict with ``images``, ``cross_image_summary``,
+            ``cross_image_summary_status``, ``cross_image_summary_error``,
+            and ``model_info`` keys.  The status is ``"success"`` or
+            ``"failed"`` when cross-image correlation ran, otherwise
+            ``None``.
 
         Raises:
             AnalysisCancelledError: If *cancel_check* returns ``True``.

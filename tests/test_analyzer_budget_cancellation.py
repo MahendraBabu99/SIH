@@ -239,7 +239,9 @@ def test_image_summaries_keep_image_identity_after_compression(tmp_path: Path) -
     )
 
     final_prompt = provider.calls[-1]["user_prompt"]
-    assert result == "cross image complete"
+    assert result["summary"] == "cross image complete"
+    assert result["status"] == "success"
+    assert result["error"] is None
     assert analyzer._input_prompt_token_count(final_prompt) <= analyzer.ai_input_max_tokens
     for index in range(12):
         assert f"Image-{index} (Image: img{index})" in final_prompt

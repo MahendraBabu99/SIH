@@ -495,6 +495,60 @@ class TestMultiImageReport(unittest.TestCase):
             self.assertNotIn("provider secret", html)
             self.assertNotIn("Scheduled Tasks (tasks)", html)
 
+    def test_failed_cross_image_summary_is_processing_note(self) -> None:
+        """A failed cross-image correlation surfaces as a processing note."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            analysis = _multi_image_analysis_results()
+            analysis["cross_image_summary"] = (
+                "Cross-image correlation unavailable; recorded as a data gap."
+            )
+            analysis["cross_image_summary_status"] = "failed"
+            analysis["cross_image_summary_error"] = "provider secret correlation error"
+
+            report_path = reporter.generate(
+                analysis_results=analysis,
+                image_metadata=_multi_image_metadata(),
+                evidence_hashes=_multi_image_hashes(),
+                investigation_context="Failed cross-image correlation.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+            self.assertIn("Processing Notes", html)
+            self.assertIn(
+                "Cross-image correlation analysis was unavailable and is "
+                "recorded as a data gap.",
+                html,
+            )
+            self.assertNotIn("provider secret", html)
+
+    def test_successful_cross_image_summary_has_no_failure_note(self) -> None:
+        """A successful cross-image correlation produces no failure note."""
+        with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:
+            cases_root = Path(temp_dir) / "cases"
+            reporter = _create_report_generator(cases_root)
+
+            analysis = _multi_image_analysis_results()
+            analysis["cross_image_summary_status"] = "success"
+            analysis["cross_image_summary_error"] = None
+
+            report_path = reporter.generate(
+                analysis_results=analysis,
+                image_metadata=_multi_image_metadata(),
+                evidence_hashes=_multi_image_hashes(),
+                investigation_context="Successful cross-image correlation.",
+                audit_log_entries=[],
+            )
+
+            html = report_path.read_text(encoding="utf-8")
+            self.assertNotIn(
+                "Cross-image correlation analysis was unavailable",
+                html,
+            )
+
     def test_multi_image_hash_verification_per_image(self) -> None:
         """Hash verification shows per-image PASS/FAIL status."""
         with TemporaryDirectory(prefix="aift-mi-test-") as temp_dir:

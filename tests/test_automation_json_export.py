@@ -435,6 +435,37 @@ class TestExportJsonReport(unittest.TestCase):
         skipped = [entry for entry in data["evidence"] if entry["image_id"] == "img-3"]
         self.assertEqual(skipped[0]["skip_reason"], "All artifact parsing failed.")
 
+    def test_failed_cross_image_summary_is_processing_note(self) -> None:
+        """A failed cross-image correlation status appears in processing notes."""
+        analysis = _make_multi_image_analysis()
+        analysis["cross_image_summary"] = (
+            "Cross-image correlation unavailable; recorded as a data gap."
+        )
+        analysis["cross_image_summary_status"] = "failed"
+        analysis["cross_image_summary_error"] = "provider secret correlation error"
+        metadata = [
+            {**_make_metadata("img-1"), "hostname": "server"},
+            {**_make_metadata("img-2"), "hostname": "workstation"},
+        ]
+        hashes = [
+            {**_make_hashes("img-1"), "sha256": "1" * 64},
+            {**_make_hashes("img-2"), "sha256": "2" * 64},
+        ]
+
+        _, data = self._export(
+            analysis=analysis,
+            metadata=metadata,
+            hashes=hashes,
+        )
+
+        notes = " ".join(note["message"] for note in data["processing_notes"])
+        self.assertIn(
+            "Cross-image correlation analysis was unavailable and is "
+            "recorded as a data gap.",
+            notes,
+        )
+        self.assertNotIn("provider secret", json.dumps(data["processing_notes"]))
+
     def test_skipped_image_evidence_uses_retained_metadata_and_hashes(self) -> None:
         """Skipped image evidence keeps filename, hashes, and skip reason."""
         analysis = _make_multi_image_analysis()
