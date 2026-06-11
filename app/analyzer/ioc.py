@@ -1,8 +1,9 @@
 """IOC extraction and prompt-building helpers for the forensic analyzer.
 
 Extracts Indicators of Compromise (URLs, IPs, domains, hashes, emails,
-file paths, filenames, suspicious tool keywords) from investigation context
-text, and formats them into prompt sections for AI analysis.
+Windows and POSIX file paths, filenames, suspicious tool keywords) from
+investigation context text, and formats them into prompt sections for AI
+analysis.
 
 Includes false-positive filtering to avoid misidentifying GUIDs as hashes
 and filenames/version strings as domain names.
@@ -24,6 +25,7 @@ from .constants import (
     IOC_IPV4_RE,
     IOC_URL_RE,
     KNOWN_MALICIOUS_TOOL_KEYWORDS,
+    POSIX_PATH_RE,
     WINDOWS_PATH_RE,
 )
 from .prompt_sections import wrap_prompt_section
@@ -136,8 +138,9 @@ def extract_ioc_targets(investigation_context: str) -> dict[str, list[str]]:
     """Extract Indicators of Compromise from investigation context text.
 
     Uses regex patterns to identify URLs, IPv4 addresses, domains,
-    hashes (MD5/SHA1/SHA256), email addresses, Windows file paths,
-    executable filenames, and known malicious tool keywords.
+    hashes (MD5/SHA1/SHA256), email addresses, Windows and absolute
+    POSIX file paths, executable/script/library filenames, and known
+    malicious tool keywords.
 
     Args:
         investigation_context: Free-text investigation context string.
@@ -156,7 +159,9 @@ def extract_ioc_targets(investigation_context: str) -> dict[str, list[str]]:
     raw_hashes = unique_preserve_order(IOC_HASH_RE.findall(text))
     hashes = [h for h in raw_hashes if not is_likely_false_positive_hash(h, guid_hex_set)]
     emails = unique_preserve_order(IOC_EMAIL_RE.findall(text))
-    windows_paths = unique_preserve_order(WINDOWS_PATH_RE.findall(text))
+    file_paths = unique_preserve_order(
+        WINDOWS_PATH_RE.findall(text) + POSIX_PATH_RE.findall(text)
+    )
     file_names = unique_preserve_order(IOC_FILENAME_RE.findall(text))
     file_names_lower = {value.lower() for value in file_names}
     tools = extract_tool_keywords(text)
@@ -188,8 +193,8 @@ def extract_ioc_targets(investigation_context: str) -> dict[str, list[str]]:
         iocs["Hashes"] = hashes
     if emails:
         iocs["Emails"] = emails
-    if windows_paths:
-        iocs["FilePaths"] = windows_paths
+    if file_paths:
+        iocs["FilePaths"] = file_paths
     if file_names:
         iocs["FileNames"] = file_names
     if tools:

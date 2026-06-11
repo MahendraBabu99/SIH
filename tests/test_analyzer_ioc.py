@@ -136,6 +136,88 @@ class TestExtractIocTargetsStandalone(unittest.TestCase):
         self.assertIn("evil.com", result["Domains"])
 
 
+class TestLinuxIocExtraction(unittest.TestCase):
+    """Tests for POSIX path and Linux script/library IOC coverage."""
+
+    def test_extracts_posix_absolute_path(self) -> None:
+        """Absolute POSIX paths land in the FilePaths category."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets("Dropper staged at /tmp/payload.sh on the host.")
+        self.assertIn("FilePaths", result)
+        self.assertIn("/tmp/payload.sh", result["FilePaths"])
+
+    def test_posix_path_excludes_trailing_sentence_punctuation(self) -> None:
+        """A sentence-final period is not captured as part of the path."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets("Implant found at /var/tmp/.hidden/implant.elf.")
+        self.assertIn("/var/tmp/.hidden/implant.elf", result.get("FilePaths", []))
+
+    def test_extracts_windows_and_posix_paths_together(self) -> None:
+        """Windows and POSIX paths are merged into one FilePaths list."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets(
+            r"Compare C:\Windows\evil.exe with /usr/local/bin/evil please."
+        )
+        paths = result.get("FilePaths", [])
+        self.assertIn(r"C:\Windows\evil.exe", paths)
+        self.assertIn("/usr/local/bin/evil", paths)
+
+    def test_posix_path_inside_url_not_extracted_as_path(self) -> None:
+        """URL path components are reported under URLs, not FilePaths."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets("Fetch https://evil.example/tmp/stage/two now")
+        self.assertIn("URLs", result)
+        self.assertNotIn("FilePaths", result)
+
+    def test_non_path_slashes_not_extracted(self) -> None:
+        """Dates, acronyms, and and/or constructs are not file paths."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets(
+            "On 04/05/2026 the TCP/IP stack and/or DNS resolver failed."
+        )
+        self.assertNotIn("FilePaths", result)
+
+    def test_extracts_linux_script_and_library_filenames(self) -> None:
+        """Linux script/library extensions are extracted as FileNames."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets(
+            "Artifacts recovered: payload.sh script.py persist.pl "
+            "implant.elf libevil.so dropper.bin"
+        )
+        names = result.get("FileNames", [])
+        for expected in (
+            "payload.sh", "script.py", "persist.pl",
+            "implant.elf", "libevil.so", "dropper.bin",
+        ):
+            self.assertIn(expected, names)
+
+    def test_linux_script_filenames_not_reported_as_domains(self) -> None:
+        """Script names like payload.sh are FileNames, never Domains."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets("Found payload.sh and persist.pl on disk.")
+        domains = result.get("Domains", [])
+        self.assertNotIn("payload.sh", domains)
+        self.assertNotIn("persist.pl", domains)
+        self.assertIn("payload.sh", result.get("FileNames", []))
+
+    def test_shared_library_path_with_arch_directory(self) -> None:
+        """Multi-segment paths with dashes and underscores are captured whole."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets(
+            "Check /usr/lib/x86_64-linux-gnu/libssl.so for tampering."
+        )
+        self.assertIn(
+            "/usr/lib/x86_64-linux-gnu/libssl.so", result.get("FilePaths", [])
+        )
+
+    def test_filename_extracted_from_posix_path(self) -> None:
+        """The basename of a POSIX path also appears under FileNames."""
+        from app.analyzer.ioc import extract_ioc_targets
+        result = extract_ioc_targets("Persistence via /etc/cron.d/backdoor.sh entry.")
+        self.assertIn("/etc/cron.d/backdoor.sh", result.get("FilePaths", []))
+        self.assertIn("backdoor.sh", result.get("FileNames", []))
+
+
 class TestIocFalsePositiveHelpers(unittest.TestCase):
     """Tests for is_likely_false_positive_hash and is_likely_false_positive_domain."""
 
@@ -165,6 +247,14 @@ class TestIocFalsePositiveHelpers(unittest.TestCase):
         from app.analyzer.ioc import is_likely_false_positive_domain
         self.assertTrue(is_likely_false_positive_domain("v2.0"))
         self.assertTrue(is_likely_false_positive_domain("1.2.3"))
+
+    def test_false_positive_domain_linux_extensions(self) -> None:
+        """Linux script/library names are filenames, not domains."""
+        from app.analyzer.ioc import is_likely_false_positive_domain
+        self.assertTrue(is_likely_false_positive_domain("payload.sh"))
+        self.assertTrue(is_likely_false_positive_domain("libevil.so"))
+        self.assertTrue(is_likely_false_positive_domain("persist.pl"))
+        self.assertTrue(is_likely_false_positive_domain("implant.elf"))
 
     def test_real_domain_not_false_positive(self) -> None:
         from app.analyzer.ioc import is_likely_false_positive_domain

@@ -75,7 +75,8 @@ IOC_HASH_RE = re.compile(r"\b(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})
 IOC_DOMAIN_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
 IOC_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}\b")
 IOC_FILENAME_RE = re.compile(
-    r"\b[A-Za-z0-9_.-]+\.(?:exe|dll|sys|bat|cmd|ps1|vbs|vbe|msi|msp|scr|cpl|lnk|jar)\b",
+    r"\b[A-Za-z0-9_.-]+\.(?:exe|dll|sys|bat|cmd|ps1|vbs|vbe|msi|msp|scr|cpl|lnk|jar"
+    r"|sh|py|pl|elf|so|bin)\b",
     flags=re.IGNORECASE,
 )
 
@@ -101,7 +102,9 @@ DOMAIN_EXCLUDED_SUFFIXES = {".local", ".lan", ".internal"}
 
 # File extensions that should not be treated as domain TLDs.
 # Matches like "file.exe", "System.dll", "v2.0" are filenames or version
-# strings, not domain names.
+# strings, not domain names.  Linux script/library extensions (.sh, .pl,
+# .elf, .so) are excluded as well so values like "payload.sh" are reported
+# once under FileNames instead of being mislabeled as domains.
 DOMAIN_EXCLUDED_TLDS = {
     ".exe", ".dll", ".sys", ".dat", ".log", ".tmp", ".ini", ".cfg",
     ".xml", ".json", ".csv", ".py", ".js", ".html", ".css", ".txt",
@@ -113,6 +116,7 @@ DOMAIN_EXCLUDED_TLDS = {
     ".h", ".c", ".cpp", ".java", ".class", ".pyc", ".pyo", ".whl",
     ".yaml", ".yml", ".toml", ".conf", ".reg", ".inf", ".cat", ".man",
     ".evtx", ".etl", ".dmp", ".pf", ".nls", ".mui", ".mof", ".sdb",
+    ".sh", ".pl", ".elf", ".so",
 }
 
 # Column name substrings that indicate a column holds identifiers (GUIDs,
@@ -148,6 +152,14 @@ CSV_DATA_SECTION_RE = re.compile(
 )
 CSV_TRAILING_FENCE_RE = re.compile(r"\n```\s*$")
 WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\"'\s,;)]*")
+# Absolute POSIX paths with at least two segments (e.g. /tmp/payload.sh).
+# The negative lookbehind rejects slashes embedded in URLs ("http://",
+# "evil.com/x"), drive-relative forms ("C:/"), and word/word constructs
+# such as "and/or" or "TCP/IP".  The final character class keeps trailing
+# sentence punctuation out of the match.
+POSIX_PATH_RE = re.compile(
+    r"(?<![\w:.\\/])/(?:[A-Za-z0-9._+~-]+/)+[A-Za-z0-9._+~-]*[A-Za-z0-9_+~-]"
+)
 INTEGER_RE = re.compile(r"-?\d+")
 
 # ---------------------------------------------------------------------------
