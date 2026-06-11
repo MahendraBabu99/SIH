@@ -589,6 +589,96 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
         self.assertFalse((image_dir / ".replacement_staging").exists())
 
+    def test_failed_replacement_before_commit_preserves_active_evidence(self) -> None:
+        """A failure before any evidence backup exists never deletes active evidence."""
+        case_id = "replace-precommit-failure"
+        image_id = "img-001"
+        case_dir = self._install_case(case_id, image_id)
+        image_dir = case_dir / "images" / image_id
+        metadata_path = image_dir / "metadata.json"
+        original_metadata = '{"label":"Image","hostname":"old-host"}\n'
+        metadata_path.write_text(original_metadata, encoding="utf-8")
+        parsed_dir = image_dir / "parsed"
+        csv_path = parsed_dir / "runkeys.csv"
+        csv_path.write_text("name\nvalue\n", encoding="utf-8")
+        image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
+        image_state.update(
+            {
+                "parse_results": [
+                    {
+                        "artifact_key": "runkeys",
+                        "success": True,
+                        "csv_path": str(csv_path),
+                    },
+                ],
+                "artifact_csv_paths": {"runkeys": str(csv_path)},
+                "csv_output_dir": str(parsed_dir),
+            },
+        )
+        routes_state.CASE_STATES[case_id].update(
+            {
+                "status": "parsed",
+                "image_artifact_csv_paths": {
+                    image_id: dict(image_state["artifact_csv_paths"]),
+                },
+            },
+        )
+        original_evidence_path = image_state["evidence_path"]
+
+        new_source = Path(self.temp_dir.name) / "precommit-failure-new.E01"
+        new_source.write_bytes(b"new")
+        evidence_payload = {
+            "mode": "path",
+            "source_mode": "path",
+            "source_path": str(new_source),
+            "dissect_path": str(new_source),
+            "stored_path": str(new_source),
+            "uploaded_files": [],
+            "files_to_hash": [str(new_source)],
+        }
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "_resolve_evidence_for_image", return_value=evidence_payload),
+            patch.object(routes_images, "_should_skip_hashing", return_value=False),
+            patch.object(
+                routes_images,
+                "_compute_evidence_hashes",
+                return_value=({"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3}, []),
+            ),
+            patch.object(
+                routes_images,
+                "_open_dissect_target",
+                return_value=(
+                    {"hostname": "new-host"},
+                    [{"key": "runkeys", "name": "Run Keys", "available": True}],
+                    "windows",
+                ),
+            ),
+            patch.object(
+                routes_images,
+                "_commit_staged_evidence",
+                side_effect=RuntimeError("commit move failed"),
+            ),
+        ):
+            with self.app.test_request_context(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                method="POST",
+                json={"path": str(new_source)},
+            ):
+                response, status = routes_images.intake_image_evidence(
+                    case_id, image_id,
+                )
+
+        self.assertEqual(status, 500)
+        self.assertIn("Evidence intake failed", response.get_json()["error"])
+        self.assertTrue((image_dir / "evidence" / "old.E01").exists())
+        restored_case = routes_state.CASE_STATES[case_id]
+        restored_image_state = restored_case["image_states"][image_id]
+        self.assertEqual(restored_image_state["evidence_path"], original_evidence_path)
+        self.assertEqual(metadata_path.read_text(encoding="utf-8"), original_metadata)
+        self.assertFalse((image_dir / ".replacement_staging").exists())
+
     def test_upload_replacement_rewrites_hash_summary_paths_after_staging(self) -> None:
         """Committed upload replacements do not retain staging paths in hash metadata."""
         case_id = "replace-upload-paths"

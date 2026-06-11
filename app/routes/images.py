@@ -18,6 +18,7 @@ import logging
 import shutil
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -238,11 +239,61 @@ def _commit_staged_evidence(staged_evidence_dir: Path, active_evidence_dir: Path
 
 
 def _restore_evidence_backup(active_evidence_dir: Path, backup_dir: Path | None) -> None:
-    """Best-effort restore of an evidence directory backup after commit failure."""
+    """Best-effort restore of an evidence directory backup after commit failure.
+
+    Must only be called after :func:`_commit_staged_evidence` succeeded: it
+    removes the newly committed active evidence directory and moves the
+    pre-commit backup (when one exists) back into place.  When ``backup_dir``
+    is ``None`` the successful commit was a first-time intake with no prior
+    evidence directory, so removing the newly committed directory restores
+    the pre-replacement state with nothing retained.  Callers must never
+    invoke this before a successful commit -- at that point the active
+    directory still holds the previous, valid evidence and deleting it would
+    destroy the case's only stored copy.
+
+    Args:
+        active_evidence_dir: The image's active evidence directory.
+        backup_dir: Backup directory returned by a successful
+            :func:`_commit_staged_evidence` call, or ``None`` when no
+            pre-existing evidence directory was backed up.
+    """
     if active_evidence_dir.exists():
         shutil.rmtree(active_evidence_dir, ignore_errors=True)
     if backup_dir is not None and backup_dir.exists():
         shutil.move(str(backup_dir), str(active_evidence_dir))
+
+
+def _recover_orphaned_evidence_backup(active_evidence_dir: Path) -> None:
+    """Best-effort recovery of an orphaned evidence backup directory.
+
+    Covers the rare commit failure where the active evidence directory was
+    moved to a ``.evidence_backup_*`` sibling but the swap could not complete
+    and the in-place restore inside :func:`_commit_staged_evidence` also
+    failed (realistic on Windows when another process briefly holds a handle
+    inside the evidence tree).  When the active directory is missing and an
+    orphaned backup sibling exists, the backup is moved back into place so
+    the image keeps its stored evidence copy.  All errors are swallowed --
+    this is a best-effort safety net on an error path.
+
+    Args:
+        active_evidence_dir: The image's active evidence directory.
+    """
+    if active_evidence_dir.exists():
+        return
+    try:
+        candidates = sorted(
+            path
+            for path in active_evidence_dir.parent.glob(".evidence_backup_*")
+            if path.is_dir()
+        )
+    except OSError:
+        return
+    for candidate in candidates:
+        try:
+            shutil.move(str(candidate), str(active_evidence_dir))
+        except (OSError, shutil.Error):
+            continue
+        return
 
 
 def _cleanup_replacement_staging(staging_dir: Path, image_dir: Path) -> None:
@@ -294,6 +345,96 @@ def _invalidate_replacement_parse_state_after_cleanup(
         CHAT_PROGRESS.pop(case_id, None)
         if not other_images_have_results:
             PARSE_PROGRESS.pop(case_id, None)
+
+
+def _handle_replacement_failure(
+    case_id: str,
+    case: dict[str, Any],
+    image_id: str,
+    error: Exception,
+    *,
+    audit_logger: Any,
+    restore_state: Callable[[], None],
+    replacement_committed: bool,
+    replacement_cleanup_started: bool,
+    replacement_cleanup_completed: bool,
+    staging_dir: Path,
+    image_dir: Path,
+    base_message: str,
+    status_code: int,
+) -> tuple[Response, int]:
+    """Roll back a failed evidence replacement and build the error response.
+
+    Shared by both exception handlers of :func:`intake_image_evidence` so the
+    rollback sequence exists in exactly one place: restore the in-memory case
+    snapshot, invalidate parse/analysis state when stale-output cleanup had
+    already started, write the ``evidence_replacement_failed`` audit entry,
+    remove the replacement staging directory, and augment the user-facing
+    message with the rollback consequences.  The on-disk evidence directory
+    itself is never touched here -- evidence restoration is handled at the
+    commit site, which only rolls back the active evidence directory after a
+    successful swap.
+
+    Args:
+        case_id: UUID of the case.
+        case: In-memory case state dictionary.
+        image_id: UUID of the image whose replacement failed.
+        error: The exception that aborted the replacement.
+        audit_logger: The case's audit logger instance.
+        restore_state: Zero-argument callable restoring the pre-replacement
+            in-memory case and progress snapshots.
+        replacement_committed: ``True`` when the replacement already fully
+            succeeded (no rollback is performed in that case).
+        replacement_cleanup_started: ``True`` when stale parsed/downstream
+            output cleanup had started before the failure.
+        replacement_cleanup_completed: ``True`` when that cleanup finished
+            before the failure.
+        staging_dir: Replacement staging directory to remove.
+        image_dir: The image directory owning the staging area.
+        base_message: User-facing message describing the failure.
+        status_code: HTTP status code for the error response.
+
+    Returns:
+        A ``(Response, int)`` error tuple suitable for returning from the
+        route handler.
+    """
+    if not replacement_committed:
+        restore_state()
+        if replacement_cleanup_started:
+            _invalidate_replacement_parse_state_after_cleanup(case_id, case, image_id)
+        audit_logger.log(
+            "evidence_replacement_failed",
+            {
+                "image_id": image_id,
+                "stage": (
+                    "after_cleanup_started"
+                    if replacement_cleanup_started
+                    else "before_commit"
+                ),
+                "retained_partial_evidence": False,
+                "parsed_outputs_invalidated": replacement_cleanup_started,
+                "cleanup_completed": replacement_cleanup_completed,
+                "stale_outputs_may_remain_on_disk": (
+                    replacement_cleanup_started
+                    and not replacement_cleanup_completed
+                ),
+                "error": str(error),
+            },
+        )
+        _cleanup_replacement_staging(staging_dir, image_dir)
+    message = base_message
+    if replacement_cleanup_started:
+        message = (
+            f"{message} Previous evidence was restored, but parsed and "
+            "analysis outputs were invalidated because replacement cleanup "
+            "had already started."
+        )
+        if not replacement_cleanup_completed:
+            message = (
+                f"{message} Some stale output files may remain on disk, "
+                "but current case state will not use them."
+            )
+    return error_response(message, status_code)
 
 
 def _rebuild_case_parse_state_from_images(case_id: str, case: dict[str, Any]) -> bool:
@@ -874,9 +1015,11 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         replacement_cleanup_completed = True
 
         backup_dir: Path | None = None
+        committed = False
         try:
             staging_evidence_dir.mkdir(parents=True, exist_ok=True)
             backup_dir = _commit_staged_evidence(staging_evidence_dir, evidence_dir)
+            committed = True
             active_payload = _rewrite_staged_evidence_payload(
                 evidence_payload,
                 staging_evidence_dir,
@@ -951,7 +1094,17 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 },
             )
         except Exception:
-            _restore_evidence_backup(evidence_dir, backup_dir)
+            if committed:
+                # The swap succeeded, so the active directory now holds the
+                # new evidence: remove it and restore the pre-commit backup
+                # (or nothing, for a first-time intake without a backup).
+                _restore_evidence_backup(evidence_dir, backup_dir)
+            else:
+                # The failure happened before (or during) the swap: the
+                # active directory still holds the previous, valid evidence
+                # and must never be deleted. Best-effort recover the rare
+                # partially-completed swap that left only a backup behind.
+                _recover_orphaned_evidence_backup(evidence_dir)
             if metadata_existed and metadata_snapshot is not None:
                 metadata_path.write_text(metadata_snapshot, encoding="utf-8")
             elif not metadata_existed:
@@ -1051,85 +1204,41 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
         _cleanup_replacement_staging(staging_dir, image_dir)
         return success_response(response_data)
     except (ValueError, FileNotFoundError) as error:
-        if not replacement_committed:
-            restore_replacement_state()
-            if replacement_cleanup_started:
-                _invalidate_replacement_parse_state_after_cleanup(case_id, case, image_id)
-            audit_logger.log(
-                "evidence_replacement_failed",
-                {
-                    "image_id": image_id,
-                    "stage": (
-                        "after_cleanup_started"
-                        if replacement_cleanup_started
-                        else "before_commit"
-                    ),
-                    "retained_partial_evidence": False,
-                    "parsed_outputs_invalidated": replacement_cleanup_started,
-                    "cleanup_completed": replacement_cleanup_completed,
-                    "stale_outputs_may_remain_on_disk": (
-                        replacement_cleanup_started
-                        and not replacement_cleanup_completed
-                    ),
-                    "error": str(error),
-                },
-            )
-            _cleanup_replacement_staging(staging_dir, image_dir)
-        message = str(error)
-        if replacement_cleanup_started:
-            message = (
-                f"{message} Previous evidence was restored, but parsed and "
-                "analysis outputs were invalidated because replacement cleanup "
-                "had already started."
-            )
-            if not replacement_cleanup_completed:
-                message = (
-                    f"{message} Some stale output files may remain on disk, "
-                    "but current case state will not use them."
-                )
-        return error_response(message, 400)
+        return _handle_replacement_failure(
+            case_id,
+            case,
+            image_id,
+            error,
+            audit_logger=audit_logger,
+            restore_state=restore_replacement_state,
+            replacement_committed=replacement_committed,
+            replacement_cleanup_started=replacement_cleanup_started,
+            replacement_cleanup_completed=replacement_cleanup_completed,
+            staging_dir=staging_dir,
+            image_dir=image_dir,
+            base_message=str(error),
+            status_code=400,
+        )
     except Exception as error:
         LOGGER.exception("Evidence intake failed for case %s image %s", case_id, image_id)
-        if not replacement_committed:
-            restore_replacement_state()
-            if replacement_cleanup_started:
-                _invalidate_replacement_parse_state_after_cleanup(case_id, case, image_id)
-            audit_logger.log(
-                "evidence_replacement_failed",
-                {
-                    "image_id": image_id,
-                    "stage": (
-                        "after_cleanup_started"
-                        if replacement_cleanup_started
-                        else "before_commit"
-                    ),
-                    "retained_partial_evidence": False,
-                    "parsed_outputs_invalidated": replacement_cleanup_started,
-                    "cleanup_completed": replacement_cleanup_completed,
-                    "stale_outputs_may_remain_on_disk": (
-                        replacement_cleanup_started
-                        and not replacement_cleanup_completed
-                    ),
-                    "error": str(error),
-                },
-            )
-            _cleanup_replacement_staging(staging_dir, image_dir)
-        message = (
-            "Evidence intake failed due to an unexpected error. "
-            "Confirm the evidence file is supported and try again."
+        return _handle_replacement_failure(
+            case_id,
+            case,
+            image_id,
+            error,
+            audit_logger=audit_logger,
+            restore_state=restore_replacement_state,
+            replacement_committed=replacement_committed,
+            replacement_cleanup_started=replacement_cleanup_started,
+            replacement_cleanup_completed=replacement_cleanup_completed,
+            staging_dir=staging_dir,
+            image_dir=image_dir,
+            base_message=(
+                "Evidence intake failed due to an unexpected error. "
+                "Confirm the evidence file is supported and try again."
+            ),
+            status_code=500,
         )
-        if replacement_cleanup_started:
-            message = (
-                f"{message} Previous evidence was restored, but parsed and "
-                "analysis outputs were invalidated because replacement cleanup "
-                "had already started."
-            )
-            if not replacement_cleanup_completed:
-                message = (
-                    f"{message} Some stale output files may remain on disk, "
-                    "but current case state will not use them."
-                )
-        return error_response(message, 500)
 
 
 # ---------------------------------------------------------------------------
