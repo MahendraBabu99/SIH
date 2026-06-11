@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any, Callable, Iterator, Mapping
 
 from .base import (
@@ -32,10 +31,9 @@ from .base import (
     _run_stream_with_rate_limit_retries,
 )
 from .openai_compatible import OpenAICompatibleChatMixin
-from .utils import (
-    _clean_streamed_answer_text,
-    stream_chunk_answer_text,
-    stream_chunk_reasoning_text,
+from .progress import (
+    finalize_progress_stream_response,
+    stream_progress_chunks,
 )
 
 logger = logging.getLogger(__name__)
@@ -267,46 +265,12 @@ class KimiProvider(OpenAICompatibleChatMixin, AIProvider):
 
         def _progress_chunks(stream: Any) -> Iterator[Any]:
             """Emit progress while yielding chunks for retry tracking."""
-            last_emit_at = 0.0
-            last_sent_thinking = ""
-            last_sent_answer = ""
-
-            for chunk in self._iter_openai_compatible_stream_text(stream):
-                thinking_delta = stream_chunk_reasoning_text(chunk)
-                answer_delta = stream_chunk_answer_text(chunk)
-                if thinking_delta:
-                    thinking_parts.append(thinking_delta)
-                if answer_delta:
-                    answer_parts.append(answer_delta)
-
-                current_thinking = "".join(thinking_parts).strip()
-                current_answer = _clean_streamed_answer_text(
-                    answer_text="".join(answer_parts),
-                    thinking_text=current_thinking,
-                )
-                last_emit_at, last_sent_thinking, last_sent_answer = (
-                    self._emit_progress_if_needed(
-                        progress_callback=progress_callback,
-                        current_thinking=current_thinking,
-                        current_answer=current_answer,
-                        last_emit_at=last_emit_at,
-                        last_sent_thinking=last_sent_thinking,
-                        last_sent_answer=last_sent_answer,
-                    )
-                )
-                yield chunk
-
-            final_thinking = "".join(thinking_parts).strip()
-            final_answer = _clean_streamed_answer_text(
-                answer_text="".join(answer_parts),
-                thinking_text=final_thinking,
+            return stream_progress_chunks(
+                chunks=self._iter_openai_compatible_stream_text(stream),
+                progress_callback=progress_callback,
+                thinking_parts=thinking_parts,
+                answer_parts=answer_parts,
             )
-            if final_thinking or final_answer:
-                self._emit_progress(
-                    progress_callback=progress_callback,
-                    thinking_text=final_thinking,
-                    partial_text=final_answer,
-                )
 
         stream = _run_stream_with_rate_limit_retries(
             stream_factory=_stream_factory,
@@ -321,78 +285,13 @@ class KimiProvider(OpenAICompatibleChatMixin, AIProvider):
         )
         for _chunk in stream:
             pass
-        return self._finalize_progress_stream_response(thinking_parts, answer_parts)
-
-    @staticmethod
-    def _emit_progress(
-        progress_callback: Callable[[dict[str, str]], None],
-        *,
-        thinking_text: str,
-        partial_text: str,
-    ) -> None:
-        """Best-effort progress callback wrapper."""
-        try:
-            progress_callback(
-                {
-                    "status": "thinking",
-                    "thinking_text": thinking_text,
-                    "partial_text": partial_text,
-                }
-            )
-        except Exception:
-            pass
-
-    @classmethod
-    def _emit_progress_if_needed(
-        cls,
-        progress_callback: Callable[[dict[str, str]], None],
-        current_thinking: str,
-        current_answer: str,
-        last_emit_at: float,
-        last_sent_thinking: str,
-        last_sent_answer: str,
-    ) -> tuple[float, str, str]:
-        """Send progress periodically while streaming."""
-        if not current_thinking and not current_answer:
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        changed = (
-            current_thinking != last_sent_thinking
-            or current_answer != last_sent_answer
-        )
-        if not changed:
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        now = time.monotonic()
-        if now - last_emit_at < 0.35 and (
-            len(current_thinking) - len(last_sent_thinking) < 80
-            and len(current_answer) - len(last_sent_answer) < 80
-        ):
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        cls._emit_progress(
-            progress_callback=progress_callback,
-            thinking_text=current_thinking,
-            partial_text=current_answer,
-        )
-        return now, current_thinking, current_answer
-
-    @staticmethod
-    def _finalize_progress_stream_response(
-        thinking_parts: list[str],
-        answer_parts: list[str],
-    ) -> str:
-        """Assemble and validate the final streamed Kimi answer."""
-        final_thinking = "".join(thinking_parts).strip()
-        final_answer = _clean_streamed_answer_text(
-            answer_text="".join(answer_parts),
-            thinking_text=final_thinking,
-        )
-        if final_answer:
-            return final_answer
-        raise AIProviderError(
-            "Kimi returned an empty streamed response. "
-            "This can happen with reasoning-only outputs or very low token limits."
+        return finalize_progress_stream_response(
+            thinking_parts,
+            answer_parts,
+            empty_response_message=(
+                "Kimi returned an empty streamed response. "
+                "This can happen with reasoning-only outputs or very low token limits."
+            ),
         )
 
     def _request_non_stream(

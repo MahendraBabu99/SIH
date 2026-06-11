@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 import logging
 import threading
-import time
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
@@ -30,17 +29,34 @@ from .base import (
     _resolve_timeout_seconds,
     _run_stream_with_rate_limit_retries,
 )
+from .progress import (
+    finalize_progress_stream_response,
+    stream_progress_chunks,
+)
 from .utils import (
-    _clean_streamed_answer_text,
     _extract_anthropic_text,
     _inline_attachment_data_into_prompt,
     _split_anthropic_stream_event_text,
-    stream_chunk_answer_text,
     stream_chunk_has_text,
-    stream_chunk_reasoning_text,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _iter_anthropic_stream_chunks(stream: Any) -> Iterator[Any]:
+    """Yield separated answer/reasoning chunks from a Claude stream.
+
+    Args:
+        stream: Anthropic streaming response iterator.
+
+    Yields:
+        String-compatible chunks from Claude content-block deltas that
+        carry answer or reasoning text.
+    """
+    for event in stream:
+        chunk = _split_anthropic_stream_event_text(event)
+        if stream_chunk_has_text(chunk):
+            yield chunk
 
 
 class ClaudeProvider(AIProvider):
@@ -173,23 +189,9 @@ class ClaudeProvider(AIProvider):
                 request_kwargs,
             )
 
-        def _stream_text_iterator(stream: Any) -> Iterator[str]:
-            """Yield separated answer/reasoning chunks from a Claude stream.
-
-            Args:
-                stream: Anthropic streaming response iterator.
-
-            Yields:
-                String-compatible chunks from Claude content-block deltas.
-            """
-            for event in stream:
-                chunk_text = _split_anthropic_stream_event_text(event)
-                if stream_chunk_has_text(chunk_text):
-                    yield chunk_text
-
         return _run_stream_with_rate_limit_retries(
             stream_factory=_stream_factory,
-            stream_text_iterator=_stream_text_iterator,
+            stream_text_iterator=_iter_anthropic_stream_chunks,
             rate_limit_error_type=self._anthropic.RateLimitError,
             provider_name="Claude",
             map_error=self._map_api_error,
@@ -346,50 +348,12 @@ class ClaudeProvider(AIProvider):
 
         def _progress_chunks(stream: Any) -> Iterator[Any]:
             """Emit progress while yielding chunks for retry tracking."""
-            last_emit_at = 0.0
-            last_sent_thinking = ""
-            last_sent_answer = ""
-
-            for event in stream:
-                chunk = _split_anthropic_stream_event_text(event)
-                if not stream_chunk_has_text(chunk):
-                    continue
-
-                thinking_delta = stream_chunk_reasoning_text(chunk)
-                answer_delta = stream_chunk_answer_text(chunk)
-                if thinking_delta:
-                    thinking_parts.append(thinking_delta)
-                if answer_delta:
-                    answer_parts.append(answer_delta)
-
-                current_thinking = "".join(thinking_parts).strip()
-                current_answer = _clean_streamed_answer_text(
-                    answer_text="".join(answer_parts),
-                    thinking_text=current_thinking,
-                )
-                last_emit_at, last_sent_thinking, last_sent_answer = (
-                    self._emit_progress_if_needed(
-                        progress_callback=progress_callback,
-                        current_thinking=current_thinking,
-                        current_answer=current_answer,
-                        last_emit_at=last_emit_at,
-                        last_sent_thinking=last_sent_thinking,
-                        last_sent_answer=last_sent_answer,
-                    )
-                )
-                yield chunk
-
-            final_thinking = "".join(thinking_parts).strip()
-            final_answer = _clean_streamed_answer_text(
-                answer_text="".join(answer_parts),
-                thinking_text=final_thinking,
+            return stream_progress_chunks(
+                chunks=_iter_anthropic_stream_chunks(stream),
+                progress_callback=progress_callback,
+                thinking_parts=thinking_parts,
+                answer_parts=answer_parts,
             )
-            if final_thinking or final_answer:
-                self._emit_progress(
-                    progress_callback=progress_callback,
-                    thinking_text=final_thinking,
-                    partial_text=final_answer,
-                )
 
         stream = _run_stream_with_rate_limit_retries(
             stream_factory=_stream_factory,
@@ -407,14 +371,34 @@ class ClaudeProvider(AIProvider):
         if attachments and isinstance(request_kwargs["messages"][0]["content"], list):
             with self._attachment_lock:
                 self._csv_attachment_supported = True
-        return self._finalize_progress_stream_response(thinking_parts, answer_parts)
+        return finalize_progress_stream_response(
+            thinking_parts,
+            answer_parts,
+            empty_response_message=(
+                "Claude returned an empty streamed response. "
+                "This can happen with reasoning-only outputs or very low token limits."
+            ),
+        )
 
     def _build_progress_user_content(
         self,
         user_prompt: str,
         attachments: list[Mapping[str, str]] | None,
     ) -> str | list[dict[str, Any]]:
-        """Build Claude user content for streaming progress requests."""
+        """Build Claude user content for streaming progress requests.
+
+        Args:
+            user_prompt: The user-facing prompt text.
+            attachments: Optional list of attachment descriptors.
+
+        Returns:
+            Content blocks including the attachments when attachment mode is
+            usable, otherwise the prompt string (with attachment data inlined
+            when attachments were requested).
+
+        Raises:
+            AIProviderError: If a requested attachment cannot be read.
+        """
         normalized_attachments = self._prepare_csv_attachments(attachments)
         if not normalized_attachments:
             effective_prompt = user_prompt
@@ -427,6 +411,29 @@ class ClaudeProvider(AIProvider):
                     logger.info("Claude progress mode inlined attachment data into prompt.")
             return effective_prompt
 
+        return self._build_attachment_content_blocks(user_prompt, normalized_attachments)
+
+    @staticmethod
+    def _build_attachment_content_blocks(
+        user_prompt: str,
+        normalized_attachments: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Build Claude user content blocks embedding CSV/PDF attachments.
+
+        PDF attachments become base64 ``document`` blocks; all other
+        attachments are read as text and wrapped in delimited ``text``
+        blocks after the prompt text.
+
+        Args:
+            user_prompt: The user-facing prompt text for the leading block.
+            normalized_attachments: Validated attachment descriptors.
+
+        Returns:
+            The list of Claude content-block dicts.
+
+        Raises:
+            AIProviderError: If an attachment file cannot be read.
+        """
         content_blocks: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
         for attachment in normalized_attachments:
             attachment_path = Path(attachment["path"])
@@ -474,78 +481,6 @@ class ClaudeProvider(AIProvider):
             )
         return content_blocks
 
-    @staticmethod
-    def _emit_progress(
-        progress_callback: Callable[[dict[str, str]], None],
-        *,
-        thinking_text: str,
-        partial_text: str,
-    ) -> None:
-        """Best-effort progress callback wrapper."""
-        try:
-            progress_callback(
-                {
-                    "status": "thinking",
-                    "thinking_text": thinking_text,
-                    "partial_text": partial_text,
-                }
-            )
-        except Exception:
-            pass
-
-    @classmethod
-    def _emit_progress_if_needed(
-        cls,
-        progress_callback: Callable[[dict[str, str]], None],
-        current_thinking: str,
-        current_answer: str,
-        last_emit_at: float,
-        last_sent_thinking: str,
-        last_sent_answer: str,
-    ) -> tuple[float, str, str]:
-        """Send progress periodically while streaming."""
-        if not current_thinking and not current_answer:
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        changed = (
-            current_thinking != last_sent_thinking
-            or current_answer != last_sent_answer
-        )
-        if not changed:
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        now = time.monotonic()
-        if now - last_emit_at < 0.35 and (
-            len(current_thinking) - len(last_sent_thinking) < 80
-            and len(current_answer) - len(last_sent_answer) < 80
-        ):
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        cls._emit_progress(
-            progress_callback=progress_callback,
-            thinking_text=current_thinking,
-            partial_text=current_answer,
-        )
-        return now, current_thinking, current_answer
-
-    @staticmethod
-    def _finalize_progress_stream_response(
-        thinking_parts: list[str],
-        answer_parts: list[str],
-    ) -> str:
-        """Assemble and validate the final streamed Claude answer."""
-        final_thinking = "".join(thinking_parts).strip()
-        final_answer = _clean_streamed_answer_text(
-            answer_text="".join(answer_parts),
-            thinking_text=final_thinking,
-        )
-        if final_answer:
-            return final_answer
-        raise AIProviderError(
-            "Claude returned an empty streamed response. "
-            "This can happen with reasoning-only outputs or very low token limits."
-        )
-
     def _request_with_csv_attachments(
         self,
         system_prompt: str,
@@ -570,49 +505,10 @@ class ClaudeProvider(AIProvider):
             return None
 
         try:
-            content_blocks: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
-            for attachment in normalized_attachments:
-                attachment_path = Path(attachment["path"])
-                attachment_name = attachment.get("name", attachment_path.name)
-                mime_type = attachment["mime_type"].lower()
-                if mime_type == "application/pdf":
-                    try:
-                        encoded_data = base64.b64encode(attachment_path.read_bytes()).decode("ascii")
-                    except OSError as error:
-                        raise AIProviderError(
-                            f"Claude could not read requested attachment "
-                            f"'{attachment_name}' at {attachment_path}: {error}"
-                        ) from error
-                    content_blocks.append(
-                        {
-                            "type": "document",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "application/pdf",
-                                "data": encoded_data,
-                            },
-                        }
-                    )
-                else:
-                    try:
-                        attachment_text = attachment_path.read_text(
-                            encoding="utf-8-sig", errors="replace"
-                        )
-                    except OSError as error:
-                        raise AIProviderError(
-                            f"Claude could not read requested attachment "
-                            f"'{attachment_name}' at {attachment_path}: {error}"
-                        ) from error
-                    content_blocks.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"--- BEGIN ATTACHMENT: {attachment_name} ---\n"
-                                f"{attachment_text.rstrip()}\n"
-                                f"--- END ATTACHMENT: {attachment_name} ---"
-                            ),
-                        }
-                    )
+            content_blocks = self._build_attachment_content_blocks(
+                user_prompt,
+                normalized_attachments,
+            )
 
             response = self._create_message_with_stream_fallback(
                 system_prompt=system_prompt,

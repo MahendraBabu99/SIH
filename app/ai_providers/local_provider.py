@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any, Callable, Iterator, Mapping
 
 from .base import (
@@ -30,12 +29,12 @@ from .base import (
     _run_stream_with_rate_limit_retries,
 )
 from .openai_compatible import OpenAICompatibleChatMixin
-from .utils import (
-    _clean_streamed_answer_text,
-    _strip_leading_reasoning_blocks,
-    stream_chunk_answer_text,
-    stream_chunk_reasoning_text,
+from .progress import (
+    emit_progress_if_needed,
+    finalize_progress_stream_response,
+    stream_progress_chunks,
 )
+from .utils import _strip_leading_reasoning_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -364,52 +363,12 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
 
         def _progress_chunks(stream: Any) -> Iterator[Any]:
             """Emit progress while yielding answer/reasoning chunks for retry tracking."""
-            last_emit_at = 0.0
-            last_sent_thinking = ""
-            last_sent_answer = ""
-
-            for chunk in self._iter_openai_compatible_stream_text(stream):
-                thinking_delta = stream_chunk_reasoning_text(chunk)
-                answer_delta = stream_chunk_answer_text(chunk)
-                if thinking_delta:
-                    thinking_parts.append(thinking_delta)
-                if answer_delta:
-                    answer_parts.append(answer_delta)
-
-                current_thinking = "".join(thinking_parts).strip()
-                current_answer = _clean_streamed_answer_text(
-                    answer_text="".join(answer_parts),
-                    thinking_text=current_thinking,
-                )
-
-                last_emit_at, last_sent_thinking, last_sent_answer = (
-                    self._emit_progress_if_needed(
-                        progress_callback=progress_callback,
-                        current_thinking=current_thinking,
-                        current_answer=current_answer,
-                        last_emit_at=last_emit_at,
-                        last_sent_thinking=last_sent_thinking,
-                        last_sent_answer=last_sent_answer,
-                    )
-                )
-                yield chunk
-
-            final_thinking = "".join(thinking_parts).strip()
-            final_answer = _clean_streamed_answer_text(
-                answer_text="".join(answer_parts),
-                thinking_text=final_thinking,
+            return stream_progress_chunks(
+                chunks=self._iter_openai_compatible_stream_text(stream),
+                progress_callback=progress_callback,
+                thinking_parts=thinking_parts,
+                answer_parts=answer_parts,
             )
-            if final_thinking or final_answer:
-                try:
-                    progress_callback(
-                        {
-                            "status": "thinking",
-                            "thinking_text": final_thinking,
-                            "partial_text": final_answer,
-                        }
-                    )
-                except Exception:
-                    pass
 
         stream = _run_stream_with_rate_limit_retries(
             stream_factory=_stream_factory,
@@ -426,60 +385,9 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
             pass
         return self._finalize_stream_response(thinking_parts, answer_parts)
 
-    @staticmethod
-    def _emit_progress_if_needed(
-        progress_callback: Callable[[dict[str, str]], None],
-        current_thinking: str,
-        current_answer: str,
-        last_emit_at: float,
-        last_sent_thinking: str,
-        last_sent_answer: str,
-    ) -> tuple[float, str, str]:
-        """Send a progress callback if enough content has changed.
-
-        Applies rate-limiting so the callback fires at most every 0.35 s
-        unless at least 80 characters have been added to either channel.
-
-        Args:
-            progress_callback: The callable to invoke with progress data.
-            current_thinking: Accumulated thinking text so far.
-            current_answer: Accumulated answer text so far.
-            last_emit_at: Monotonic timestamp of the last emission.
-            last_sent_thinking: Thinking text sent in the last emission.
-            last_sent_answer: Answer text sent in the last emission.
-
-        Returns:
-            Updated ``(last_emit_at, last_sent_thinking, last_sent_answer)``.
-        """
-        if not current_thinking and not current_answer:
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        changed = (
-            current_thinking != last_sent_thinking
-            or current_answer != last_sent_answer
-        )
-        if not changed:
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        now = time.monotonic()
-        if now - last_emit_at < 0.35 and (
-            len(current_thinking) - len(last_sent_thinking) < 80
-            and len(current_answer) - len(last_sent_answer) < 80
-        ):
-            return last_emit_at, last_sent_thinking, last_sent_answer
-
-        try:
-            progress_callback(
-                {
-                    "status": "thinking",
-                    "thinking_text": current_thinking,
-                    "partial_text": current_answer,
-                }
-            )
-        except Exception:
-            pass
-
-        return now, current_thinking, current_answer
+    # Class-level alias retained so existing callers and unit tests that
+    # exercise the shared progress throttle via ``LocalProvider`` keep working.
+    _emit_progress_if_needed = staticmethod(emit_progress_if_needed)
 
     @staticmethod
     def _finalize_stream_response(
@@ -498,16 +406,13 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
         Raises:
             AIProviderError: If both channels are empty.
         """
-        final_thinking = "".join(thinking_parts).strip()
-        final_answer = _clean_streamed_answer_text(
-            answer_text="".join(answer_parts),
-            thinking_text=final_thinking,
-        )
-        if final_answer:
-            return final_answer
-        raise AIProviderError(
-            "Local AI provider returned an empty streamed response. "
-            "Try a different local model or increase max tokens."
+        return finalize_progress_stream_response(
+            thinking_parts,
+            answer_parts,
+            empty_response_message=(
+                "Local AI provider returned an empty streamed response. "
+                "Try a different local model or increase max tokens."
+            ),
         )
 
     def _clean_openai_compatible_response_text(self, text: str) -> str:
