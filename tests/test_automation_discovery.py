@@ -520,6 +520,98 @@ class TestDiscoverEvidence(unittest.TestCase):
             else []
         )
 
+    def test_corrupt_archive_in_directory_is_skipped_with_warning(self) -> None:
+        """A corrupt archive found while scanning a directory is skipped."""
+        good = self._touch("disk.E01")
+        corrupt = self.root / "corrupt.zip"
+        corrupt.write_bytes(b"this is not a zip file")
+
+        warnings: list[str] = []
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = discover_evidence(self.root, warnings=warnings)
+
+        names = [descriptor.dissect_path.name for descriptor in result]
+        self.assertEqual(names, ["disk.E01"])
+        self._assert_direct_descriptor(result[0], good)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("corrupt.zip", warnings[0])
+        self.assertIn("Skipped archive", warnings[0])
+
+    def test_empty_archive_in_directory_is_skipped_without_accumulator(self) -> None:
+        """Skipping a bad archive works when no warnings list is supplied."""
+        self._touch("disk.E01")
+        empty = self.root / "empty.zip"
+        with ZipFile(empty, "w"):
+            pass
+
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = discover_evidence(self.root)
+
+        names = [descriptor.dissect_path.name for descriptor in result]
+        self.assertEqual(names, ["disk.E01"])
+
+    def test_corrupt_archive_as_selected_path_still_raises(self) -> None:
+        """An explicitly selected corrupt archive fails loudly."""
+        corrupt = self.root / "corrupt.zip"
+        corrupt.write_bytes(b"this is not a zip file")
+
+        warnings: list[str] = []
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Invalid ZIP evidence file"):
+                discover_evidence(corrupt, warnings=warnings)
+        self.assertEqual(warnings, [])
+
+    def test_hostile_archive_in_directory_still_aborts_discovery(self) -> None:
+        """'Archive rejected:' safety errors abort the whole directory scan."""
+        self._touch("disk.E01")
+        hostile = self.root / "hostile.zip"
+        with ZipFile(hostile, "w") as zip_file:
+            zip_file.writestr("../escape.E01", b"escape")
+
+        warnings: list[str] = []
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Archive rejected"):
+                discover_evidence(self.root, warnings=warnings)
+        self.assertEqual(warnings, [])
+
+    def test_unreadable_archive_oserror_in_directory_is_skipped(self) -> None:
+        """An OS-level read failure on one archive does not abort the scan."""
+        self._touch("disk.E01")
+        locked = self.root / "locked.zip"
+        with ZipFile(locked, "w") as zip_file:
+            zip_file.writestr("nested/disk2.E01", b"image")
+
+        warnings: list[str] = []
+        with (
+            patch(
+                "app.automation.discovery.Target.open",
+                side_effect=RuntimeError("not directly loadable"),
+            ),
+            patch(
+                "app.automation.discovery.resolve_archive_descriptor",
+                side_effect=PermissionError("locked by another process"),
+            ),
+        ):
+            result = discover_evidence(self.root, warnings=warnings)
+
+        names = [descriptor.dissect_path.name for descriptor in result]
+        self.assertEqual(names, ["disk.E01"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("locked.zip", warnings[0])
+        self.assertIn("locked by another process", warnings[0])
+
     @pytest.mark.requires_symlink(target_is_directory=True)
     def test_directory_symlink_to_outside_tree_is_skipped(self) -> None:
         """Recursive discovery does not escape through a symlinked directory."""

@@ -1233,6 +1233,8 @@ def run_automation(
     # --- 5. Discover evidence ---
     # Archive fallback extraction during discovery honors the configured
     # evidence.archive_max_* limits, matching GUI evidence intake behavior.
+    # Corrupt archives skipped during directory recursion are recorded
+    # directly into the run warnings so they surface in result payloads.
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)
     try:
         discovered_evidence = discover_evidence(
@@ -1240,6 +1242,7 @@ def run_automation(
             workspace_dir=discovery_workspace,
             source_mode=discovery_source_mode,
             limits=archive_limits_from_config(config),
+            warnings=result.warnings,
         )
     except (FileNotFoundError, ValueError) as exc:
         result.errors.append(f"Evidence discovery failed: {exc}")

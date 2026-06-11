@@ -1056,6 +1056,36 @@ class TestRunAutomation(unittest.TestCase):
         _args, kwargs = self.mocks["discover_evidence"].call_args
         self.assertEqual(kwargs.get("limits"), DEFAULT_ARCHIVE_LIMITS)
 
+    def test_discovery_skip_warnings_surface_in_run_warnings(self) -> None:
+        """Per-archive skip warnings recorded by discovery reach the result."""
+        skip_message = (
+            "Skipped archive 'corrupt.zip' during evidence discovery: "
+            "Invalid ZIP evidence file: corrupt.zip"
+        )
+
+        def _discover_with_skip(*_args: Any, **kwargs: Any) -> list[Any]:
+            """Simulate discovery skipping one corrupt sibling archive.
+
+            Args:
+                *_args: Positional discovery arguments (ignored).
+                **kwargs: Keyword discovery arguments; the ``warnings``
+                    accumulator must be the engine's run warning list.
+
+            Returns:
+                One-element discovered evidence list.
+            """
+            warnings = kwargs.get("warnings")
+            self.assertIsInstance(warnings, list)
+            warnings.append(skip_message)
+            return [self.evidence_file]
+
+        self.mocks["discover_evidence"].side_effect = _discover_with_skip
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        self.assertIn(skip_message, result.warnings)
+
     def test_invalid_profile_falls_back_to_recommended(self) -> None:
         """Unknown profile name triggers fallback with warning."""
         result = run_automation(self._make_request(profile_name="nonexistent"))
@@ -1899,7 +1929,9 @@ class TestRunAutomation(unittest.TestCase):
             workspace_dir: str | Path | None = None,
             source_mode: str = "path",
             limits: Any | None = None,
+            warnings: list[str] | None = None,
         ) -> list[Any]:
+            del warnings
             captured["source_path"] = Path(source_path)
             captured["workspace_dir"] = Path(workspace_dir) if workspace_dir else None
             captured["source_mode"] = source_mode

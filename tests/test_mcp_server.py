@@ -769,9 +769,10 @@ class TestMCPDiscoveryWorkspaceRetention(unittest.TestCase):
             *,
             workspace_dir: object = None,
             limits: object = None,
+            warnings: object = None,
         ) -> list[object]:
             """Populate the workspace, then return or raise the outcome."""
-            del source_path, limits
+            del source_path, limits, warnings
             workspace = Path(str(workspace_dir))
             workspace.mkdir(parents=True, exist_ok=True)
             (workspace / "extracted.bin").write_bytes(b"x")
@@ -915,9 +916,10 @@ class TestMCPDiscoveryWorkspaceRetention(unittest.TestCase):
             *,
             workspace_dir: object = None,
             limits: object = None,
+            warnings: object = None,
         ) -> list[object]:
             """Record the limits passed into discovery."""
-            del source_path, workspace_dir
+            del source_path, workspace_dir, warnings
             captured["limits"] = limits
             return []
 
@@ -942,6 +944,44 @@ class TestMCPDiscoveryWorkspaceRetention(unittest.TestCase):
                 max_member_bytes=1024,
             ),
         )
+
+    def test_discovery_skip_warnings_surface_in_payload(self) -> None:
+        """Per-archive skip warnings recorded by discovery reach the payload."""
+        skip_message = (
+            "Skipped archive 'corrupt.zip' during evidence discovery: "
+            "Invalid ZIP evidence file: corrupt.zip"
+        )
+
+        def _discover_with_skip(
+            source_path: object,
+            *,
+            workspace_dir: object = None,
+            limits: object = None,
+            warnings: object = None,
+        ) -> list[object]:
+            """Record a skip warning, then return one descriptor."""
+            del source_path, limits
+            workspace = Path(str(workspace_dir))
+            workspace.mkdir(parents=True, exist_ok=True)
+            assert isinstance(warnings, list)
+            warnings.append(skip_message)
+            return [self.descriptor]
+
+        root_patch, limits_patch = self._default_limit_patches()
+        with (
+            root_patch,
+            limits_patch,
+            patch.object(
+                mcp_server,
+                "discover_evidence",
+                side_effect=_discover_with_skip,
+            ),
+        ):
+            result = mcp_server._discover_evidence_payload(str(self.evidence))
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["count"], 1)
+        self.assertIn(skip_message, result["warnings"])
 
     def test_archive_limits_helper_warns_on_missing_config_path(self) -> None:
         """A missing config_path yields default limits plus a warning."""

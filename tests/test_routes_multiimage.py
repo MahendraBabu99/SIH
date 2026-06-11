@@ -208,6 +208,7 @@ class MultiImageRoutesTests(unittest.TestCase):
         self.assertEqual(paths, {"pc01.E01", "pc02.vmdk"})
         labels = {item["label"] for item in data["evidence"]}
         self.assertEqual(labels, {"pc01", "pc02"})
+        self.assertEqual(data["warnings"], [])
 
     def test_discover_evidence_directory_returns_descriptor_fields(self) -> None:
         """GUI discovery returns descriptor fields for split evidence."""
@@ -241,6 +242,45 @@ class MultiImageRoutesTests(unittest.TestCase):
         resp = self.client.post("/api/evidence/discover", json={})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("path", resp.get_json()["error"])
+
+    def test_discover_evidence_skips_corrupt_archive_with_warning(self) -> None:
+        """A corrupt archive in a scanned directory is skipped, not fatal."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        (evidence_dir / "pc01.E01").write_bytes(b"evidence-1")
+        (evidence_dir / "corrupt.zip").write_bytes(b"this is not a zip file")
+
+        with self._patch_context():
+            with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(evidence_dir)},
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(Path(data["evidence"][0]["path"]).name, "pc01.E01")
+        self.assertEqual(len(data["warnings"]), 1)
+        self.assertIn("corrupt.zip", data["warnings"][0])
+
+    def test_discover_evidence_selected_corrupt_archive_fails(self) -> None:
+        """A corrupt archive selected as the scan path itself returns 400."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        corrupt = evidence_dir / "corrupt.zip"
+        corrupt.write_bytes(b"this is not a zip file")
+
+        with self._patch_context():
+            with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(corrupt)},
+                )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("Invalid ZIP evidence file", resp.get_json()["error"])
 
     def test_discover_evidence_failure_cleans_up_managed_workspace(self) -> None:
         """A failed discovery leaves no discovery_* workspace behind."""

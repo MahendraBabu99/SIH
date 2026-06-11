@@ -263,11 +263,17 @@
       const entries = (Array.isArray(response.evidence) ? response.evidence : [])
         .map(normalizeDiscoveredEvidence)
         .filter(Boolean);
+      /* Non-fatal backend warnings, e.g. corrupt archives skipped while
+         scanning a directory, are appended to the scan messages. */
+      const warnings = (Array.isArray(response.warnings) ? response.warnings : [])
+        .filter((warning) => typeof warning === "string" && warning.trim())
+        .map((warning) => warning.trim());
+      const warningSuffix = warnings.length ? ` ${warnings.join(" ")}` : "";
 
       if (!entries.length) {
         return A.setMsg(
           el.scanDirectoryMsg || el.evidenceMsg,
-          "No supported evidence targets were found at that path.",
+          `No supported evidence targets were found at that path.${warningSuffix}`,
           "error",
         );
       }
@@ -275,15 +281,16 @@
       populateImageFormsFromDiscovery(entries);
       renderScanDirectoryResults(entries);
       const noun = entries.length === 1 ? "target" : "targets";
+      const msgKind = warnings.length ? "warning" : "success";
       A.setMsg(
         el.scanDirectoryMsg || el.evidenceMsg,
-        `Found ${entries.length} evidence ${noun}. Image cards were added below.`,
-        "success",
+        `Found ${entries.length} evidence ${noun}. Image cards were added below.${warningSuffix}`,
+        msgKind,
       );
       A.setMsg(
         el.evidenceMsg,
-        `Found ${entries.length} evidence ${noun}. Review the paths, then submit.`,
-        "success",
+        `Found ${entries.length} evidence ${noun}. Review the paths, then submit.${warningSuffix}`,
+        msgKind,
       );
     } catch (e) {
       if (!A.isEvidenceOperationCurrent(token) || e.name === "AbortError") return;

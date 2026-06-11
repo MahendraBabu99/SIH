@@ -97,6 +97,7 @@ def discover_evidence(
     *,
     workspace_dir: str | Path | None = None,
     limits: Any | None = None,
+    warnings: list[str] | None = None,
 ) -> list[Any]:
     """Lazy proxy for canonical evidence discovery.
 
@@ -105,15 +106,21 @@ def discover_evidence(
         workspace_dir: Optional archive fallback extraction workspace root.
         limits: Optional ``ArchiveExtractionLimits`` applied to archive
             fallback extraction; ``None`` uses the canonical defaults.
+        warnings: Optional list receiving non-fatal warning messages for
+            corrupt or unreadable archives skipped during directory
+            recursion; ``None`` leaves skip warnings log-only.
 
     Returns:
         Discovered evidence descriptors.
     """
     from app.automation.discovery import discover_evidence as _discover
 
-    if limits is None:
-        return _discover(source_path, workspace_dir=workspace_dir)
-    return _discover(source_path, workspace_dir=workspace_dir, limits=limits)
+    kwargs: dict[str, Any] = {"workspace_dir": workspace_dir}
+    if limits is not None:
+        kwargs["limits"] = limits
+    if warnings is not None:
+        kwargs["warnings"] = warnings
+    return _discover(source_path, **kwargs)
 
 
 def descriptor_to_payload(descriptor: Any) -> dict[str, Any]:
@@ -621,6 +628,10 @@ def _discover_evidence_payload(
     ``evidence.archive_max_*`` extraction limits loaded from ``config_path``
     (or AIFT's default config when omitted). The byte budget applies per
     extracted archive, not as an aggregate bound across the whole call.
+    Corrupt or unreadable archives found while scanning a directory are
+    skipped and reported in the payload's ``warnings`` list instead of
+    failing the call; the call still fails when ``evidence_path`` itself is
+    a bad archive, and ``"Archive rejected:"`` safety errors always abort.
 
     Default workspace retention: when the caller does not supply
     ``workspace_dir``, the extraction workspace is created under the managed
@@ -661,17 +672,19 @@ def _discover_evidence_payload(
         limits, limit_warnings = _archive_limits_for_config_path(
             _optional_text(config_path, "config_path")
         )
+        discovery_warnings: list[str] = []
         evidence = discover_evidence(
             source_path,
             workspace_dir=workspace_root,
             limits=limits,
+            warnings=discovery_warnings,
         )
         return _ok({
             "source_path": str(source_path),
             "workspace_dir": str(workspace_root),
             "evidence": [_descriptor_payload(item) for item in evidence],
             "count": len(evidence),
-            "warnings": limit_warnings,
+            "warnings": [*limit_warnings, *discovery_warnings],
         })
     except (FileNotFoundError, ValueError) as exc:
         _remove_default_discovery_workspace(created_default_workspace)

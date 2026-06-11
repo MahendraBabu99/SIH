@@ -381,6 +381,53 @@ describe("scanEvidenceDirectory", () => {
     expect(dialogMsg.textContent).toContain("No supported evidence targets");
   });
 
+  test("surfaces backend warnings for archives skipped during the scan", async () => {
+    const pathInput = document.getElementById("scan-directory-path");
+    pathInput.value = "E:\\evidence";
+    mockJsonFetch({
+      success: true,
+      evidence: [{ path: "E:\\evidence\\disk.E01", label: "disk" }],
+      warnings: [
+        "Skipped archive 'corrupt.zip' during evidence discovery: Invalid ZIP evidence file: corrupt.zip",
+      ],
+    });
+
+    await A.scanEvidenceDirectory();
+
+    const panelMsg = document.getElementById("scan-directory-message");
+    expect(panelMsg.hidden).toBe(false);
+    expect(panelMsg.dataset.status).toBe("warning");
+    expect(panelMsg.textContent).toContain("Found 1 evidence target");
+    expect(panelMsg.textContent).toContain("corrupt.zip");
+    const evidenceMsg = document.getElementById("evidence-message");
+    expect(evidenceMsg.hidden).toBe(false);
+    expect(evidenceMsg.dataset.status).toBe("warning");
+    expect(evidenceMsg.textContent).toContain("corrupt.zip");
+    expect(A.getImageForms()).toHaveLength(1);
+    expect(A.getImageForms()[0].querySelector(".image-path-input").value)
+      .toBe("E:\\evidence\\disk.E01");
+  });
+
+  test("includes backend warnings when every target was skipped", async () => {
+    const pathInput = document.getElementById("scan-directory-path");
+    pathInput.value = "E:\\evidence";
+    mockJsonFetch({
+      success: true,
+      evidence: [],
+      warnings: [
+        "Skipped archive 'corrupt.zip' during evidence discovery: Invalid ZIP evidence file: corrupt.zip",
+      ],
+    });
+
+    await A.scanEvidenceDirectory();
+
+    const dialogMsg = document.getElementById("scan-directory-message");
+    expect(dialogMsg.hidden).toBe(false);
+    expect(dialogMsg.dataset.status).toBe("failed");
+    expect(dialogMsg.textContent).toContain("No supported evidence targets");
+    expect(dialogMsg.textContent).toContain("corrupt.zip");
+  });
+
   test("ignores a directory scan response after reset", async () => {
     const pathInput = document.getElementById("scan-directory-path");
     pathInput.value = "E:\\cases";

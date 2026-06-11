@@ -674,8 +674,15 @@ def discover_evidence_paths() -> tuple[Response, int]:
     Archive fallback extraction honors the configured
     ``evidence.archive_max_*`` extraction limits.
 
+    Corrupt or unreadable archives found while scanning a directory are
+    skipped rather than failing the whole scan; each skip is reported in
+    the response's ``warnings`` list. The scan still fails when the
+    selected path itself is a bad archive, and ``"Archive rejected:"``
+    safety errors always abort.
+
     Returns:
-        ``(Response, 200)`` with discovered evidence entries, or an error.
+        ``(Response, 200)`` with discovered evidence entries and non-fatal
+        discovery warnings, or an error.
     """
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
@@ -688,6 +695,7 @@ def discover_evidence_paths() -> tuple[Response, int]:
         )
 
     discovery_workspace: Path | None = None
+    discovery_warnings: list[str] = []
     try:
         source_path = validate_evidence_path(path_value)
         _prune_stale_discovery_workspaces()
@@ -702,6 +710,7 @@ def discover_evidence_paths() -> tuple[Response, int]:
             limits=archive_limits_from_config(
                 current_app.config.get("AIFT_CONFIG", {})
             ),
+            warnings=discovery_warnings,
         )
     except (FileNotFoundError, ValueError) as error:
         _remove_discovery_workspace(discovery_workspace)
@@ -727,6 +736,7 @@ def discover_evidence_paths() -> tuple[Response, int]:
         "source_path": str(source_path),
         "evidence": evidence_entries,
         "count": len(evidence_entries),
+        "warnings": discovery_warnings,
     })
 
 

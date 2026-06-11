@@ -55,6 +55,9 @@ class _DiscoveryContext:
         visited_directories: Resolved directories already scanned.
         limits: Archive extraction safety limits applied to every archive
             fallback extraction (outer and nested) in this run.
+        warnings: Non-fatal warning messages recorded while scanning, such
+            as corrupt or unreadable archives skipped during directory
+            recursion.
     """
 
     source_root: Path | None = None
@@ -63,6 +66,7 @@ class _DiscoveryContext:
     extraction_count: int = 0
     visited_directories: set[Path] = field(default_factory=set)
     limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS
+    warnings: list[str] = field(default_factory=list)
 
     def next_extraction_dir(self, source_path: Path) -> Path:
         """Return a fresh extraction directory for *source_path*."""
@@ -239,6 +243,30 @@ def _discover_file(
     Archive fallback scans use the archive's extracted root as the temporary
     workspace while recursing so nested archive outputs remain contained by
     the parent extraction tree selected later.
+
+    ``strict_extension`` is True only when *path* is the explicitly selected
+    evidence path. For explicitly selected archives every validation or read
+    failure propagates so the caller fails loudly. During directory
+    recursion a corrupt or unreadable archive is skipped with a warning
+    recorded on the context so one bad archive cannot abort the whole scan;
+    ``"Archive rejected:"`` safety errors (hostile or limit-violating
+    content) always abort regardless of how the archive was reached.
+
+    Args:
+        path: Resolved file path to discover evidence for.
+        context: Shared discovery state for this run.
+        strict_extension: True when *path* is the explicitly selected
+            evidence path; enables strict extension validation and disables
+            the per-archive skip behavior.
+
+    Returns:
+        Descriptors discovered for *path*; empty when the file is skipped.
+
+    Raises:
+        ValueError: If the explicitly selected path has an unsupported
+            extension or is an invalid archive, or if any archive is
+            rejected for safety reasons (``"Archive rejected:"``).
+        OSError: If reading the explicitly selected archive fails.
     """
     if not _has_supported_extension(path):
         if strict_extension:
@@ -261,14 +289,29 @@ def _discover_file(
             ]
         return [descriptor_for_path(path, source_mode=context.source_mode)]
 
-    return [
-        resolve_archive_descriptor(
-            path,
-            lambda: context.next_extraction_dir(path),
-            limits=context.limits,
-            source_mode=context.source_mode,
+    try:
+        return [
+            resolve_archive_descriptor(
+                path,
+                lambda: context.next_extraction_dir(path),
+                limits=context.limits,
+                source_mode=context.source_mode,
+            )
+        ]
+    except (ValueError, OSError) as error:
+        if strict_extension:
+            raise
+        if isinstance(error, ValueError) and str(error).startswith(
+            "Archive rejected:"
+        ):
+            raise
+        message = (
+            f"Skipped archive '{path.name}' during evidence discovery: "
+            f"{error}"
         )
-    ]
+        LOGGER.warning(message)
+        context.warnings.append(message)
+        return []
 
 
 def _discover_directory(path: Path, context: _DiscoveryContext) -> list[EvidenceDescriptor]:
@@ -346,12 +389,21 @@ def discover_evidence(
     workspace_dir: str | Path | None = None,
     source_mode: str = "path",
     limits: ArchiveExtractionLimits = DEFAULT_ARCHIVE_LIMITS,
+    warnings: list[str] | None = None,
 ) -> list[EvidenceDescriptor]:
     """Discover all forensic evidence targets at the given path.
 
     Discovery uses target-aware recursion: image files are returned directly,
     archives and folders are first probed with Dissect, and only non-loadable
     archives or folders are extracted/descended into.
+
+    Directory scans are resilient to bad archives: a corrupt, empty, or
+    unreadable archive encountered during directory recursion is skipped
+    with a warning instead of aborting the scan, so one broken file cannot
+    hide the remaining evidence. The failure still propagates when the
+    archive is the explicitly selected ``source_path``, and
+    ``"Archive rejected:"`` safety errors (hostile or limit-violating
+    content) always abort the whole discovery.
 
     Args:
         source_path: Path to a single evidence file or a directory to scan.
@@ -364,6 +416,9 @@ def discover_evidence(
             inside extraction roots. The byte budget is enforced per
             extracted archive (each extraction has its own total counter),
             not as an aggregate bound across the whole run.
+        warnings: Optional caller-supplied list that receives non-fatal
+            warning messages (one per archive skipped during directory
+            recursion). When omitted, skip warnings are only logged.
 
     Returns:
         Sorted list of unique evidence descriptors, each pointing to a viable
@@ -371,8 +426,9 @@ def discover_evidence(
 
     Raises:
         FileNotFoundError: If source_path does not exist.
-        ValueError: If source_path is a file but has no supported extension, or
-            if archive fallback extraction rejects unsafe member paths or
+        ValueError: If source_path is a file but has no supported extension,
+            if source_path itself is an invalid or unreadable archive, or if
+            any archive (selected or nested) rejects unsafe member paths or
             exceeds the supplied extraction limits.
     """
     resolved = Path(source_path).resolve()
@@ -388,6 +444,7 @@ def discover_evidence(
         workspace_root=workspace_root,
         source_mode=source_mode,
         limits=limits,
+        warnings=warnings if warnings is not None else [],
     )
     result = _discover_path(resolved, context, strict_extension=True)
     result = sorted(set(result), key=lambda item: str(item.dissect_path))
