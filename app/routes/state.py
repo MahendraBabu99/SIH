@@ -806,19 +806,23 @@ def cleanup_case_entries(case_id: str) -> None:
 def _is_case_expired(case_id: str, now: float) -> bool:
     """Check whether a case's progress entries have exceeded the TTL.
 
-    Must be called while holding ``STATE_LOCK``.
+    Active (``running``/``cancelling``) progress entries keep the case
+    alive: evicting a long-running parse or analysis mid-run would orphan
+    its thread and break SSE. Must be called while holding ``STATE_LOCK``.
 
     Args:
         case_id: UUID of the case.
         now: Current monotonic timestamp.
 
     Returns:
-        ``True`` if the case has exceeded the TTL.
+        ``True`` if the case has exceeded the TTL and has no active work.
     """
     latest_created = 0.0
     for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
         for progress_key, entry in store.items():
             if _progress_key_matches_case(progress_key, case_id):
+                if normalize_case_status(entry.get("status")) in ACTIVE_PROGRESS_STATUSES:
+                    return False
                 latest_created = max(latest_created, entry.get("created_at", 0.0))
     if latest_created == 0.0:
         return False
@@ -846,10 +850,10 @@ def _evict_orphaned_progress(now: float) -> None:
 def cleanup_terminal_cases(exclude_case_id: str | None = None) -> None:
     """Remove in-memory state for TTL-expired cases.
 
-    Terminal cases (completed, failed, error, cancelled) are only evicted once their
-    ``_terminal_since`` timestamp exceeds ``CASE_TTL_SECONDS``, so that
-    post-analysis actions (chat, report, download) continue to work.
-    Non-terminal cases are evicted if their progress entries exceed the TTL.
+    Terminal cases (completed, failed, error, cancelled) are evicted once
+    ``_terminal_since`` exceeds ``CASE_TTL_SECONDS``, so post-analysis
+    actions (chat, report, download) keep working. Non-terminal cases are
+    evicted on TTL expiry unless any progress entry is still active.
 
     Only in-memory state is removed; case data on disk is never deleted.
 

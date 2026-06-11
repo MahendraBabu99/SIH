@@ -143,6 +143,71 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
         self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
 
+    def test_ttl_cleanup_keeps_case_with_active_progress(self) -> None:
+        """TTL cleanup never evicts a case while an operation is still active.
+
+        A parse or analysis legitimately running longer than the case TTL
+        (``created_at`` is set at run start and never refreshed) must keep its
+        in-memory case state so the background thread, SSE streaming, and the
+        eventual results all remain attached to the case.
+        """
+        expired_time = time.monotonic() - routes_state.CASE_TTL_SECONDS - 10
+        scenarios = [
+            ("active-parse", routes_state.PARSE_PROGRESS, "running", False),
+            ("active-parse-image", routes_state.PARSE_PROGRESS, "running", True),
+            ("active-analysis", routes_state.ANALYSIS_PROGRESS, "running", False),
+            ("active-chat", routes_state.CHAT_PROGRESS, "running", False),
+            ("cancelling-parse", routes_state.PARSE_PROGRESS, "cancelling", False),
+        ]
+        for case_id, store, status, composite in scenarios:
+            with self.subTest(case_id=case_id, status=status, composite=composite):
+                self._install_case(case_id)
+                routes_state.CASE_STATES[case_id]["status"] = "running"
+                progress_key = f"{case_id}::img-001" if composite else case_id
+                progress = routes_state.new_progress(status=status)
+                progress["created_at"] = expired_time
+                store[progress_key] = progress
+
+                routes_state.cleanup_terminal_cases()
+
+                self.assertIn(case_id, routes_state.CASE_STATES)
+                self.assertIn(progress_key, store)
+                store.pop(progress_key, None)
+                routes_state.CASE_STATES.pop(case_id, None)
+
+    def test_ttl_cleanup_still_evicts_expired_case_without_active_progress(self) -> None:
+        """An expired non-terminal case with no active work is still evicted."""
+        case_id = "stale-non-terminal"
+        self._install_case(case_id)
+        routes_state.CASE_STATES[case_id]["status"] = "evidence_loaded"
+        progress = routes_state.new_progress(status="completed")
+        progress["created_at"] = time.monotonic() - routes_state.CASE_TTL_SECONDS - 10
+        routes_state.PARSE_PROGRESS[case_id] = progress
+
+        routes_state.cleanup_terminal_cases()
+
+        self.assertNotIn(case_id, routes_state.CASE_STATES)
+        self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
+
+    def test_ttl_cleanup_active_image_parse_protects_stale_sibling_entries(self) -> None:
+        """One active per-image parse keeps the whole case alive past the TTL."""
+        case_id = "active-protects-siblings"
+        self._install_case(case_id)
+        routes_state.CASE_STATES[case_id]["status"] = "running"
+        expired_time = time.monotonic() - routes_state.CASE_TTL_SECONDS - 10
+        stale = routes_state.new_progress(status="completed")
+        stale["created_at"] = expired_time
+        routes_state.PARSE_PROGRESS[f"{case_id}::img-001"] = stale
+        active = routes_state.new_progress(status="running")
+        active["created_at"] = expired_time
+        routes_state.PARSE_PROGRESS[f"{case_id}::img-002"] = active
+
+        routes_state.cleanup_terminal_cases()
+
+        self.assertIn(case_id, routes_state.CASE_STATES)
+        self.assertIn(f"{case_id}::img-001", routes_state.PARSE_PROGRESS)
+        self.assertIn(f"{case_id}::img-002", routes_state.PARSE_PROGRESS)
+
     def test_orphan_cleanup_removes_expired_per_image_progress(self) -> None:
         """Orphan eviction treats composite keys as owned by their base case."""
         case_id = "orphan-composite"
