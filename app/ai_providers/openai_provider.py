@@ -2,8 +2,9 @@
 
 Uses the ``openai`` Python SDK to communicate with the OpenAI Chat
 Completions and Responses APIs. Supports synchronous and streaming
-generation, CSV file attachments via the Responses API, and automatic
-fallback between ``max_completion_tokens`` and ``max_tokens`` parameters.
+generation, streamed progress mode with live partial answer text, CSV
+file attachments via the Responses API, and automatic fallback between
+``max_completion_tokens`` and ``max_tokens`` parameters.
 
 Attributes:
     logger: Module-level logger for OpenAI provider operations.
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from .base import (
     AIProvider,
@@ -23,8 +24,13 @@ from .base import (
     DEFAULT_OPENAI_MODEL,
     _normalize_api_key_value,
     _resolve_timeout_seconds,
+    _run_stream_with_rate_limit_retries,
 )
 from .openai_compatible import OpenAICompatibleChatMixin
+from .progress import (
+    finalize_progress_stream_response,
+    stream_progress_chunks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +185,96 @@ class OpenAIProvider(OpenAICompatibleChatMixin, AIProvider):
             )
 
         return self._run_request(_request)
+
+    def analyze_with_progress(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        progress_callback: Callable[[dict[str, str]], None] | None,
+        attachments: list[Mapping[str, str]] | None = None,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> str:
+        """Analyze with streamed partial answer text for live GUI progress.
+
+        Progress mode streams the Chat Completions response and periodically
+        invokes ``progress_callback`` with accumulated answer text (and
+        thinking text when the endpoint exposes a reasoning channel). CSV
+        attachment data is inlined into the streamed prompt instead of being
+        uploaded via the Responses API so partial output stays visible.
+        Falls back to ``analyze_with_attachments`` when no callback is
+        provided.
+
+        Args:
+            system_prompt: The system-level instruction text.
+            user_prompt: The user-facing prompt with investigation context.
+            progress_callback: Optional callable receiving progress dicts.
+            attachments: Optional list of attachment descriptors.
+            max_tokens: Maximum completion tokens.
+
+        Returns:
+            The generated analysis text.
+
+        Raises:
+            AIProviderError: On empty response or API failure.
+            Exception: Any exception raised by ``progress_callback`` aborts
+                the stream and propagates unchanged (this is how mid-stream
+                cancellation takes effect).
+        """
+        if progress_callback is None:
+            return self.analyze_with_attachments(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                attachments=attachments,
+                max_tokens=max_tokens,
+            )
+
+        prompt_for_completion = self._build_openai_compatible_prompt(
+            user_prompt=user_prompt,
+            attachments=attachments,
+        )
+        messages = self._chat_completion_messages(system_prompt, prompt_for_completion)
+
+        def _stream_factory() -> Any:
+            """Open the OpenAI streaming chat completion."""
+            return self._create_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+
+        thinking_parts: list[str] = []
+        answer_parts: list[str] = []
+
+        def _progress_chunks(stream: Any) -> Iterator[Any]:
+            """Emit progress while yielding chunks for retry tracking."""
+            return stream_progress_chunks(
+                chunks=self._iter_openai_compatible_stream_text(stream),
+                progress_callback=progress_callback,
+                thinking_parts=thinking_parts,
+                answer_parts=answer_parts,
+            )
+
+        stream = _run_stream_with_rate_limit_retries(
+            stream_factory=_stream_factory,
+            stream_text_iterator=_progress_chunks,
+            rate_limit_error_type=self._openai.RateLimitError,
+            provider_name=self._provider_display_name,
+            map_error=self._map_api_error,
+            empty_response_message=(
+                "OpenAI returned an empty streamed response. "
+                "Try increasing max tokens."
+            ),
+        )
+        for _chunk in stream:
+            pass
+        return finalize_progress_stream_response(
+            thinking_parts,
+            answer_parts,
+            empty_response_message=(
+                "OpenAI returned an empty streamed response. "
+                "This can happen with reasoning-only outputs or very low token limits."
+            ),
+        )
 
     def _request_non_stream(
         self,

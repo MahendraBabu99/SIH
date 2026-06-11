@@ -17,6 +17,7 @@ from app.ai_providers.base import (
     DEFAULT_CLOUD_REQUEST_TIMEOUT_SECONDS,
     DEFAULT_MAX_TOKENS,
     RATE_LIMIT_MAX_RETRIES,
+    _RATE_LIMIT_STATE,
 )
 from app.ai_providers.utils import _extract_openai_text
 
@@ -26,6 +27,16 @@ def _make_openai_response(text: str) -> SimpleNamespace:
     message = SimpleNamespace(content=text)
     choice = SimpleNamespace(message=message)
     return SimpleNamespace(choices=[choice])
+
+
+def _raise_after_chunks(chunks: list[SimpleNamespace], error: Exception):
+    """Yield stream chunks and then raise an error."""
+    yield from chunks
+    raise error
+
+
+class _CallbackAbortError(Exception):
+    """Custom exception raised by test progress callbacks to abort streams."""
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +123,239 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(chunks, ["Recovered"])
         self.assertEqual(mock_client.chat.completions.create.call_count, 2)
         mock_sleep.assert_called()
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_streams_partial_answer_text(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Progress mode streams chat completions and emits partial answers."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Partial answer. "))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Final answer."))]
+            ),
+        ]
+
+        progress_updates: list[dict[str, str]] = []
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=lambda payload: progress_updates.append(payload),
+        )
+
+        self.assertEqual(result, "Partial answer. Final answer.")
+        self.assertTrue(progress_updates)
+        self.assertEqual(progress_updates[-1]["status"], "thinking")
+        self.assertIn("Partial answer.", progress_updates[0]["partial_text"])
+        self.assertEqual(
+            progress_updates[-1]["partial_text"],
+            "Partial answer. Final answer.",
+        )
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertTrue(kwargs["stream"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_streams_reasoning_content(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Reasoning deltas reach the thinking channel, never the answer."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(reasoning_content="Model thinking. "),
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="Final answer."),
+                    )
+                ]
+            ),
+        ]
+
+        progress_updates: list[dict[str, str]] = []
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=lambda payload: progress_updates.append(payload),
+        )
+
+        self.assertEqual(result, "Final answer.")
+        self.assertTrue(progress_updates)
+        self.assertIn("Model thinking.", progress_updates[-1]["thinking_text"])
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertTrue(kwargs["stream"])
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_callback_exception_aborts_stream(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """A raising progress callback aborts the stream mid-flight."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        chunks = [
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Partial answer. "))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Middle of answer. "))]
+            ),
+            SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Rest of answer."))]
+            ),
+        ]
+        pulled: list[int] = []
+
+        def _recording_stream():
+            """Yield mocked stream chunks while recording consumption."""
+            for index, chunk in enumerate(chunks):
+                pulled.append(index)
+                yield chunk
+
+        mock_client.chat.completions.create.return_value = _recording_stream()
+
+        def cancelling_callback(_payload: dict[str, str]) -> None:
+            """Raise to simulate the analyzer's mid-stream cancellation."""
+            raise _CallbackAbortError("cancel requested")
+
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+        with self.assertRaises(_CallbackAbortError):
+            provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=cancelling_callback,
+            )
+
+        self.assertEqual(pulled, [0])
+        _RATE_LIMIT_STATE.pop("OpenAI", None)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_inlines_attachments_for_streaming(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Attachments are inlined for streaming instead of uploaded."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(delta=SimpleNamespace(content="Streamed result."))
+                ]
+            )
+        ]
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+            attachments = [
+                {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+            ]
+
+            provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+            result = provider.analyze_with_progress(
+                "system",
+                "user",
+                progress_callback=lambda _payload: None,
+                attachments=attachments,
+            )
+
+        self.assertEqual(result, "Streamed result.")
+        self.assertEqual(mock_client.files.create.call_count, 0)
+        self.assertEqual(mock_client.responses.create.call_count, 0)
+        stream_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertTrue(stream_kwargs["stream"])
+        stream_prompt = stream_kwargs["messages"][1]["content"]
+        self.assertIn("File attachments were unavailable", stream_prompt)
+        self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", stream_prompt)
+        self.assertIn("ts,name", stream_prompt)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_no_callback_delegates_to_attachment_mode(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """Without a callback, progress mode delegates to attachment mode."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            "OpenAI non-progress result"
+        )
+
+        provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+        result = provider.analyze_with_progress(
+            "system",
+            "user",
+            progress_callback=None,
+        )
+
+        self.assertEqual(result, "OpenAI non-progress result")
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        self.assertNotIn("stream", kwargs)
+
+    @patch("openai.OpenAI")
+    def test_analyze_with_progress_rate_limit_after_partial_output_does_not_retry(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """No automatic stream retry once partial answer text was delivered."""
+        class _FakeRateLimitError(Exception):
+            """Fake rate-limit error for progress retry tests."""
+
+        _RATE_LIMIT_STATE.pop("OpenAI", None)
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        error = _FakeRateLimitError("rate limited after partial output")
+        mock_client.chat.completions.create.return_value = _raise_after_chunks(
+            [
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="Partial answer before failure")
+                        )
+                    ]
+                ),
+            ],
+            error,
+        )
+        progress_updates: list[dict[str, str]] = []
+
+        with patch("openai.RateLimitError", _FakeRateLimitError), patch(
+            "app.ai_providers.base.time.sleep"
+        ) as mock_sleep:
+            provider = OpenAIProvider(api_key="sk-test", model="gpt-4o")
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=progress_updates.append,
+                )
+
+        self.assertIn("partial output", str(ctx.exception))
+        self.assertEqual(mock_client.chat.completions.create.call_count, 1)
+        self.assertFalse(mock_sleep.called)
+        self.assertTrue(
+            any(
+                "Partial answer before failure" in item.get("partial_text", "")
+                for item in progress_updates
+            )
+        )
+        _RATE_LIMIT_STATE.pop("OpenAI", None)
 
     @patch("openai.OpenAI")
     def test_analyze_prefers_max_completion_tokens(self, mock_openai_cls: MagicMock) -> None:
