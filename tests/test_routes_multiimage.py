@@ -6,6 +6,7 @@ the same image-scoped parsing API as multi-image cases.
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 from io import BytesIO
@@ -994,6 +995,150 @@ class MultiImageRoutesTests(unittest.TestCase):
                 "/api/cases/nonexistent/images/fake-image",
             )
             self.assertEqual(del_resp.status_code, 404)
+
+    def _setup_analyzed_case_with_image(self) -> tuple[str, str, Path]:
+        """Create a case with one parsed image and completed analysis state.
+
+        Ingests evidence for a single image, parses it, then simulates a
+        completed analysis: canonical per-image analysis results in memory
+        plus ``analysis_results.json``, ``prompt.txt``,
+        ``chat_history.jsonl``, and a generated report file on disk.
+
+        Must be called inside the ``_patch_context`` context manager.
+
+        Returns:
+            Tuple of ``(case_id, image_id, case_dir)`` for the analyzed
+            image.
+        """
+        evidence_path = Path(self.temp_dir.name) / "analyzed.E01"
+        evidence_path.write_bytes(b"test-evidence")
+
+        case_id = self._create_case()
+        add_resp = self.client.post(
+            f"/api/cases/{case_id}/images", json={"label": "PC01"},
+        )
+        self.assertEqual(add_resp.status_code, 201)
+        image_id = add_resp.get_json()["image_id"]
+
+        ev_resp = self.client.post(
+            f"/api/cases/{case_id}/images/{image_id}/evidence",
+            json={"path": str(evidence_path)},
+        )
+        self.assertEqual(ev_resp.status_code, 200)
+
+        parse_resp = self.client.post(
+            f"/api/cases/{case_id}/images/{image_id}/parse",
+            json=canonical_parse_payload("runkeys"),
+        )
+        self.assertEqual(parse_resp.status_code, 202)
+
+        case_dir = self.cases_root / case_id
+        analysis_results = {
+            "images": {
+                image_id: {
+                    "label": "PC01",
+                    "summary": "Test summary for PC01.",
+                    "per_artifact": [],
+                },
+            },
+            "cross_image_summary": "",
+            "model_info": {"provider": "fake", "model": "fake-model"},
+        }
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            case["analysis_results"] = copy.deepcopy(analysis_results)
+            case["investigation_context"] = "Investigate suspicious logons."
+            case["analysis_date_range"] = {
+                "start": "2026-01-01", "end": "2026-01-31",
+            }
+            case["status"] = "completed"
+
+        (case_dir / "analysis_results.json").write_text(
+            json.dumps(analysis_results, indent=2), encoding="utf-8",
+        )
+        (case_dir / "prompt.txt").write_text(
+            "Investigate suspicious logons.", encoding="utf-8",
+        )
+        (case_dir / "chat_history.jsonl").write_text(
+            json.dumps({"role": "user", "content": "hello"}) + "\n",
+            encoding="utf-8",
+        )
+        reports_dir = case_dir / "reports"
+        reports_dir.mkdir(exist_ok=True)
+        (reports_dir / "report_20260101_000000.html").write_text(
+            "<html></html>", encoding="utf-8",
+        )
+        return case_id, image_id, case_dir
+
+    def test_delete_empty_slot_preserves_analysis_outputs(self) -> None:
+        """Deleting a never-used image slot keeps analysis outputs intact."""
+        with self._patch_context():
+            case_id, image_a, case_dir = self._setup_analyzed_case_with_image()
+
+            add_resp = self.client.post(
+                f"/api/cases/{case_id}/images", json={"label": "EmptySlot"},
+            )
+            self.assertEqual(add_resp.status_code, 201)
+            image_b = add_resp.get_json()["image_id"]
+
+            del_resp = self.client.delete(
+                f"/api/cases/{case_id}/images/{image_b}",
+            )
+            self.assertEqual(del_resp.status_code, 200)
+
+            # Downstream output files survive the empty-slot deletion.
+            self.assertTrue((case_dir / "analysis_results.json").is_file())
+            self.assertTrue((case_dir / "prompt.txt").is_file())
+            self.assertTrue((case_dir / "chat_history.jsonl").is_file())
+            self.assertEqual(
+                len(list((case_dir / "reports").glob("report_*.html"))), 1,
+            )
+
+            with routes_state.STATE_LOCK:
+                case = routes_state.CASE_STATES[case_id]
+                self.assertEqual(case["status"], "completed")
+                self.assertIn(image_a, case["analysis_results"]["images"])
+                self.assertEqual(
+                    case["investigation_context"],
+                    "Investigate suspicious logons.",
+                )
+                self.assertEqual(
+                    case["analysis_date_range"],
+                    {"start": "2026-01-01", "end": "2026-01-31"},
+                )
+                # The empty slot itself is fully removed.
+                self.assertNotIn(image_b, case.get("image_states", {}))
+                self.assertNotIn(
+                    image_b,
+                    [img.get("image_id") for img in case.get("images", [])],
+                )
+                # Image A's parsed CSVs remain in the aggregate.
+                self.assertIn(image_a, case.get("image_artifact_csv_paths", {}))
+
+    def test_delete_contributing_image_invalidates_analysis_outputs(self) -> None:
+        """Deleting a parsed and analyzed image still wipes downstream outputs."""
+        with self._patch_context():
+            case_id, image_a, case_dir = self._setup_analyzed_case_with_image()
+
+            del_resp = self.client.delete(
+                f"/api/cases/{case_id}/images/{image_a}",
+            )
+            self.assertEqual(del_resp.status_code, 200)
+
+            self.assertFalse((case_dir / "analysis_results.json").exists())
+            self.assertFalse((case_dir / "prompt.txt").exists())
+            self.assertFalse((case_dir / "chat_history.jsonl").exists())
+            self.assertEqual(
+                list((case_dir / "reports").glob("report_*.html")), [],
+            )
+
+            with routes_state.STATE_LOCK:
+                case = routes_state.CASE_STATES[case_id]
+                self.assertEqual(case["status"], "evidence_loaded")
+                self.assertEqual(case.get("analysis_results"), {})
+                self.assertEqual(case.get("investigation_context"), "")
+                self.assertIsNone(case.get("analysis_date_range"))
+                self.assertEqual(case.get("image_artifact_csv_paths", {}), {})
 
     def test_delete_image_while_running_returns_409(self) -> None:
         """DELETE while parsing is running returns 409."""

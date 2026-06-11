@@ -730,6 +730,49 @@ def discover_evidence_paths() -> tuple[Response, int]:
     })
 
 
+def _image_contributed_to_outputs(
+    case: dict[str, Any],
+    image_id: str,
+    image_state: dict[str, Any],
+) -> bool:
+    """Return whether an image contributed parsed CSVs or analysis content.
+
+    Used by :func:`delete_image` to decide whether removing the image
+    changes the data set that current analysis outputs were built from.
+    Deleting a slot that never produced parsed output and never appeared
+    in analysis results must not invalidate completed analysis, reports,
+    or chat history.
+
+    Must be called while holding ``STATE_LOCK``.
+
+    Args:
+        case: In-memory case state dictionary.
+        image_id: UUID of the image being deleted.
+        image_state: The image's per-image state dict (pre-deletion copy).
+
+    Returns:
+        ``True`` when the image has parse results, parsed CSV paths, a CSV
+        output directory, an entry in the case-level parsed-CSV aggregate,
+        or an entry in the analysis results; ``False`` otherwise.
+    """
+    if image_state.get("parse_results") or image_state.get("artifact_csv_paths"):
+        return True
+    if str(image_state.get("csv_output_dir", "")).strip():
+        return True
+    image_csv_paths = case.get("image_artifact_csv_paths")
+    if isinstance(image_csv_paths, dict) and image_id in image_csv_paths:
+        return True
+    analysis_results = case.get("analysis_results") or {}
+    analysis_images = (
+        analysis_results.get("images")
+        if isinstance(analysis_results, dict)
+        else None
+    )
+    if isinstance(analysis_images, dict) and image_id in analysis_images:
+        return True
+    return False
+
+
 @images_bp.delete("/api/cases/<case_id>/images/<image_id>")
 def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
     """Remove an ingested image and its data from a case.
@@ -737,6 +780,12 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
     Validates that the case and image exist, prevents deletion while
     analysis or parsing is running, removes the image directory from
     disk, clears in-memory state for the image, and logs the action.
+
+    When the deleted image contributed parsed CSVs or analysis content,
+    downstream outputs (analysis results, prompt, chat history, reports)
+    are invalidated because they were built from a data set that no
+    longer exists.  Deleting an empty slot that never contributed leaves
+    those outputs and the case status untouched.
 
     Args:
         case_id: UUID of the case.
@@ -765,8 +814,9 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
             )
         # Mark the image as deleting so concurrent operations won't start
         # on it while we perform disk I/O outside the lock.
-        image_states = case.get("image_states", {})
+        image_states = case.setdefault("image_states", {})
         original_state = image_states.get(image_id, {}).copy()
+        contributed = _image_contributed_to_outputs(case, image_id, original_state)
         image_states[image_id] = {"status": "deleting"}
 
     # Perform the potentially slow disk deletion outside the lock to avoid
@@ -809,25 +859,34 @@ def delete_image(case_id: str, image_id: str) -> tuple[Response, int]:
         removed_csv_dir = str(original_state.get("csv_output_dir", "")).strip()
 
         # Remove from image_states.
-        image_states = case.get("image_states", {})
+        image_states = case.setdefault("image_states", {})
         image_states.pop(image_id, None)
-        has_remaining_parse = _rebuild_case_parse_state_from_images(case_id, case)
+        if contributed:
+            has_remaining_parse = _rebuild_case_parse_state_from_images(case_id, case)
+        else:
+            # The deleted slot never produced parsed CSVs or analysis
+            # content, so the data set behind existing outputs is
+            # unchanged: refresh the parsed-CSV aggregate without
+            # invalidating analysis state, status, or date range.
+            rebuild_case_parse_artifacts(case)
 
         # Clear per-image progress keys.
         img_progress_key = _progress_key(case_id, image_id)
         PARSE_PROGRESS.pop(img_progress_key, None)
         ANALYSIS_PROGRESS.pop(img_progress_key, None)
         CHAT_PROGRESS.pop(img_progress_key, None)
-        ANALYSIS_PROGRESS.pop(case_id, None)
-        CHAT_PROGRESS.pop(case_id, None)
-        if not has_remaining_parse:
-            PARSE_PROGRESS.pop(case_id, None)
+        if contributed:
+            ANALYSIS_PROGRESS.pop(case_id, None)
+            CHAT_PROGRESS.pop(case_id, None)
+            if not has_remaining_parse:
+                PARSE_PROGRESS.pop(case_id, None)
 
         case_dir = Path(case["case_dir"])
 
     if removed_csv_dir:
         invalidate_header_cache(removed_csv_dir)
-    _purge_case_downstream_files(case_dir)
+    if contributed:
+        _purge_case_downstream_files(case_dir)
 
     # Note: CaseManager.delete_image() already writes an "image_deleted"
     # audit entry, so we do not duplicate it here.
