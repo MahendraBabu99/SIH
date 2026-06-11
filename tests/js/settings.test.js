@@ -351,6 +351,15 @@ describe("advanced automation retention setting", () => {
   });
 });
 
+describe("advanced evidence size threshold setting", () => {
+  test("size threshold input accepts fractional GB values", () => {
+    const input = mustGet("setting-size-threshold");
+    expect(input.getAttribute("type")).toBe("number");
+    expect(input.getAttribute("min")).toBe("0");
+    expect(input.getAttribute("step")).toBe("any");
+  });
+});
+
 // -- Help tooltips ------------------------------------------------------------
 
 describe("help tooltips", () => {

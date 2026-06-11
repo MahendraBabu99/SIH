@@ -64,6 +64,28 @@ def test_flask_test_mode_serves_production_index_template() -> None:
     assert "0 preserves all rows; positive values intentionally cap parsed CSV output" in html
 
 
+@pytest.mark.browser_flow
+def test_size_threshold_input_accepts_fractional_values() -> None:
+    """Ensure the rendered size-threshold input allows fractional GB values.
+
+    The settings UI presents ``evidence.large_file_threshold_mb`` in GB and
+    renders fractional values (e.g. 512 MB as ``0.500``). Without
+    ``step="any"`` browsers treat fractional values as a step mismatch and
+    block the Save Settings form submit.
+    """
+    app = create_app(config={})
+    app.testing = True
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    id_index = html.index('id="setting-size-threshold"')
+    tag = html[html.rindex("<input", 0, id_index) : html.index(">", id_index) + 1]
+    assert 'type="number"' in tag
+    assert 'step="any"' in tag
+
+
 def test_public_docs_do_not_reference_retired_paths_or_migration_claims() -> None:
     """Catch stale public docs for retired implementation paths and flat layouts."""
     docs = [PROJECT_ROOT / "README.md"]
