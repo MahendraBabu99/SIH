@@ -1742,11 +1742,12 @@ def _run_image_parse(
         evidence_path: Path to the Dissect evidence.
         parsed_dir: Path to the image-specific parsed directory.
     """
+    from ..parser.result_checks import artifact_csv_row_limit_from_config
     from .state import (
         mark_case_status,
         set_progress_status,
     )
-    from .tasks import resolve_artifact_csv_row_limit, run_parse_loop
+    from .tasks import run_parse_loop
 
     progress_key = _progress_key(case_id, image_id)
 
@@ -1769,7 +1770,7 @@ def _run_image_parse(
             parsed_dir=parsed_dir,
             parse_artifacts=parse_artifacts,
             progress_key=progress_key,
-            max_records_per_artifact=resolve_artifact_csv_row_limit(config_snapshot),
+            max_records_per_artifact=artifact_csv_row_limit_from_config(config_snapshot),
         )
         if outcome is None:
             # Parsing was cancelled — reset status so the user can retry.

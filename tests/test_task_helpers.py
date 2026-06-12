@@ -74,25 +74,6 @@ class ResolveChatMaxTokensTests(unittest.TestCase):
                     routes_tasks_chat.resolve_chat_max_tokens(config)
 
 
-class ResolveArtifactCsvRowLimitTests(unittest.TestCase):
-    def test_defaults_to_unlimited(self) -> None:
-        self.assertEqual(routes_tasks.resolve_artifact_csv_row_limit({}), 0)
-
-    def test_returns_configured_positive_limit(self) -> None:
-        config = {"analysis": {"artifact_csv_row_limit": "1000000"}}
-        self.assertEqual(routes_tasks.resolve_artifact_csv_row_limit(config), 1_000_000)
-
-    def test_clamps_negative_or_invalid_values(self) -> None:
-        self.assertEqual(
-            routes_tasks.resolve_artifact_csv_row_limit({"analysis": {"artifact_csv_row_limit": -5}}),
-            0,
-        )
-        self.assertEqual(
-            routes_tasks.resolve_artifact_csv_row_limit({"analysis": {"artifact_csv_row_limit": "bad"}}),
-            0,
-        )
-
-
 class CompressFindingsWithAiTests(unittest.TestCase):
     def test_returns_none_for_blank_findings(self) -> None:
         provider = MagicMock()

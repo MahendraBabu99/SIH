@@ -33,6 +33,10 @@ from ..analyzer.core import ForensicAnalyzer
 from ..logging.case_logging import case_log_context
 from ..parser.core import ForensicParser
 from ..parser.core import ParserCancelledError
+from ..parser.result_checks import (
+    callable_accepts_keyword,
+    parse_result_has_usable_output,
+)
 from ..reporter.normalization import normalize_per_artifact_findings
 from .state import (
     ANALYSIS_PROGRESS,
@@ -64,7 +68,6 @@ from .evidence_utils import (
 __all__ = [
     "run_task_with_case_log_context",
     "run_parse_loop",
-    "resolve_artifact_csv_row_limit",
     "run_analysis",
     "run_multi_image_analysis_task",
     "load_case_analysis_results",
@@ -334,78 +337,17 @@ def run_task_with_case_log_context(
         task_fn(*args, **kwargs)
 
 
-def resolve_artifact_csv_row_limit(config_snapshot: dict[str, Any]) -> int:
-    """Return the configured per-artifact CSV row cap.
-
-    Args:
-        config_snapshot: Application configuration snapshot.
-
-    Returns:
-        Non-negative row cap, where ``0`` means unlimited.
-    """
-    config = config_snapshot if isinstance(config_snapshot, dict) else {}
-    analysis = config.get("analysis", {}) if isinstance(config, dict) else {}
-    raw_value = (
-        analysis.get("artifact_csv_row_limit", 0)
-        if isinstance(analysis, dict)
-        else 0
-    )
-    try:
-        return max(0, int(raw_value))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _supports_keyword(callable_obj: Any, keyword: str) -> bool:
-    """Return whether a callable accepts a keyword argument.
-
-    Args:
-        callable_obj: Callable or class to inspect.
-        keyword: Keyword parameter name to check for.
-
-    Returns:
-        ``True`` when the callable explicitly accepts the keyword or
-        accepts arbitrary keyword arguments.
-    """
-    try:
-        signature = inspect.signature(callable_obj)
-    except (TypeError, ValueError):
-        return False
-    for parameter in signature.parameters.values():
-        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return keyword in signature.parameters
-
-
-def _parse_result_has_usable_output(result: dict[str, Any]) -> bool:
-    """Return whether a parser result produced records usable for analysis.
-
-    Args:
-        result: Parser result dictionary returned by ``parse_artifact``.
-
-    Returns:
-        ``True`` when the result succeeded, reported at least one record
-        when ``record_count`` is present, and includes a CSV path.
-    """
-    if not result.get("success"):
-        return False
-    if "record_count" in result:
-        try:
-            if int(result.get("record_count", 0)) <= 0:
-                return False
-        except (TypeError, ValueError):
-            return False
-    csv_paths = result.get("csv_paths")
-    if isinstance(csv_paths, list) and any(str(path).strip() for path in csv_paths):
-        return True
-    return bool(str(result.get("csv_path", "")).strip())
-
-
 def _parse_result_succeeded(result: dict[str, Any]) -> bool:
     """Return whether the parser completed without a parser error.
 
     A successful parse can legitimately produce zero records.  That is not
     usable for AI analysis, but it is also not a parse failure.
+
+    Args:
+        result: Parser result dictionary returned by ``parse_artifact``.
+
+    Returns:
+        ``True`` when the parser reported success.
     """
     return bool(result.get("success"))
 
@@ -461,7 +403,7 @@ def run_parse_loop(
         "audit_logger": audit_logger,
         "parsed_dir": parsed_dir,
     }
-    if _supports_keyword(ForensicParser, "max_records_per_artifact"):
+    if callable_accepts_keyword(ForensicParser, "max_records_per_artifact"):
         parser_kwargs["max_records_per_artifact"] = max_records_per_artifact
 
     parse_log_handler = _ParseProgressLogHandler(progress_key)
@@ -529,7 +471,7 @@ def run_parse_loop(
                 results.append(result_entry)
 
                 parse_succeeded = _parse_result_succeeded(result)
-                usable_output = _parse_result_has_usable_output(result)
+                usable_output = parse_result_has_usable_output(result)
                 message = result.get("message")
                 if parse_succeeded and not message and result.get("error"):
                     message = result.get("error")

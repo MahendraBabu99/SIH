@@ -30,6 +30,7 @@ from ..utils.hasher import (
     verify_hashes_for_report,
 )
 from ..parser.core import ForensicParser
+from ..parser.result_checks import parse_result_has_usable_output
 from ..reporter.generator import ReportGenerator
 
 from .state import (
@@ -268,9 +269,11 @@ def build_csv_map(parse_results: list[dict[str, Any]]) -> dict[str, str | list[s
 
     Split artifacts (e.g. EVTX) that produce multiple CSV files are
     represented as a ``list[str]`` value.  Single-file artifacts remain
-    a plain ``str`` so existing callers are unaffected.  Results that
-    explicitly report ``record_count`` as zero are skipped because they
-    did not produce usable parsed records.
+    a plain ``str`` so existing callers are unaffected.  The per-result
+    usability decision (success flag, non-zero ``record_count``, presence
+    of a CSV path) is delegated to the shared
+    :func:`app.parser.result_checks.parse_result_has_usable_output`
+    gating helper used by both the GUI and headless pipelines.
 
     Args:
         parse_results: List of per-artifact parse result dicts.
@@ -282,15 +285,8 @@ def build_csv_map(parse_results: list[dict[str, Any]]) -> dict[str, str | list[s
     mapping: dict[str, str | list[str]] = {}
     for result in parse_results:
         artifact = str(result.get("artifact_key", "")).strip()
-        if not artifact or not result.get("success"):
+        if not artifact or not parse_result_has_usable_output(result):
             continue
-        if "record_count" in result:
-            try:
-                record_count = int(result.get("record_count", 0))
-            except (TypeError, ValueError):
-                record_count = 0
-            if record_count <= 0:
-                continue
         csv_paths = result.get("csv_paths")
         if isinstance(csv_paths, list) and csv_paths:
             non_empty = [str(p) for p in csv_paths if str(p).strip()]

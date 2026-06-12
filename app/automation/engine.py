@@ -12,7 +12,6 @@ Attributes:
 
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 import shutil
@@ -49,6 +48,11 @@ from app.utils.hasher import (
 )
 from app.parser.core import ForensicParser, ParserCancelledError
 from app.parser.registry import get_supported_artifact_keys
+from app.parser.result_checks import (
+    artifact_csv_row_limit_from_config,
+    callable_accepts_keyword,
+    parse_result_has_usable_output,
+)
 from app.reporter.generator import ReportGenerator
 from app.utils.artifact_profiles import (
     artifact_options_to_lists,
@@ -386,27 +390,6 @@ def _effective_profile_config_path(config_path: str | Path | None) -> Path:
     return _PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
 
 
-def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
-    """Return the configured per-artifact CSV row cap.
-
-    Args:
-        config: Loaded application configuration.
-
-    Returns:
-        Non-negative row cap, where ``0`` means unlimited.
-    """
-    analysis = config.get("analysis", {}) if isinstance(config, dict) else {}
-    raw_value = (
-        analysis.get("artifact_csv_row_limit", 0)
-        if isinstance(analysis, dict)
-        else 0
-    )
-    try:
-        return max(0, int(raw_value))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _resolve_skip_hashing(
     requested_skip_hashing: bool | None,
     config: dict[str, Any],
@@ -552,52 +535,6 @@ def _validate_profile_artifact_keys(
     return [f"Unknown artifact key(s) in selected profile: {', '.join(unknown)}."]
 
 
-def _callable_accepts_keyword(callable_obj: Any, keyword: str) -> bool:
-    """Return whether a callable accepts a specific keyword argument.
-
-    Args:
-        callable_obj: Callable object to inspect.
-        keyword: Keyword argument name to check.
-
-    Returns:
-        ``True`` if the callable accepts the keyword directly or via
-        ``**kwargs``.
-    """
-    try:
-        signature = inspect.signature(callable_obj)
-    except (TypeError, ValueError):
-        return False
-    for parameter in signature.parameters.values():
-        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return keyword in signature.parameters
-
-
-def _parse_result_has_usable_output(parse_result: dict[str, Any]) -> bool:
-    """Return whether a parser result contains usable parsed records.
-
-    Args:
-        parse_result: Result dictionary returned by
-            :meth:`ForensicParser.parse_artifact`.
-
-    Returns:
-        ``True`` when the result succeeded, includes at least one record
-        when ``record_count`` is present, and reports one or more CSV paths.
-    """
-    if not parse_result.get("success"):
-        return False
-    if "record_count" in parse_result:
-        try:
-            if int(parse_result.get("record_count", 0)) <= 0:
-                return False
-        except (TypeError, ValueError):
-            return False
-    csv_paths = parse_result.get("csv_paths")
-    if isinstance(csv_paths, list) and any(str(path).strip() for path in csv_paths):
-        return True
-    return bool(str(parse_result.get("csv_path", "")).strip())
-
-
 def _extract_parser_record_count(args: tuple[Any, ...]) -> int:
     """Extract a parser progress record count from callback arguments.
 
@@ -676,7 +613,7 @@ def _parse_artifact_for_automation(
         )
 
     parse_kwargs: dict[str, Any] = {"progress_callback": _parser_progress}
-    if _callable_accepts_keyword(parser.parse_artifact, "cancel_check"):
+    if callable_accepts_keyword(parser.parse_artifact, "cancel_check"):
         parse_kwargs["cancel_check"] = cancel_check
     return parser.parse_artifact(artifact_key, **parse_kwargs)
 
@@ -1277,7 +1214,7 @@ def _execute_automation(
     # --- 2. Load configuration ---
     config, config_warnings = _load_config_safe(request.config_path)
     result.warnings.extend(config_warnings)
-    max_records_per_artifact = _artifact_csv_row_limit_from_config(config)
+    max_records_per_artifact = artifact_csv_row_limit_from_config(config)
     # An explicit caller choice wins; otherwise the loaded config's
     # evidence.compute_hashes setting decides whether hashing runs.
     skip_hashing = _resolve_skip_hashing(request.skip_hashing, config)
@@ -1622,7 +1559,7 @@ def _execute_automation(
                             cancel_check=safe_cancel_check,
                             percentage=artifact_pct,
                         )
-                        if _parse_result_has_usable_output(parse_result):
+                        if parse_result_has_usable_output(parse_result):
                             csv_paths[artifact_key] = parse_result["csv_path"]
                             # Handle EVTX multi-part CSVs.
                             if parse_result.get("csv_paths"):
