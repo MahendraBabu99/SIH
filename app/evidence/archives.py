@@ -21,6 +21,7 @@ from __future__ import annotations
 import shutil
 import stat
 import tarfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, BinaryIO
@@ -586,11 +587,16 @@ def _copy_7z_outputs(
 class _Limited7zWriter(Py7zIO):
     """Implement a bounded py7zr output stream for one member.
 
+    The destination file is created eagerly at construction time so that
+    zero-byte archive members — for which py7zr opens and closes the member
+    writer without ever calling :meth:`write` — still appear on disk as
+    empty files, matching ZIP and tar extraction fidelity.
+
     Attributes:
         _target: Destination path for the member.
         _factory: Factory that tracks aggregate extraction state.
         _written: Bytes written to this member.
-        _stream: Open destination stream, created lazily.
+        _stream: Open destination stream, created at construction.
     """
 
     def __init__(
@@ -599,22 +605,38 @@ class _Limited7zWriter(Py7zIO):
         *,
         factory: "_Limited7zWriterFactory",
     ) -> None:
-        """Initialize a writer for one prevalidated 7z target.
+        """Initialize a writer and eagerly create its destination file.
+
+        Creating the file here (instead of on first ``write``) guarantees
+        zero-byte members materialize on disk. py7zr may construct writers
+        on parallel worker threads when extracting multi-folder archives.
 
         Args:
             target: Destination file path for this member.
             factory: Factory that owns aggregate byte accounting.
+
+        Raises:
+            OSError: If the destination file or its parent directories
+                cannot be created.
         """
         self._target = target
         self._factory = factory
         self._written = 0
         self._stream: BinaryIO | None = None
+        self._ensure_stream()
 
     def _ensure_stream(self) -> BinaryIO:
         """Open and register the destination stream if needed.
 
+        Called eagerly from :meth:`__init__`, so the stream normally already
+        exists when :meth:`write` runs. May run on py7zr worker threads.
+
         Returns:
             Writable binary stream for this member.
+
+        Raises:
+            OSError: If the destination file or its parent directories
+                cannot be created.
         """
         if self._stream is None:
             self._target.parent.mkdir(parents=True, exist_ok=True)
@@ -684,11 +706,16 @@ class _Limited7zWriter(Py7zIO):
 class _Limited7zWriterFactory(WriterFactory):
     """Create bounded writers for prevalidated 7z member targets.
 
+    py7zr extracts multi-folder 7z archives on concurrent worker threads,
+    so the shared byte accounting and stream registry are guarded by a lock.
+
     Attributes:
         _targets: Mapping from normalized 7z member names to target paths.
         _limits: Extraction limit values.
         _total_written: Aggregate bytes written across all members.
         _streams: Streams opened by created writers and closed by the factory.
+        _lock: Lock serializing byte accounting and stream registration
+            across py7zr worker threads.
     """
 
     def __init__(
@@ -708,9 +735,14 @@ class _Limited7zWriterFactory(WriterFactory):
         self._limits = limits
         self._total_written = 0
         self._streams: list[BinaryIO] = []
+        self._lock = threading.Lock()
 
     def create(self, filename: str) -> Py7zIO:
         """Create a bounded writer for one 7z member.
+
+        Constructing the writer eagerly creates the destination file, so
+        zero-byte members appear on disk even though py7zr never calls
+        ``write`` for them. May be invoked from py7zr worker threads.
 
         Args:
             filename: Member name requested by ``py7zr``.
@@ -720,6 +752,7 @@ class _Limited7zWriterFactory(WriterFactory):
 
         Raises:
             ValueError: If ``filename`` was not prevalidated.
+            OSError: If the member's destination file cannot be created.
         """
         normalized = str(filename).replace("\\", "/")
         target = self._targets.get(normalized)
@@ -730,13 +763,21 @@ class _Limited7zWriterFactory(WriterFactory):
     def register_stream(self, stream: BinaryIO) -> None:
         """Register an open stream for cleanup.
 
+        May be called from py7zr worker threads; registration is serialized
+        by the factory lock.
+
         Args:
             stream: Stream opened by a writer.
         """
-        self._streams.append(stream)
+        with self._lock:
+            self._streams.append(stream)
 
     def reserve_bytes(self, chunk_size: int, member_written: int) -> None:
         """Reserve bytes before a 7z writer emits a chunk.
+
+        Reservations may occur concurrently from py7zr worker threads, so
+        the limit checks and the aggregate increment run atomically under
+        the factory lock to keep the total-byte cap accurate.
 
         Args:
             chunk_size: Size of the chunk about to be written.
@@ -747,17 +788,18 @@ class _Limited7zWriterFactory(WriterFactory):
             ValueError: If the member or aggregate extraction would exceed
                 configured limits.
         """
-        if member_written > self._limits.max_member_bytes:
-            raise ValueError(
-                f"Archive rejected: member exceeds single-file size limit "
-                f"({self._limits.max_member_bytes} bytes)."
-            )
-        if self._total_written + chunk_size > self._limits.max_total_bytes:
-            raise ValueError(
-                f"Archive rejected: total extracted size exceeds limit "
-                f"({self._limits.max_total_bytes} bytes)."
-            )
-        self._total_written += chunk_size
+        with self._lock:
+            if member_written > self._limits.max_member_bytes:
+                raise ValueError(
+                    f"Archive rejected: member exceeds single-file size limit "
+                    f"({self._limits.max_member_bytes} bytes)."
+                )
+            if self._total_written + chunk_size > self._limits.max_total_bytes:
+                raise ValueError(
+                    f"Archive rejected: total extracted size exceeds limit "
+                    f"({self._limits.max_total_bytes} bytes)."
+                )
+            self._total_written += chunk_size
 
     def close(self) -> None:
         """Close every stream opened by created writers."""

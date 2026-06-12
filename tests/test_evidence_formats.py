@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import tarfile
+import threading
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -39,6 +41,11 @@ import app.routes.tasks as routes_tasks
 from app.evidence.archives import (
     ARCHIVE_EXTENSIONS,
     ArchiveExtractionLimits,
+    _Limited7zWriterFactory,
+    extract_7z_to_directory,
+    extract_archive_to_directory,
+    extract_tar_to_directory,
+    extract_zip_to_directory,
     validate_archive_member_target,
 )
 from app.evidence.archive_resolver import can_open_with_dissect
@@ -937,6 +944,167 @@ class TestExtract7z(unittest.TestCase):
         _assert_archive_descriptor(self, result, archive_path, dest)
         self.assertEqual(result.dissect_path.name, "Disk.E01")
         self.assertTrue(result.dissect_path.is_relative_to(dest.resolve()))
+
+
+class TestArchiveZeroByteMemberFidelity(unittest.TestCase):
+    """Pin zero-byte member extraction parity across 7z, ZIP, and tar.
+
+    File presence is itself forensic signal (cleared logs, marker files), so
+    every supported archive format must materialize zero-byte members as
+    empty files in the extraction root.
+
+    Attributes:
+        _MEMBERS: Fixture member names mapped to their payload bytes; two of
+            the three members are zero-byte (one at root level, one nested).
+        temp_dir: Temporary directory holding fixtures and extraction roots.
+        root: Path of the temporary directory.
+    """
+
+    _MEMBERS: dict[str, bytes] = {
+        "case/data.txt": b"payload",
+        "case/empty.log": b"",
+        "case/subdir/empty2.dat": b"",
+    }
+
+    def setUp(self) -> None:
+        """Create a temporary directory for fixtures and extraction roots."""
+        self.temp_dir = TemporaryDirectory(prefix="aift-zero-byte-test-")
+        self.root = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        """Remove the temporary directory."""
+        self.temp_dir.cleanup()
+
+    def _make_7z(self, name: str, members: dict[str, bytes]) -> Path:
+        """Create a 7z fixture archive.
+
+        Args:
+            name: Archive file name created under the test root.
+            members: Member names mapped to payload bytes.
+
+        Returns:
+            Path of the created archive.
+        """
+        archive_path = self.root / name
+        with py7zr.SevenZipFile(archive_path, mode="w") as szf:
+            for member_name, payload in members.items():
+                szf.writestr(payload, member_name)
+        return archive_path
+
+    def _assert_members_extracted(self, destination: Path) -> None:
+        """Assert every fixture member exists with its original size.
+
+        Args:
+            destination: Extraction root to inspect.
+        """
+        for member_name, payload in self._MEMBERS.items():
+            extracted = destination / Path(member_name)
+            self.assertTrue(
+                extracted.is_file(),
+                f"member missing after extraction: {member_name}",
+            )
+            self.assertEqual(
+                extracted.stat().st_size,
+                len(payload),
+                f"wrong extracted size for {member_name}",
+            )
+
+    def test_7z_zero_byte_members_extracted(self) -> None:
+        """7z extraction must materialize zero-byte members as empty files."""
+        archive_path = self._make_7z("mixed.7z", self._MEMBERS)
+        destination = self.root / "extracted-7z"
+        extract_7z_to_directory(archive_path, destination)
+        self._assert_members_extracted(destination)
+
+    def test_zip_zero_byte_members_extracted(self) -> None:
+        """ZIP extraction parity: zero-byte members exist as empty files."""
+        archive_path = self.root / "mixed.zip"
+        with ZipFile(archive_path, "w") as zf:
+            for member_name, payload in self._MEMBERS.items():
+                zf.writestr(member_name, payload)
+        destination = self.root / "extracted-zip"
+        extract_zip_to_directory(archive_path, destination)
+        self._assert_members_extracted(destination)
+
+    def test_tar_zero_byte_members_extracted(self) -> None:
+        """tar extraction parity: zero-byte members exist as empty files."""
+        archive_path = self.root / "mixed.tar"
+        with tarfile.open(archive_path, "w") as tf:
+            for member_name, payload in self._MEMBERS.items():
+                info = tarfile.TarInfo(name=member_name)
+                info.size = len(payload)
+                tf.addfile(info, io.BytesIO(payload))
+        destination = self.root / "extracted-tar"
+        extract_tar_to_directory(archive_path, destination)
+        self._assert_members_extracted(destination)
+
+    def test_7z_only_zero_byte_files_extracts(self) -> None:
+        """A 7z holding only zero-byte files must extract successfully."""
+        members = {"only/empty-a.log": b"", "only/empty-b.dat": b""}
+        archive_path = self._make_7z("all-empty.7z", members)
+        destination = self.root / "extracted-all-empty"
+        extract_archive_to_directory(archive_path, destination)
+        for member_name in members:
+            extracted = destination / Path(member_name)
+            self.assertTrue(
+                extracted.is_file(),
+                f"zero-byte member missing: {member_name}",
+            )
+            self.assertEqual(extracted.stat().st_size, 0, member_name)
+
+
+class TestLimited7zWriterFactoryThreadSafety(unittest.TestCase):
+    """Pin the thread-safety invariant of shared 7z byte accounting.
+
+    py7zr can extract multi-folder 7z archives on parallel worker threads,
+    so concurrent ``reserve_bytes`` calls must never let the aggregate total
+    exceed the configured cap or lose increments.
+    """
+
+    def test_reserve_bytes_total_accounting_under_threads(self) -> None:
+        """Concurrent reservations keep the total exact and within the cap."""
+        chunk_size = 10
+        max_total_bytes = 1000
+        thread_count = 8
+        attempts_per_thread = 50
+        limits = ArchiveExtractionLimits(
+            max_members=100,
+            max_total_bytes=max_total_bytes,
+            max_member_bytes=100,
+        )
+        factory = _Limited7zWriterFactory(targets={}, limits=limits)
+        successes: list[int] = []
+        barrier = threading.Barrier(thread_count)
+
+        def worker() -> None:
+            """Reserve many chunks and record this thread's success count."""
+            barrier.wait()
+            count = 0
+            for _ in range(attempts_per_thread):
+                try:
+                    factory.reserve_bytes(chunk_size, chunk_size)
+                except ValueError:
+                    continue
+                count += 1
+            successes.append(count)
+
+        previous_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            threads = [
+                threading.Thread(target=worker) for _ in range(thread_count)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            sys.setswitchinterval(previous_interval)
+
+        self.assertEqual(len(successes), thread_count)
+        total_reserved = sum(successes) * chunk_size
+        self.assertEqual(factory._total_written, total_reserved)
+        self.assertLessEqual(factory._total_written, max_total_bytes)
 
 
 # ---------------------------------------------------------------------------
