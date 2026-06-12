@@ -266,6 +266,8 @@ describe("mocked final browser flow", () => {
     // duplicate composite-key card for the same artifact.
     expect(A.st.analysis.order).toEqual(["runkeys"]);
     expect(document.querySelectorAll("#analysis-results-list .analysis-card")).toHaveLength(1);
+    // An empty skipped_images payload must not produce skipped-image notes.
+    expect(document.querySelectorAll(".analysis-skipped-note")).toHaveLength(0);
 
     document.getElementById("download-report").click();
     await nextTick();

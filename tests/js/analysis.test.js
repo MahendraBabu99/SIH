@@ -9,6 +9,7 @@
  *  - setProvider updates provider display text
  *  - closeAnalysisSse closes the SSE channel
  *  - Analysis state lifecycle flags
+ *  - Skipped-image notes (image_skipped events / skipped_images payloads)
  *  - Analysis navigation prerequisites
  *
  * @jest-environment jsdom
@@ -915,6 +916,154 @@ describe("single-image analysis_completed does not duplicate streamed rows", () 
     expect(groups[0].textContent).toContain("Suspicious service install.");
     expect(groups[1].textContent).toContain("Server");
     expect(groups[1].textContent).toContain("Unexpected executable.");
+  });
+});
+
+// ── Skipped image notes (image_skipped / skipped_images) ───────────────────
+
+describe("skipped analysis images are visibly reported", () => {
+  const SKIP_REASON = "No requested artifacts have parsed CSV output.";
+  const SKIP_ENTRY = { image_id: "img-2", label: "Server", reason: SKIP_REASON };
+
+  /** Query the rendered skipped-image notes inside a container by id. */
+  function skippedNotes(containerId) {
+    return document.querySelectorAll(`#${containerId} .analysis-skipped-note`);
+  }
+
+  test("live image_skipped event renders a note in results and findings", () => {
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, multi_image: true, sequence: 0 });
+    A._onAnalysisEvent({ type: "image_skipped", ...SKIP_ENTRY, sequence: 1 });
+
+    const liveNotes = skippedNotes("analysis-results-list");
+    expect(liveNotes).toHaveLength(1);
+    expect(liveNotes[0].textContent).toContain("Image skipped: Server");
+    expect(liveNotes[0].textContent).toContain(SKIP_REASON);
+    expect(liveNotes[0].textContent).toContain("not analyzed by the AI");
+
+    const findingsNotes = skippedNotes("artifact-findings");
+    expect(findingsNotes).toHaveLength(1);
+    expect(findingsNotes[0].textContent).toContain("Image skipped: Server");
+    expect(findingsNotes[0].textContent).toContain(SKIP_REASON);
+    expect(findingsNotes[0].textContent).toContain("not analyzed by the AI");
+  });
+
+  test("summary and completion payloads do not duplicate a live note", () => {
+    A.st.analysis.run = true;
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, multi_image: true, sequence: 0 });
+    A._onAnalysisEvent({ type: "image_skipped", ...SKIP_ENTRY, sequence: 1 });
+    // A repeated live event (e.g. duplicated emission) must dedupe too.
+    A._onAnalysisEvent({ type: "image_skipped", ...SKIP_ENTRY, sequence: 2 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "evtx",
+      image_id: "img-1",
+      image_label: "Workstation",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", image_id: "img-1", image_label: "Workstation", analysis: "Suspicious service install." },
+      sequence: 3,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_summary",
+      summary: "S",
+      model_info: {},
+      multi_image: true,
+      image_scoped: true,
+      images: { "img-1": { label: "Workstation", summary: "W" } },
+      cross_image_summary: "",
+      skipped_images: [SKIP_ENTRY],
+      sequence: 4,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_completed",
+      artifact_count: 1,
+      multi_image: true,
+      image_scoped: true,
+      images: {
+        "img-1": {
+          label: "Workstation",
+          per_artifact: [{ artifact_key: "evtx", artifact_name: "Event Logs", analysis: "Suspicious service install." }],
+          summary: "W",
+        },
+      },
+      cross_image_summary: "",
+      skipped_images: [SKIP_ENTRY],
+      sequence: 5,
+    });
+
+    expect(skippedNotes("analysis-results-list")).toHaveLength(1);
+    expect(skippedNotes("artifact-findings")).toHaveLength(1);
+    expect(document.getElementById("analysis-results-list").textContent).toContain("Image skipped: Server");
+    expect(document.getElementById("artifact-findings").textContent).toContain(SKIP_REASON);
+    // The analyzed image still renders normally next to the note.
+    expect(document.getElementById("analysis-results-list").textContent).toContain("Suspicious service install.");
+  });
+
+  test("completion payload alone recovers a note missed during reconnect", () => {
+    A.st.analysis.run = true;
+    A._onAnalysisEvent({
+      type: "analysis_completed",
+      artifact_count: 1,
+      multi_image: true,
+      image_scoped: true,
+      images: {
+        "img-1": {
+          label: "Workstation",
+          per_artifact: [{ artifact_key: "evtx", artifact_name: "Event Logs", analysis: "Result." }],
+          summary: "W",
+        },
+      },
+      cross_image_summary: "",
+      skipped_images: [SKIP_ENTRY],
+      sequence: 1,
+    });
+
+    expect(skippedNotes("analysis-results-list")).toHaveLength(1);
+    expect(skippedNotes("artifact-findings")).toHaveLength(1);
+    expect(document.getElementById("artifact-findings").textContent).toContain("Image skipped: Server");
+  });
+
+  test("resetAnalysisState clears skipped-image state and rendered notes", () => {
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, multi_image: true, sequence: 0 });
+    A._onAnalysisEvent({ type: "image_skipped", ...SKIP_ENTRY, sequence: 1 });
+    expect(skippedNotes("analysis-results-list")).toHaveLength(1);
+
+    A.resetAnalysisState();
+
+    expect(A.st.analysis.skippedImages).toEqual({});
+    expect(skippedNotes("analysis-results-list")).toHaveLength(0);
+    expect(skippedNotes("artifact-findings")).toHaveLength(0);
+    expect(document.getElementById("analysis-results-list").textContent).not.toContain("Image skipped");
+    expect(document.getElementById("artifact-findings").textContent).not.toContain("Image skipped");
+  });
+
+  test("single-image runs with empty skipped_images render no notes", () => {
+    A.st.analysis.run = true;
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, multi_image: false, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      artifact_key: "runkeys",
+      result: { artifact_key: "runkeys", artifact_name: "Run/RunOnce Keys", analysis: "Persistence found." },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "analysis_completed",
+      artifact_count: 1,
+      multi_image: false,
+      image_scoped: true,
+      images: {
+        "img-uuid-1": {
+          label: "Image 1",
+          per_artifact: [{ artifact_key: "runkeys", artifact_name: "Run/RunOnce Keys", analysis: "Persistence found." }],
+          summary: "S",
+        },
+      },
+      cross_image_summary: "",
+      skipped_images: [],
+      sequence: 2,
+    });
+
+    expect(skippedNotes("analysis-results-list")).toHaveLength(0);
+    expect(skippedNotes("artifact-findings")).toHaveLength(0);
+    expect(document.getElementById("analysis-results-list").textContent).toContain("Persistence found.");
   });
 });
 

@@ -1393,6 +1393,36 @@ thead th {
   font-size: 0.95rem;
 }
 
+/* Notes for images excluded from AI analysis, shown in the Step 4 live
+   results list and the Step 5 findings section. The ID-qualified selector
+   outranks the generic #analysis-results-list > div card rule above. */
+.analysis-skipped-note,
+#analysis-results-list > .analysis-skipped-note {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+  background: var(--bg-card);
+  padding: var(--space-3);
+  margin: var(--space-3) 0 0;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+  min-width: 0;
+}
+
+#analysis-results-list > .analysis-skipped-note {
+  margin: 0;
+}
+
+.analysis-skipped-note strong {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--text-primary);
+}
+
+.analysis-skipped-note p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
 /* Per-image summaries in the executive summary (Step 5). */
 .per-image-summaries {
   margin-top: var(--space-4);

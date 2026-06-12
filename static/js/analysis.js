@@ -2,7 +2,8 @@
  * Analysis SSE, result rendering, and findings display for AIFT.
  *
  * Manages the analysis lifecycle: submit, track via SSE, render
- * per-artifact results, executive summary, and collapsible findings.
+ * per-artifact results, executive summary, collapsible findings, and
+ * visible notes for images that were skipped during multi-image analysis.
  * Supports both single-image and multi-image analysis flows.
  *
  * Depends on: AIFT (utils.js, markdown.js)
@@ -204,6 +205,15 @@
       renderFindings();
       return;
     }
+    if (t === "image_skipped") {
+      // A whole image was excluded from AI analysis (e.g. no parsed CSV
+      // output for its requested artifacts). Surface it as a visible note.
+      if (recordSkippedImage(p)) {
+        renderAnalysis();
+        renderFindings();
+      }
+      return;
+    }
     if (t === "analysis_summary") {
       st.analysis.summary = String(p.summary || "");
       st.analysis.model = A.isObj(p.model_info) ? p.model_info : {};
@@ -212,6 +222,12 @@
         st.analysis.multiImage = Boolean(p.multi_image || Object.keys(p.images).length > 1);
         st.analysis.imageResults = p.images;
         st.analysis.crossImageSummary = String(p.cross_image_summary || "");
+      }
+      // Merge the payload's skipped-image list so SSE reconnects that
+      // missed the live image_skipped events still surface every skip.
+      if (mergeSkippedImages(p.skipped_images)) {
+        renderAnalysis();
+        renderFindings();
       }
       renderExecSummary();
       if (st.analysis.model.provider || st.analysis.model.model) {
@@ -229,6 +245,10 @@
         st.analysis.imageResults = p.images;
         st.analysis.crossImageSummary = String(p.cross_image_summary || "");
       }
+      // Merge skipped images from the terminal payload (covers reconnects
+      // that missed the live image_skipped events); the renders below pick
+      // up any newly recorded entries.
+      mergeSkippedImages(p.skipped_images);
       const finalArtifacts = flattenImageScopedArtifacts(p.images);
       finalArtifacts.forEach((entry) => {
         if (!A.isObj(entry)) return;
@@ -342,6 +362,91 @@
       });
     });
     return rows;
+  }
+
+  // ── Skipped image tracking ─────────────────────────────────────────────────
+
+  /**
+   * Record one image that was skipped during analysis, deduplicated by
+   * image id (falling back to the label when the id is missing).
+   *
+   * @param {Object} entry - Skip descriptor with image_id, label, and
+   *     reason fields (snake_case as emitted by the backend).
+   * @returns {boolean} True when a new entry was recorded.
+   */
+  function recordSkippedImage(entry) {
+    if (!A.isObj(entry)) return false;
+    const imageId = String(entry.image_id || "");
+    const label = String(entry.label || "");
+    const reason = String(entry.reason || "");
+    const key = imageId || label;
+    if (!key) return false;
+    if (!A.isObj(st.analysis.skippedImages)) st.analysis.skippedImages = {};
+    if (st.analysis.skippedImages[key]) return false;
+    st.analysis.skippedImages[key] = { imageId, label: label || imageId, reason };
+    return true;
+  }
+
+  /**
+   * Merge a skipped_images payload array into the per-run skip store.
+   *
+   * Covers SSE reconnects that missed the live image_skipped events: the
+   * analysis_summary and analysis_completed payloads repeat the full list.
+   *
+   * @param {Array<Object>} entries - skipped_images array from an SSE payload.
+   * @returns {boolean} True when at least one new entry was recorded.
+   */
+  function mergeSkippedImages(entries) {
+    if (!Array.isArray(entries)) return false;
+    let changed = false;
+    entries.forEach((entry) => {
+      if (recordSkippedImage(entry)) changed = true;
+    });
+    return changed;
+  }
+
+  /**
+   * Return the recorded skipped-image entries in insertion order.
+   *
+   * @returns {Array<Object>} Entries of {imageId, label, reason}.
+   */
+  function skippedImageList() {
+    const store = A.isObj(st.analysis.skippedImages) ? st.analysis.skippedImages : {};
+    return Object.keys(store).map((key) => store[key]).filter(A.isObj);
+  }
+
+  /**
+   * Build the visible note element for one skipped image.
+   *
+   * The wording must make clear the image was NOT analyzed by the AI,
+   * mirroring how the HTML report lists skipped images as processing notes.
+   *
+   * @param {Object} entry - Skip entry of {imageId, label, reason}.
+   * @returns {HTMLElement} The note element.
+   */
+  function buildSkippedImageNote(entry) {
+    const label = String(entry.label || entry.imageId || "Unknown image");
+    const reason = String(entry.reason || "No reason provided.");
+    return A.createDomElement("div", {
+      className: "analysis-skipped-note",
+      attrs: { role: "note" },
+      dataset: { imageId: String(entry.imageId || "") },
+    }, [
+      A.createDomElement("strong", { text: `Image skipped: ${label}` }),
+      A.createDomElement("p", { text: `${reason} This image was not analyzed by the AI.` }),
+    ]);
+  }
+
+  /**
+   * Append one note element per recorded skipped image to a container.
+   *
+   * @param {HTMLElement} container - Target list/section element.
+   */
+  function appendSkippedImageNotes(container) {
+    if (!container) return;
+    skippedImageList().forEach((entry) => {
+      container.appendChild(buildSkippedImageNote(entry));
+    });
   }
 
   /**
@@ -476,12 +581,15 @@
     });
   }
 
-  /** Render all per-artifact analysis cards into the analysis results list. */
+  /**
+   * Render all per-artifact analysis cards into the analysis results list,
+   * followed by one visible note per image skipped during analysis.
+   */
   function renderAnalysis() {
     if (!el.analysisList) return;
     const openState = snapshotDetailsState(el.analysisList);
     el.analysisList.innerHTML = "";
-    if (!st.analysis.order.length) {
+    if (!st.analysis.order.length && !skippedImageList().length) {
       const p = document.createElement("p");
       p.textContent = "No analysis output yet.";
       el.analysisList.appendChild(p);
@@ -498,6 +606,7 @@
         el.analysisList.appendChild(buildAnalysisCard(r));
       });
     }
+    appendSkippedImageNotes(el.analysisList);
     restoreDetailsState(el.analysisList, openState);
   }
 
@@ -641,14 +750,17 @@
     }
   }
 
-  /** Render collapsible per-artifact findings `<details>` elements. */
+  /**
+   * Render collapsible per-artifact findings `<details>` elements, followed
+   * by one non-collapsible note per image skipped during analysis.
+   */
   function renderFindings() {
     if (!el.findings) return;
     const openState = snapshotDetailsState(el.findings);
     Array.from(el.findings.children).forEach((c) => {
       if (c.id !== "artifact-findings-title") c.remove();
     });
-    if (!st.analysis.order.length) {
+    if (!st.analysis.order.length && !skippedImageList().length) {
       const p = document.createElement("p");
       p.textContent = "Findings will appear here.";
       el.findings.appendChild(p);
@@ -665,6 +777,7 @@
         el.findings.appendChild(buildFindingsDetails(r, i === 0));
       });
     }
+    appendSkippedImageNotes(el.findings);
     restoreDetailsState(el.findings, openState);
   }
 
@@ -830,6 +943,7 @@
     st.analysis.multiImage = false;
     st.analysis.imageResults = {};
     st.analysis.crossImageSummary = "";
+    st.analysis.skippedImages = {};
     A.clearMsg(el.analysisMsg);
     setAnalysisStatus(null);
     if (el.runBtn) el.runBtn.disabled = false;

@@ -144,6 +144,10 @@ class TestMultiImageAnalysisCSS(unittest.TestCase):
         self.assertIn(".findings-image-group", self.css_content)
         self.assertIn(".findings-image-group-header", self.css_content)
 
+    def test_skipped_image_note_styles(self) -> None:
+        """CSS must contain skipped-image note styles for analysis/results."""
+        self.assertIn(".analysis-skipped-note", self.css_content)
+
     def test_accent_border_on_cross_system(self) -> None:
         """Cross-system analysis should use accent color border."""
         # Check that the accent variable is referenced in the cross-system block.
