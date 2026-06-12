@@ -181,16 +181,22 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
 
     prompt_path = Path(case_dir) / "prompt.txt"
 
-    # Write the prompt file outside the lock — it doesn't depend on shared
-    # state and avoids blocking other threads during file I/O.
+    # Startup work (clearing stale outputs, writing the prompt file,
+    # audit logging, and the first progress event) runs on the request
+    # thread before the worker is spawned.  This keeps a single code path
+    # for production threads and synchronous thread test doubles alike:
+    # the worker only ever runs the analysis task itself.
     try:
         total_artifact_count = sum(len(img.get("artifacts", [])) for img in images_payload)
         config_snapshot = copy.deepcopy(current_app.config.get("AIFT_CONFIG", {}))
-        startup_gate = threading.Event()
-        startup_failed = threading.Event()
-        startup_done = threading.Event()
 
         def fail_analysis_startup(startup_error: Exception) -> None:
+            """Record a startup failure and restore a retryable case state.
+
+            Args:
+                startup_error: The exception raised while preparing the
+                    analysis workspace.
+            """
             audit_logger.log(
                 "analysis_startup_failed",
                 {
@@ -215,9 +221,7 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
                 },
             )
 
-        def perform_analysis_startup() -> None:
-            if startup_done.is_set():
-                return
+        try:
             clear_analysis_outputs(
                 Path(case_dir),
                 case=case,
@@ -239,19 +243,12 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
                     "image_count": image_count,
                 },
             )
-            startup_done.set()
+        except Exception as startup_error:
+            fail_analysis_startup(startup_error)
+            return error_response("Failed to start analysis.", 500)
 
-        def analysis_startup_and_run() -> None:
-            """Invalidate stale outputs after thread start, then analyze."""
-            try:
-                startup_gate.wait()
-                if startup_failed.is_set():
-                    return
-                perform_analysis_startup()
-            except Exception as startup_error:
-                fail_analysis_startup(startup_error)
-                return
-
+        def run_analysis_worker() -> None:
+            """Run the multi-image analysis task in the case log context."""
             run_task_with_case_log_context(
                 case_id,
                 run_multi_image_analysis_task,
@@ -261,22 +258,10 @@ def start_analysis(case_id: str) -> tuple[Response, int]:
                 config_snapshot,
             )
 
-        thread = threading.Thread(
-            target=analysis_startup_and_run,
+        threading.Thread(
+            target=run_analysis_worker,
             daemon=True,
-        )
-        if getattr(threading.Thread, "__name__", "") == "ImmediateThread":
-            startup_gate.set()
-        thread.start()
-        if not startup_done.is_set():
-            try:
-                perform_analysis_startup()
-            except Exception as startup_error:
-                startup_failed.set()
-                startup_gate.set()
-                fail_analysis_startup(startup_error)
-                return error_response("Failed to start analysis.", 500)
-        startup_gate.set()
+        ).start()
     except Exception:
         with STATE_LOCK:
             audit = case.get("audit")

@@ -6,6 +6,7 @@ and TestAnalysisRerunClearsStaleResults extracted from the main test_routes modu
 from __future__ import annotations
 
 import csv
+import inspect
 import json
 import logging
 from io import BytesIO
@@ -567,6 +568,175 @@ class TestStreamSSECursorResetOnRestart(unittest.TestCase):
 
             # Clean up the generator to avoid ResourceWarning.
             gen.close()
+
+
+class TestAnalysisStartupSingleCodePath(unittest.TestCase):
+    """Analysis startup must use one code path for tests and production.
+
+    Startup work (clearing stale outputs, writing the prompt file, audit
+    logging, and the first progress event) runs on the request thread
+    before the worker thread is spawned.  The route must not branch on
+    the test suite's synchronous ``Thread`` replacement.
+    """
+
+    def setUp(self) -> None:
+        """Create a Flask app, client, and clean shared route state."""
+        self.temp_dir = TemporaryDirectory(prefix="aift-analysis-startup-")
+        self.config_path = Path(self.temp_dir.name) / "config.yaml"
+        self.app = create_app(str(self.config_path))
+        self.app.testing = True
+        self.csrf_token = self.app.config["CSRF_TOKEN"]
+        self.client = self.app.test_client()
+        self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
+        unregister_all_case_log_handlers()
+
+    def tearDown(self) -> None:
+        """Clear shared route state and remove temporary files."""
+        unregister_all_case_log_handlers()
+        routes_state.CASE_STATES.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        self.temp_dir.cleanup()
+
+    def _install_case(self, case_id: str) -> Path:
+        """Register a minimal parsed single-image case in shared state.
+
+        Args:
+            case_id: Identifier to register the case under.
+
+        Returns:
+            The case directory containing one parsed artifact CSV.
+        """
+        case_dir = Path(self.temp_dir.name) / case_id
+        parsed_dir = case_dir / "images" / "img1" / "parsed"
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = parsed_dir / "runkeys.csv"
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["ts", "name"])
+            writer.writerow(["2024-01-01", "test"])
+        with routes_state.STATE_LOCK:
+            routes_state.CASE_STATES[case_id] = {
+                "status": "parsed",
+                "case_dir": str(case_dir),
+                "audit": MagicMock(),
+                "image_artifact_csv_paths": {"img1": {"runkeys": str(csv_path)}},
+                "image_states": {
+                    "img1": {
+                        "artifact_csv_paths": {"runkeys": str(csv_path)},
+                        "analysis_artifacts": ["runkeys"],
+                        "csv_output_dir": str(parsed_dir),
+                        "image_metadata": {},
+                        "os_type": "windows",
+                    },
+                },
+                "images": [{"image_id": "img1", "label": "Image 1"}],
+                "image_metadata": {},
+            }
+        return case_dir
+
+    def test_route_module_does_not_reference_thread_test_double(self) -> None:
+        """The route module must not special-case the thread test double."""
+        source = inspect.getsource(routes_analysis)
+        self.assertNotIn(
+            "ImmediateThread", source,
+            "Production analysis route must not branch on the name of the "
+            "test suite's Thread replacement.",
+        )
+
+    def test_startup_completes_before_worker_runs(self) -> None:
+        """The worker observes a written prompt and emitted start event."""
+        case_id = "startup-order"
+        case_dir = self._install_case(case_id)
+        prompt_path = case_dir / "prompt.txt"
+        observed: dict[str, object] = {}
+
+        def record_worker_start(*args: object, **kwargs: object) -> None:
+            """Capture startup side effects visible when the worker begins."""
+            with routes_state.STATE_LOCK:
+                events = [
+                    event.get("type")
+                    for event in routes_state.ANALYSIS_PROGRESS[case_id]["events"]
+                ]
+            observed["prompt_text"] = (
+                prompt_path.read_text(encoding="utf-8")
+                if prompt_path.exists()
+                else None
+            )
+            observed["event_types"] = events
+
+        with (
+            patch.object(routes_analysis.threading, "Thread", ImmediateThread),
+            patch.object(
+                routes_analysis,
+                "run_task_with_case_log_context",
+                side_effect=record_worker_start,
+            ),
+        ):
+            response = self.client.post(
+                f"/api/cases/{case_id}/analyze",
+                json={"prompt": "fresh prompt"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(
+            observed.get("prompt_text"), "fresh prompt",
+            "prompt.txt must be written before the worker starts",
+        )
+        self.assertIn(
+            "analysis_started", observed.get("event_types", []),
+            "analysis_started must be emitted before the worker starts",
+        )
+
+    def test_startup_failure_returns_500_without_spawning_worker(self) -> None:
+        """A startup failure reports cleanly and never spawns the worker."""
+        case_id = "startup-fails"
+        self._install_case(case_id)
+
+        with (
+            patch.object(
+                routes_analysis,
+                "clear_analysis_outputs",
+                side_effect=RuntimeError("cleanup exploded"),
+            ),
+            patch.object(
+                routes_analysis,
+                "run_task_with_case_log_context",
+                side_effect=AssertionError("analysis worker should not run"),
+            ),
+            patch.object(
+                routes_analysis.threading,
+                "Thread",
+                side_effect=AssertionError("worker thread should not be created"),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/cases/{case_id}/analyze",
+                json={"prompt": "boom"},
+            )
+
+        self.assertEqual(response.status_code, 500)
+        body = response.get_json()
+        self.assertFalse(body.get("success"))
+        self.assertEqual(body.get("error"), "Failed to start analysis.")
+
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            progress = routes_state.ANALYSIS_PROGRESS[case_id]
+        self.assertEqual(case.get("status"), "parsed")
+        self.assertEqual(case.get("analysis_results"), {})
+        self.assertEqual(progress["status"], "failed")
+        self.assertEqual(progress["error"], "cleanup exploded")
+        self.assertEqual(progress["events"][-1]["type"], "analysis_failed")
+        self.assertEqual(
+            progress["events"][-1]["error"],
+            "Failed to prepare analysis workspace.",
+        )
+        logged_events = [call.args[0] for call in case["audit"].log.call_args_list]
+        self.assertIn("analysis_startup_failed", logged_events)
 
 
 if __name__ == "__main__":
