@@ -186,7 +186,7 @@ def _start_triage_payload(
     profile_name: str | None = None,
     config_path: str | None = None,
     case_name: str | None = None,
-    skip_hashing: bool = False,
+    skip_hashing: bool | None = None,
     date_range: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate and start an asynchronous automation run for MCP.
@@ -199,7 +199,9 @@ def _start_triage_payload(
         profile_name: Optional artifact profile name or profile JSON path.
         config_path: Optional YAML config path for the run.
         case_name: Optional case display name.
-        skip_hashing: Whether to skip evidence hashing.
+        skip_hashing: Optional explicit hashing override. ``True`` skips
+            evidence hashing, ``False`` forces it, and ``None`` (default)
+            defers to the run config's ``evidence.compute_hashes`` setting.
         date_range: Optional analysis date-range object.
 
     Returns:
@@ -215,8 +217,8 @@ def _start_triage_payload(
         validated_profile_name = _optional_text(profile_name, "profile_name")
         validated_config_path = _optional_text(config_path, "config_path")
         validated_case_name = _optional_text(case_name, "case_name")
-        if not isinstance(skip_hashing, bool):
-            raise ValueError("Field 'skip_hashing' must be a boolean.")
+        if skip_hashing is not None and not isinstance(skip_hashing, bool):
+            raise ValueError("Field 'skip_hashing' must be a boolean or null.")
         validated_date_range = _normalize_date_range(date_range)
 
         request = server.make_automation_request(

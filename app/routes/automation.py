@@ -282,8 +282,22 @@ def _stage_uploaded_evidence(run_id: str) -> tuple[Path | None, Path | None]:
         raise
 
 
-def _parse_form_bool(field: str, default: bool = False) -> tuple[bool | None, str]:
-    """Parse a boolean field from multipart form data."""
+def _parse_form_bool(
+    field: str,
+    default: bool | None = None,
+) -> tuple[bool | None, str]:
+    """Parse an optional boolean field from multipart form data.
+
+    Args:
+        field: Form field name to read.
+        default: Value returned when the field is absent. ``None`` means
+            the caller did not provide the field.
+
+    Returns:
+        Tuple of ``(value, error_message)``. The error message is empty on
+        success; on a malformed value the parsed value is ``None`` and the
+        error message is non-empty.
+    """
     if field not in request.form:
         return default, ""
     value = str(request.form.get(field, "")).strip().lower()
@@ -308,7 +322,9 @@ def _multipart_payload() -> tuple[dict[str, Any] | None, str]:
         if field in request.form:
             payload[field] = request.form.get(field)
 
-    skip_hashing, error = _parse_form_bool("skip_hashing", False)
+    # Tri-state: an omitted field stays None so the automation engine can
+    # apply the config's evidence.compute_hashes default.
+    skip_hashing, error = _parse_form_bool("skip_hashing")
     if error:
         return None, error
     payload["skip_hashing"] = skip_hashing
@@ -386,9 +402,12 @@ def _validate_run_request(
             return None, error
         optional_values[field] = value
 
-    skip_hashing_raw = payload.get("skip_hashing", False)
-    if not isinstance(skip_hashing_raw, bool):
-        return None, "Field 'skip_hashing' must be a boolean."
+    # Tri-state: True/False are explicit caller choices forwarded verbatim;
+    # an omitted or null field stays None so the automation engine applies
+    # the config's evidence.compute_hashes default.
+    skip_hashing_raw = payload.get("skip_hashing")
+    if skip_hashing_raw is not None and not isinstance(skip_hashing_raw, bool):
+        return None, "Field 'skip_hashing' must be a boolean or null."
 
     # Date range validation (strict — return 400 on bad format).
     date_range_raw = payload.get("date_range")

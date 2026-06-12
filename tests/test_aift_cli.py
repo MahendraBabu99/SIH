@@ -301,7 +301,9 @@ class TestCLIArgumentParsing(unittest.TestCase):
         self.assertEqual(args.profile, "recommended")
         self.assertIsNone(args.config)
         self.assertIsNone(args.case_name)
-        self.assertFalse(args.skip_hashing)
+        # Tri-state default: None means "not chosen", letting the engine
+        # apply the config's evidence.compute_hashes default.
+        self.assertIsNone(args.skip_hashing)
         self.assertFalse(args.quiet)
         self.assertFalse(args.no_logo)
         self.assertFalse(args.verbose)
@@ -332,6 +334,14 @@ class TestCLIArgumentParsing(unittest.TestCase):
         self.assertTrue(args.quiet)
         self.assertTrue(args.no_logo)
         self.assertTrue(args.verbose)
+
+    def test_no_skip_hashing_flag_forces_hashing(self) -> None:
+        """--no-skip-hashing parses as an explicit False override."""
+        parser = _build_parser()
+        args = parser.parse_args(
+            ["-e", "/path", "-p", "prompt", "--no-skip-hashing"]
+        )
+        self.assertIs(args.skip_hashing, False)
 
 
 class TestCLIVersionAndProfiles(unittest.TestCase):

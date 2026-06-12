@@ -73,7 +73,11 @@ class AutomationRequest:
         config_path: Path to a YAML config file. Falls back to default if None
             or not found.
         case_name: Optional human-readable case name for the report header.
-        skip_hashing: If True, skip SHA-256/MD5 evidence hash computation.
+        skip_hashing: Tri-state hashing override. ``True`` skips SHA-256/MD5
+            evidence hash computation, ``False`` forces hashing, and ``None``
+            (default, meaning the caller did not choose) defers to the loaded
+            config's ``evidence.compute_hashes`` setting — hashing stays
+            enabled unless that key is explicitly ``false``.
         date_range: Optional ``(start_date, end_date)`` tuple for filtering
             analysis to a specific time window.
         upload_staging_path: Optional pre-case REST multipart upload staging
@@ -87,7 +91,7 @@ class AutomationRequest:
     profile_name: str | None = None
     config_path: str | Path | None = None
     case_name: str | None = None
-    skip_hashing: bool = False
+    skip_hashing: bool | None = None
     date_range: tuple[str, str] | None = None
     upload_staging_path: str | Path | None = None
 
@@ -389,6 +393,37 @@ def _artifact_csv_row_limit_from_config(config: dict[str, Any]) -> int:
         return max(0, int(raw_value))
     except (TypeError, ValueError):
         return 0
+
+
+def _resolve_skip_hashing(
+    requested_skip_hashing: bool | None,
+    config: dict[str, Any],
+) -> bool:
+    """Resolve the effective skip-hashing flag for an automation run.
+
+    An explicit caller choice always wins. When the caller did not choose
+    (``None``), the loaded config's ``evidence.compute_hashes`` setting
+    supplies the default: hashing stays enabled unless that key is explicitly
+    ``False``. Missing or non-boolean config values keep hashing enabled,
+    mirroring how the GUI settings toggle treats the same key.
+
+    Args:
+        requested_skip_hashing: Caller-supplied tri-state flag where ``None``
+            means the caller did not choose.
+        config: Loaded application configuration.
+
+    Returns:
+        True when evidence hashing must be skipped for this run.
+    """
+    if requested_skip_hashing is not None:
+        return requested_skip_hashing
+    evidence = config.get("evidence", {}) if isinstance(config, dict) else {}
+    compute_hashes_setting = (
+        evidence.get("compute_hashes", True) if isinstance(evidence, dict) else True
+    )
+    if not isinstance(compute_hashes_setting, bool):
+        return False
+    return not compute_hashes_setting
 
 
 def _load_profile(
@@ -1063,6 +1098,12 @@ def run_automation(
     per-image/per-artifact work items, and is passed through to analyzer
     and parser calls.
 
+    Evidence hashing honors an explicit ``request.skip_hashing`` value.
+    When the caller did not choose (``None``), the loaded config's
+    ``evidence.compute_hashes`` setting decides (hashing enabled by
+    default).  The resolved choice is recorded in the
+    ``automation_started`` audit entry.
+
     Error handling:
 
     - If evidence discovery finds 0 files: return failure immediately.
@@ -1156,6 +1197,9 @@ def run_automation(
     config, config_warnings = _load_config_safe(request.config_path)
     result.warnings.extend(config_warnings)
     max_records_per_artifact = _artifact_csv_row_limit_from_config(config)
+    # An explicit caller choice wins; otherwise the loaded config's
+    # evidence.compute_hashes setting decides whether hashing runs.
+    skip_hashing = _resolve_skip_hashing(request.skip_hashing, config)
 
     cancelled = _stop_if_cancelled()
     if cancelled is not None:
@@ -1301,7 +1345,7 @@ def run_automation(
     audit_logger.log("automation_started", {
         "evidence_path": str(evidence_path),
         "profile": request.profile_name or DEFAULT_PROFILE_NAME,
-        "skip_hashing": request.skip_hashing,
+        "skip_hashing": skip_hashing,
         "evidence_count": len(evidence_descriptors),
     })
 
@@ -1399,7 +1443,7 @@ def run_automation(
                 try:
                     hashes_entry, _file_hashes = _hash_evidence_descriptor(
                         descriptor,
-                        skip_hashing=request.skip_hashing,
+                        skip_hashing=skip_hashing,
                         audit_logger=audit_logger,
                     )
                 except Exception as exc:

@@ -116,9 +116,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     optional.add_argument(
         "--skip-hashing",
-        action="store_true",
-        default=False,
-        help="Skip SHA-256/MD5 hash computation on evidence.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Skip SHA-256/MD5 hash computation on evidence "
+            "(--no-skip-hashing forces hashing). When neither flag is given, "
+            "the config's evidence.compute_hashes setting decides; hashing "
+            "stays enabled unless that key is set to false."
+        ),
     )
     optional.add_argument(
         "--date-start",

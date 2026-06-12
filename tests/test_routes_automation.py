@@ -437,7 +437,51 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertEqual(resp.status_code, 202)
 
         req = mock_run.call_args[0][0]
-        self.assertFalse(req.skip_hashing)
+        self.assertIs(req.skip_hashing, False)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_omitted_skip_hashing_passes_none_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """An omitted skip_hashing field stays None in AutomationRequest.
+
+        ``None`` means "caller did not choose", letting the automation
+        engine apply the config's ``evidence.compute_hashes`` default.
+        """
+        mock_run.return_value = _make_successful_result()
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {"evidence_path": "/fake/path.E01", "prompt": "test"},
+        )
+        self.assertEqual(resp.status_code, 202)
+
+        req = mock_run.call_args[0][0]
+        self.assertIsNone(req.skip_hashing)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_null_skip_hashing_passes_none_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """An explicit JSON null for skip_hashing is treated as not chosen."""
+        mock_run.return_value = _make_successful_result()
+
+        resp = self._post_json(
+            "/api/automation/run",
+            {
+                "evidence_path": "/fake/path.E01",
+                "prompt": "test",
+                "skip_hashing": None,
+            },
+        )
+        self.assertEqual(resp.status_code, 202)
+
+        req = mock_run.call_args[0][0]
+        self.assertIsNone(req.skip_hashing)
 
     @patch("app.routes.automation.run_automation")
     @patch("app.routes.automation.threading.Thread", ImmediateThread)
@@ -545,6 +589,30 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         self.assertEqual(Path(req.upload_staging_path), evidence_path.parent)
         self.assertEqual(req.prompt, "Investigate upload")
         self.assertTrue(req.skip_hashing)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_multipart_omitted_skip_hashing_passes_none_to_request(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """A multipart run without skip_hashing leaves the tri-state None."""
+        mock_run.return_value = _make_successful_result()
+        upload_root = Path(self.temp_dir.name) / "cases"
+
+        with patch.object(automation_mod, "CASES_ROOT", upload_root):
+            resp = self.client.post(
+                "/api/automation/run",
+                data={
+                    "evidence_file": (BytesIO(b"evidence"), "uploaded.E01"),
+                    "prompt": "Investigate upload",
+                },
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(resp.status_code, 202)
+        req = mock_run.call_args.args[0]
+        self.assertIsNone(req.skip_hashing)
 
     @patch("app.routes.automation.run_automation")
     @patch("app.routes.automation.threading.Thread", ImmediateThread)

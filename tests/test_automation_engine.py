@@ -214,7 +214,7 @@ class TestAutomationRequest(unittest.TestCase):
         self.assertIsNone(req.profile_name)
         self.assertIsNone(req.config_path)
         self.assertIsNone(req.case_name)
-        self.assertFalse(req.skip_hashing)
+        self.assertIsNone(req.skip_hashing)
         self.assertIsNone(req.date_range)
         self.assertIsNone(req.upload_staging_path)
 
@@ -252,6 +252,42 @@ class TestAutomationResult(unittest.TestCase):
         self.assertEqual(res.errors, [])
         self.assertEqual(res.warnings, [])
         self.assertEqual(res.duration_seconds, 0.0)
+
+
+class TestResolveSkipHashing(unittest.TestCase):
+    """Tests for the engine's skip-hashing resolution helper."""
+
+    def test_explicit_caller_choice_wins(self) -> None:
+        """An explicit True/False request overrides the config setting."""
+        config_disabled = {"evidence": {"compute_hashes": False}}
+        config_enabled = {"evidence": {"compute_hashes": True}}
+        self.assertFalse(
+            engine_module._resolve_skip_hashing(False, config_disabled)
+        )
+        self.assertTrue(
+            engine_module._resolve_skip_hashing(True, config_enabled)
+        )
+
+    def test_config_compute_hashes_false_skips_when_not_chosen(self) -> None:
+        """evidence.compute_hashes=false skips hashing for None requests."""
+        self.assertTrue(
+            engine_module._resolve_skip_hashing(
+                None, {"evidence": {"compute_hashes": False}}
+            )
+        )
+
+    def test_missing_or_invalid_config_keeps_hashing(self) -> None:
+        """Absent or non-boolean config values keep hashing enabled."""
+        for config in (
+            {},
+            {"evidence": {}},
+            {"evidence": {"compute_hashes": "no"}},
+            {"evidence": None},
+        ):
+            with self.subTest(config=config):
+                self.assertFalse(
+                    engine_module._resolve_skip_hashing(None, config)
+                )
 
 
 class TestAutomationProfileRoots(unittest.TestCase):
@@ -1601,6 +1637,65 @@ class TestRunAutomation(unittest.TestCase):
             [e for e in entries if e["action"] == "evidence_intake_file_hashed"],
             [],
         )
+
+    def test_config_compute_hashes_false_skips_hashing_by_default(self) -> None:
+        """evidence.compute_hashes=false skips hashing when caller did not choose."""
+        self._use_real_audit_logger()
+        self.mocks["load_config"].side_effect = lambda path: {
+            "ai_provider": "fake",
+            "api_key": "test",
+            "evidence": {"compute_hashes": False},
+        }
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        self.mocks["compute_hashes"].assert_not_called()
+
+        entries = self._read_audit_entries(result.case_id)
+        started = [e for e in entries if e["action"] == "automation_started"]
+        self.assertEqual(len(started), 1)
+        self.assertTrue(started[0]["details"]["skip_hashing"])
+        intake = [e for e in entries if e["action"] == "evidence_intake"]
+        self.assertEqual(len(intake), 1)
+        self.assertEqual(intake[0]["details"]["sha256"], "N/A (skipped)")
+        self.assertEqual(intake[0]["details"]["md5"], "N/A (skipped)")
+
+    def test_explicit_skip_hashing_false_overrides_config(self) -> None:
+        """Explicit skip_hashing=False hashes even when config disables it."""
+        self._use_real_audit_logger()
+        self.mocks["load_config"].side_effect = lambda path: {
+            "ai_provider": "fake",
+            "api_key": "test",
+            "evidence": {"compute_hashes": False},
+        }
+
+        result = run_automation(self._make_request(skip_hashing=False))
+
+        self.assertTrue(result.success)
+        self.mocks["compute_hashes"].assert_called()
+
+        entries = self._read_audit_entries(result.case_id)
+        started = [e for e in entries if e["action"] == "automation_started"]
+        self.assertEqual(len(started), 1)
+        self.assertFalse(started[0]["details"]["skip_hashing"])
+        intake = [e for e in entries if e["action"] == "evidence_intake"]
+        self.assertEqual(len(intake), 1)
+        self.assertEqual(intake[0]["details"]["sha256"], FAKE_HASHES["sha256"])
+
+    def test_default_config_hashes_when_caller_did_not_choose(self) -> None:
+        """Without evidence.compute_hashes config, hashing runs by default."""
+        self._use_real_audit_logger()
+
+        result = run_automation(self._make_request())
+
+        self.assertTrue(result.success)
+        self.mocks["compute_hashes"].assert_called()
+
+        entries = self._read_audit_entries(result.case_id)
+        started = [e for e in entries if e["action"] == "automation_started"]
+        self.assertEqual(len(started), 1)
+        self.assertFalse(started[0]["details"]["skip_hashing"])
 
     def test_folder_evidence_run_audits_evidence_intake_per_evidence(self) -> None:
         """Directory evidence gets one evidence_intake entry with placeholders.

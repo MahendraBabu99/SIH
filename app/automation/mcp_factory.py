@@ -159,7 +159,7 @@ def build_mcp_server(
         profile_name: str | None = None,
         config_path: str | None = None,
         case_name: str | None = None,
-        skip_hashing: bool = False,
+        skip_hashing: bool | None = None,
         date_range: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Start an asynchronous forensic triage run."""

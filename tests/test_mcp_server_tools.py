@@ -285,6 +285,37 @@ class TestMCPTools(unittest.TestCase):
         request = manager.started_requests[0]
         self.assertEqual(request.profile_name, str(profile_path))
 
+    def test_start_triage_omitted_skip_hashing_stays_none(self) -> None:
+        """Omitted skip_hashing stays None so config decides hashing.
+
+        ``None`` means "caller did not choose", letting the automation
+        engine apply the run config's ``evidence.compute_hashes`` default.
+        """
+        manager = FakeRunManager()
+        evidence_path = Path("D:/Cases/acme/WIN-WS01.E01")
+        with (
+            patch.dict(sys.modules, fake_mcp_modules()),
+            patch.object(
+                mcp_server,
+                "validate_evidence_path",
+                return_value=evidence_path,
+            ),
+            patch.object(
+                mcp_server,
+                "make_automation_request",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            server = mcp_server.build_mcp_server(run_manager=manager)
+            result = get_tool(server, "aift_start_triage")(
+                evidence_path=str(evidence_path),
+                prompt="Investigate persistence.",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(len(manager.started_requests), 1)
+        self.assertIsNone(manager.started_requests[0].skip_hashing)
+
     def test_start_triage_rejects_empty_prompt_before_starting_run(self) -> None:
         """Validation errors are model-visible and do not call the manager."""
         manager = FakeRunManager()
