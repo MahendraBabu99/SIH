@@ -878,8 +878,13 @@ def _is_attachment_unsupported_error(
     Args:
         error: The API exception to inspect.
         allow_bare_404: Treat a bare HTTP 404 as attachment-unsupported.
-            Use only from code paths that are already attempting attachment
-            delivery, since generic 404s can also mean a missing model.
+            Use only from code paths that probe optional file-API routes
+            (the OpenAI-compatible ``/files`` + ``/responses`` flow), since
+            generic 404s can also mean a missing model. Paths whose
+            attachment delivery rides a universally available route (for
+            example Anthropic ``messages.create`` content blocks) must
+            leave this ``False`` so model-not-found errors propagate
+            instead of triggering a doomed text-mode retry.
 
     Returns:
         ``True`` if the error indicates file-attachment APIs are unavailable.

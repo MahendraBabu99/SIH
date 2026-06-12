@@ -407,6 +407,76 @@ class TestClaudeProvider(unittest.TestCase):
         self.assertIn("ts,name", fallback_prompt)
 
     @patch("anthropic.Anthropic")
+    def test_analyze_with_attachments_propagates_model_not_found_404(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        """A bare 404 (e.g. unknown model id) is not treated as attachment-unsupported.
+
+        The error must propagate from the first request: no text-mode
+        retry of the identical failing request, and attachment support
+        must not be latched off for the provider instance.
+        """
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = RuntimeError(
+            "Error code: 404 - {'type': 'error', 'error': "
+            "{'type': 'not_found_error', 'message': 'model: claude-bogus-1'}}"
+        )
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+            attachments = [{"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}]
+
+            provider = ClaudeProvider(api_key="sk-test", model="claude-bogus-1")
+            with self.assertRaises(AIProviderError) as raised:
+                provider.analyze_with_attachments("system", "user", attachments=attachments)
+
+        self.assertIn("404", str(raised.exception))
+        self.assertIn("not_found_error", str(raised.exception))
+        self.assertEqual(mock_client.messages.create.call_count, 1)
+        self.assertIsNone(provider._csv_attachment_supported)
+
+    @patch("anthropic.Anthropic")
+    def test_analyze_with_progress_propagates_model_not_found_404(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        """A bare 404 in progress mode propagates instead of inlining attachments.
+
+        The streaming attachment request must not be retried with inlined
+        attachment data when the failure is a model/endpoint 404, and
+        attachment support must not be latched off.
+        """
+        mock_client = MagicMock()
+        mock_anthropic_cls.return_value = mock_client
+        mock_client.messages.create.side_effect = RuntimeError(
+            "Error code: 404 - {'type': 'error', 'error': "
+            "{'type': 'not_found_error', 'message': 'model: claude-bogus-1'}}"
+        )
+
+        with TemporaryDirectory(prefix="aift-ai-provider-test-") as temp_dir:
+            csv_path = Path(temp_dir) / "runkeys.csv"
+            csv_path.write_text("ts,name\n2026-01-15T12:00:00Z,EntryA\n", encoding="utf-8")
+            attachments = [
+                {"path": str(csv_path), "name": "runkeys.csv", "mime_type": "text/csv"}
+            ]
+
+            provider = ClaudeProvider(api_key="sk-test", model="claude-bogus-1")
+            with self.assertRaises(AIProviderError) as raised:
+                provider.analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=lambda _payload: None,
+                    attachments=attachments,
+                )
+
+        self.assertIn("404", str(raised.exception))
+        self.assertEqual(mock_client.messages.create.call_count, 1)
+        self.assertIsNone(provider._csv_attachment_supported)
+
+    @patch("anthropic.Anthropic")
     def test_analyze_retries_with_stream_for_long_requests(
         self,
         mock_anthropic_cls: MagicMock,

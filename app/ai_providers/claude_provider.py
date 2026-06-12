@@ -308,11 +308,23 @@ class ClaudeProvider(AIProvider):
         }
 
         def _fallback_to_inlined_attachments(error: Exception) -> bool:
-            """Switch a progress request to inline attachment data if supported."""
-            if not attachments or not _is_attachment_unsupported_error(
-                error,
-                allow_bare_404=True,
-            ):
+            """Switch a progress request to inline attachment data if needed.
+
+            Bare HTTP 404 responses are deliberately not treated as
+            attachment failures here: on the Anthropic Messages API a 404
+            indicates a missing model or endpoint, so retrying the same
+            request in text mode would fail identically and hide the real
+            error behind a misleading attachment-fallback log entry.
+
+            Args:
+                error: The exception raised by the attachment-mode request.
+
+            Returns:
+                ``True`` if the request was rewritten with inline attachment
+                data and should be retried, ``False`` if the error is not an
+                attachment-unsupported failure and must propagate.
+            """
+            if not attachments or not _is_attachment_unsupported_error(error):
                 return False
 
             effective_prompt, _inlined = _inline_attachment_data_into_prompt(
@@ -502,6 +514,14 @@ class ClaudeProvider(AIProvider):
         Returns:
             The generated text if attachment mode succeeded, or ``None``
             if attachments were skipped or unsupported.
+
+        Raises:
+            Exception: Errors that do not indicate attachment-unsupported
+                delivery propagate unchanged. This includes bare HTTP 404
+                responses, which on the Anthropic Messages API mean a
+                missing model or endpoint rather than an attachment
+                problem, so the caller surfaces the real error instead of
+                repeating the same failing request in text mode.
         """
         normalized_attachments = self._prepare_csv_attachments(attachments)
         if not normalized_attachments:
@@ -526,7 +546,7 @@ class ClaudeProvider(AIProvider):
                 self._csv_attachment_supported = True
             return text
         except Exception as error:
-            if _is_attachment_unsupported_error(error, allow_bare_404=True):
+            if _is_attachment_unsupported_error(error):
                 with self._attachment_lock:
                     self._csv_attachment_supported = False
                 logger.info(
