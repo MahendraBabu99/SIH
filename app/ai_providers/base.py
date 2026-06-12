@@ -681,9 +681,31 @@ def _run_with_completion_token_retry(
 ) -> _T:
     """Run a request once, retrying with a provider-declared token cap.
 
-    OpenAI-compatible endpoints commonly reject over-large output-token
+    Provider endpoints (OpenAI-compatible chat completions and the
+    Anthropic Messages API alike) commonly reject over-large output-token
     budgets with a message that includes the maximum supported value. This
-    helper keeps that fallback consistent for chat-completion providers.
+    helper keeps the retry contract consistent across providers: catch the
+    provider's bad-request error, extract the declared cap, log, and retry
+    once with the reduced token budget.
+
+    Args:
+        create_fn: A callable that takes the request kwargs dict and
+            performs the API call.
+        request_kwargs: Keyword arguments for the API call. Not mutated;
+            the retry uses a copy with the reduced token value.
+        token_parameter: Name of the output-token kwarg to reduce on
+            retry (e.g. ``"max_tokens"`` or ``"max_completion_tokens"``).
+        bad_request_error_type: The provider SDK's bad-request exception
+            class that triggers the retry.
+        provider_name: Human-readable provider name for log messages.
+
+    Returns:
+        The API response object from the first successful call.
+
+    Raises:
+        Exception: Re-raises the provider's bad-request error when no
+            usable token cap can be extracted from it, and propagates any
+            error raised by the single retry attempt.
     """
     effective_kwargs: dict[str, Any] = dict(request_kwargs)
     try:

@@ -25,9 +25,9 @@ from .base import (
     _is_attachment_unsupported_error,
     _is_anthropic_streaming_required_error,
     _normalize_api_key_value,
-    _resolve_completion_token_retry_limit,
     _resolve_timeout_seconds,
     _run_stream_with_rate_limit_retries,
+    _run_with_completion_token_retry,
 )
 from .progress import (
     finalize_progress_stream_response,
@@ -595,10 +595,9 @@ class ClaudeProvider(AIProvider):
 
         If the initial request is rejected because ``max_tokens`` exceeds
         the model's supported maximum, retries once with the lower limit
-        extracted from the error message.
-
-        This single method replaces the three near-identical retry methods
-        that existed previously.
+        extracted from the error message. Delegates to the shared
+        completion-token retry helper so the retry contract stays
+        identical across providers.
 
         Args:
             create_fn: A callable that takes the request kwargs dict and
@@ -612,24 +611,13 @@ class ClaudeProvider(AIProvider):
             anthropic.BadRequestError: If the request fails for a reason
                 other than token limits, or if the retry also fails.
         """
-        effective_kwargs: dict[str, Any] = dict(request_kwargs)
-        try:
-            return create_fn(effective_kwargs)
-        except self._anthropic.BadRequestError as error:
-            requested_tokens = int(effective_kwargs.get("max_tokens", 0))
-            retry_token_count = _resolve_completion_token_retry_limit(
-                error=error,
-                requested_tokens=requested_tokens,
-            )
-            if retry_token_count is None:
-                raise
-            logger.warning(
-                "Claude rejected max_tokens=%d; retrying with max_tokens=%d.",
-                requested_tokens,
-                retry_token_count,
-            )
-            effective_kwargs["max_tokens"] = retry_token_count
-        return create_fn(effective_kwargs)
+        return _run_with_completion_token_retry(
+            create_fn=create_fn,
+            request_kwargs=request_kwargs,
+            token_parameter="max_tokens",
+            bad_request_error_type=self._anthropic.BadRequestError,
+            provider_name=self._provider_display_name,
+        )
 
     def get_model_info(self) -> dict[str, str]:
         """Return Claude provider and model metadata.

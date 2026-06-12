@@ -503,6 +503,38 @@ class TestClaudeProvider(unittest.TestCase):
         self.assertEqual(second_kwargs["max_tokens"], 128000)
 
     @patch("anthropic.Anthropic")
+    def test_token_limit_retry_delegates_to_shared_helper(
+        self,
+        mock_anthropic_cls: MagicMock,
+    ) -> None:
+        """Pin that Claude's token-limit retry uses the shared base helper.
+
+        The retry contract (catch ``BadRequestError``, extract the
+        provider-declared cap, retry once with the reduced ``max_tokens``)
+        must come from ``_run_with_completion_token_retry`` rather than a
+        provider-local reimplementation that could drift.
+        """
+        mock_anthropic_cls.return_value = MagicMock()
+        provider = ClaudeProvider(api_key="sk-test", model="claude-opus-4-8")
+
+        create_fn = MagicMock(return_value="shared helper result")
+        request_kwargs = {"model": "claude-opus-4-8", "max_tokens": 1024}
+        with patch(
+            "app.ai_providers.claude_provider._run_with_completion_token_retry",
+            return_value="shared helper result",
+        ) as mock_shared_retry:
+            result = provider._with_token_limit_retry(create_fn, request_kwargs)
+
+        self.assertEqual(result, "shared helper result")
+        mock_shared_retry.assert_called_once_with(
+            create_fn=create_fn,
+            request_kwargs=request_kwargs,
+            token_parameter="max_tokens",
+            bad_request_error_type=provider._anthropic.BadRequestError,
+            provider_name="Claude",
+        )
+
+    @patch("anthropic.Anthropic")
     def test_analyze_stream_retries_with_model_token_cap_when_max_tokens_too_large(
         self,
         mock_anthropic_cls: MagicMock,
