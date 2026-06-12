@@ -17,7 +17,6 @@ from __future__ import annotations
 from .constants import (
     DOMAIN_EXCLUDED_SUFFIXES,
     DOMAIN_EXCLUDED_TLDS,
-    HASH_ID_COLUMN_HINTS,
     IOC_DOMAIN_RE,
     IOC_EMAIL_RE,
     IOC_FILENAME_RE,

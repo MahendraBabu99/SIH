@@ -100,32 +100,6 @@ class TestSanitizeFilename(unittest.TestCase):
         self.assertEqual(sanitize_filename("!!!"), "artifact")
 
 
-class TestTruncateForPrompt(unittest.TestCase):
-    """Tests for utils.truncate_for_prompt."""
-
-    def test_short_string_unchanged(self) -> None:
-        from app.analyzer.utils import truncate_for_prompt
-        self.assertEqual(truncate_for_prompt("hello", 100), "hello")
-
-    def test_long_string_truncated(self) -> None:
-        from app.analyzer.utils import truncate_for_prompt
-        result = truncate_for_prompt("a" * 100, 50)
-        self.assertIn("[truncated]", result)
-        # The function uses limit - 14 for the prefix, plus " ... [truncated]"
-        # which is 14 chars, so the result may be close to but not exceed limit+2.
-        self.assertLess(len(result), 60)
-
-    def test_very_small_limit(self) -> None:
-        from app.analyzer.utils import truncate_for_prompt
-        result = truncate_for_prompt("abcdefghij", 5)
-        self.assertEqual(result, "abcde")
-
-    def test_none_value(self) -> None:
-        from app.analyzer.utils import truncate_for_prompt
-        result = truncate_for_prompt(None, 100)
-        self.assertEqual(result, "")
-
-
 class TestUniquePreserveOrder(unittest.TestCase):
     """Tests for utils.unique_preserve_order."""
 

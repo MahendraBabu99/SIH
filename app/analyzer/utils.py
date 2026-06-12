@@ -45,7 +45,6 @@ __all__ = [
     "time_range_for_rows",
     "normalize_artifact_key",
     "unique_preserve_order",
-    "truncate_for_prompt",
     "extract_url_host",
     "normalize_csv_row",
     "coerce_projection_columns",
@@ -181,24 +180,6 @@ def build_scoped_artifact_stem(
         hash_seed = f"{raw_scope}\0{raw_artifact}"
         stem = f"{stem}__{stable_identity_hash(hash_seed)}"
     return stem
-
-
-def truncate_for_prompt(value: str, limit: int) -> str:
-    """Truncate a string to fit within a character limit for prompt inclusion.
-
-    Args:
-        value: The string to truncate.
-        limit: Maximum allowed character count.
-
-    Returns:
-        The original string if it fits, or a truncated version.
-    """
-    text = str(value or "").strip()
-    if len(text) <= limit:
-        return text
-    if limit <= 20:
-        return text[:limit]
-    return f"{text[: limit - 14].rstrip()} ... [truncated]"
 
 
 def unique_preserve_order(values: Iterable[str]) -> list[str]:

@@ -46,7 +46,6 @@ __all__ = [
     "PROJECT_ROOT",
     "DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH",
     "DOMAIN_EXCLUDED_TLDS",
-    "HASH_ID_COLUMN_HINTS",
     "UnavailableProvider",
 ]
 
@@ -122,14 +121,6 @@ DOMAIN_EXCLUDED_TLDS = {
     ".yaml", ".yml", ".toml", ".conf", ".reg", ".inf", ".cat", ".man",
     ".evtx", ".etl", ".dmp", ".pf", ".nls", ".mui", ".mof", ".sdb",
     ".sh", ".pl", ".elf", ".so",
-}
-
-# Column name substrings that indicate a column holds identifiers (GUIDs,
-# session IDs, etc.) rather than cryptographic hashes.  Used to suppress
-# hash-IOC false positives when scanning CSV data.
-HASH_ID_COLUMN_HINTS = {
-    "guid", "uuid", "id", "session", "correlat", "instance",
-    "object_id", "objectid", "handle", "token", "logon",
 }
 
 # ---------------------------------------------------------------------------
