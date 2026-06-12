@@ -46,6 +46,7 @@ def _make_successful_result(
         errors=[],
         warnings=["minor warning"],
         duration_seconds=42.0,
+        successful_images=1,
     )
 
 

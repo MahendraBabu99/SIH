@@ -59,6 +59,7 @@ def _make_result(
         errors=errors or [],
         warnings=warnings or [],
         duration_seconds=10.5,
+        successful_images=1 if success else 0,
     )
 
 
@@ -196,6 +197,31 @@ class TestPrintSummary(unittest.TestCase):
         self.assertIn("Reports:", output)
         self.assertIn(str(html_path), output)
         self.assertIn(str(json_path), output)
+
+    def test_evidence_line_reports_successful_image_count(self) -> None:
+        """The evidence line shows successes out of discovered images."""
+        result = AutomationResult(
+            success=True,
+            case_id="case-cli-counts",
+            evidence_files=[
+                Path("/fake/disk1.E01"),
+                Path("/fake/disk2.E01"),
+                Path("/fake/disk3.E01"),
+            ],
+            warnings=["Failed to open evidence disk3.E01: unreadable"],
+            duration_seconds=3.0,
+            successful_images=2,
+        )
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_summary(result)
+
+        output = stdout.getvalue()
+        self.assertIn(
+            "2 of 3 discovered evidence image(s) processed successfully",
+            output,
+        )
 
     def test_summary_prints_case_local_report_paths_when_distinct(self) -> None:
         """Explicit exports keep case-local report paths visible."""

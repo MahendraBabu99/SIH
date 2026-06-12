@@ -982,6 +982,7 @@ class TestRunAutomation(unittest.TestCase):
         result = run_automation(self._make_request())
         self.assertTrue(result.success)
         self.assertEqual(len(result.evidence_files), 2)
+        self.assertEqual(result.successful_images, 2)
 
     def test_no_evidence_found_returns_failure(self) -> None:
         """Empty discovery result returns success=False."""
@@ -1164,6 +1165,9 @@ class TestRunAutomation(unittest.TestCase):
         result = run_automation(self._make_request())
         self.assertTrue(result.success)
         self.assertTrue(len(result.warnings) > 0)
+        # Discovery found two images, but only one processed successfully.
+        self.assertEqual(len(result.evidence_files), 2)
+        self.assertEqual(result.successful_images, 1)
 
     def test_report_metadata_hashes_include_images_skipped_after_hashing(self) -> None:
         """Report inputs retain image-scoped records for post-hash skips."""

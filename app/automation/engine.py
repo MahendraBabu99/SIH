@@ -109,10 +109,16 @@ class AutomationResult:
             report generation failed.
         analysis_results_path: Path to the persisted analysis_results.json,
             or None if analysis did not complete successfully.
-        evidence_files: List of evidence file Paths that were processed.
+        evidence_files: List of evidence file Paths that were discovered for
+            processing. Discovery-time count; images in this list may still
+            fail later (see ``successful_images``).
         errors: List of error message strings for any fatal failures.
         warnings: List of non-fatal warning message strings.
         duration_seconds: Total wall-clock time of the run in seconds.
+        successful_images: Number of discovered evidence images that were
+            processed successfully (opened, hashed, and parsed with usable
+            artifact output). Images that failed or were skipped are counted
+            in warnings instead.
     """
 
     success: bool
@@ -126,6 +132,7 @@ class AutomationResult:
     warnings: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
     analysis_results_path: Path | None = None
+    successful_images: int = 0
 
 
 def _notify(
@@ -1299,7 +1306,6 @@ def run_automation(
     all_hashes: list[dict[str, Any]] = []
     retained_report_image_ids: set[str] = set()
     skipped_images: list[dict[str, str]] = []
-    successful_images = 0
 
     for img_idx, descriptor in enumerate(evidence_descriptors):
         cancelled = _stop_if_cancelled()
@@ -1517,7 +1523,7 @@ def run_automation(
                     LOGGER.warning(msg)
                     result.warnings.append(msg)
 
-                successful_images += 1
+                result.successful_images += 1
                 image_descriptors.append({
                     "image_id": image_id,
                     "label": img_label,
@@ -1569,7 +1575,7 @@ def run_automation(
     if cancelled is not None:
         return cancelled
 
-    if successful_images == 0:
+    if result.successful_images == 0:
         result.errors.append("All evidence images failed to process.")
         result.duration_seconds = time.monotonic() - start_time
         audit_logger.log("automation_failed", {

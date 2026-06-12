@@ -39,7 +39,18 @@ def _now_iso() -> str:
 
 
 def _result_payload(result: AutomationResult) -> dict[str, Any]:
-    """Build the public result payload from an automation engine result."""
+    """Build the public result payload from an automation engine result.
+
+    Args:
+        result: Finished automation engine result.
+
+    Returns:
+        JSON-compatible result dict. ``evidence_files_processed`` counts the
+        evidence images that were processed successfully (opened, hashed, and
+        parsed with usable artifact output), not the number of discovered
+        evidence files; discovered images that failed are reported through
+        ``warnings``.
+    """
     return {
         "html_report_path": (
             str(result.html_report_path) if result.html_report_path else None
@@ -62,7 +73,7 @@ def _result_payload(result: AutomationResult) -> dict[str, Any]:
             if result.analysis_results_path
             else None
         ),
-        "evidence_files_processed": len(result.evidence_files),
+        "evidence_files_processed": result.successful_images,
         "warnings": list(result.warnings),
     }
 

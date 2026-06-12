@@ -334,6 +334,10 @@ def _early_config_path(argv: list[str]) -> str | None:
 def _print_summary(result: Any) -> None:
     """Print the final summary block after automation completes.
 
+    The evidence line reports how many of the discovered evidence images
+    were processed successfully; images that failed to process are listed
+    in the warnings section.
+
     Args:
         result: An ``AutomationResult`` instance from the automation engine.
     """
@@ -345,8 +349,13 @@ def _print_summary(result: Any) -> None:
     else:
         print("AIFT Automation Complete (with errors)")
     print(separator)
+    successful_images = getattr(result, "successful_images", 0)
     print(f"  Case ID:      {result.case_id or 'N/A'}")
-    print(f"  Evidence:     {len(result.evidence_files)} file(s) processed")
+    print(
+        f"  Evidence:     {successful_images} of "
+        f"{len(result.evidence_files)} discovered evidence image(s) "
+        "processed successfully"
+    )
     print(f"  Duration:     {_format_duration(result.duration_seconds)}")
     print()
 

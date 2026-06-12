@@ -419,6 +419,7 @@ class TestFullPipelineIntegration(_IntegrationTestBase):
         self.assertTrue(result.success)
         self.assertEqual(result.case_id, "case-integ-001")
         self.assertEqual(len(result.evidence_files), 1)
+        self.assertEqual(result.successful_images, 1)
         self.assertIsNotNone(result.html_report_path)
         self.assertIsNotNone(result.json_report_path)
         self.assertEqual(len(result.errors), 0)
@@ -460,6 +461,7 @@ class TestFullPipelineIntegration(_IntegrationTestBase):
         result = run_automation(self._make_request())
         self.assertTrue(result.success)
         self.assertEqual(len(result.evidence_files), 3)
+        self.assertEqual(result.successful_images, 3)
 
     def test_multi_file_uses_multi_image_analysis(self) -> None:
         """Multi-file run uses run_multi_image_analysis on the analyzer."""

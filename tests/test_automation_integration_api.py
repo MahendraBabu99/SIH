@@ -646,6 +646,7 @@ class TestCliIntegration(unittest.TestCase):
             json_report_path=self.root / "report.json",
             evidence_files=[self.evidence],
             duration_seconds=5.0,
+            successful_images=1,
         )
 
         with (

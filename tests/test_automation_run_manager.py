@@ -38,6 +38,7 @@ def _successful_result(case_id: str = "case-ok") -> AutomationResult:
         evidence_files=[Path("/fake/evidence.E01")],
         warnings=["minor warning"],
         duration_seconds=12.0,
+        successful_images=1,
     )
 
 
@@ -153,6 +154,36 @@ class TestAutomationRunManager(unittest.TestCase):
             manager.get_output_path(run_id, "analysis_results"),
             Path("/cases/case-ok/analysis_results.json"),
         )
+
+    def test_evidence_files_processed_counts_successful_images(self) -> None:
+        """evidence_files_processed reflects successes, not discovery count."""
+        def fake_run(*args: object, **kwargs: object) -> AutomationResult:
+            del args, kwargs
+            return AutomationResult(
+                success=True,
+                case_id="case-partial",
+                html_report_path=Path("/cases/case-partial/reports/report.html"),
+                evidence_files=[
+                    Path("/fake/disk1.E01"),
+                    Path("/fake/disk2.E01"),
+                    Path("/fake/disk3.E01"),
+                ],
+                warnings=["Failed to open evidence disk3.E01"],
+                successful_images=2,
+            )
+
+        manager = AutomationRunManager(
+            run_automation_func=fake_run,
+            thread_factory=ImmediateThread,
+        )
+
+        run_id = manager.start_run(_request())["run_id"]
+        status = manager.get_status(run_id)
+
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["result"]["evidence_files_processed"], 2)
 
     def test_failed_run_keeps_partial_output_paths(self) -> None:
         """A failed run includes errors and partial output paths when present."""
