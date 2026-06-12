@@ -19,6 +19,7 @@ import tarfile
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 import unittest
 from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -68,6 +69,21 @@ def _install_minimal_canonical_analysis(case_id: str) -> None:
         },
         "cross_image_summary": None,
     }
+
+
+def _single_image_state(case_id: str) -> dict[str, Any]:
+    """Return the per-image state dict of a case's only image.
+
+    Args:
+        case_id: Identifier of an in-memory case holding exactly one image.
+
+    Returns:
+        The image-state dict recorded for the case's single image.
+    """
+    with routes_state.STATE_LOCK:
+        image_states = routes_state.CASE_STATES[case_id]["image_states"]
+        assert len(image_states) == 1, f"expected one image, got {len(image_states)}"
+        return next(iter(image_states.values()))
 
 
 def _resolve_archive_fallback_descriptor(
@@ -1470,13 +1486,59 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 200)
 
-        with routes_state.STATE_LOCK:
-            case = routes_state.CASE_STATES[case_id]
-            file_hashes = case.get("evidence_file_hashes", [])
+        file_hashes = _single_image_state(case_id).get("evidence_file_hashes", [])
 
         self.assertEqual(len(file_hashes), 1)
         self.assertEqual(file_hashes[0]["path"], str(zip_path))
         self.assertEqual(file_hashes[0]["sha256"], "a" * 64)
+
+    def test_intake_records_evidence_state_per_image_only(self) -> None:
+        """Intake must write evidence state to image_states, not the case dict."""
+        case_id = self._create_case()
+        zip_path = Path(self.temp_dir.name) / "evidence.zip"
+        with ZipFile(zip_path, "w") as zf:
+            zf.writestr("Disk.E01", b"EWF-DATA")
+
+        with (
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_evidence, "ForensicParser", FakeParser),
+            patch("app.parser.core.ForensicParser", FakeParser),
+            patch.object(routes_evidence, "compute_hashes", return_value=FAKE_HASHES),
+            patch("app.utils.hasher.compute_hashes", return_value=FAKE_HASHES),
+        ):
+            resp = self.client.post(
+                f"/api/cases/{case_id}/evidence",
+                json={"path": str(zip_path)},
+            )
+            self.assertEqual(resp.status_code, 200)
+
+        mirror_fields = (
+            "evidence_path",
+            "evidence_hashes",
+            "evidence_file_hashes",
+            "image_metadata",
+            "available_artifacts",
+            "os_type",
+            "evidence_mode",
+            "source_mode",
+            "source_path",
+            "stored_path",
+            "uploaded_files",
+            "evidence_descriptor",
+            "extracted_from",
+            "extraction_root",
+        )
+        with routes_state.STATE_LOCK:
+            case = routes_state.CASE_STATES[case_id]
+            for field in mirror_fields:
+                self.assertNotIn(field, case)
+
+        img_state = _single_image_state(case_id)
+        self.assertTrue(img_state["evidence_path"])
+        self.assertEqual(img_state["evidence_hashes"]["sha256"], "a" * 64)
+        self.assertEqual(img_state["os_type"], "windows")
 
     def test_path_archive_direct_open_uses_archive_descriptor(self) -> None:
         """Path-mode archives that Dissect opens directly are not extracted."""
@@ -1586,12 +1648,9 @@ class TestEvidenceIntegrityArchive(unittest.TestCase):
         self.assertEqual(Path(descriptor["dissect_path"]).name, "Disk.E01")
         self.assertEqual(Path(descriptor["files_to_hash"][0]).name, "evidence.zip")
 
-        with routes_state.STATE_LOCK:
-            case = routes_state.CASE_STATES[case_id]
-            case_descriptor = case.get("evidence_descriptor", {})
-
-        self.assertEqual(case.get("source_mode"), "upload")
-        self.assertEqual(case_descriptor.get("source_mode"), "upload")
+        img_state = _single_image_state(case_id)
+        self.assertEqual(img_state.get("source_mode"), "upload")
+        self.assertEqual(img_state.get("evidence_descriptor", {}).get("source_mode"), "upload")
 
     def test_nested_archive_fallback_stays_under_extraction_root(self) -> None:
         """Nested archive fallback extracts under the case extraction root."""
@@ -1723,8 +1782,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
         # Called via both routes_evidence and evidence_utils paths.
         self.assertEqual(call_count["n"], 2)
 
-        with routes_state.STATE_LOCK:
-            file_hashes = routes_state.CASE_STATES[case_id].get("evidence_file_hashes", [])
+        file_hashes = _single_image_state(case_id).get("evidence_file_hashes", [])
         self.assertEqual(len(file_hashes), 2)
 
     def test_split_upload_e10_hashes_all_segments_and_opens_primary(self) -> None:
@@ -1759,10 +1817,9 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
 
         self.assertEqual(call_count["n"], 10)
-        with routes_state.STATE_LOCK:
-            case = routes_state.CASE_STATES[case_id]
-            file_hashes = case.get("evidence_file_hashes", [])
-            evidence_path = Path(case["evidence_path"])
+        img_state = _single_image_state(case_id)
+        file_hashes = img_state.get("evidence_file_hashes", [])
+        evidence_path = Path(img_state["evidence_path"])
 
         self.assertEqual(len(file_hashes), 10)
         self.assertEqual(evidence_path.name, "Disk.E01")
@@ -1841,8 +1898,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
 
         self.assertEqual(call_count["n"], 2)
-        with routes_state.STATE_LOCK:
-            file_hashes = routes_state.CASE_STATES[case_id].get("evidence_file_hashes", [])
+        file_hashes = _single_image_state(case_id).get("evidence_file_hashes", [])
         self.assertEqual(len(file_hashes), 2)
         self.assertEqual(
             {entry["path"] for entry in file_hashes},
@@ -1880,10 +1936,9 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
 
         self.assertEqual(call_count["n"], 10)
-        with routes_state.STATE_LOCK:
-            case = routes_state.CASE_STATES[case_id]
-            file_hashes = case.get("evidence_file_hashes", [])
-            evidence_path = Path(case["evidence_path"])
+        img_state = _single_image_state(case_id)
+        file_hashes = img_state.get("evidence_file_hashes", [])
+        evidence_path = Path(img_state["evidence_path"])
 
         self.assertEqual(evidence_path, segments[0])
         self.assertEqual(
@@ -1945,8 +2000,7 @@ class TestEvidenceIntegritySplitSegments(unittest.TestCase):
             )
             self.assertEqual(resp.status_code, 200)
 
-        with routes_state.STATE_LOCK:
-            file_hashes = routes_state.CASE_STATES[case_id].get("evidence_file_hashes", [])
+        file_hashes = _single_image_state(case_id).get("evidence_file_hashes", [])
         self.assertEqual([entry["path"] for entry in file_hashes], [str(disk_e01)])
 
     def test_split_path_report_verifies_all_segments(self) -> None:

@@ -1851,6 +1851,7 @@ class RoutesTests(unittest.TestCase):
             self.assertEqual(csv_bundle_resp.mimetype, "application/zip")
 
     def test_report_hash_verification_uses_evidence_file_hashes_for_zip(self) -> None:
+        """Report hash verification reads per-image evidence_file_hashes for ZIP intake."""
         zip_path = Path(self.temp_dir.name) / "sample.zip"
         with ZipFile(zip_path, "w") as archive:
             archive.writestr("sample.E01", b"demo")
@@ -1907,7 +1908,7 @@ class RoutesTests(unittest.TestCase):
 
             # Verify evidence_file_hashes was stored with the zip path.
             with routes_state.STATE_LOCK:
-                file_hashes = routes_state.CASE_STATES[case_id].get("evidence_file_hashes", [])
+                file_hashes = self._first_image_state(case_id).get("evidence_file_hashes", [])
             self.assertEqual(len(file_hashes), 1)
             self.assertEqual(file_hashes[0]["path"], str(zip_path))
 
@@ -2772,14 +2773,12 @@ class RoutesTests(unittest.TestCase):
             self.assertIn("JSON object", resp.get_json()["error"])
 
     def test_report_missing_hash_context(self) -> None:
+        """Report generation returns 400 when no analysis or hash context exists."""
         with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             create_resp = self.client.post("/api/cases", json={"case_name": "No Hash"})
             case_id = create_resp.get_json()["case_id"]
-            # Simulate parse results exist but no hash
-            with routes_state.STATE_LOCK:
-                routes_state.CASE_STATES[case_id]["evidence_hashes"] = {"sha256": "abc123"}
-                routes_state.CASE_STATES[case_id]["source_path"] = ""
-                routes_state.CASE_STATES[case_id]["evidence_path"] = ""
+            # The case has no per-image evidence state and no analysis
+            # results, so no hash-verification context exists.
             resp = self.client.get(f"/api/cases/{case_id}/report")
             # Missing integrity data now degrades gracefully instead of
             # blocking report generation â€” the request still fails because
@@ -3021,7 +3020,8 @@ class RoutesTests(unittest.TestCase):
 
             # Evidence metadata should reflect the new evidence.
             with routes_state.STATE_LOCK:
-                self.assertIn("disk_b", case.get("source_path", ""))
+                image_state = self._first_image_state(case_id)
+                self.assertIn("disk_b", image_state.get("source_path", ""))
 
     def test_replace_evidence_blocks_analysis_until_reparsed(self) -> None:
         """After evidence replacement, analysis should fail (no parse results)."""

@@ -1217,31 +1217,6 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
 
             other_images_have_results = _rebuild_case_parse_state_from_images(case_id, case)
 
-            is_first_image = len(image_states) <= 1 or not case.get("evidence_path")
-            if is_first_image:
-                case["evidence_mode"] = active_payload["mode"]
-                case["source_mode"] = active_payload.get("source_mode", active_payload["mode"])
-                case["source_path"] = active_payload["source_path"]
-                case["stored_path"] = active_payload["stored_path"]
-                case["uploaded_files"] = list(active_payload.get("uploaded_files", []))
-                case["evidence_descriptor"] = descriptor_details
-                case["extracted_from"] = active_payload.get("extracted_from", "")
-                case["extraction_root"] = active_payload.get("extraction_root", "")
-                case["evidence_path"] = str(active_dissect_path)
-                case["evidence_hashes"] = active_hashes
-                case["evidence_file_hashes"] = [
-                    {
-                        "path": h["path"],
-                        "sha256": h["sha256"],
-                        "md5": h["md5"],
-                        "size_bytes": h["size_bytes"],
-                    }
-                    for h in active_file_hashes
-                ]
-                case["image_metadata"] = metadata
-                case["os_type"] = detected_os_type
-                case["available_artifacts"] = available_artifacts
-
             img_progress_key = _progress_key(case_id, image_id)
             PARSE_PROGRESS.pop(img_progress_key, None)
             ANALYSIS_PROGRESS.pop(img_progress_key, None)
@@ -1390,7 +1365,7 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
         image_states = case.get("image_states", {})
         img_state = image_states.get(image_id, {}) if isinstance(image_states, dict) else {}
         available_artifacts = copy.deepcopy(img_state.get("available_artifacts", []))
-        os_type = str(img_state.get("os_type") or case.get("os_type") or "windows")
+        os_type = str(img_state.get("os_type") or "windows")
     try:
         validate_requested_parse_artifacts(
             parse_artifacts,

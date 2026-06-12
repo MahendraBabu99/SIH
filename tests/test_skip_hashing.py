@@ -278,8 +278,10 @@ class TestSkipHashingIntake(unittest.TestCase):
                 json={"path": str(evidence_path), "skip_hashing": True},
             )
             with routes_state.STATE_LOCK:
-                file_hashes = routes_state.CASE_STATES[case_id].get("evidence_file_hashes", [])
-                ev_hashes = routes_state.CASE_STATES[case_id].get("evidence_hashes", {})
+                image_states = routes_state.CASE_STATES[case_id]["image_states"]
+                img_state = next(iter(image_states.values()))
+                file_hashes = img_state.get("evidence_file_hashes", [])
+                ev_hashes = img_state.get("evidence_hashes", {})
 
         self.assertEqual(file_hashes, [])
         self.assertEqual(ev_hashes["sha256"], "N/A (skipped)")

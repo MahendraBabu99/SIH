@@ -480,9 +480,9 @@ def generate_case_report(case_id: str) -> dict[str, Any]:
 
     with STATE_LOCK:
         # Deep-copy the entire case dict so no nested mutable objects
-        # (analysis_results, image_states, evidence_hashes, etc.) are
-        # shared with the live state.  The "audit" key holds a
-        # non-serializable AuditLogger instance and must be excluded.
+        # (analysis_results, image_states, etc.) are shared with the
+        # live state.  The "audit" key holds a non-serializable
+        # AuditLogger instance and must be excluded.
         audit_logger = case["audit"]
         case_snapshot = copy.deepcopy(
             {k: v for k, v in case.items() if k != "audit"}
