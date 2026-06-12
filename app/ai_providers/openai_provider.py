@@ -24,13 +24,8 @@ from .base import (
     DEFAULT_OPENAI_MODEL,
     _normalize_api_key_value,
     _resolve_timeout_seconds,
-    _run_stream_with_rate_limit_retries,
 )
 from .openai_compatible import OpenAICompatibleChatMixin
-from .progress import (
-    finalize_progress_stream_response,
-    stream_progress_chunks,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -228,49 +223,17 @@ class OpenAIProvider(OpenAICompatibleChatMixin, AIProvider):
                 max_tokens=max_tokens,
             )
 
-        prompt_for_completion = self._build_openai_compatible_prompt(
+        return self._analyze_with_progress_via_chat_stream(
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
+            progress_callback=progress_callback,
             attachments=attachments,
-        )
-        messages = self._chat_completion_messages(system_prompt, prompt_for_completion)
-
-        def _stream_factory() -> Any:
-            """Open the OpenAI streaming chat completion."""
-            return self._create_chat_completion(
-                messages=messages,
-                max_tokens=max_tokens,
-                stream=True,
-            )
-
-        thinking_parts: list[str] = []
-        answer_parts: list[str] = []
-
-        def _progress_chunks(stream: Any) -> Iterator[Any]:
-            """Emit progress while yielding chunks for retry tracking."""
-            return stream_progress_chunks(
-                chunks=self._iter_openai_compatible_stream_text(stream),
-                progress_callback=progress_callback,
-                thinking_parts=thinking_parts,
-                answer_parts=answer_parts,
-            )
-
-        stream = _run_stream_with_rate_limit_retries(
-            stream_factory=_stream_factory,
-            stream_text_iterator=_progress_chunks,
-            rate_limit_error_type=self._openai.RateLimitError,
-            provider_name=self._provider_display_name,
-            map_error=self._map_api_error,
-            empty_response_message=(
+            max_tokens=max_tokens,
+            empty_stream_message=(
                 "OpenAI returned an empty streamed response. "
                 "Try increasing max tokens."
             ),
-        )
-        for _chunk in stream:
-            pass
-        return finalize_progress_stream_response(
-            thinking_parts,
-            answer_parts,
-            empty_response_message=(
+            empty_final_message=(
                 "OpenAI returned an empty streamed response. "
                 "This can happen with reasoning-only outputs or very low token limits."
             ),

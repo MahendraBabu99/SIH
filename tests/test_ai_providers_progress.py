@@ -2,9 +2,7 @@
 
 Covers the progress emitter (including callback-exception propagation, the
 mechanism behind mid-stream cancellation), the throttled emitter, the shared
-progress-chunk generator, the final streamed-response validation, and the
-consolidation guarantees that keep Claude, Kimi, and Local providers on the
-same implementation.
+progress-chunk generator, and the final streamed-response validation.
 """
 from __future__ import annotations
 
@@ -13,7 +11,6 @@ import unittest
 from unittest.mock import MagicMock
 
 from app.ai_providers.base import AIProviderError
-from app.ai_providers.local_provider import LocalProvider
 from app.ai_providers.progress import (
     ProgressCallbackError,
     emit_progress,
@@ -113,6 +110,26 @@ class TestEmitProgressIfNeeded(unittest.TestCase):
         )
         callback.assert_not_called()
         self.assertEqual(result[0], now)
+
+    def test_propagates_callback_exception(self) -> None:
+        """A raising callback aborts the emit instead of being swallowed."""
+        original = RuntimeError("callback failed")
+
+        def cancelling_callback(payload: dict[str, str]) -> None:
+            """Support test behavior for cancelling_callback."""
+            raise original
+
+        long_text = "x" * 100
+        with self.assertRaises(ProgressCallbackError) as ctx:
+            emit_progress_if_needed(
+                progress_callback=cancelling_callback,
+                current_thinking=long_text,
+                current_answer="",
+                last_emit_at=0.0,
+                last_sent_thinking="",
+                last_sent_answer="",
+            )
+        self.assertIs(ctx.exception.original, original)
 
 
 class TestStreamProgressChunks(unittest.TestCase):
@@ -233,13 +250,15 @@ class TestFinalizeProgressStreamResponse(unittest.TestCase):
         )
         self.assertEqual(result, "Final.")
 
-
-class TestProviderConsolidation(unittest.TestCase):
-    """Pin that providers share the single progress implementation."""
-
-    def test_local_provider_alias_is_shared_function(self) -> None:
-        """``LocalProvider._emit_progress_if_needed`` is the shared helper."""
-        self.assertIs(LocalProvider._emit_progress_if_needed, emit_progress_if_needed)
+    def test_raises_when_both_channels_empty(self) -> None:
+        """Fully empty streams raise the provider-specific message."""
+        with self.assertRaises(AIProviderError) as ctx:
+            finalize_progress_stream_response(
+                [],
+                [],
+                empty_response_message="Provider X returned nothing.",
+            )
+        self.assertEqual(str(ctx.exception), "Provider X returned nothing.")
 
 
 if __name__ == "__main__":

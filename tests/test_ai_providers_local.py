@@ -1,13 +1,12 @@
 """Tests for the Local AI provider implementation and provider factory.
 
 Covers TestLocalProvider and its helper classes (stream chunks, progress,
-finalize, chat prompt), TestCreateProvider factory, TestAIProviderErrorPassthrough,
+chat prompt), TestCreateProvider factory, TestAIProviderErrorPassthrough,
 TestUploadAndRequestViaResponsesAPI, and TestAttachmentFallbackRegression.
 """
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -30,7 +29,6 @@ from app.ai_providers.base import (
     RATE_LIMIT_MAX_RETRIES,
     _RATE_LIMIT_STATE,
 )
-from app.ai_providers.progress import ProgressCallbackError
 from app.ai_providers.utils import (
     _extract_openai_text,
     _inline_attachment_data_into_prompt,
@@ -1207,130 +1205,6 @@ class TestLocalProvider(unittest.TestCase):
             any("Thinking before failure" in item.get("thinking_text", "") for item in progress_updates)
         )
         _RATE_LIMIT_STATE.pop("Local/OpenAI-compatible", None)
-
-
-# ---------------------------------------------------------------------------
-# LocalProvider._emit_progress_if_needed
-# ---------------------------------------------------------------------------
-
-class TestLocalProviderEmitProgressIfNeeded(unittest.TestCase):
-    """Grouped tests for TestLocalProviderEmitProgressIfNeeded behavior."""
-    def test_no_emit_when_no_content(self) -> None:
-        """Verify the behavior described by this test name."""
-        callback = MagicMock()
-        result = LocalProvider._emit_progress_if_needed(
-            progress_callback=callback,
-            current_thinking="",
-            current_answer="",
-            last_emit_at=0.0,
-            last_sent_thinking="",
-            last_sent_answer="",
-        )
-        callback.assert_not_called()
-        self.assertEqual(result[0], 0.0)
-
-    def test_no_emit_when_unchanged(self) -> None:
-        """Verify the behavior described by this test name."""
-        callback = MagicMock()
-        result = LocalProvider._emit_progress_if_needed(
-            progress_callback=callback,
-            current_thinking="same",
-            current_answer="same",
-            last_emit_at=0.0,
-            last_sent_thinking="same",
-            last_sent_answer="same",
-        )
-        callback.assert_not_called()
-
-    def test_emits_when_enough_change(self) -> None:
-        """Verify the behavior described by this test name."""
-        callback = MagicMock()
-        long_text = "x" * 100
-        result = LocalProvider._emit_progress_if_needed(
-            progress_callback=callback,
-            current_thinking=long_text,
-            current_answer="",
-            last_emit_at=0.0,
-            last_sent_thinking="",
-            last_sent_answer="",
-        )
-        callback.assert_called_once()
-        self.assertGreater(result[0], 0.0)
-        self.assertEqual(result[1], long_text)
-
-    def test_rate_limits_small_changes(self) -> None:
-        """Verify the behavior described by this test name."""
-        callback = MagicMock()
-        now = time.monotonic()
-        result = LocalProvider._emit_progress_if_needed(
-            progress_callback=callback,
-            current_thinking="a",
-            current_answer="",
-            last_emit_at=now,
-            last_sent_thinking="",
-            last_sent_answer="",
-        )
-        callback.assert_not_called()
-        self.assertEqual(result[0], now)
-
-    def test_propagates_callback_exception(self) -> None:
-        """A raising callback aborts the emit instead of being swallowed."""
-        original = RuntimeError("callback failed")
-
-        def cancelling_callback(payload):
-            """Support test behavior for cancelling_callback."""
-            raise original
-
-        long_text = "x" * 100
-        with self.assertRaises(ProgressCallbackError) as ctx:
-            LocalProvider._emit_progress_if_needed(
-                progress_callback=cancelling_callback,
-                current_thinking=long_text,
-                current_answer="",
-                last_emit_at=0.0,
-                last_sent_thinking="",
-                last_sent_answer="",
-            )
-        self.assertIs(ctx.exception.original, original)
-
-
-# ---------------------------------------------------------------------------
-# LocalProvider._finalize_stream_response
-# ---------------------------------------------------------------------------
-
-class TestLocalProviderFinalizeStreamResponse(unittest.TestCase):
-    """Grouped tests for TestLocalProviderFinalizeStreamResponse behavior."""
-    def test_returns_answer_when_present(self) -> None:
-        """Verify the behavior described by this test name."""
-        result = LocalProvider._finalize_stream_response(
-            thinking_parts=["thinking"],
-            answer_parts=["answer"],
-        )
-        self.assertEqual(result, "answer")
-
-    def test_raises_when_only_thinking_is_present(self) -> None:
-        """Reasoning-only streams must not become final answer text."""
-        with self.assertRaises(AIProviderError):
-            LocalProvider._finalize_stream_response(
-                thinking_parts=["thinking only"],
-                answer_parts=[],
-            )
-
-    def test_raises_when_both_empty(self) -> None:
-        """Verify the behavior described by this test name."""
-        with self.assertRaises(AIProviderError):
-            LocalProvider._finalize_stream_response(
-                thinking_parts=[],
-                answer_parts=[],
-            )
-
-    def test_strips_think_block_from_answer(self) -> None:
-        """Verify the behavior described by this test name."""
-        result = LocalProvider._finalize_stream_response(
-            thinking_parts=[],
-            answer_parts=["<think>reasoning</think>\nFinal."],
-        )
-        self.assertEqual(result, "Final.")
 
 
 # ---------------------------------------------------------------------------

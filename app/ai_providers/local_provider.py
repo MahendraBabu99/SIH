@@ -26,14 +26,8 @@ from .base import (
     _normalize_api_key_value,
     _normalize_openai_compatible_base_url,
     _resolve_timeout_seconds,
-    _run_stream_with_rate_limit_retries,
 )
 from .openai_compatible import OpenAICompatibleChatMixin
-from .progress import (
-    emit_progress_if_needed,
-    finalize_progress_stream_response,
-    stream_progress_chunks,
-)
 from .utils import _strip_leading_reasoning_blocks
 
 logger = logging.getLogger(__name__)
@@ -401,61 +395,20 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
                     )
                 raise
 
-        thinking_parts: list[str] = []
-        answer_parts: list[str] = []
-
-        def _progress_chunks(stream: Any) -> Iterator[Any]:
-            """Emit progress while yielding answer/reasoning chunks for retry tracking."""
-            return stream_progress_chunks(
-                chunks=self._iter_openai_compatible_stream_text(stream),
-                progress_callback=progress_callback,
-                thinking_parts=thinking_parts,
-                answer_parts=answer_parts,
-            )
-
-        stream = _run_stream_with_rate_limit_retries(
-            stream_factory=_stream_factory,
-            stream_text_iterator=_progress_chunks,
-            rate_limit_error_type=self._openai.RateLimitError,
-            provider_name=self._provider_display_name,
-            map_error=self._map_api_error,
-            empty_response_message=(
-                "Local AI provider returned an empty streamed response. "
-                "Try a different local model or increase max tokens."
-            ),
+        empty_response_message = (
+            "Local AI provider returned an empty streamed response. "
+            "Try a different local model or increase max tokens."
         )
-        for _chunk in stream:
-            pass
-        return self._finalize_stream_response(thinking_parts, answer_parts)
-
-    # Class-level alias retained so existing callers and unit tests that
-    # exercise the shared progress throttle via ``LocalProvider`` keep working.
-    _emit_progress_if_needed = staticmethod(emit_progress_if_needed)
-
-    @staticmethod
-    def _finalize_stream_response(
-        thinking_parts: list[str],
-        answer_parts: list[str],
-    ) -> str:
-        """Assemble the final response text from accumulated stream parts.
-
-        Args:
-            thinking_parts: Collected thinking-channel text fragments.
-            answer_parts: Collected answer-channel text fragments.
-
-        Returns:
-            The cleaned final answer.
-
-        Raises:
-            AIProviderError: If both channels are empty.
-        """
-        return finalize_progress_stream_response(
-            thinking_parts,
-            answer_parts,
-            empty_response_message=(
-                "Local AI provider returned an empty streamed response. "
-                "Try a different local model or increase max tokens."
-            ),
+        return self._analyze_with_progress_via_chat_stream(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            progress_callback=progress_callback,
+            attachments=attachments,
+            max_tokens=max_tokens,
+            prompt_for_completion=prompt_for_completion,
+            stream_factory=_stream_factory,
+            empty_stream_message=empty_response_message,
+            empty_final_message=empty_response_message,
         )
 
     def _clean_openai_compatible_response_text(self, text: str) -> str:

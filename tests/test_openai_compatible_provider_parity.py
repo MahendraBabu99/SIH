@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from app.ai_providers import (
     AIProvider,
+    AIProviderError,
     KimiProvider,
     LocalProvider,
     OpenAIProvider,
@@ -151,6 +152,122 @@ class TestOpenAICompatibleProviderParity(unittest.TestCase):
                 self.assertIn("File attachments were unavailable", fallback_prompt)
                 self.assertIn("--- BEGIN ATTACHMENT: runkeys.csv ---", fallback_prompt)
                 self.assertIn("ts,name", fallback_prompt)
+
+    def test_progress_mode_streams_answer_and_progress_updates(self) -> None:
+        """Progress mode returns the answer and forwards both text channels."""
+        for provider_name, provider_factory in _provider_factories():
+            with self.subTest(provider=provider_name), patch("openai.OpenAI") as mock_openai_cls:
+                mock_client = MagicMock()
+                mock_openai_cls.return_value = mock_client
+                mock_client.chat.completions.create.return_value = [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    reasoning="Reasoning detail. ",
+                                    content="Visible answer.",
+                                )
+                            )
+                        ]
+                    )
+                ]
+                progress_updates: list[dict[str, str]] = []
+
+                result = provider_factory().analyze_with_progress(
+                    "system",
+                    "user",
+                    progress_callback=progress_updates.append,
+                )
+
+                self.assertEqual(result, "Visible answer.")
+                self.assertTrue(progress_updates)
+                final_update = progress_updates[-1]
+                self.assertEqual(final_update["status"], "thinking")
+                self.assertEqual(final_update["thinking_text"], "Reasoning detail.")
+                self.assertEqual(final_update["partial_text"], "Visible answer.")
+
+    def test_progress_mode_empty_stream_messages_stay_provider_specific(self) -> None:
+        """Reasoning-only progress streams raise each provider's exact message."""
+        expected_messages = {
+            "OpenAI": (
+                "OpenAI returned an empty streamed response. "
+                "Try increasing max tokens."
+            ),
+            "Kimi": (
+                "Kimi returned an empty streamed response. "
+                "Try increasing max tokens."
+            ),
+            "Local": (
+                "Local AI provider returned an empty streamed response. "
+                "Try a different local model or increase max tokens."
+            ),
+        }
+        for provider_name, provider_factory in _provider_factories():
+            with self.subTest(provider=provider_name), patch("openai.OpenAI") as mock_openai_cls:
+                mock_client = MagicMock()
+                mock_openai_cls.return_value = mock_client
+                mock_client.chat.completions.create.return_value = [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    reasoning="Reasoning only. ",
+                                    content=None,
+                                )
+                            )
+                        ]
+                    )
+                ]
+
+                with self.assertRaises(AIProviderError) as ctx:
+                    provider_factory().analyze_with_progress(
+                        "system",
+                        "user",
+                        progress_callback=lambda _payload: None,
+                    )
+
+                self.assertEqual(str(ctx.exception), expected_messages[provider_name])
+
+    def test_progress_mode_empty_final_messages_stay_provider_specific(self) -> None:
+        """Answers that clean to nothing raise each provider's exact message."""
+        expected_messages = {
+            "OpenAI": (
+                "OpenAI returned an empty streamed response. "
+                "This can happen with reasoning-only outputs or very low token limits."
+            ),
+            "Kimi": (
+                "Kimi returned an empty streamed response. "
+                "This can happen with reasoning-only outputs or very low token limits."
+            ),
+            "Local": (
+                "Local AI provider returned an empty streamed response. "
+                "Try a different local model or increase max tokens."
+            ),
+        }
+        for provider_name, provider_factory in _provider_factories():
+            with self.subTest(provider=provider_name), patch("openai.OpenAI") as mock_openai_cls:
+                mock_client = MagicMock()
+                mock_openai_cls.return_value = mock_client
+                mock_client.chat.completions.create.return_value = [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content="<think>only reasoning markup</think>",
+                                )
+                            )
+                        ]
+                    )
+                ]
+
+                with self.assertRaises(AIProviderError) as ctx:
+                    provider_factory().analyze_with_progress(
+                        "system",
+                        "user",
+                        progress_callback=lambda _payload: None,
+                    )
+
+                self.assertEqual(str(ctx.exception), expected_messages[provider_name])
 
 
 if __name__ == "__main__":
