@@ -20,6 +20,7 @@ from app.utils.config import (
     get_default_config,
     load_config,
     save_config,
+    strip_retired_config_keys,
     validate_config,
 )
 
@@ -37,7 +38,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.get("server", {}).get("port"), 5000)
             self.assertNotIn("max_upload_mb", config.get("server", {}))
             self.assertEqual(config.get("evidence", {}).get("large_file_threshold_mb"), 0)
-            self.assertEqual(config.get("evidence", {}).get("csv_output_dir"), "")
+            self.assertNotIn("csv_output_dir", config.get("evidence", {}))
             self.assertEqual(
                 config.get("automation", {}).get("run_retention_seconds"),
                 86400,
@@ -59,6 +60,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(persisted.get("ai", {}).get("provider"), "claude")
             self.assertEqual(persisted.get("server", {}).get("port"), 5000)
             self.assertEqual(persisted.get("evidence", {}).get("large_file_threshold_mb"), 0)
+            self.assertNotIn("csv_output_dir", persisted.get("evidence", {}))
             self.assertEqual(
                 persisted.get("automation", {}).get("run_retention_seconds"),
                 86400,
@@ -136,6 +138,51 @@ class ConfigTests(unittest.TestCase):
             config = load_config(config_path, use_env_overrides=False)
         self.assertEqual(config["ai"]["provider"], "claude")
         self.assertEqual(config["server"]["port"], 5000)
+
+    def test_load_config_ignores_retired_csv_output_dir_key(self) -> None:
+        """A legacy config.yaml containing evidence.csv_output_dir loads cleanly.
+
+        The retired key must be dropped from the loaded configuration without
+        raising a validation error, while the other evidence keys survive.
+        """
+        with TemporaryDirectory(prefix="aift-config-test-") as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "evidence": {
+                            "csv_output_dir": "E:/legacy/output",
+                            "large_file_threshold_mb": 512,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(config_path, use_env_overrides=False)
+        self.assertNotIn("csv_output_dir", config["evidence"])
+        self.assertEqual(config["evidence"]["large_file_threshold_mb"], 512)
+
+
+class StripRetiredConfigKeysTests(unittest.TestCase):
+    """Tests for the strip_retired_config_keys helper."""
+
+    def test_removes_retired_evidence_key_in_place(self) -> None:
+        """The retired evidence.csv_output_dir key is dropped in place."""
+        config: dict = {"evidence": {"csv_output_dir": "X:/old", "intake_timeout_seconds": 60}}
+        result = strip_retired_config_keys(config)
+        self.assertIs(result, config)
+        self.assertNotIn("csv_output_dir", config["evidence"])
+        self.assertEqual(config["evidence"]["intake_timeout_seconds"], 60)
+
+    def test_tolerates_missing_or_non_dict_evidence_section(self) -> None:
+        """Configs without a dict evidence section are returned unchanged."""
+        self.assertEqual(strip_retired_config_keys({}), {})
+        config: dict = {"evidence": "not-a-dict"}
+        self.assertEqual(strip_retired_config_keys(config), {"evidence": "not-a-dict"})
+
+    def test_default_config_contains_no_retired_keys(self) -> None:
+        """DEFAULT_CONFIG must not reintroduce the retired key."""
+        self.assertNotIn("csv_output_dir", DEFAULT_CONFIG["evidence"])
 
 
 class ConfigPathResolutionTests(unittest.TestCase):

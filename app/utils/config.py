@@ -37,6 +37,7 @@ __all__ = [
     "save_config",
     "get_default_config",
     "apply_env_overrides",
+    "strip_retired_config_keys",
     "validate_config",
     "ConfigurationError",
     "PROJECT_ROOT",
@@ -104,7 +105,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "evidence": {
         "large_file_threshold_mb": 0,
-        "csv_output_dir": "",
         "intake_timeout_seconds": 7200,
     },
     "automation": {
@@ -231,6 +231,30 @@ def apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def strip_retired_config_keys(config: dict[str, Any]) -> dict[str, Any]:
+    """Silently drop configuration keys that AIFT no longer supports.
+
+    Currently removes ``evidence.csv_output_dir``, a retired setting that was
+    never read to redirect parser output (parsed CSVs are always written to
+    the case-owned ``images/<image_id>/parsed`` directory).  Stale copies of
+    the key may still exist in older ``config.yaml`` files or be sent by
+    older settings clients; they are ignored without raising a validation
+    error.  The unrelated per-image ``csv_output_dir`` *state* field is not
+    affected.
+
+    Args:
+        config: Configuration (or settings payload) dictionary to clean
+            in place.
+
+    Returns:
+        The mutated *config* dictionary (returned for convenience).
+    """
+    evidence_section = config.get("evidence")
+    if isinstance(evidence_section, dict):
+        evidence_section.pop("csv_output_dir", None)
+    return config
+
+
 def validate_config(config: dict[str, Any]) -> list[str]:
     """Validate configuration values and return a list of error descriptions.
 
@@ -350,7 +374,9 @@ def load_config(path: str | Path | None = None, use_env_overrides: bool = True) 
 
     If the configuration file does not exist, a new file is created from
     the defaults. Environment variable overrides are applied last unless
-    *use_env_overrides* is ``False``.
+    *use_env_overrides* is ``False``.  Unknown top-level keys and retired
+    keys (see :func:`strip_retired_config_keys`) found in the YAML file are
+    dropped silently so legacy configuration files keep loading.
 
     Args:
         path: Explicit path to a YAML configuration file.  Defaults to
@@ -384,6 +410,9 @@ def load_config(path: str | Path | None = None, use_env_overrides: bool = True) 
             if key not in known_keys:
                 logger.warning("Ignoring unknown config key: %r", key)
                 del config[key]
+
+        # Drop retired keys that legacy config files may still contain.
+        strip_retired_config_keys(config)
     else:
         save_config(config, config_path)
 

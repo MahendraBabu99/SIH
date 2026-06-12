@@ -60,7 +60,10 @@ def test_flask_test_mode_serves_production_index_template() -> None:
     script_positions = [html.index(f'src="/static/{script}"') for script in REQUIRED_SCRIPT_ORDER]
     assert script_positions == sorted(script_positions)
     assert "cases/&lt;case_id&gt;/parsed" not in html
-    assert "cases/&lt;case_id&gt;/images/&lt;image_id&gt;/parsed" in html
+    # The retired CSV Output Directory setting must stay out of the template:
+    # parsed CSVs are always written to the case-owned parsed directory.
+    assert 'id="setting-csv-output-dir"' not in html
+    assert "CSV Output Directory" not in html
     assert "0 preserves all rows; positive values intentionally cap parsed CSV output" in html
 
 

@@ -50,7 +50,12 @@ from ..logging.case_logging import (
     push_case_log_context,
     register_case_log_handler,
 )
-from ..utils.config import load_config, save_config, validate_config
+from ..utils.config import (
+    load_config,
+    save_config,
+    strip_retired_config_keys,
+    validate_config,
+)
 from ..evidence.constants import evidence_ui_metadata
 from ..utils.version import TOOL_VERSION
 
@@ -315,12 +320,17 @@ def get_settings() -> Response:
 def update_settings() -> Response | tuple[Response, int]:
     """Update application settings by deep-merging the request payload.
 
+    Retired configuration keys (e.g. ``evidence.csv_output_dir``) sent by
+    older clients are silently ignored: they are stripped from the payload
+    before merging, so they are neither persisted nor audited.
+
     Returns:
         JSON with updated masked configuration, or 400 error.
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return error_response("Settings payload must be a JSON object.", 400)
+    strip_retired_config_keys(payload)
 
     config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config/config.yaml")))
 

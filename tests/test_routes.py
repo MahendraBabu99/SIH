@@ -994,21 +994,36 @@ class RoutesTests(unittest.TestCase):
         self.assertIn("defender.evtx", option_keys)
         self.assertIn("bash_history", option_keys)
 
-    def test_settings_update_persists_csv_output_dir(self) -> None:
+    def test_settings_update_ignores_retired_csv_output_dir(self) -> None:
+        """The retired evidence.csv_output_dir settings key is ignored silently.
+
+        Older clients may still send the key; the update must succeed, the
+        key must not appear in the settings response or the persisted YAML,
+        and sibling evidence keys in the same payload must still be saved.
+        """
         csv_output_dir = str((Path(self.temp_dir.name) / "csv output").resolve())
         with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):
             update_resp = self.client.post(
                 "/api/settings",
-                json={"evidence": {"csv_output_dir": csv_output_dir}},
+                json={
+                    "evidence": {
+                        "csv_output_dir": csv_output_dir,
+                        "large_file_threshold_mb": 512,
+                    }
+                },
             )
             self.assertEqual(update_resp.status_code, 200)
-            self.assertEqual(update_resp.get_json()["evidence"]["csv_output_dir"], csv_output_dir)
+            response_evidence = update_resp.get_json().get("evidence", {})
+            self.assertNotIn("csv_output_dir", response_evidence)
+            self.assertEqual(response_evidence.get("large_file_threshold_mb"), 512)
+
+            get_resp = self.client.get("/api/settings")
+            self.assertEqual(get_resp.status_code, 200)
+            self.assertNotIn("csv_output_dir", get_resp.get_json().get("evidence", {}))
 
         persisted = yaml.safe_load(self.config_path.read_text(encoding="utf-8")) or {}
-        self.assertEqual(
-            persisted.get("evidence", {}).get("csv_output_dir", ""),
-            csv_output_dir,
-        )
+        self.assertNotIn("csv_output_dir", persisted.get("evidence", {}))
+        self.assertEqual(persisted.get("evidence", {}).get("large_file_threshold_mb"), 512)
 
     def test_settings_update_persists_advanced_analysis_settings(self) -> None:
         with patch.object(routes_state, "CASES_ROOT", self.cases_root), patch.object(routes_handlers, "CASES_ROOT", self.cases_root), patch.object(routes_images, "CASES_ROOT", self.cases_root), patch.object(routes_state, "CASES_ROOT", self.cases_root):

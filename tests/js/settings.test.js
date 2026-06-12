@@ -4,7 +4,7 @@
  * Covers:
  *  - openSettings / closeSettings visibility and aria
  *  - Settings tab switching (basic / advanced)
- *  - updateCsvOutputHelp path display logic
+ *  - Removal of the retired CSV output directory setting
  *  - Provider field sync (show/hide API key, endpoint rows)
  *  - setProvider display updates
  *  - Focus trap setup
@@ -134,39 +134,16 @@ describe("settings tab switching", () => {
   });
 });
 
-// ── updateCsvOutputHelp ─────────────────────────────────────────────────────
+// ── Retired CSV output directory setting ───────────────────────────────────
 
-describe("updateCsvOutputHelp", () => {
-  test("shows default path when no custom dir configured", () => {
-    const input = mustGet("setting-csv-output-dir");
-    const help = mustGet("setting-csv-output-help");
-    input.value = "";
-    A.updateCsvOutputHelp();
-    expect(help.textContent).toContain("image-scoped case folders");
-    expect(help.textContent).toContain("cases/<case_id>/images/<image_id>/parsed");
-    expect(help.textContent).not.toContain("cases/<case_id>/parsed");
+describe("retired CSV output directory setting", () => {
+  test("settings form has no CSV output directory field or help text", () => {
+    expect(document.getElementById("setting-csv-output-dir")).toBeNull();
+    expect(document.getElementById("setting-csv-output-help")).toBeNull();
   });
 
-  test("shows configured path when custom dir is set", () => {
-    const input = mustGet("setting-csv-output-dir");
-    const help = mustGet("setting-csv-output-help");
-    A.setCaseId("test-case-123");
-    input.value = "/custom/output";
-    A.updateCsvOutputHelp();
-    expect(help.textContent).toContain("Configured root");
-    expect(help.textContent).toContain("/custom/output");
-    expect(help.textContent).toContain("test-case-123");
-    expect(help.textContent).toContain("images/<image_id>/parsed");
-  });
-
-  test("uses <case_id> placeholder when no case is active", () => {
-    const input = mustGet("setting-csv-output-dir");
-    const help = mustGet("setting-csv-output-help");
-    A.setCaseId("");
-    input.value = "/custom/output";
-    A.updateCsvOutputHelp();
-    expect(help.textContent).toContain("<case_id>");
-    expect(help.textContent).toContain("<image_id>");
+  test("no CSV output help updater is exported", () => {
+    expect(A.updateCsvOutputHelp).toBeUndefined();
   });
 });
 
@@ -257,7 +234,7 @@ describe("test connection button", () => {
       ai: { provider: "openai", openai: { model: "gpt-test", api_key: "sk-test" } },
       analysis: { ai_max_tokens: 64000, artifact_csv_row_limit: 250 },
       automation: { run_retention_seconds: 172800 },
-      evidence: { csv_output_dir: "E:\\cases\\csv", compute_hashes: true },
+      evidence: { compute_hashes: true },
       server: { port: 5050 },
     };
     global.fetch = jest.fn(() => jsonResponse(savedPayload));
@@ -268,7 +245,6 @@ describe("test connection button", () => {
     mustGet("setting-ai-max-tokens").value = "64000";
     mustGet("setting-artifact-csv-row-limit").value = "250";
     mustGet("setting-automation-run-retention-seconds").value = "172800";
-    mustGet("setting-csv-output-dir").value = "E:\\cases\\csv";
     mustGet("settings-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await flushPromises();
 
@@ -278,7 +254,7 @@ describe("test connection button", () => {
     expect(body.ai.openai).toMatchObject({ api_key: "sk-test", model: "gpt-test" });
     expect(body.analysis).toMatchObject({ ai_max_tokens: 64000, artifact_csv_row_limit: 250 });
     expect(body.automation.run_retention_seconds).toBe(172800);
-    expect(body.evidence.csv_output_dir).toBe("E:\\cases\\csv");
+    expect(body.evidence.csv_output_dir).toBeUndefined();
     expect(A.el.settingsMsg.textContent).toContain("Settings saved");
   });
 

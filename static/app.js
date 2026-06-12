@@ -138,8 +138,6 @@
     el.setModel = q("setting-model");
     el.setPort = q("setting-port");
     el.setSize = q("setting-size-threshold");
-    el.setCsvOutputDir = q("setting-csv-output-dir");
-    el.setCsvOutputHelp = q("setting-csv-output-help");
     el.saveSettings = q("save-settings");
     el.setApiLabel = document.querySelector('label[for="setting-api-key"]');
     el.setLocalLabel = document.querySelector('label[for="setting-local-url"]');
@@ -518,7 +516,6 @@
     A.renderFindings();
 
     if (el.runBtn) el.runBtn.disabled = false;
-    A.updateCsvOutputHelp();
     updateNav();
     syncEvidenceBanner();
   }

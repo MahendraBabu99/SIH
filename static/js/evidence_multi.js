@@ -472,8 +472,6 @@
       intakeProgress.complete();
       if (intakeStatusEl) intakeStatusEl.hidden = true;
 
-      A.updateCsvOutputHelp();
-
       /* Build a combined evidence response for applyEvidence. */
       const combinedEv = {
         available_artifacts: allArtifacts,

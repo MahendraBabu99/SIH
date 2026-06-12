@@ -2,8 +2,8 @@
  * Settings panel, provider configuration, and connection testing for AIFT.
  *
  * Manages the settings overlay: loading/saving config, provider field
- * toggling, advanced settings, CSV output path help, and the
- * "Test Connection" button with progress feedback.
+ * toggling, advanced settings, and the "Test Connection" button with
+ * progress feedback.
  *
  * Depends on: AIFT (utils.js)
  */
@@ -15,7 +15,7 @@
 
   // ── Setup ──────────────────────────────────────────────────────────────────
 
-  /** Wire up the settings panel: tabs, open/close, provider, CSV help, form submit. */
+  /** Wire up the settings panel: tabs, open/close, provider, form submit. */
   function setupSettings() {
     if (!el.settingsBtn || !el.settingsPanel || !el.settingsForm) return;
     ensureTestButton();
@@ -34,10 +34,6 @@
         fillProviderFields();
         syncProviderFields();
       });
-    }
-    if (el.setCsvOutputDir) {
-      el.setCsvOutputDir.addEventListener("input", updateCsvOutputHelp);
-      el.setCsvOutputDir.addEventListener("change", updateCsvOutputHelp);
     }
     if (el.setAiMaxTokens) {
       el.setAiMaxTokens.addEventListener("input", updateAiMaxTokensWarning);
@@ -181,8 +177,6 @@
       var threshMb = A.num(A.obj(s.evidence).large_file_threshold_mb, 0);
       el.setSize.value = threshMb === 0 ? "0" : (threshMb / 1024).toFixed(3);
     }
-    if (el.setCsvOutputDir) el.setCsvOutputDir.value = String(A.obj(s.evidence).csv_output_dir || "");
-    updateCsvOutputHelp();
     applyAdvancedSettings(s);
     fillProviderFields();
     syncProviderFields();
@@ -305,7 +299,6 @@
 
     const gb = A.num(A.val(el.setSize), null);
     if (typeof gb === "number" && Number.isFinite(gb) && gb >= 0) base.evidence.large_file_threshold_mb = Math.round(gb * 1024);
-    if (el.setCsvOutputDir) base.evidence.csv_output_dir = A.val(el.setCsvOutputDir);
     base.evidence.intake_timeout_seconds = readIntInput(el.setIntakeTimeoutSeconds, 7200, 60);
     base.automation.run_retention_seconds = readIntInput(el.setAutomationRunRetentionSeconds, 86400, 60);
     if (el.setComputeHashes) base.evidence.compute_hashes = !!el.setComputeHashes.checked;
@@ -400,38 +393,6 @@
     if (!p) return A.setProvider("Not configured");
     const label = A.prettyProvider(p);
     A.setProvider(model ? `${label} (${model})` : label);
-  }
-
-  // ── CSV output path help ───────────────────────────────────────────────────
-
-  /** Return the default CSV output path for the active case. */
-  function defaultCsvOutputForCurrentCase() {
-    const caseId = A.activeCaseId();
-    if (caseId) return `cases/${caseId}/images/<image_id>/parsed`;
-    return "cases/<case_id>/images/<image_id>/parsed";
-  }
-
-  /** Build the effective CSV output path from a configured root directory. */
-  function configuredCsvOutputForCurrentCase(rootPath) {
-    const text = String(rootPath || "").trim();
-    if (!text) return "";
-    const trimmed = text.replace(/[\\/]+$/, "");
-    const sep = trimmed.includes("\\") ? "\\" : "/";
-    const caseToken = A.activeCaseId() || "<case_id>";
-    return `${trimmed}${sep}${caseToken}${sep}images${sep}<image_id>${sep}parsed`;
-  }
-
-  /** Update the CSV output path help text below the input field. */
-  function updateCsvOutputHelp() {
-    if (!el.setCsvOutputHelp) return;
-    const configuredPath = A.val(el.setCsvOutputDir);
-    const defaultPath = defaultCsvOutputForCurrentCase();
-    if (configuredPath) {
-      const effectivePath = configuredCsvOutputForCurrentCase(configuredPath);
-      el.setCsvOutputHelp.textContent = `Configured root; parsed CSVs are written under image-scoped folders such as ${effectivePath}.`;
-      return;
-    }
-    el.setCsvOutputHelp.textContent = `When empty, parsed CSVs are written under image-scoped case folders such as ${defaultPath}.`;
   }
 
   // ── Connection test ────────────────────────────────────────────────────────
@@ -560,5 +521,4 @@
   A.setupHelpTooltips = setupHelpTooltips;
   A.openSettings = openSettings;
   A.loadSettings = loadSettings;
-  A.updateCsvOutputHelp = updateCsvOutputHelp;
 })();
