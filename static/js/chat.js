@@ -20,8 +20,8 @@
 
   /** Wire up results-step event listeners: downloads, new-analysis, chat UI. */
   function setupResults() {
-    if (el.downloadReport) el.downloadReport.addEventListener("click", async () => downloadCaseFile("report"));
-    if (el.downloadCsvs) el.downloadCsvs.addEventListener("click", async () => downloadCaseFile("csvs"));
+    if (el.downloadReport) el.downloadReport.addEventListener("click", () => downloadCaseFile("report"));
+    if (el.downloadCsvs) el.downloadCsvs.addEventListener("click", () => downloadCaseFile("csvs"));
     if (el.newAnalysis) el.newAnalysis.addEventListener("click", () => {
       A.resetCaseUi();
       A.showStep(1);
@@ -52,9 +52,15 @@
   /**
    * Download a case artifact (report HTML or parsed CSVs zip).
    *
+   * Navigates a temporary same-origin anchor straight at the download
+   * endpoint instead of fetching the body in JS: the browser streams the
+   * response to disk (the server sets Content-Disposition), so multi-GB
+   * CSV bundles are never buffered in memory and no fetch timeout can
+   * abort the transfer mid-download.
+   *
    * @param {string} kind - "report" or "csvs".
    */
-  async function downloadCaseFile(kind) {
+  function downloadCaseFile(kind) {
     A.clearMsg(el.resultsMsg);
     const caseId = A.activeCaseId();
     if (!caseId) return A.setMsg(el.resultsMsg, "No active case to download from.", "error");
@@ -62,28 +68,28 @@
       ? `/api/cases/${encodeURIComponent(caseId)}/report`
       : `/api/cases/${encodeURIComponent(caseId)}/csvs`;
     const fallback = kind === "report" ? `${caseId}_report.html` : `${caseId}_parsed_csvs.zip`;
-    try {
-      const r = await A.fetchWithTimeout(endpoint, { method: "GET" }, A.FETCH_TIMEOUT_UPLOAD_MS);
-      if (!r.ok) throw new Error((await A.readErr(r)) || `Download failed (${r.status}).`);
-      const blob = await r.blob();
-      const filename = A.getFilename(r.headers) || fallback;
-      triggerDownload(blob, filename);
-      A.setMsg(el.resultsMsg, `Download started: ${filename}`, "success");
-    } catch (e) {
-      A.setMsg(el.resultsMsg, `Download failed: ${A.handleFetchError(e, endpoint)}`, "error");
-    }
+    triggerDownload(endpoint, fallback);
+    A.setMsg(el.resultsMsg, "Download started — your browser will save the file once it is ready.", "info");
   }
 
-  /** Create a temporary anchor to trigger a browser download for the given blob. */
-  function triggerDownload(blob, name) {
-    const url = URL.createObjectURL(blob);
+  /**
+   * Trigger a browser-native download via a temporary same-origin anchor.
+   *
+   * The `download` attribute keeps error responses (which lack a
+   * Content-Disposition header) from replacing the app page; on success
+   * the server-supplied Content-Disposition filename takes precedence
+   * over the fallback name.
+   *
+   * @param {string} url - Same-origin download endpoint URL.
+   * @param {string} name - Fallback filename if the server does not supply one.
+   */
+  function triggerDownload(url, name) {
     const a = document.createElement("a");
     a.href = url;
-    a.download = name;
+    a.download = name || "";
     document.body.appendChild(a);
     a.click();
     a.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
 
   // ── Chat toggle & controls ─────────────────────────────────────────────────
@@ -775,4 +781,5 @@
   A.toggleChat = toggleChat;
   A._sendChatMessage = sendChatMessage;
   A._onChatEvent = onChatEvent;
+  A._downloadCaseFile = downloadCaseFile;
 })();

@@ -8,6 +8,7 @@
  *  - Chat panel visibility and aria attributes
  *  - Chat controls disabled state
  *  - Chat empty state rendering
+ *  - Report/CSV downloads via anchor navigation (no fetch buffering)
  *
  * @jest-environment jsdom
  */
@@ -242,6 +243,82 @@ describe("chat reasoning stream rendering", () => {
     expect(answer.textContent).not.toContain("hidden model reasoning");
     expect(panel.open).toBe(false);
     expect(reasoningText.textContent).toBe("hidden model reasoning");
+  });
+});
+
+// ── Report/CSV downloads ────────────────────────────────────────────────────
+
+describe("case file downloads", () => {
+  /** Spy on anchor clicks and record href/download attributes of each click. */
+  function spyAnchorClicks() {
+    const clicks = [];
+    jest.spyOn(window.HTMLAnchorElement.prototype, "click").mockImplementation(function recordClick() {
+      clicks.push({ href: this.getAttribute("href"), download: this.getAttribute("download") });
+    });
+    return clicks;
+  }
+
+  test("report download navigates an anchor at the report endpoint without fetch", () => {
+    A.setCaseId("case-dl");
+    const clicks = spyAnchorClicks();
+    global.fetch.mockClear();
+
+    A._downloadCaseFile("report");
+
+    // The browser must stream the download natively: no fetch call means
+    // no JS body buffering and no fetch timeout that could abort it.
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(clicks).toEqual([
+      { href: "/api/cases/case-dl/report", download: "case-dl_report.html" },
+    ]);
+    expect(A.el.resultsMsg.textContent).toContain("Download started");
+  });
+
+  test("CSV bundle download navigates an anchor at the csvs endpoint without fetch", () => {
+    A.setCaseId("case-dl");
+    const clicks = spyAnchorClicks();
+    global.fetch.mockClear();
+
+    A._downloadCaseFile("csvs");
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(clicks).toEqual([
+      { href: "/api/cases/case-dl/csvs", download: "case-dl_parsed_csvs.zip" },
+    ]);
+    expect(A.el.resultsMsg.textContent).toContain("Download started");
+  });
+
+  test("URL-encodes the case id in the download endpoint", () => {
+    A.setCaseId("case with spaces");
+    const clicks = spyAnchorClicks();
+
+    A._downloadCaseFile("csvs");
+
+    expect(clicks).toEqual([
+      {
+        href: "/api/cases/case%20with%20spaces/csvs",
+        download: "case with spaces_parsed_csvs.zip",
+      },
+    ]);
+  });
+
+  test("shows an error and does not navigate when no case is active", () => {
+    A.setCaseId("");
+    const clicks = spyAnchorClicks();
+
+    A._downloadCaseFile("report");
+
+    expect(clicks).toEqual([]);
+    expect(A.el.resultsMsg.textContent).toContain("No active case");
+  });
+
+  test("removes the temporary download anchor from the document", () => {
+    A.setCaseId("case-dl");
+    spyAnchorClicks();
+
+    A._downloadCaseFile("csvs");
+
+    expect(document.querySelector('a[href="/api/cases/case-dl/csvs"]')).toBeNull();
   });
 });
 

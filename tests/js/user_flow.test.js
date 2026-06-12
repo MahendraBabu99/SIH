@@ -30,24 +30,6 @@ function jsonResponse(payload, status = 200, extraHeaders = {}) {
   });
 }
 
-function blobResponse(content, filename) {
-  const blob = new Blob([content], { type: "text/html" });
-  return Promise.resolve({
-    ok: true,
-    status: 200,
-    headers: {
-      get: (name) => {
-        const key = String(name || "").toLowerCase();
-        if (key === "content-disposition") return `attachment; filename="${filename}"`;
-        if (key === "content-type") return "text/html";
-        return "";
-      },
-    },
-    blob: async () => blob,
-    text: async () => content,
-  });
-}
-
 function emit(source, payload) {
   source.onmessage({ data: JSON.stringify(payload) });
 }
@@ -130,9 +112,6 @@ describe("mocked final browser flow", () => {
       if (url === "/api/cases/case-final/analyze") {
         return jsonResponse({ success: true });
       }
-      if (url === "/api/cases/case-final/report") {
-        return blobResponse("<html><body>AIFT report for runkeys</body></html>", "case-final_report.html");
-      }
       if (url === "/api/cases/case-final/chat/history") {
         if (init.method === "DELETE") {
           return jsonResponse({ success: true });
@@ -151,8 +130,12 @@ describe("mocked final browser flow", () => {
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
 
-    URL.createObjectURL = jest.fn(() => "blob:aift-report");
-    URL.revokeObjectURL = jest.fn();
+    // Report/CSV downloads must use plain anchor navigation (browser
+    // streams the body to disk) rather than fetch + blob buffering.
+    const anchorClicks = [];
+    jest.spyOn(window.HTMLAnchorElement.prototype, "click").mockImplementation(function recordClick() {
+      anchorClicks.push({ href: this.getAttribute("href"), download: this.getAttribute("download") });
+    });
 
     const firstCard = A.getImageForms()[0];
     firstCard.querySelector(".image-label-input").value = "Workstation";
@@ -287,12 +270,16 @@ describe("mocked final browser flow", () => {
     document.getElementById("download-report").click();
     await nextTick();
 
-    expect(global.fetch).toHaveBeenCalledWith(
+    // The download must not go through fetch (no JS buffering, no timeout):
+    // a temporary anchor navigates straight at the report endpoint.
+    expect(global.fetch).not.toHaveBeenCalledWith(
       "/api/cases/case-final/report",
-      expect.objectContaining({ method: "GET" }),
+      expect.anything(),
     );
-    expect(URL.createObjectURL).toHaveBeenCalled();
-    expect(document.getElementById("results-message").textContent).toContain("case-final_report.html");
+    expect(anchorClicks).toEqual([
+      { href: "/api/cases/case-final/report", download: "case-final_report.html" },
+    ]);
+    expect(document.getElementById("results-message").textContent).toContain("Download started");
 
     await A.loadChatHistory();
     await nextTick();
