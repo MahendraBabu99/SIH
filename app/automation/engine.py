@@ -784,6 +784,10 @@ def _log_evidence_intake(
     runs keep audit parity across entry points.
     Placeholder hash values such as ``"N/A (skipped)"`` and
     ``"N/A (directory)"`` are audited verbatim when nothing was hashed.
+    For evidence extracted from an archive, the ``extracted_from`` and
+    ``extraction_root`` provenance fields are included so the audit trail
+    records which archive the analyzed target originated from, matching
+    the descriptor details that GUI intake logs.
 
     Args:
         audit_logger: Case audit logger receiving the entry.
@@ -791,7 +795,7 @@ def _log_evidence_intake(
         hash_record: Aggregate hash record providing the audited ``sha256``,
             ``md5``, ``size_bytes``, and ``evidence_file_hashes`` values.
     """
-    audit_logger.log("evidence_intake", {
+    entry: dict[str, Any] = {
         "file": str(descriptor.source_path),
         "dissect_path": str(descriptor.dissect_path),
         "source_mode": descriptor.source_mode,
@@ -799,7 +803,12 @@ def _log_evidence_intake(
         "md5": hash_record.get("md5", ""),
         "size_bytes": hash_record.get("size_bytes", 0),
         "evidence_file_hashes": list(hash_record.get("evidence_file_hashes", [])),
-    })
+    }
+    if descriptor.extracted_from is not None:
+        entry["extracted_from"] = str(descriptor.extracted_from)
+    if descriptor.extraction_root is not None:
+        entry["extraction_root"] = str(descriptor.extraction_root)
+    audit_logger.log("evidence_intake", entry)
 
 
 def _hash_evidence_descriptor(
