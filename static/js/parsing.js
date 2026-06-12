@@ -198,6 +198,97 @@
     );
   }
 
+  // ── Parse-start conflict retry ────────────────────────────────────────────
+
+  /**
+   * Backend rejection messages returned while a previous parse operation is
+   * still winding down.  Cancelling a parse is asynchronous on the backend:
+   * the previous worker stays active until it observes the cancellation, and
+   * new parse starts are rejected with one of these messages during that
+   * window.
+   * @type {Set<string>}
+   */
+  const PARSE_START_CONFLICT_MESSAGES = new Set([
+    "Cannot start parsing while another case operation is running.",
+    "Parsing is already running for this image.",
+  ]);
+
+  /** Delay between parse-start retries while the previous parse stops (ms). */
+  const PARSE_START_RETRY_DELAY_MS = 500;
+
+  /** Maximum parse-start retries after the initial attempt (~10 s total). */
+  const PARSE_START_MAX_RETRIES = 20;
+
+  /**
+   * Return whether an error is a known active-operation parse-start rejection.
+   *
+   * @param {Error|null} error - Error thrown by the parse-start request.
+   * @returns {boolean} True when the error message matches one of the known
+   *     active-operation rejection messages.
+   */
+  function isParseStartConflictError(error) {
+    return PARSE_START_CONFLICT_MESSAGES.has(String((error && error.message) || ""));
+  }
+
+  /**
+   * Resolve after the given number of milliseconds.
+   *
+   * @param {number} ms - Delay duration in milliseconds.
+   * @returns {Promise<void>} Promise that resolves once the timeout elapses.
+   */
+  function waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * POST a parse-start request, briefly retrying while the previous parse
+   * operation is still winding down on the backend.
+   *
+   * Retries the POST every {@link PARSE_START_RETRY_DELAY_MS} ms, up to
+   * {@link PARSE_START_MAX_RETRIES} times, while the rejection matches a
+   * known active-operation message, so a one-click "Restart Parsing"
+   * tolerates the asynchronous cancellation of the previous run.  While
+   * waiting, an informational message is shown.  Retrying stops immediately
+   * when the abort signal fires or the captured run owner is superseded;
+   * once retries are exhausted the most recent rejection is surfaced
+   * unchanged.  Non-conflict errors are re-thrown without retrying.
+   *
+   * @param {string} url - Parse-start endpoint URL.
+   * @param {Object} payload - JSON request body for the POST.
+   * @param {AbortSignal|undefined} signal - Abort signal shared with
+   *     cancelParse() so cancellation also aborts retried requests.
+   * @param {{caseId: string, runId: string}} owner - Parse run owner captured
+   *     at submit time.
+   * @returns {Promise<Object|string>} Parsed response payload on success.
+   * @throws {Error} An AbortError when the request or retry wait is aborted,
+   *     the last conflict rejection when retries are exhausted or the owner
+   *     changes, or any non-conflict request error unchanged.
+   */
+  async function postParseStartWithRetry(url, payload, signal, owner) {
+    let lastError = null;
+    for (let attempt = 0; attempt <= PARSE_START_MAX_RETRIES; attempt += 1) {
+      if (attempt > 0) {
+        A.setMsg(el.artifactsMsg, "Waiting for the previous parse to stop...", "info");
+        await waitMs(PARSE_START_RETRY_DELAY_MS);
+        if (signal && signal.aborted) {
+          const abortError = new Error("Parsing start was cancelled.");
+          abortError.name = "AbortError";
+          throw abortError;
+        }
+        if (!A.isRunOwnerCurrent(st.parse, owner)) throw lastError;
+      }
+      try {
+        const result = await A.apiJson(url, { method: "POST", json: payload, signal });
+        if (attempt > 0) A.clearMsg(el.artifactsMsg);
+        return result;
+      } catch (e) {
+        if (e.name === "AbortError" || !isParseStartConflictError(e)) throw e;
+        lastError = e;
+      }
+    }
+    throw lastError;
+  }
+
   // ── Parse submission ───────────────────────────────────────────────────────
 
   /**
@@ -224,6 +315,9 @@
 
   /**
    * Submit parse for a single-image case.
+   *
+   * The parse-start POST tolerates the asynchronous backend cancellation of
+   * a previous run via {@link postParseStartWithRetry}.
    *
    * @param {string} caseId - Active case ID.
    */
@@ -265,9 +359,11 @@
       const parsePayload = { artifact_options: artifactOptions };
       if (dateRangeValidation.range) parsePayload.analysis_date_range = dateRangeValidation.range;
       A.startTimer("parse");
-      await A.apiJson(
+      await postParseStartWithRetry(
         `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/parse`,
-        { method: "POST", json: parsePayload, signal: abortCtrl.signal },
+        parsePayload,
+        abortCtrl.signal,
+        owner,
       );
       if (!A.isRunOwnerCurrent(st.parse, owner)) return;
       startParseSse(owner, imageId);
@@ -346,6 +442,9 @@
   /**
    * Start parsing for a single image within a multi-image parse.
    *
+   * The parse-start POST tolerates the asynchronous backend cancellation of
+   * a previous run via {@link postParseStartWithRetry}.
+   *
    * @param {string} caseId - Case ID.
    * @param {Object} sel - Selection: {image_id, label, artifact_options}.
    * @param {Object|null} dateRange - Date range filter or null.
@@ -377,9 +476,11 @@
       const payload = { artifact_options: sel.artifact_options };
       if (dateRange) payload.analysis_date_range = dateRange;
 
-      await A.apiJson(
+      await postParseStartWithRetry(
         `/api/cases/${encodeURIComponent(caseId)}/images/${encodeURIComponent(imageId)}/parse`,
-        { method: "POST", json: payload, signal: st.parse.abort ? st.parse.abort.signal : undefined },
+        payload,
+        st.parse.abort ? st.parse.abort.signal : undefined,
+        owner,
       );
 
       if (!isImageParseOwnerCurrent(imageId, owner)) return;

@@ -8,13 +8,14 @@
  *  - Parse state lifecycle (run, done, fail flags)
  *  - Parse progress bar updates
  *  - Parse row creation and status updates
+ *  - Parse-start retry while a previous parse is still cancelling
  *
  * @jest-environment jsdom
  */
 
 "use strict";
 
-const { setupAift, mustGet, mustQuery, mustFindAll, cleanupAift } = require("./harness");
+const { setupAift, mustGet, mustQuery, mustFindAll, cleanupAift, flushMicrotasks } = require("./harness");
 
 let A;
 
@@ -792,6 +793,191 @@ describe("parse SSE ownership and retry state", () => {
     expect(A.st.parse.done).toBe(false);
     expect(A.st.parsedSelections.caseId).toBe("");
     jest.useRealTimers();
+  });
+});
+
+// ── Parse-start retry while previous parse stops ───────────────────────────
+
+describe("parse start retry while the previous parse stops", () => {
+  const CONFLICT_MESSAGE = "Cannot start parsing while another case operation is running.";
+
+  /** Build a resolved fetch Response-like promise carrying a JSON payload. */
+  function jsonResponse(payload, status = 200) {
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (name) => (String(name || "").toLowerCase() === "content-type" ? "application/json" : "") },
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
+    });
+  }
+
+  /** Install a single-image case with one AI-enabled artifact selection. */
+  function installSingleImageSelection(caseId) {
+    A.setCaseId(caseId);
+    A.st.images = [{ image_id: "img1", label: "Image 1", available_artifacts: [{ key: "evtx", available: true }] }];
+    A.serializeArtifactSelections = () => [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }];
+  }
+
+  afterEach(() => {
+    A.st.images = [];
+    jest.useRealTimers();
+  });
+
+  test("single-image restart retries through the active-operation rejection", async () => {
+    jest.useFakeTimers();
+    installSingleImageSelection("case-retry-start");
+    let parsePosts = 0;
+    global.fetch = jest.fn((url) => {
+      if (String(url).endsWith("/parse")) {
+        parsePosts += 1;
+        if (parsePosts === 1) return jsonResponse({ success: false, error: CONFLICT_MESSAGE }, 409);
+        return jsonResponse({ success: true });
+      }
+      return jsonResponse({ success: true });
+    });
+
+    const submitPromise = A.submitParse();
+    await flushMicrotasks();
+
+    expect(parsePosts).toBe(1);
+    expect(A.el.artifactsMsg.textContent).toContain("Waiting for the previous parse to stop");
+    expect(window.__AIFT_TEST_OPEN_EVENT_SOURCES__).toHaveLength(0);
+
+    jest.advanceTimersByTime(500);
+    await flushMicrotasks();
+    await submitPromise;
+
+    expect(parsePosts).toBe(2);
+    expect(A.st.parse.run).toBe(true);
+    expect(window.__AIFT_TEST_OPEN_EVENT_SOURCES__).toHaveLength(1);
+    expect(A.el.artifactsMsg.hidden).toBe(true);
+    expect(A.el.artifactsMsg.textContent).toBe("");
+  });
+
+  test("cancelParse during the retry window stops further parse-start attempts", async () => {
+    jest.useFakeTimers();
+    installSingleImageSelection("case-retry-cancel");
+    let parsePosts = 0;
+    let cancelPosts = 0;
+    global.fetch = jest.fn((url) => {
+      const u = String(url);
+      if (u.endsWith("/parse/cancel")) {
+        cancelPosts += 1;
+        return jsonResponse({ success: true });
+      }
+      if (u.endsWith("/parse")) {
+        parsePosts += 1;
+        return jsonResponse({ success: false, error: CONFLICT_MESSAGE }, 409);
+      }
+      return jsonResponse({ success: true });
+    });
+
+    const submitPromise = A.submitParse();
+    await flushMicrotasks();
+    expect(parsePosts).toBe(1);
+
+    A.cancelParse();
+    await flushMicrotasks();
+
+    jest.advanceTimersByTime(21 * 500);
+    await flushMicrotasks();
+    await submitPromise;
+
+    expect(parsePosts).toBe(1);
+    expect(cancelPosts).toBe(1);
+    expect(A.st.parse.run).toBe(false);
+    expect(A.el.artifactsMsg.textContent).not.toContain("Failed to start parsing");
+    expect(window.__AIFT_TEST_OPEN_EVENT_SOURCES__).toHaveLength(0);
+  });
+
+  test("exhausted retries surface the original rejection message", async () => {
+    jest.useFakeTimers();
+    installSingleImageSelection("case-retry-exhausted");
+    let parsePosts = 0;
+    global.fetch = jest.fn((url) => {
+      if (String(url).endsWith("/parse")) {
+        parsePosts += 1;
+        return jsonResponse({ success: false, error: CONFLICT_MESSAGE }, 409);
+      }
+      return jsonResponse({ success: true });
+    });
+
+    const submitPromise = A.submitParse();
+    for (let i = 0; i < 20; i += 1) {
+      await flushMicrotasks();
+      jest.advanceTimersByTime(500);
+    }
+    await flushMicrotasks();
+    await submitPromise;
+
+    expect(parsePosts).toBe(21);
+    expect(A.st.parse.run).toBe(false);
+    expect(A.el.artifactsMsg.textContent).toContain(CONFLICT_MESSAGE);
+    expect(window.__AIFT_TEST_OPEN_EVENT_SOURCES__).toHaveLength(0);
+  });
+
+  test("a non-conflict start failure surfaces immediately without retrying", async () => {
+    jest.useFakeTimers();
+    installSingleImageSelection("case-start-error");
+    let parsePosts = 0;
+    global.fetch = jest.fn((url) => {
+      if (String(url).endsWith("/parse")) {
+        parsePosts += 1;
+        return jsonResponse({ success: false, error: "Image not found." }, 404);
+      }
+      return jsonResponse({ success: true });
+    });
+
+    await A.submitParse();
+
+    expect(parsePosts).toBe(1);
+    expect(A.st.parse.run).toBe(false);
+    expect(A.el.artifactsMsg.textContent).toContain("Failed to start parsing");
+  });
+
+  test("multi-image restart retries per-image starts through the rejection", async () => {
+    jest.useFakeTimers();
+    A.setCaseId("case-multi-retry");
+    A.st.images = [
+      { image_id: "img1", label: "Image 1", available_artifacts: [] },
+      { image_id: "img2", label: "Image 2", available_artifacts: [] },
+    ];
+    A.serializeArtifactSelections = () => [
+      { image_id: "img1", label: "Image 1", artifact_options: [{ artifact_key: "evtx", mode: A.MODE_PARSE_AND_AI }] },
+      { image_id: "img2", label: "Image 2", artifact_options: [{ artifact_key: "mft", mode: A.MODE_PARSE_AND_AI }] },
+    ];
+    const parsePosts = { img1: 0, img2: 0 };
+    global.fetch = jest.fn((url) => {
+      const u = String(url);
+      if (u.endsWith("/images/img1/parse")) {
+        parsePosts.img1 += 1;
+        if (parsePosts.img1 === 1) return jsonResponse({ success: false, error: CONFLICT_MESSAGE }, 409);
+        return jsonResponse({ success: true });
+      }
+      if (u.endsWith("/images/img2/parse")) {
+        parsePosts.img2 += 1;
+        return jsonResponse({ success: true });
+      }
+      return jsonResponse({ success: true });
+    });
+
+    const submitPromise = A.submitParse();
+    await flushMicrotasks();
+
+    expect(parsePosts.img1).toBe(1);
+    expect(parsePosts.img2).toBe(1);
+    expect(window.__AIFT_TEST_OPEN_EVENT_SOURCES__).toHaveLength(1);
+
+    jest.advanceTimersByTime(500);
+    await flushMicrotasks();
+    await submitPromise;
+
+    expect(parsePosts.img1).toBe(2);
+    expect(A.st.parse.run).toBe(true);
+    expect(A.st.imageParse.img1.fail).toBe(false);
+    expect(A.st.imageParse.img2.fail).toBe(false);
+    expect(window.__AIFT_TEST_OPEN_EVENT_SOURCES__).toHaveLength(2);
   });
 });
 
