@@ -138,11 +138,42 @@ def make_automation_request(**kwargs: Any) -> Any:
 
 
 class _DefaultRunManagerProxy:
-    """Lazy proxy for the shared default automation run manager."""
+    """Lazy proxy for the shared default automation run manager.
+
+    The proxy defers importing the run manager module until a tool actually
+    needs it, keeping MCP server construction free of pipeline imports. On
+    the first resolution it applies the configured automation run retention
+    TTL (``automation.run_retention_seconds``) to the shared manager so MCP
+    honors the same retention knob as the REST automation routes.
+
+    Attributes:
+        _config_path: Optional YAML config path supplying the retention TTL;
+            ``None`` uses AIFT's default config.
+        _ttl_synced: Whether the configured retention TTL has already been
+            applied to the shared manager.
+    """
+
+    def __init__(self, config_path: str | Path | None = None) -> None:
+        """Initialise the proxy.
+
+        Args:
+            config_path: Optional YAML config path read for the
+                ``automation.run_retention_seconds`` retention TTL when the
+                shared manager is first resolved. ``None`` uses AIFT's
+                default config.
+        """
+        self._config_path = config_path
+        self._ttl_synced = False
 
     def _manager(self) -> Any:
+        """Resolve the shared manager, applying the configured TTL once."""
         from app.automation.run_manager import DEFAULT_RUN_MANAGER
 
+        if not self._ttl_synced:
+            self._ttl_synced = True
+            ttl_seconds = _configured_run_ttl_seconds(self._config_path)
+            if ttl_seconds is not None:
+                DEFAULT_RUN_MANAGER.ttl_seconds = ttl_seconds
         return DEFAULT_RUN_MANAGER
 
     def start_run(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -564,6 +595,49 @@ def _archive_limits_for_config_path(config_path: str | None) -> tuple[Any, list[
         )
         config = {}
     return archive_limits_from_config(config), warnings
+
+
+def _configured_run_ttl_seconds(config_path: str | Path | None = None) -> int | None:
+    """Read the configured automation run retention TTL from YAML config.
+
+    Loads the supplied YAML config (or AIFT's default config when omitted)
+    and returns ``automation.run_retention_seconds`` using the same
+    validation as the REST automation routes: an integer of at least 60
+    seconds. Missing config files, loading failures, and invalid values
+    return ``None`` so the shared run manager keeps its current retention
+    TTL instead of failing the calling tool.
+
+    Args:
+        config_path: Optional path to a YAML config file.
+
+    Returns:
+        Validated retention TTL in seconds, or ``None`` when no usable
+        configured value is available.
+    """
+    from app.utils.config import load_config
+
+    resolved: Path | None = None
+    if config_path is not None:
+        resolved = Path(config_path).expanduser().resolve()
+        if not resolved.is_file():
+            LOGGER.warning(
+                "Config path not found for MCP run retention: %s. "
+                "Using the default config for the run retention TTL.",
+                resolved,
+            )
+            resolved = None
+    try:
+        config: dict[str, Any] = load_config(resolved)
+    except Exception:
+        LOGGER.exception("Failed to load config for MCP run retention TTL")
+        return None
+    automation_config = config.get("automation", {})
+    if not isinstance(automation_config, dict):
+        return None
+    value = automation_config.get("run_retention_seconds")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 60:
+        return value
+    return None
 
 
 def _prune_stale_default_discovery_workspaces() -> None:
@@ -1117,6 +1191,7 @@ def build_mcp_server(
     run_manager: Any | None = None,
     *,
     cases_root: str | Path | None = None,
+    config_path: str | Path | None = None,
     transport_host: str | None = None,
     transport_port: int | None = None,
 ) -> Any:
@@ -1125,6 +1200,11 @@ def build_mcp_server(
     Args:
         run_manager: Optional automation manager override for tests.
         cases_root: Optional AIFT cases root override for tests.
+        config_path: Optional YAML config path supplying the
+            ``automation.run_retention_seconds`` retention TTL applied to
+            the shared default run manager when it is first used. Ignored
+            when ``run_manager`` is provided. ``None`` uses AIFT's default
+            config.
         transport_host: Optional host for HTTP-based MCP transports.
         transport_port: Optional port for HTTP-based MCP transports.
 
@@ -1155,7 +1235,11 @@ def build_mcp_server(
         fastmcp_kwargs["port"] = transport_port
 
     mcp = FastMCP(**fastmcp_kwargs)
-    manager = run_manager or _DefaultRunManagerProxy()
+    manager = (
+        run_manager
+        if run_manager is not None
+        else _DefaultRunManagerProxy(config_path=config_path)
+    )
     active_cases_root = (
         Path(cases_root).expanduser().resolve()
         if cases_root is not None
