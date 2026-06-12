@@ -18,6 +18,8 @@ Supporting logic lives in:
 
 Attributes:
     routes_bp: Flask ``Blueprint`` for core routes (UI, cases, settings).
+    _MAX_CASE_DIR_ATTEMPTS: Upper bound on uniqueness-suffix attempts when
+        reserving a case directory name.
 """
 
 from __future__ import annotations
@@ -97,6 +99,7 @@ LOGGER = logging.getLogger(__name__)
 routes_bp = Blueprint("routes", __name__)
 _SETTINGS_LOCK = threading.Lock()
 _REQUEST_CASE_LOG_TOKEN = "_aift_case_log_token"
+_MAX_CASE_DIR_ATTEMPTS = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -222,13 +225,61 @@ def image_asset(filename: str) -> Response | tuple[Response, int]:
 # Case management routes
 # ---------------------------------------------------------------------------
 
+def _allocate_case_directory(base_name: str) -> tuple[str, Path]:
+    """Reserve a unique case directory under ``CASES_ROOT``.
+
+    Tries ``base_name`` first, then ``<base_name>_2``, ``<base_name>_3``,
+    and so on until a candidate is found that is neither registered in
+    ``CASE_STATES`` nor present on disk.  The directory is created with
+    ``exist_ok=False`` so that a concurrent request racing on the same
+    candidate fails with :class:`FileExistsError` and moves on to the next
+    suffix instead of silently sharing an existing case directory.
+
+    Args:
+        base_name: Candidate directory name without a uniqueness suffix
+            (sanitised case name plus UTC timestamp for named cases, or a
+            UUID string for unnamed cases).
+
+    Returns:
+        Tuple of ``(case_id, case_dir)`` where ``case_id`` is the final
+        unique directory name and ``case_dir`` is the created directory
+        path.
+
+    Raises:
+        OSError: If directory creation fails for a reason other than the
+            candidate already existing (e.g. permissions or disk errors).
+        RuntimeError: If no unique name was found within
+            ``_MAX_CASE_DIR_ATTEMPTS`` suffix attempts.
+    """
+    for attempt in range(1, _MAX_CASE_DIR_ATTEMPTS + 1):
+        candidate = base_name if attempt == 1 else f"{base_name}_{attempt}"
+        candidate_dir = CASES_ROOT / candidate
+        with STATE_LOCK:
+            if candidate in CASE_STATES:
+                continue
+        if candidate_dir.exists():
+            continue
+        try:
+            candidate_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        return candidate, candidate_dir
+    raise RuntimeError(
+        f"Could not find a unique case directory name for {base_name!r} "
+        f"after {_MAX_CASE_DIR_ATTEMPTS} attempts."
+    )
+
+
 @routes_bp.post("/api/cases")
 def create_case() -> tuple[Response, int]:
     """Create a new forensic analysis case.
 
     Creates the current image-scoped directory layout (``images/``,
     ``reports/``, ``audit.jsonl``).  The response contains ``case_id`` and
-    ``case_name``.
+    ``case_name``.  The case directory name doubles as the ``case_id``:
+    named cases use the sanitised case name plus a UTC timestamp (with a
+    numeric uniqueness suffix appended on collision), unnamed cases use a
+    UUID.
 
     Returns:
         ``(Response, 201)`` with case_id and case_name, or error.
@@ -244,16 +295,22 @@ def create_case() -> tuple[Response, int]:
         case_name = datetime.now(timezone.utc).strftime("Case %Y-%m-%d %H:%M:%S")
 
     # Use sanitised case name + timestamp as folder name for readability;
-    # fall back to UUID if no custom name was provided.
+    # fall back to UUID if no custom name was provided.  A uniqueness
+    # suffix is appended when the candidate name is already taken so two
+    # same-named cases created within the same second can never share a
+    # case directory.
     if has_custom_name:
-        folder_name = safe_name(case_name, "case") + "_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        base_name = safe_name(case_name, "case") + "_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     else:
-        folder_name = str(uuid4())
-    case_id = folder_name
-    case_dir = CASES_ROOT / case_id
+        base_name = str(uuid4())
 
-    # Create multi-image directory layout via CaseManager helpers.
-    case_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        case_id, case_dir = _allocate_case_directory(base_name)
+    except (OSError, RuntimeError):
+        LOGGER.exception("Failed to create a case directory for case name %r", case_name)
+        return error_response("Failed to create the case directory due to a filesystem error.", 500)
+
+    # Create the multi-image directory layout inside the reserved directory.
     (case_dir / "images").mkdir(exist_ok=True)
     (case_dir / "reports").mkdir(exist_ok=True)
 

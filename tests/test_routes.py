@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone, tzinfo
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -99,6 +100,34 @@ def _install_minimal_canonical_analysis(case_id: str) -> None:
         },
         "cross_image_summary": None,
     }
+
+
+class FrozenUtcDatetime(datetime):
+    """``datetime`` stub whose ``now()`` always returns one fixed instant.
+
+    Used to force two case creations into the same wall-clock second so the
+    timestamp-based case directory names collide deterministically.
+
+    Attributes:
+        FROZEN: The fixed aware UTC instant returned by :meth:`now`.
+    """
+
+    FROZEN = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:
+        """Return the fixed instant, converted to ``tz`` when provided.
+
+        Args:
+            tz: Optional target timezone for the returned value.
+
+        Returns:
+            The frozen instant as a naive datetime when ``tz`` is ``None``,
+            otherwise converted to ``tz``.
+        """
+        if tz is None:
+            return cls.FROZEN.replace(tzinfo=None)
+        return cls.FROZEN.astimezone(tz)
 
 
 class RoutesTests(unittest.TestCase):
@@ -2204,6 +2233,54 @@ class RoutesTests(unittest.TestCase):
             resp = self.client.post("/api/cases", json={"case_name": "   "})
             self.assertEqual(resp.status_code, 201)
             self.assertTrue(resp.get_json()["case_name"].startswith("Case "))
+
+    def test_create_case_same_name_same_second_gets_unique_suffix(self) -> None:
+        """Same-named cases created in the same second get distinct IDs and dirs."""
+        with (
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "datetime", FrozenUtcDatetime),
+        ):
+            first = self.client.post("/api/cases", json={"case_name": "Collision Case"})
+            second = self.client.post("/api/cases", json={"case_name": "Collision Case"})
+            third = self.client.post("/api/cases", json={"case_name": "Collision Case"})
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(third.status_code, 201)
+        case_id_1 = first.get_json()["case_id"]
+        case_id_2 = second.get_json()["case_id"]
+        case_id_3 = third.get_json()["case_id"]
+
+        self.assertEqual(case_id_1, "Collision_Case_20260612_120000")
+        self.assertEqual(case_id_2, f"{case_id_1}_2")
+        self.assertEqual(case_id_3, f"{case_id_1}_3")
+
+        for case_id in (case_id_1, case_id_2, case_id_3):
+            self.assertIn(case_id, routes_state.CASE_STATES)
+            self.assertTrue((self.cases_root / case_id).is_dir())
+            self.assertEqual(
+                Path(routes_state.CASE_STATES[case_id]["case_dir"]),
+                self.cases_root / case_id,
+            )
+
+    def test_create_case_never_reuses_leftover_on_disk_directory(self) -> None:
+        """A pre-existing on-disk directory with the candidate name is skipped."""
+        leftover = self.cases_root / "Disk_Case_20260612_120000"
+        leftover.mkdir(parents=True)
+        with (
+            patch.object(routes_state, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "CASES_ROOT", self.cases_root),
+            patch.object(routes_handlers, "datetime", FrozenUtcDatetime),
+        ):
+            resp = self.client.post("/api/cases", json={"case_name": "Disk Case"})
+
+        self.assertEqual(resp.status_code, 201)
+        case_id = resp.get_json()["case_id"]
+        self.assertEqual(case_id, "Disk_Case_20260612_120000_2")
+        self.assertTrue((self.cases_root / case_id).is_dir())
+        # The leftover directory must remain untouched (no new contents).
+        self.assertEqual(list(leftover.iterdir()), [])
 
     def test_favicon_returns_404_when_no_logo(self) -> None:
         missing_dir = Path(self.temp_dir.name) / "no_images"
