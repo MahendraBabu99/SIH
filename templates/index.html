@@ -21,7 +21,7 @@
 </head>
 <body data-evidence-accept="{{ evidence_ui_accept }}" data-evidence-help="{{ evidence_ui_help }}">
   <noscript>
-    <p style="padding:2em;color:#ff6b6b;font-size:1.2em;text-align:center;">
+    <p style="padding:2em;color:#e57870;font-size:1.2em;text-align:center;">
       JavaScript is required to use AIFT. Please enable JavaScript in your browser settings and reload the page.
     </p>
   </noscript>
@@ -35,7 +35,7 @@
             alt="AIFT logo"
           >
         {% endif %}
-        <h1 class="app-title">AIFT by Flip Forensics</h1>
+        <h1 class="app-title sr-only">AIFT by Flip Forensics</h1>
       </div>
       <button
         id="settings-button"
@@ -44,7 +44,23 @@
         aria-controls="settings-panel"
         aria-expanded="false"
       >
-        <span aria-hidden="true">&#9881;</span>
+        <svg
+          aria-hidden="true"
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        >
+          <line x1="2" y1="3.5" x2="14" y2="3.5"></line>
+          <circle cx="10" cy="3.5" r="1.8" fill="currentColor" stroke="none"></circle>
+          <line x1="2" y1="8" x2="14" y2="8"></line>
+          <circle cx="5.5" cy="8" r="1.8" fill="currentColor" stroke="none"></circle>
+          <line x1="2" y1="12.5" x2="14" y2="12.5"></line>
+          <circle cx="11" cy="12.5" r="1.8" fill="currentColor" stroke="none"></circle>
+        </svg>
       </button>
     </div>
     <nav aria-label="Wizard steps">
@@ -97,7 +113,7 @@
               autocomplete="off"
               spellcheck="false"
             >
-            <button id="scan-directory-btn" type="button">Scan Directory</button>
+            <button id="scan-directory-btn" class="btn-secondary" type="button">Scan Directory</button>
           </div>
           <p id="scan-directory-message" role="status" aria-live="polite" hidden></p>
           <ul id="scan-directory-results" class="scan-directory-results" hidden></ul>
@@ -170,7 +186,7 @@
 
         <button id="add-image-btn" type="button">+ Add Image</button>
 
-        <button id="submit-evidence" type="submit">Submit</button>
+        <button id="submit-evidence" class="btn-primary" type="submit">Submit</button>
 
         <div id="evidence-intake-progress" hidden>
           <label for="evidence-progress">Intake progress</label>
@@ -228,10 +244,10 @@
       <div id="artifact-image-panels"></div>
 
       <div class="preset-actions">
-        <button id="preset-quick-triage" type="button">Recommended</button>
-        <button id="preset-clear-all" type="button">Clear All</button>
-        <button id="apply-recommended-all" type="button" hidden>Apply Recommended to All</button>
-        <button id="apply-selection-all" type="button" hidden>Apply Current Selection to All</button>
+        <button id="preset-quick-triage" class="btn-secondary" type="button">Recommended</button>
+        <button id="preset-clear-all" class="btn-danger" type="button">Clear All</button>
+        <button id="apply-recommended-all" class="btn-secondary" type="button" hidden>Apply Recommended to All</button>
+        <button id="apply-selection-all" class="btn-secondary" type="button" hidden>Apply Current Selection to All</button>
       </div>
 
       <section id="artifact-profiles" aria-labelledby="artifact-profiles-title">
@@ -244,7 +260,7 @@
             </select>
           </div>
           <div class="profile-actions">
-            <button id="artifact-profile-load" type="button">Load Profile</button>
+            <button id="artifact-profile-load" class="btn-secondary" type="button">Load Profile</button>
           </div>
           <div class="form-row">
             <label for="artifact-profile-name">Save current artifact options</label>
@@ -259,7 +275,7 @@
             >
           </div>
           <div class="profile-actions">
-            <button id="artifact-profile-save" type="button">Save Profile</button>
+            <button id="artifact-profile-save" class="btn-primary" type="button">Save Profile</button>
           </div>
           <p id="artifact-profile-message" class="profile-message" role="status" aria-live="polite" hidden></p>
         </div>
@@ -706,7 +722,7 @@
         </fieldset>
 
       </form>
-        <button id="parse-selected" type="button" disabled>Parse Selected</button>
+        <button id="parse-selected" class="btn-primary" type="button" disabled>Parse Selected</button>
       </div><!-- /artifact-selection-content -->
     </section>
 
@@ -777,7 +793,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
           <a href="#settings-panel" id="provider-settings-link">Settings</a>
         </p>
 
-        <button id="run-analysis" type="submit">Run Analysis</button>
+        <button id="run-analysis" class="btn-primary" type="submit">Run Analysis</button>
         <button id="cancel-analysis" type="button" hidden>Cancel Analysis</button>
       </form>
 
@@ -814,9 +830,9 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
       </section>
 
       <div class="result-actions">
-        <button id="download-report" type="button">Download Report (HTML)</button>
-        <button id="download-csvs" type="button">Download CSVs (ZIP)</button>
-        <button id="new-analysis" type="button">New Analysis</button>
+        <button id="download-report" class="btn-primary" type="button">Download Report (HTML)</button>
+        <button id="download-csvs" class="btn-secondary" type="button">Download CSVs (ZIP)</button>
+        <button id="new-analysis" class="btn-secondary" type="button">New Analysis</button>
       </div>
 
       <section id="chat-section" aria-labelledby="chat-section-title">
@@ -831,7 +847,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
             >
               Hide Chat
             </button>
-            <button id="clear-chat" type="button">Clear Chat</button>
+            <button id="clear-chat" class="btn-danger" type="button">Clear Chat</button>
           </div>
         </header>
 
@@ -1088,7 +1104,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
       </section>
 
       <div class="settings-actions">
-        <button id="save-settings" type="submit">Save Settings</button>
+        <button id="save-settings" class="btn-primary" type="submit">Save Settings</button>
       </div>
     </form>
   </div>

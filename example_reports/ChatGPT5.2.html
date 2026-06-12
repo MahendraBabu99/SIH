@@ -5,21 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AIFT Report | Flip Forensics - 10887ec4-142c-4364-9e97-baa750118587</title>
   <style>
+
     :root {
-      --bg: #0b1018;
-      --panel: #141d2a;
-      --panel-alt: #1b2638;
-      --border: #2d3a4c;
-      --text: #e6edf7;
-      --muted: #9fb1c7;
-      --accent: #57b3ff;
-      --pass: #22c55e;
-      --fail: #f04438;
-      --critical: #ef4444;
-      --high: #ff7a45;
-      --medium: #facc15;
-      --low: #60a5fa;
-      --unknown: #94a3b8;
+      --bg: #20252c;
+      --panel: #272d36;
+      --panel-alt: #2e3540;
+      --inset: #1a1f25;
+      --border: #414c5a;
+      --text: #dce3eb;
+      --muted: #9aa6b5;
+      --accent: #146afe;
+      --pass: #45b87c;
+      --fail: #e57870;
+      --skipped: #d09a36;
+      --critical: #c8322b;
+      --medium: #d09a36;
     }
 
     * {
@@ -28,10 +28,7 @@
 
     body {
       margin: 0;
-      background:
-        radial-gradient(circle at 20% 0%, #21324a 0%, transparent 40%),
-        radial-gradient(circle at 80% 10%, #1f2b3f 0%, transparent 35%),
-        var(--bg);
+      background: var(--bg);
       color: var(--text);
       font-family: "Segoe UI", "Helvetica Neue", Tahoma, Arial, sans-serif;
       line-height: 1.5;
@@ -44,12 +41,14 @@
     }
 
     .panel {
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--panel);
+      background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 18px;
-      margin: 0 0 16px;
-      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.18);
+      padding: 18px 20px;
+      margin: 0 0 14px;
+    }
+
+    .header-panel {
+      border-top: 3px solid var(--accent);
     }
 
     .report-brand {
@@ -57,14 +56,14 @@
       flex-wrap: wrap;
       align-items: flex-end;
       gap: 10px 16px;
-      margin: 0 0 12px;
+      margin: 0 0 14px;
     }
 
     .report-logo {
       width: auto;
       height: auto;
-      max-height: clamp(52px, 8vw, 90px);
-      max-width: min(56vw, 420px);
+      max-height: 56px;
+      max-width: min(56vw, 320px);
       object-fit: contain;
       flex: 0 0 auto;
       display: block;
@@ -76,15 +75,15 @@
 
     .report-heading h1 {
       margin: 0;
-      font-size: 1.8rem;
-      letter-spacing: 0.02em;
+      font-size: 1.6rem;
+      letter-spacing: 0.01em;
     }
 
     .report-subtitle {
       margin: 4px 0 0;
       color: var(--muted);
-      font-size: 0.95rem;
-      letter-spacing: 0.03em;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
     }
 
@@ -95,44 +94,43 @@
     }
 
     .meta-item {
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid rgba(159, 177, 199, 0.15);
-      border-radius: 8px;
-      padding: 10px 12px;
+      border-left: 2px solid var(--border);
+      padding: 2px 0 2px 10px;
     }
 
     .meta-item strong {
       display: block;
       color: var(--muted);
-      font-size: 0.82rem;
+      font-size: 0.78rem;
       font-weight: 600;
-      margin-bottom: 4px;
+      margin-bottom: 3px;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.05em;
     }
 
     h2 {
       margin: 0 0 12px;
-      font-size: 1.2rem;
-      color: #f4f8ff;
+      padding-bottom: 7px;
+      border-bottom: 1px solid var(--border);
+      font-size: 1.05rem;
+      color: var(--text);
     }
 
     .mono {
       font-family: "Consolas", "SFMono-Regular", "Liberation Mono", Menlo, monospace;
       font-size: 0.95em;
+      font-variant-numeric: tabular-nums;
       word-break: break-word;
     }
 
     .kv-table {
       width: 100%;
       border-collapse: collapse;
-      overflow: hidden;
-      border-radius: 8px;
     }
 
     .kv-table th,
     .kv-table td {
-      border: 1px solid rgba(159, 177, 199, 0.2);
+      border: 1px solid var(--border);
       padding: 9px 10px;
       text-align: left;
       vertical-align: top;
@@ -142,40 +140,67 @@
       width: 260px;
       color: var(--muted);
       font-weight: 600;
-      background: rgba(159, 177, 199, 0.06);
+      background: var(--panel-alt);
     }
 
     .hash-status {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
-      border-radius: 10px;
-      padding: 10px 14px;
+      gap: 8px;
+      padding: 4px 12px;
+      font-size: 0.82rem;
       font-weight: 700;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
       margin-bottom: 8px;
-      min-width: 180px;
+      min-width: 110px;
       justify-content: center;
     }
 
     .hash-status.pass {
-      color: #042e11;
-      background: linear-gradient(90deg, #67e8a7, var(--pass));
-      border: 1px solid rgba(34, 197, 94, 0.45);
+      color: var(--pass);
+      border: 1px solid var(--pass);
+      background: rgba(69, 184, 124, 0.08);
     }
 
     .hash-status.fail {
-      color: #fff2f0;
-      background: linear-gradient(90deg, #f97360, var(--fail));
-      border: 1px solid rgba(240, 68, 56, 0.45);
+      color: var(--fail);
+      border: 1px solid var(--fail);
+      background: rgba(229, 120, 112, 0.08);
+    }
+
+    .hash-status.skipped {
+      color: var(--skipped);
+      border: 1px solid var(--skipped);
+      background: rgba(208, 154, 54, 0.08);
     }
 
     .content-block {
       background: var(--panel-alt);
-      border: 1px solid rgba(159, 177, 199, 0.2);
-      border-radius: 8px;
+      border: 1px solid var(--border);
       padding: 12px;
+    }
+
+    .processing-note-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .processing-note {
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--medium);
+      padding: 10px 12px;
+    }
+
+    .processing-note strong {
+      display: block;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      margin-bottom: 3px;
+      text-transform: uppercase;
     }
 
     .markdown-output > :first-child {
@@ -193,7 +218,9 @@
     .markdown-output h5,
     .markdown-output h6 {
       margin: 0 0 8px;
-      color: #f4f8ff;
+      padding: 0;
+      border: 0;
+      color: var(--text);
     }
 
     .markdown-output p {
@@ -214,9 +241,8 @@
     .markdown-output code {
       font-family: "Consolas", "SFMono-Regular", "Liberation Mono", Menlo, monospace;
       font-size: 0.9em;
-      background: rgba(11, 16, 24, 0.75);
-      border: 1px solid rgba(159, 177, 199, 0.25);
-      border-radius: 5px;
+      background: var(--inset);
+      border: 1px solid var(--border);
       padding: 1px 6px;
     }
 
@@ -224,16 +250,14 @@
       margin: 0 0 10px;
       padding: 10px;
       overflow-x: auto;
-      border: 1px solid rgba(159, 177, 199, 0.25);
-      border-radius: 8px;
-      background: rgba(11, 16, 24, 0.85);
+      border: 1px solid var(--border);
+      background: var(--inset);
     }
 
     .markdown-output pre code {
       border: 0;
       padding: 0;
       background: transparent;
-      border-radius: 0;
     }
 
     .markdown-output table {
@@ -244,20 +268,16 @@
 
     .markdown-output th,
     .markdown-output td {
-      border: 1px solid rgba(159, 177, 199, 0.28);
+      border: 1px solid var(--border);
       padding: 8px 10px;
       text-align: left;
       vertical-align: top;
     }
 
     .markdown-output th {
-      background: rgba(255, 255, 255, 0.04);
-      color: #e9f0ff;
+      background: var(--panel);
+      color: var(--text);
       font-weight: 600;
-    }
-
-    .markdown-output td {
-      background: rgba(0, 0, 0, 0.08);
     }
 
     .artifact-list {
@@ -267,8 +287,7 @@
 
     details.artifact-card,
     details.audit-card {
-      border: 1px solid rgba(159, 177, 199, 0.2);
-      border-radius: 10px;
+      border: 1px solid var(--border);
       background: var(--panel-alt);
       overflow: hidden;
     }
@@ -282,11 +301,77 @@
       gap: 12px;
       padding: 12px 14px;
       font-weight: 600;
-      background: rgba(255, 255, 255, 0.02);
     }
 
     details > summary::-webkit-details-marker {
       display: none;
+    }
+
+    details.image-section {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      background: var(--panel);
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    details.image-section > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      font-weight: 700;
+      font-size: 1rem;
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    details.image-section > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .image-section-content {
+      padding: 16px;
+    }
+
+    .cross-system-panel {
+      border-left: 3px solid var(--accent);
+    }
+
+    .evidence-multi-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .evidence-multi-table th,
+    .evidence-multi-table td {
+      border: 1px solid var(--border);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .evidence-multi-table th {
+      color: var(--muted);
+      font-weight: 600;
+      background: var(--panel-alt);
+    }
+
+    .hash-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .hash-row-label {
+      font-weight: 600;
+      color: var(--muted);
+      min-width: 120px;
     }
 
     .artifact-content,
@@ -308,9 +393,8 @@
     .pill {
       display: inline-flex;
       align-items: center;
-      border-radius: 999px;
-      padding: 3px 10px;
-      font-size: 0.78rem;
+      padding: 2px 9px;
+      font-size: 0.74rem;
       font-weight: 700;
       letter-spacing: 0.04em;
       text-transform: uppercase;
@@ -344,7 +428,6 @@
 
     .confidence-inline {
       padding: 1px 6px;
-      border-radius: 5px;
       font-weight: 700;
       font-size: 0.9em;
       margin: 0 2px;
@@ -358,7 +441,7 @@
 
     .key-point-table th,
     .key-point-table td {
-      border: 1px solid rgba(159, 177, 199, 0.2);
+      border: 1px solid var(--border);
       padding: 8px 10px;
       text-align: left;
       vertical-align: top;
@@ -366,7 +449,7 @@
 
     .key-point-table th {
       color: var(--muted);
-      background: rgba(159, 177, 199, 0.05);
+      background: var(--panel);
       font-weight: 600;
     }
 
@@ -377,7 +460,7 @@
 
     .audit-table th,
     .audit-table td {
-      border: 1px solid rgba(159, 177, 199, 0.2);
+      border: 1px solid var(--border);
       padding: 8px 10px;
       text-align: left;
       vertical-align: top;
@@ -386,7 +469,20 @@
     .audit-table th {
       color: var(--muted);
       font-weight: 600;
-      background: rgba(159, 177, 199, 0.05);
+      background: var(--panel);
+    }
+
+    .audit-details-pre {
+      margin: 0;
+      padding: 8px 10px;
+      background: var(--inset);
+      border: 1px solid var(--border);
+      font-family: "Consolas", "SFMono-Regular", "Liberation Mono", Menlo, monospace;
+      font-size: 0.88em;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.45;
+      color: var(--text);
     }
 
     .empty-value {
@@ -398,7 +494,7 @@
       border-top: 1px solid var(--border);
       margin-top: 18px;
       padding-top: 12px;
-      color: #d3deed;
+      color: var(--text);
       font-size: 0.92rem;
     }
 
@@ -416,6 +512,7 @@
         --bg: #ffffff;
         --panel: #ffffff;
         --panel-alt: #ffffff;
+        --inset: #ffffff;
         --border: #d1d5db;
         --text: #111827;
         --muted: #475569;
@@ -423,7 +520,7 @@
       }
 
       body {
-        background: #ffffff !important;
+        background: #ffffff;
         color: var(--text);
         padding: 0;
         font-size: 11pt;
@@ -432,14 +529,20 @@
       .panel,
       details.artifact-card,
       details.audit-card {
-        box-shadow: none !important;
-        border-color: var(--border) !important;
+        border-color: var(--border);
         break-inside: avoid;
       }
 
       .hash-status.pass,
-      .hash-status.fail {
-        color: #111827 !important;
+      .hash-status.fail,
+      .hash-status.skipped {
+        color: #111827;
+      }
+
+      .pill,
+      .confidence-inline {
+        color: #111827;
+        border: 1px solid #d1d5db;
       }
 
       details {
@@ -463,7 +566,7 @@
       }
 
       .report-logo {
-        max-height: clamp(44px, 11vw, 64px);
+        max-height: 44px;
         max-width: 84vw;
       }
     }
