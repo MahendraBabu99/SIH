@@ -1280,7 +1280,7 @@ describe("applyRecommendedToAllImages", () => {
     expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 
-  test("fallback recommended excludes MFT and sets EVTX parse-only", () => {
+  test("fallback recommended excludes EVTX and MFT", () => {
     const images = makeWindowsLinuxImages();
     images[0].available_artifacts.push({ key: "defender.evtx", name: "Defender Logs", available: true });
     setImagesAndBuildTabs(images);
@@ -1294,9 +1294,9 @@ describe("applyRecommendedToAllImages", () => {
     const mftMode = mftCb.closest("li").querySelector(".artifact-mode-select");
 
     expect(defenderCb.checked).toBe(true);
-    expect(evtxCb.checked).toBe(true);
+    expect(evtxCb.checked).toBe(false);
     expect(mftCb.checked).toBe(false);
-    expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(evtxMode.value).toBe(A.MODE_PARSE_AND_AI);
     expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 

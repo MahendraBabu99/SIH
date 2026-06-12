@@ -7,7 +7,7 @@ description: Windows event channel records covering authentication, process crea
   policy changes, and system health. EVTX is often the backbone for timeline and intrusion
   reconstruction.
 order: 190
-recommended: true
+recommended: false
 default_mode: parse_only
 ---
 

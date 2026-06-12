@@ -274,7 +274,7 @@ describe("recommended artifact action", () => {
     expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 
-  test("single-image fallback excludes MFT and keeps EVTX parse-only", () => {
+  test("single-image fallback excludes EVTX, MFT, and USN journal", () => {
     loadWindowsArtifactsForRecommendedAction();
     A.st.profiles = [];
 
@@ -288,10 +288,10 @@ describe("recommended artifact action", () => {
     const mftMode = mustQuery(mft.closest("li"), ".artifact-mode-select");
 
     expect(defender.checked).toBe(true);
-    expect(evtx.checked).toBe(true);
+    expect(evtx.checked).toBe(false);
     expect(mft.checked).toBe(false);
     expect(usn.checked).toBe(false);
-    expect(evtxMode.value).toBe(A.MODE_PARSE_ONLY);
+    expect(evtxMode.value).toBe(A.MODE_PARSE_AND_AI);
     expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 });
