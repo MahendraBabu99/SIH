@@ -1632,6 +1632,105 @@ class TestRunAutomation(unittest.TestCase):
         self.assertIn("discovery", phases_seen)
         self.assertIn("reporting", phases_seen)
 
+    def test_artifact_start_is_announced_to_progress_callback(self) -> None:
+        """Each artifact parse announces itself before parsing starts.
+
+        Without a start announcement the run status would keep naming the
+        previously completed artifact for the whole duration of artifacts
+        that emit no mid-stream progress (fewer than 1,000 records).
+        """
+        events: list[tuple[str, str, float]] = []
+
+        def _cb(phase: str, message: str, pct: float) -> None:
+            """Record each progress callback invocation.
+
+            Args:
+                phase: Pipeline phase name.
+                message: Status message.
+                pct: Percentage value.
+            """
+            events.append((phase, message, pct))
+
+        result = run_automation(self._make_request(), progress_callback=_cb)
+
+        self.assertTrue(result.success)
+        self.assertTrue(
+            any(
+                phase == "parsing"
+                and message.startswith("Parsing runkeys from")
+                and "records" not in message
+                for phase, message, _pct in events
+            ),
+            "Expected an artifact-start progress message for runkeys.",
+        )
+
+    def test_parsing_percentage_advances_per_artifact(self) -> None:
+        """Artifact-start percentages advance within an image's span."""
+        self.mocks["artifact_options_to_lists"].side_effect = (
+            lambda _options: (
+                ["runkeys", "shellbags"],
+                ["runkeys", "shellbags"],
+            )
+        )
+
+        class TwoArtifactParser(FakeParser):
+            """Parser stub exposing two available artifacts."""
+
+            def get_available_artifacts(self) -> list[dict[str, object]]:
+                """Return two artifacts marked available.
+
+                Returns:
+                    List of artifact descriptor dicts.
+                """
+                return [
+                    {"key": "runkeys", "name": "Run Keys", "available": True},
+                    {"key": "shellbags", "name": "Shellbags", "available": True},
+                ]
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: TwoArtifactParser(**kwargs)
+        )
+
+        events: list[tuple[str, str, float]] = []
+
+        def _cb(phase: str, message: str, pct: float) -> None:
+            """Record each progress callback invocation.
+
+            Args:
+                phase: Pipeline phase name.
+                message: Status message.
+                pct: Percentage value.
+            """
+            events.append((phase, message, pct))
+
+        result = run_automation(self._make_request(), progress_callback=_cb)
+        self.assertTrue(result.success)
+
+        def _start_pct(artifact_key: str) -> float:
+            """Return the percentage of an artifact's start announcement.
+
+            Args:
+                artifact_key: Artifact key to look up.
+
+            Returns:
+                Percentage reported with the artifact-start message.
+            """
+            for phase, message, pct in events:
+                if (
+                    phase == "parsing"
+                    and message.startswith(f"Parsing {artifact_key} from")
+                    and "records" not in message
+                ):
+                    return pct
+            self.fail(f"No artifact-start progress event for {artifact_key}.")
+
+        runkeys_pct = _start_pct("runkeys")
+        shellbags_pct = _start_pct("shellbags")
+        # Single image: its span is the full phase, so the second of two
+        # artifacts starts at the 50% mark.
+        self.assertEqual(runkeys_pct, 0.0)
+        self.assertEqual(shellbags_pct, 50.0)
+
     def test_analysis_prompt_starts_are_forwarded_to_progress_callback(self) -> None:
         """Analyzer prompt-start events surface as analysis progress messages."""
 

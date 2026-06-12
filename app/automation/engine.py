@@ -631,6 +631,13 @@ def _parse_artifact_for_automation(
 ) -> dict[str, Any]:
     """Parse one artifact with automation progress and cancellation wiring.
 
+    Announces the artifact via the progress callback before parsing starts,
+    so status polling names the artifact actually running. Without this,
+    the run message would keep naming the previously completed artifact for
+    the whole duration of slow artifacts that stream fewer than 1,000
+    records (the parser's mid-stream emission threshold), such as ``lnk``
+    walking the full filesystem on a disk image.
+
     Args:
         parser: Open parser instance.
         artifact_key: Artifact key to parse.
@@ -646,6 +653,12 @@ def _parse_artifact_for_automation(
         ParserCancelledError: If parser cancellation is requested.
         Exception: Any parser error raised by the underlying implementation.
     """
+    _notify(
+        progress_callback,
+        "parsing",
+        f"Parsing {artifact_key} from {img_label}...",
+        percentage,
+    )
 
     def _parser_progress(*args: Any, **_kwargs: Any) -> None:
         """Forward parser record progress to the automation callback.
@@ -1588,11 +1601,18 @@ def _execute_automation(
                 csv_paths: dict[str, str | Path] = {}
                 _notify(progress_callback, "parsing", f"Parsing {img_label}...", pct)
 
-                for artifact_key in image_parse:
+                # Advance the percentage per artifact within this image's
+                # share of the phase, so status polling shows movement
+                # during long per-image artifact loops.
+                image_span = 100.0 / len(evidence_descriptors)
+                for artifact_index, artifact_key in enumerate(image_parse):
                     cancelled = _stop_if_cancelled()
                     if cancelled is not None:
                         return cancelled
 
+                    artifact_pct = pct + (
+                        (artifact_index / len(image_parse)) * image_span
+                    )
                     try:
                         parse_result = _parse_artifact_for_automation(
                             parser=parser,
@@ -1600,7 +1620,7 @@ def _execute_automation(
                             img_label=img_label,
                             progress_callback=progress_callback,
                             cancel_check=safe_cancel_check,
-                            percentage=pct,
+                            percentage=artifact_pct,
                         )
                         if _parse_result_has_usable_output(parse_result):
                             csv_paths[artifact_key] = parse_result["csv_path"]

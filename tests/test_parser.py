@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from datetime import date, datetime, time
+import itertools
 import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -468,6 +469,43 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result["record_count"], 2500)
         # Callback at 1000, 2000, and final
         self.assertTrue(callback.call_count >= 3)
+
+    def test_parse_artifact_time_based_progress_emission(self) -> None:
+        """Slow low-volume artifacts emit progress on elapsed time.
+
+        Artifacts that stream records slowly and never reach the
+        1,000-record threshold must still emit progress at least every
+        PROGRESS_EMIT_INTERVAL_SECONDS so status polling shows liveness.
+        """
+        records = [FakeRecord({"id": i}) for i in range(5)]
+
+        class SlowTarget:
+            """Target stub yielding a handful of records."""
+
+            def runkeys(self) -> list[FakeRecord]:
+                """Return the prepared records."""
+                return records
+
+        callback = Mock()
+        audit = FakeAuditLogger()
+        # Each perf_counter() call advances the fake clock by 6 seconds,
+        # exceeding the 5-second emission interval on every record.
+        fake_clock = itertools.count(0.0, 6.0)
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(SlowTarget(), Path(temp_dir), audit)
+            with patch(
+                "app.parser.core.perf_counter",
+                side_effect=lambda: next(fake_clock),
+            ):
+                result = parser.parse_artifact(
+                    "runkeys", progress_callback=callback,
+                )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["record_count"], 5)
+        # One time-based emission per record plus the final emission --
+        # far more than the single final call the count threshold allows.
+        self.assertGreaterEqual(callback.call_count, 5)
 
     def test_parse_artifact_caps_at_max_records(self) -> None:
         """Records should be capped at MAX_RECORDS_PER_ARTIFACT."""
@@ -953,6 +991,38 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result["record_count"], 1500)
         # At least one progress call at 1000 and a final call
         self.assertTrue(callback.call_count >= 2)
+
+    def test_parse_artifact_evtx_time_based_progress_emission(self) -> None:
+        """EVTX writing emits progress on elapsed time below 1,000 records."""
+        records = [
+            FakeRecord({"channel": "Security", "event_id": i}) for i in range(5)
+        ]
+
+        class SlowEvtxTarget:
+            """Target stub yielding a handful of EVTX records."""
+
+            def evtx(self) -> list[FakeRecord]:
+                """Return the prepared records."""
+                return records
+
+        callback = Mock()
+        audit = FakeAuditLogger()
+        # Each perf_counter() call advances the fake clock by 6 seconds,
+        # exceeding the 5-second emission interval on every record.
+        fake_clock = itertools.count(0.0, 6.0)
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(SlowEvtxTarget(), Path(temp_dir), audit)
+            with patch(
+                "app.parser.core.perf_counter",
+                side_effect=lambda: next(fake_clock),
+            ):
+                result = parser.parse_artifact(
+                    "evtx", progress_callback=callback,
+                )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["record_count"], 5)
+        self.assertGreaterEqual(callback.call_count, 5)
 
 
     def test_evtx_schema_expansion_preserves_later_fields(self) -> None:

@@ -27,6 +27,8 @@ Attributes:
     EVTX_MAX_RECORDS_PER_FILE: Maximum rows per EVTX CSV part file.
     MAX_RECORDS_PER_ARTIFACT: Default cap on rows written for any single
         artifact. ``0`` means unlimited.
+    PROGRESS_EMIT_INTERVAL_SECONDS: Minimum elapsed seconds between
+        time-based progress emissions for slow, low-record-count artifacts.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ apply_dissect_patches()
 UNKNOWN_VALUE = "Unknown"
 EVTX_MAX_RECORDS_PER_FILE = 500_000
 MAX_RECORDS_PER_ARTIFACT = 0
+PROGRESS_EMIT_INTERVAL_SECONDS = 5.0
 _PREFIXED_THUMBCACHE_FUNCTIONS = {
     "thumbcache.thumbcache": ("thumbcache", ThumbcacheRecord),
     "thumbcache.iconcache": ("iconcache", IconcacheRecord),
@@ -441,8 +444,10 @@ class ForensicParser:
         Args:
             artifact_key: Key from the OS-specific artifact registry identifying
                 the artifact to parse.
-            progress_callback: Optional callback invoked every 1 000 records
-                with progress information.
+            progress_callback: Optional callback invoked with progress
+                information every 1,000 records, at least once every
+                :data:`PROGRESS_EMIT_INTERVAL_SECONDS` seconds while records
+                are streaming, and once on successful completion.
             cancel_check: Optional callable returning ``True`` when parsing
                 should stop.
 
@@ -686,7 +691,10 @@ class ForensicParser:
         Args:
             records: Iterable of Dissect record objects.
             csv_output_path: Destination CSV file path.
-            progress_callback: Optional progress callback.
+            progress_callback: Optional progress callback. Invoked every
+                1,000 records, at least once every
+                :data:`PROGRESS_EMIT_INTERVAL_SECONDS` seconds while records
+                are streaming, and once when the artifact completes.
             artifact_key: Artifact key for audit/progress reporting.
 
         Returns:
@@ -697,6 +705,7 @@ class ForensicParser:
         fieldnames: list[str] = []
         fieldnames_set: set[str] = set()
         headers_expanded = False
+        last_progress_emit = perf_counter()
 
         with csv_output_path.open("w", newline="", encoding="utf-8") as csv_file:
             writer: csv.DictWriter | None = None
@@ -737,8 +746,13 @@ class ForensicParser:
                     )
                     break
 
-                if progress_callback is not None and record_count % 1000 == 0:
+                if progress_callback is not None and (
+                    record_count % 1000 == 0
+                    or perf_counter() - last_progress_emit
+                    >= PROGRESS_EMIT_INTERVAL_SECONDS
+                ):
                     self._emit_progress(progress_callback, artifact_key, record_count)
+                    last_progress_emit = perf_counter()
 
         if headers_expanded and record_count > 0:
             self._rewrite_csv_with_expanded_headers(csv_output_path, fieldnames)
@@ -788,7 +802,10 @@ class ForensicParser:
         Args:
             artifact_key: Artifact key for filename construction.
             records: Iterable of Dissect EVTX record objects.
-            progress_callback: Optional progress callback.
+            progress_callback: Optional progress callback. Invoked every
+                1,000 records, at least once every
+                :data:`PROGRESS_EMIT_INTERVAL_SECONDS` seconds while records
+                are streaming, and once when the artifact completes.
             created_csv_paths: Optional list that will be populated with
                 paths of CSV files as they are created.  This allows the
                 caller to clean up partial files if the method raises.
@@ -804,6 +821,7 @@ class ForensicParser:
         csv_paths: list[Path] = []
         record_count = 0
         max_records = self.max_records_per_artifact
+        last_progress_emit = perf_counter()
 
         try:
             for record in records:
@@ -896,8 +914,13 @@ class ForensicParser:
                 writer_state["records_in_file"] += 1
                 record_count += 1
 
-                if progress_callback is not None and record_count % 1000 == 0:
+                if progress_callback is not None and (
+                    record_count % 1000 == 0
+                    or perf_counter() - last_progress_emit
+                    >= PROGRESS_EMIT_INTERVAL_SECONDS
+                ):
                     self._emit_progress(progress_callback, artifact_key, record_count)
+                    last_progress_emit = perf_counter()
         finally:
             # Detect whether we are unwinding due to an existing exception
             # so that a header-rewrite failure does not mask the original error.
