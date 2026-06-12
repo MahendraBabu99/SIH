@@ -77,7 +77,7 @@ jobs:
       - name: Run real MCP stdio smoke test
         run: >
           python -m pytest
-          tests/test_mcp_server.py::TestMCPProtocolSmoke::test_stdio_client_can_initialize_list_and_call_safe_tools
+          tests/test_mcp_protocol_smoke.py::TestMCPProtocolSmoke::test_stdio_client_can_initialize_list_and_call_safe_tools
           -q
           -rs
 
