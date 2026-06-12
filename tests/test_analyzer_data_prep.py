@@ -685,17 +685,17 @@ class TestEstimateTokensStandalone(unittest.TestCase):
 
 
 class TestSplitCsvIntoChunks(unittest.TestCase):
-    """Tests for chunking.split_csv_into_chunks."""
+    """Tests for chunk_budget.split_csv_into_chunks."""
 
     def test_small_csv_returns_single_chunk(self) -> None:
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         csv_text = "header\nrow1\nrow2"
         result = split_csv_into_chunks(csv_text, max_chars=1000)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0], csv_text)
 
     def test_splits_at_row_boundaries(self) -> None:
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         header = "col1,col2"
         rows = [f"val{i},data{i}" for i in range(100)]
         csv_text = header + "\n" + "\n".join(rows)
@@ -705,25 +705,25 @@ class TestSplitCsvIntoChunks(unittest.TestCase):
             self.assertTrue(chunk.startswith(header))
 
     def test_zero_max_chars_returns_single_chunk(self) -> None:
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         csv_text = "header\nrow1"
         result = split_csv_into_chunks(csv_text, max_chars=0)
         self.assertEqual(len(result), 1)
 
     def test_header_only_csv(self) -> None:
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         csv_text = "col1,col2"
         result = split_csv_into_chunks(csv_text, max_chars=5)
         self.assertEqual(len(result), 1)
 
     def test_empty_string(self) -> None:
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         result = split_csv_into_chunks("", max_chars=100)
         self.assertEqual(len(result), 1)
 
     def test_quoted_multiline_field_not_split(self) -> None:
         """A CSV row with a quoted field containing newlines must stay intact."""
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         csv_text = (
             'name,description\n'
             '"Alice","Short desc"\n'
@@ -742,7 +742,7 @@ class TestSplitCsvIntoChunks(unittest.TestCase):
 
     def test_multiline_field_chunked_across_boundary(self) -> None:
         """Multiline rows must not be split across chunk boundaries."""
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         header = "id,notes"
         # Build rows where the second has an embedded newline
         row1 = '"1","normal row"'
@@ -769,7 +769,7 @@ class TestSplitCsvIntoChunks(unittest.TestCase):
 
     def test_headers_preserved_in_all_chunks_with_multiline(self) -> None:
         """Each chunk starts with the header even when rows have newlines."""
-        from app.analyzer.chunking import split_csv_into_chunks
+        from app.analyzer.chunk_budget import split_csv_into_chunks
         rows = [f'"val{i}","line1\nline2"' for i in range(20)]
         csv_text = "col1,col2\n" + "\n".join(rows)
         result = split_csv_into_chunks(csv_text, max_chars=200)

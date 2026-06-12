@@ -31,9 +31,7 @@ from typing import Any, Callable, Iterable, Mapping
 from ..ai_providers import AIProviderError, create_provider
 from ..ai_providers.utils import _inline_attachment_data_into_prompt
 from .cancellation import AnalysisCancelledError as _AnalysisCancelledError, raise_if_cancelled
-from .chunking import (
-    analyze_artifact_chunked, find_csv_section_anchor, split_csv_and_suffix, split_csv_into_chunks,
-)
+from .chunking import analyze_artifact_chunked, find_csv_section_anchor, split_csv_and_suffix
 from .citations import match_column_name, timestamp_found_in_csv, timestamp_lookup_keys, validate_citations
 from .constants import (
     AI_MAX_TOKENS, AI_RETRY_ATTEMPTS, AI_RETRY_BASE_DELAY,
@@ -41,8 +39,8 @@ from .constants import (
     DEFAULT_ARTIFACT_AI_COLUMNS_CONFIG_PATH, DEFAULT_ARTIFACT_PROMPT_TEMPLATE,
     DEFAULT_ARTIFACT_PROMPT_TEMPLATE_SMALL_CONTEXT, DEFAULT_CHUNK_MERGE_PROMPT_TEMPLATE,
     DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS, DEFAULT_SUMMARY_PROMPT_TEMPLATE,
-    DEFAULT_SYSTEM_PROMPT, MAX_MERGE_ROUNDS, PROJECT_ROOT, TOKEN_CHAR_RATIO,
-    UnavailableProvider,
+    CHUNK_CONTEXT_FRACTION, DEFAULT_SYSTEM_PROMPT, MAX_MERGE_ROUNDS, PROJECT_ROOT,
+    TOKEN_CHAR_RATIO, UnavailableProvider,
 )
 from .data_prep import (
     ArtifactPrepResult, build_artifact_csv_attachment, build_full_data_csv, compute_statistics,
@@ -369,7 +367,12 @@ class ForensicAnalyzer:
     # ------------------------------------------------------------------
 
     def _load_analysis_settings(self) -> None:
-        """Load and validate analysis tuning parameters from the config dict."""
+        """Load and validate analysis tuning parameters from the config dict.
+
+        The per-chunk character budget is 60% of the reserved input budget
+        at the ASCII characters-per-token ratio; token-aware chunk planning
+        re-derives it from the measured token density at analysis time.
+        """
         analysis_config = self.config.get("analysis")
         if not isinstance(analysis_config, Mapping):
             analysis_config = {}
@@ -386,7 +389,7 @@ class ForensicAnalyzer:
             DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS,
             minimum=1,
         )
-        self.chunk_csv_budget = max(1, int(self.ai_input_max_tokens * TOKEN_CHAR_RATIO * 0.6))
+        self.chunk_csv_budget = max(1, int(self.ai_input_max_tokens * TOKEN_CHAR_RATIO * CHUNK_CONTEXT_FRACTION))
         self.citation_spot_check_limit = read_int_setting(
             analysis_config, "citation_spot_check_limit", CITATION_SPOT_CHECK_LIMIT, minimum=1,
         )

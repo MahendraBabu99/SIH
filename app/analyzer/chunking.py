@@ -4,9 +4,9 @@ When artifact CSV data exceeds the AI model's context window, this module
 splits the data into row-boundary-aligned chunks, analyses each chunk
 independently, and hierarchically merges the per-chunk findings via
 additional AI calls until a single consolidated analysis remains.
-The bottom-up merge implementation lives in
-:mod:`app.analyzer.chunk_merge`; this module re-exports its historical
-helpers so existing imports keep working.
+Chunk sizing and the row-boundary CSV splitter live in
+:mod:`app.analyzer.chunk_budget`; the bottom-up merge implementation
+lives in :mod:`app.analyzer.chunk_merge`.
 
 Attributes:
     LOGGER: Module-level logger instance.
@@ -14,20 +14,15 @@ Attributes:
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
 import re
 from typing import Any
 
 from .cancellation import raise_if_cancelled
-# _build_merge_prompt and _estimate_prompt_tokens are re-exported for
-# backward-compatible imports from this module (see module docstring).
+from .chunk_budget import plan_token_aware_chunks
 from .chunk_merge import (
-    _build_merge_prompt,  # noqa: F401  (re-export)
     _call_with_retry,
     _ensure_prompt_fits_budget,
-    _estimate_prompt_tokens,  # noqa: F401  (re-export)
     _hierarchical_merge_findings,
 )
 from .constants import CSV_DATA_SECTION_RE, CSV_TRAILING_FENCE_RE
@@ -39,26 +34,7 @@ __all__ = [
     "analyze_artifact_chunked",
     "find_csv_section_anchor",
     "split_csv_and_suffix",
-    "split_csv_into_chunks",
 ]
-
-
-def _serialize_row(row: list[str]) -> str:
-    """Serialize a single parsed CSV row back to a CSV string.
-
-    Uses the ``csv`` module so that fields containing commas, quotes,
-    or newlines are properly quoted.
-
-    Args:
-        row: List of field values.
-
-    Returns:
-        A single CSV line (without trailing newline).
-    """
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(row)
-    return buf.getvalue().rstrip("\r\n")
 
 
 def _suffix_start(text: str) -> int:
@@ -209,62 +185,6 @@ def _csv_preamble(raw_csv_tail: str) -> str:
     return ""
 
 
-def split_csv_into_chunks(csv_text: str, max_chars: int) -> list[str]:
-    """Split CSV text into chunks that each fit within *max_chars*.
-
-    Parsing is done via the ``csv`` module so that quoted fields with
-    embedded newlines are kept intact as single records.  Every chunk
-    retains the original header row.
-
-    Args:
-        csv_text: Full CSV text including the header row.
-        max_chars: Maximum character count per chunk (including header).
-
-    Returns:
-        A list of CSV text chunks, each starting with the header row.
-    """
-    if max_chars <= 0 or len(csv_text) <= max_chars:
-        return [csv_text]
-
-    reader = csv.reader(io.StringIO(csv_text))
-    try:
-        header_fields = next(reader)
-    except StopIteration:
-        return [csv_text]
-
-    header_line = _serialize_row(header_fields)
-
-    data_rows: list[str] = []
-    for row in reader:
-        data_rows.append(_serialize_row(row))
-
-    if not data_rows:
-        return [csv_text]
-
-    header_overhead = len(header_line) + 1  # +1 for the joining newline
-    chunk_data_budget = max_chars - header_overhead
-    if chunk_data_budget <= 0:
-        return [csv_text]
-
-    chunks: list[str] = []
-    current_rows: list[str] = []
-    current_size = 0
-
-    for serialized_row in data_rows:
-        row_size = len(serialized_row) + 1  # +1 for joining newline
-        if current_rows and current_size + row_size > chunk_data_budget:
-            chunks.append(header_line + "\n" + "\n".join(current_rows))
-            current_rows = []
-            current_size = 0
-        current_rows.append(serialized_row)
-        current_size += row_size
-
-    if current_rows:
-        chunks.append(header_line + "\n" + "\n".join(current_rows))
-
-    return chunks if chunks else [csv_text]
-
-
 def split_csv_and_suffix(raw_csv_tail: str) -> tuple[str, str]:
     """Separate CSV rows from trailing content in a rendered prompt.
 
@@ -383,7 +303,11 @@ def analyze_artifact_chunked(
 
     Splits the CSV portion of the prompt into row-boundary-aligned
     chunks, analyzes each independently via the AI provider, then
-    merges the per-chunk findings hierarchically.
+    merges the per-chunk findings hierarchically. When a reserved input
+    token budget is active, chunk sizing is planned token-aware via
+    :func:`app.analyzer.chunk_budget.plan_token_aware_chunks` so that
+    token-dense (non-ASCII) CSV data is re-split into smaller chunks
+    instead of failing the artifact; rows are never truncated.
 
     Args:
         artifact_prompt: The fully rendered artifact analysis prompt.
@@ -393,9 +317,11 @@ def analyze_artifact_chunked(
         model: AI model identifier for progress reporting.
         system_prompt: The system prompt sent to the AI provider.
         ai_response_max_tokens: Token budget for the AI response.
-        chunk_csv_budget: Character budget for CSV data per chunk.
+        chunk_csv_budget: Character budget for CSV data per chunk, used
+            when no input token budget is active.
         input_token_budget: Optional reserved input-token budget.
-        estimate_tokens_fn: Optional callable used for final prompt checks.
+        estimate_tokens_fn: Optional callable used for chunk planning and
+            final prompt checks.
         chunk_merge_prompt_template: Template for merging chunk findings.
         max_merge_rounds: Maximum hierarchical merge iterations.
         call_ai_with_retry_fn: Callable wrapping AI calls with retry.
@@ -417,6 +343,9 @@ def analyze_artifact_chunked(
 
     Raises:
         AnalysisCancelledError: If cancellation has been requested.
+        ValueError: If the prompt overhead leaves no room for CSV rows,
+            or if a single CSV row by itself cannot fit within the
+            reserved input token budget (rows are never truncated).
     """
     raise_if_cancelled(cancel_check)
     marker_match = find_csv_section_anchor(artifact_prompt)
@@ -444,16 +373,17 @@ def analyze_artifact_chunked(
     instructions_portion = f"{instructions_portion}{_csv_preamble(raw_csv_tail)}"
     csv_data, context_suffix = split_csv_and_suffix(raw_csv_tail)
 
-    suffix_chars = len(context_suffix)
-    instructions_chars = len(instructions_portion) + len(system_prompt) + suffix_chars
-    csv_budget = chunk_csv_budget - instructions_chars
-    if csv_budget <= 0:
-        raise ValueError(
-            f"Prompt overhead for {artifact_key} leaves no room for CSV rows "
-            "within the reserved input token budget."
-        )
-
-    chunks = split_csv_into_chunks(csv_data, csv_budget)
+    chunks, csv_budget = plan_token_aware_chunks(
+        csv_data=csv_data,
+        instructions_portion=instructions_portion,
+        context_suffix=context_suffix,
+        system_prompt=system_prompt,
+        full_prompt=artifact_prompt,
+        artifact_key=artifact_key,
+        chunk_csv_budget=chunk_csv_budget,
+        input_token_budget=input_token_budget,
+        estimate_tokens_fn=estimate_tokens_fn,
+    )
     total_chunks = len(chunks)
 
     if total_chunks <= 1:

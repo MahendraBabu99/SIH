@@ -6,6 +6,9 @@ circular dependencies.
 
 Attributes:
     TOKEN_CHAR_RATIO (int): Approximate characters per token for ASCII text.
+    CHUNK_CONTEXT_FRACTION (float): Fraction of the reserved input token
+        budget allotted to CSV data in each chunked-analysis request,
+        leaving headroom for prompt overhead and estimator drift.
     AI_MAX_TOKENS (int): Default AI context window size in tokens.
     DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS (int): Token threshold for
         switching to the small-context prompt template.
@@ -30,6 +33,7 @@ from ..ai_providers import AIProviderError
 
 __all__ = [
     "TOKEN_CHAR_RATIO",
+    "CHUNK_CONTEXT_FRACTION",
     "AI_MAX_TOKENS",
     "DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS",
     "AI_RETRY_ATTEMPTS",
@@ -51,6 +55,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 TOKEN_CHAR_RATIO = 4
+CHUNK_CONTEXT_FRACTION = 0.6
 AI_MAX_TOKENS = 128000
 DEFAULT_SHORTENED_PROMPT_CUTOFF_TOKENS = 64000
 AI_RETRY_ATTEMPTS = 3

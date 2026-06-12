@@ -11,11 +11,16 @@ artifact, preserving the already-completed chunk analyses for
 completeness.
 
 This module was split out of :mod:`app.analyzer.chunking` to keep both
-files within the project file-size limits; ``chunking`` re-exports the
-helpers it historically exposed.
+files within the project file-size limits; :mod:`app.analyzer.chunking`
+and :mod:`app.analyzer.chunk_budget` import the helpers they need
+directly.
 
 Attributes:
     LOGGER: Module-level logger instance.
+    MAX_FALLBACK_SHRINK_ATTEMPTS (int): Maximum number of times the
+        truncated-concatenation fallback shrinks its findings character
+        budget when the merge prompt exceeds the reserved input token
+        budget.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ from .prompt_sections import append_analysis_prompt_footer, wrap_prompt_section
 from .utils import sanitize_filename, emit_analysis_progress
 
 LOGGER = logging.getLogger(__name__)
+
+MAX_FALLBACK_SHRINK_ATTEMPTS = 5
 
 
 def _estimate_prompt_tokens(
@@ -210,6 +217,41 @@ def _merge_batch_overflows_budget(
     return token_estimate > input_token_budget
 
 
+def _truncate_findings_to_char_budget(
+    current_findings: list[str],
+    findings_budget: int,
+) -> tuple[str, bool]:
+    """Concatenate findings, truncating each one to fit a character budget.
+
+    When the combined findings exceed ``findings_budget``, every finding
+    is capped at an equal per-finding share (never below 200 characters)
+    and truncated findings receive a visible ``[... truncated ...]``
+    marker.
+
+    Args:
+        current_findings: Finding texts to concatenate.
+        findings_budget: Total character budget for the concatenated
+            findings text.
+
+    Returns:
+        A ``(concatenated_text, text_truncated)`` tuple where
+        ``text_truncated`` is ``True`` when at least one finding was cut.
+    """
+    total_chars = sum(len(finding) for finding in current_findings)
+    if total_chars <= findings_budget:
+        return "\n\n".join(current_findings), False
+    per_finding_budget = max(200, findings_budget // max(1, len(current_findings)))
+    capped: list[str] = []
+    text_truncated = False
+    for finding in current_findings:
+        if len(finding) > per_finding_budget:
+            capped.append(finding[:per_finding_budget] + "\n[... truncated ...]")
+            text_truncated = True
+        else:
+            capped.append(finding)
+    return "\n\n".join(capped), text_truncated
+
+
 def _concatenation_merge_fallback(
     *,
     current_findings: list[str],
@@ -243,10 +285,15 @@ def _concatenation_merge_fallback(
     merge-round limit is exhausted, or a merge batch prompt would exceed
     the reserved input token budget), the remaining findings are
     concatenated -- individually truncated when needed -- and merged in a
-    single provider call. The truncation is surfaced as a visible
-    ``chunk_merge_truncated`` processing warning and a
-    ``chunked_analysis_merge_fallback`` audit entry rather than failing
-    the artifact, preserving the completed chunk analyses.
+    single provider call. The initial truncation budget is
+    character-based; when the resulting merge prompt still exceeds the
+    reserved input token budget (token-dense, non-ASCII findings), the
+    per-finding character budget is shrunk proportionally and the prompt
+    rebuilt, in a bounded loop, so the completed chunk analyses are
+    merged instead of being discarded by a budget error. The truncation
+    is surfaced as a visible ``chunk_merge_truncated`` processing warning
+    and a ``chunked_analysis_merge_fallback`` audit entry rather than
+    failing the artifact, preserving the completed chunk analyses.
 
     Args:
         current_findings: Remaining finding texts to concatenate and merge.
@@ -256,7 +303,9 @@ def _concatenation_merge_fallback(
         model: AI model identifier for progress reporting.
         system_prompt: The system prompt sent to the AI provider.
         ai_response_max_tokens: Token budget for the AI response.
-        findings_budget: Character budget available for findings text.
+        findings_budget: Initial character budget available for findings
+            text; shrunk token-aware when the merge prompt overflows the
+            input token budget.
         input_token_budget: Optional reserved input-token budget.
         estimate_tokens_fn: Optional analyzer token estimator.
         chunk_merge_prompt_template: Template for merging findings.
@@ -285,8 +334,9 @@ def _concatenation_merge_fallback(
 
     Raises:
         AnalysisCancelledError: If cancellation has been requested.
-        ValueError: If even the truncated fallback prompt exceeds the
-            reserved input token budget.
+        ValueError: If the fallback prompt exceeds the reserved input
+            token budget even at the minimum per-finding truncation
+            budget.
     """
     if progress_callback is not None:
         emit_analysis_progress(
@@ -300,20 +350,56 @@ def _concatenation_merge_fallback(
             },
         )
         raise_if_cancelled(cancel_check)
-    total_chars = sum(len(f) for f in current_findings)
-    text_truncated = False
-    if total_chars > findings_budget:
-        per_finding_budget = max(200, findings_budget // len(current_findings))
-        capped = []
-        for f in current_findings:
-            if len(f) > per_finding_budget:
-                capped.append(f[:per_finding_budget] + "\n[... truncated ...]")
-                text_truncated = True
-            else:
-                capped.append(f)
-        concatenated = "\n\n".join(capped)
-    else:
-        concatenated = "\n\n".join(current_findings)
+
+    effective_findings_budget = findings_budget
+    concatenated, text_truncated = _truncate_findings_to_char_budget(
+        current_findings, effective_findings_budget,
+    )
+    merge_prompt = _build_merge_prompt(
+        findings_text=concatenated,
+        batch_count=len(current_findings),
+        artifact_key=artifact_key,
+        artifact_name=artifact_name,
+        investigation_context=investigation_context,
+        chunk_merge_prompt_template=chunk_merge_prompt_template,
+    )
+    if input_token_budget is not None and input_token_budget > 0:
+        minimum_budget = 200 * max(1, len(current_findings))
+        for _attempt in range(MAX_FALLBACK_SHRINK_ATTEMPTS):
+            token_estimate = _estimate_prompt_tokens(
+                system_prompt, merge_prompt, estimate_tokens_fn,
+            )
+            if token_estimate <= input_token_budget:
+                break
+            if effective_findings_budget <= minimum_budget:
+                break
+            LOGGER.info(
+                "Merge fallback for %s exceeds the input token budget (%d > %d); "
+                "shrinking the findings character budget and rebuilding.",
+                artifact_key, token_estimate, input_token_budget,
+            )
+            effective_findings_budget = max(
+                minimum_budget,
+                min(
+                    effective_findings_budget - 1,
+                    int(
+                        effective_findings_budget
+                        * (input_token_budget / token_estimate)
+                        * 0.9
+                    ),
+                ),
+            )
+            concatenated, text_truncated = _truncate_findings_to_char_budget(
+                current_findings, effective_findings_budget,
+            )
+            merge_prompt = _build_merge_prompt(
+                findings_text=concatenated,
+                batch_count=len(current_findings),
+                artifact_key=artifact_key,
+                artifact_name=artifact_name,
+                investigation_context=investigation_context,
+                chunk_merge_prompt_template=chunk_merge_prompt_template,
+            )
 
     warning = {
         "category": "chunk_merge_truncated",
@@ -329,7 +415,7 @@ def _concatenation_merge_fallback(
             )
         ),
         "remaining_batch_count": len(current_findings),
-        "findings_budget": findings_budget,
+        "findings_budget": effective_findings_budget,
         "max_merge_rounds": max_merge_rounds,
         "merge_rounds_completed": merge_rounds_completed,
         "text_truncated": text_truncated,
@@ -343,20 +429,12 @@ def _concatenation_merge_fallback(
                 "artifact_key": artifact_key,
                 "artifact_name": artifact_name,
                 "remaining_batch_count": len(current_findings),
-                "findings_budget": findings_budget,
+                "findings_budget": effective_findings_budget,
                 "max_merge_rounds": max_merge_rounds,
                 "text_truncated": text_truncated,
             },
         )
 
-    merge_prompt = _build_merge_prompt(
-        findings_text=concatenated,
-        batch_count=len(current_findings),
-        artifact_key=artifact_key,
-        artifact_name=artifact_name,
-        investigation_context=investigation_context,
-        chunk_merge_prompt_template=chunk_merge_prompt_template,
-    )
     safe_key = prompt_filename_stem or sanitize_filename(artifact_key)
     if save_case_prompt_fn is not None:
         save_case_prompt_fn(
