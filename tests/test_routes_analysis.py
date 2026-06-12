@@ -9,6 +9,7 @@ import csv
 import inspect
 import json
 import logging
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -737,6 +738,267 @@ class TestAnalysisStartupSingleCodePath(unittest.TestCase):
         )
         logged_events = [call.args[0] for call in case["audit"].log.call_args_list]
         self.assertIn("analysis_startup_failed", logged_events)
+
+
+class TestAnalysisCancelCompletionRace(unittest.TestCase):
+    """Cancel requests must never destroy the outputs of a completing run.
+
+    Regression tests for the race between ``POST /analyze/cancel`` on the
+    request thread and the analysis worker's success commit.  The cancel
+    route must only signal cancellation and leave output purging to the
+    worker, so a run that has already passed its final cancellation
+    checkpoint completes with intact, servable results instead of ending
+    as a "completed" case whose results were just deleted.
+    """
+
+    def setUp(self) -> None:
+        """Create a Flask app, client, and clean shared route state."""
+        self.temp_dir = TemporaryDirectory(prefix="aift-cancel-race-")
+        self.cases_root = Path(self.temp_dir.name) / "cases"
+        self.config_path = Path(self.temp_dir.name) / "config.yaml"
+        self.app = create_app(str(self.config_path))
+        self.app.testing = True
+        self.csrf_token = self.app.config["CSRF_TOKEN"]
+        self.client = self.app.test_client()
+        self.client.environ_base["HTTP_X_CSRF_TOKEN"] = self.csrf_token
+        routes_state.CASE_STATES.clear()
+        routes_state.PARSE_PROGRESS.clear()
+        routes_state.ANALYSIS_PROGRESS.clear()
+        routes_state.CHAT_PROGRESS.clear()
+        unregister_all_case_log_handlers()
+        FakeAnalyzer.last_artifact_keys = []
+
+    def tearDown(self) -> None:
+        """Clear case log handlers and remove temporary files."""
+        unregister_all_case_log_handlers()
+        self.temp_dir.cleanup()
+
+    def _patches(self, analyzer_cls: type) -> ExitStack:
+        """Return an ExitStack with the standard evidence/analysis patches.
+
+        Args:
+            analyzer_cls: Fake analyzer class to install in the worker
+                module.
+
+        Returns:
+            A ``contextlib.ExitStack`` with cases-root, parser, analyzer,
+            report-generator, hashing, and synchronous-thread patches
+            applied.
+        """
+        hash_rv = {"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 4}
+        stack = ExitStack()
+        for mod in (routes_handlers, routes_images, routes_state):
+            stack.enter_context(patch.object(mod, "CASES_ROOT", self.cases_root))
+        for mod in (routes_tasks, routes_evidence):
+            stack.enter_context(patch.object(mod, "ForensicParser", FakeParser))
+        stack.enter_context(patch("app.parser.core.ForensicParser", FakeParser))
+        stack.enter_context(patch.object(routes_tasks, "ForensicAnalyzer", analyzer_cls))
+        stack.enter_context(
+            patch.object(routes_evidence, "ReportGenerator", FakeReportGenerator)
+        )
+        stack.enter_context(
+            patch.object(routes_evidence, "compute_hashes", return_value=dict(hash_rv))
+        )
+        stack.enter_context(
+            patch("app.utils.hasher.compute_hashes", return_value=dict(hash_rv))
+        )
+        stack.enter_context(
+            patch.object(routes_evidence, "verify_hash", return_value=(True, "a" * 64))
+        )
+        stack.enter_context(
+            patch.object(routes_images.threading, "Thread", ImmediateThread)
+        )
+        return stack
+
+    def _setup_parsed_case(self) -> str:
+        """Create a case with intaken evidence and one parsed AI artifact.
+
+        Must be called while the patches from :meth:`_patches` are active.
+
+        Returns:
+            The case ID of the newly created, parsed case.
+        """
+        evidence_path = Path(self.temp_dir.name) / "race.E01"
+        evidence_path.write_bytes(b"demo")
+        create_resp = self.client.post("/api/cases", json={"case_name": "Cancel Race"})
+        self.assertEqual(create_resp.status_code, 201)
+        case_id = create_resp.get_json()["case_id"]
+        ev_resp = self.client.post(
+            f"/api/cases/{case_id}/evidence", json={"path": str(evidence_path)},
+        )
+        self.assertEqual(ev_resp.status_code, 200)
+        parse_resp = self.client.post(
+            first_image_parse_url(case_id),
+            json={
+                "artifact_options": [
+                    {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                ],
+            },
+        )
+        self.assertEqual(parse_resp.status_code, 202)
+        return case_id
+
+    def _parsed_csv_path(self, case_id: str) -> Path:
+        """Return the parsed runkeys CSV path for the case's first image.
+
+        Args:
+            case_id: UUID of the case.
+
+        Returns:
+            Path to ``runkeys.csv`` inside the image's parsed directory.
+        """
+        with routes_state.STATE_LOCK:
+            image_state = next(
+                iter(routes_state.CASE_STATES[case_id]["image_states"].values())
+            )
+            return Path(image_state["csv_output_dir"]) / "runkeys.csv"
+
+    def test_cancel_during_success_commit_keeps_completed_results(self) -> None:
+        """A cancel landing in the worker's commit window must not purge results.
+
+        Simulates the race by issuing ``POST /analyze/cancel`` from inside
+        the worker's commit window (after the on-disk and in-memory results
+        commit, before the terminal status flip).  The final state must be
+        either a cancelled run with purged outputs or a completed run with
+        servable results -- never "completed" with destroyed outputs.
+        """
+        with self._patches(FakeAnalyzer):
+            case_id = self._setup_parsed_case()
+            parsed_csv = self._parsed_csv_path(case_id)
+            cancel_responses: list[object] = []
+            real_emit = routes_tasks.emit_progress
+
+            def emit_with_late_cancel(
+                store: dict[str, dict[str, object]],
+                progress_key: str,
+                payload: dict[str, object],
+            ) -> None:
+                """Inject a cancel request inside the worker's commit window."""
+                if payload.get("type") == "analysis_summary" and not cancel_responses:
+                    cancel_responses.append(
+                        self.client.post(f"/api/cases/{case_id}/analyze/cancel")
+                    )
+                real_emit(store, progress_key, payload)
+
+            with patch.object(routes_tasks, "emit_progress", emit_with_late_cancel):
+                resp = self.client.post(
+                    f"/api/cases/{case_id}/analyze", json={"prompt": "race"},
+                )
+
+            self.assertEqual(resp.status_code, 202)
+            self.assertEqual(len(cancel_responses), 1)
+            self.assertEqual(
+                cancel_responses[0].status_code, 200,
+                "Cancel must be accepted while the analysis entry is running",
+            )
+
+            with routes_state.STATE_LOCK:
+                final_status = routes_state.ANALYSIS_PROGRESS[case_id]["status"]
+                case_status = routes_state.CASE_STATES[case_id].get("status")
+                has_findings = _has_image_scoped_findings(
+                    routes_state.CASE_STATES[case_id].get("analysis_results")
+                )
+            results_path = self.cases_root / case_id / "analysis_results.json"
+
+            self.assertIn(final_status, ("completed", "cancelled"))
+            if final_status == "completed":
+                self.assertEqual(case_status, "completed")
+                self.assertTrue(
+                    has_findings,
+                    "A completed run must keep its in-memory analysis results",
+                )
+                self.assertTrue(
+                    results_path.exists(),
+                    "A completed run must keep analysis_results.json on disk",
+                )
+                report_resp = self.client.get(f"/api/cases/{case_id}/report")
+                self.assertEqual(
+                    report_resp.status_code, 200,
+                    "A completed run must serve its report",
+                )
+            else:
+                self.assertFalse(has_findings)
+                self.assertFalse(results_path.exists())
+            self.assertTrue(
+                parsed_csv.exists(),
+                "Parsed CSVs must survive analysis cancellation",
+            )
+
+    def test_cancel_honored_at_checkpoint_purges_outputs(self) -> None:
+        """A cancel observed at an analyzer checkpoint purges all outputs.
+
+        With the route no longer deleting outputs itself, the worker owns
+        the purge: a run that acknowledges the cancel signal must leave no
+        servable analysis outputs behind while parsed CSVs stay intact.
+        """
+        case_holder: dict[str, str] = {}
+        test_client = self.client
+
+        class CancelAwareAnalyzer(FakeAnalyzer):
+            """Analyzer fake that requests cancellation and then honors it."""
+
+            def run_multi_image_analysis(
+                self,
+                images: list[dict[str, object]],
+                investigation_context: str,
+                progress_callback: object | None = None,
+                cancel_check: object | None = None,
+                analysis_date_range: tuple[str, str] | None = None,
+            ) -> dict[str, object]:
+                """Cancel via the route, then raise at the next checkpoint."""
+                response = test_client.post(
+                    f"/api/cases/{case_holder['case_id']}/analyze/cancel"
+                )
+                assert response.status_code == 200
+                if callable(cancel_check) and cancel_check():
+                    raise routes_tasks.AnalysisCancelledError("cancelled")
+                return super().run_multi_image_analysis(
+                    images, investigation_context, progress_callback,
+                    cancel_check, analysis_date_range,
+                )
+
+        with self._patches(CancelAwareAnalyzer):
+            case_id = self._setup_parsed_case()
+            case_holder["case_id"] = case_id
+            parsed_csv = self._parsed_csv_path(case_id)
+
+            resp = self.client.post(
+                f"/api/cases/{case_id}/analyze", json={"prompt": "cancel me"},
+            )
+            self.assertEqual(resp.status_code, 202)
+
+            with routes_state.STATE_LOCK:
+                self.assertEqual(
+                    routes_state.ANALYSIS_PROGRESS[case_id]["status"], "cancelled",
+                )
+                self.assertEqual(routes_state.CASE_STATES[case_id].get("status"), "parsed")
+                self.assertEqual(
+                    routes_state.CASE_STATES[case_id].get("analysis_results"), {},
+                )
+                self.assertEqual(
+                    routes_state.CASE_STATES[case_id].get("investigation_context"), "",
+                )
+            case_dir = self.cases_root / case_id
+            self.assertFalse((case_dir / "analysis_results.json").exists())
+            self.assertFalse((case_dir / "prompt.txt").exists())
+            self.assertFalse((case_dir / "chat_history.jsonl").exists())
+            self.assertEqual(
+                self.client.get(f"/api/cases/{case_id}/report").status_code, 400,
+            )
+            self.assertTrue(
+                parsed_csv.exists(),
+                "Parsed CSVs must survive analysis cancellation",
+            )
+
+    def test_cancel_without_running_analysis_returns_409(self) -> None:
+        """Cancelling when no analysis is running returns a 409 error."""
+        with routes_state.STATE_LOCK:
+            routes_state.CASE_STATES["idle-case"] = {
+                "status": "parsed",
+                "case_dir": self.temp_dir.name,
+            }
+        resp = self.client.post("/api/cases/idle-case/analyze/cancel")
+        self.assertEqual(resp.status_code, 409)
 
 
 if __name__ == "__main__":

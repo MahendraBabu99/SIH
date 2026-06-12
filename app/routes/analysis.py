@@ -305,13 +305,24 @@ def stream_analysis_progress(case_id: str) -> Response | tuple[Response, int]:
 
 @analysis_bp.post("/api/cases/<case_id>/analyze/cancel")
 def cancel_analysis_route(case_id: str) -> tuple[Response, int]:
-    """Cancel a running analysis operation for a case.
+    """Request cancellation of a running analysis operation for a case.
+
+    Cancellation is signal-only on the request thread: the route marks the
+    progress entry as ``cancelling`` and sets its cancel event, then leaves
+    all output handling to the background worker.  The worker purges the
+    analysis outputs itself when it acknowledges the cancellation or fails,
+    and a run that has already passed its final cancellation checkpoint
+    completes normally with its results intact.  Purging outputs here would
+    race the worker's success commit and could destroy the results of a
+    run that goes on to complete.  There are no stale servable outputs to
+    remove on this thread either, because starting an analysis already
+    clears the previous run's outputs before the worker is spawned.
 
     Args:
         case_id: UUID of the case.
 
     Returns:
-        ``(Response, 200)`` confirming cancellation, or error.
+        ``(Response, 200)`` confirming the cancellation request, or error.
     """
     case = get_case(case_id)
     if case is None:
@@ -319,14 +330,4 @@ def cancel_analysis_route(case_id: str) -> tuple[Response, int]:
     cancelled = cancel_progress(ANALYSIS_PROGRESS, case_id, "analysis_cancel_requested")
     if not cancelled:
         return error_response("No running analysis to cancel.", 409)
-    case_dir = case.get("case_dir")
-    if case_dir:
-        clear_analysis_outputs(
-            Path(case_dir),
-            case=case,
-            remove_prompt=True,
-            remove_chat_history=True,
-            remove_reports=True,
-            remove_analysis_results=True,
-        )
     return success_response({"status": "cancelling", "case_id": case_id})

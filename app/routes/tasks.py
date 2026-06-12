@@ -44,6 +44,7 @@ from .state import (
     mark_case_status,
     safe_int,
     set_progress_status,
+    set_progress_status_and_emit,
 )
 from .artifacts import (
     extract_parse_progress,
@@ -755,6 +756,12 @@ def run_multi_image_analysis_task(
     parsed directories and metadata), then delegates to
     :meth:`ForensicAnalyzer.run_multi_image_analysis`.
 
+    Cancellation is checkpoint-based and owned by this worker: a cancel
+    request observed at an analyzer checkpoint raises
+    :class:`AnalysisCancelledError` and purges all analysis outputs, while
+    a request arriving after the final checkpoint is outlived by the
+    success commit and the run completes with its results intact.
+
     Args:
         case_id: UUID of the case.
         prompt: Investigation context / user prompt.
@@ -964,8 +971,12 @@ def run_multi_image_analysis_task(
             "cross_image_summary": cross_summary,
             "skipped_images": skipped_images,
         })
-        set_progress_status(ANALYSIS_PROGRESS, case_id, "completed")
-        emit_progress(ANALYSIS_PROGRESS, case_id, {
+        # Commit the terminal status and the completion event in a single
+        # lock acquisition so observers never see "completed" without the
+        # matching event.  A cancel request that arrives after the
+        # analyzer's final checkpoint is simply outlived by this commit:
+        # the run completes normally and its outputs remain intact.
+        set_progress_status_and_emit(ANALYSIS_PROGRESS, case_id, "completed", {
             "type": "analysis_completed",
             "artifact_count": sum(
                 len(img_data.get("per_artifact", []))
