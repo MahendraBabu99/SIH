@@ -1652,11 +1652,7 @@ class TestMCPProtocolSmoke(unittest.TestCase):
             StdioServerParameters = mcp_module.StdioServerParameters
             stdio_client = stdio_module.stdio_client
         except (AttributeError, ImportError) as exc:
-            self.skipTest(
-                "optional MCP Python SDK client APIs are not available; "
-                "install/update with pip install -r requirements.txt "
-                f"({type(exc).__name__}: {exc})"
-            )
+            self._report_missing_mcp_sdk(exc)
 
         repo_root = Path(__file__).resolve().parents[1]
         env = dict(os.environ)
@@ -1708,6 +1704,51 @@ class TestMCPProtocolSmoke(unittest.TestCase):
         self.assertGreaterEqual(len(tool_names), len(mcp_server.MCP_TOOL_NAMES))
         self.assertEqual(info["mcp_server"]["name"], "aift")
         self.assertGreaterEqual(len(profiles["profiles"]), 0)
+
+    def test_missing_sdk_skips_when_mcp_not_required(self) -> None:
+        """Without AIFT_REQUIRE_MCP set, a missing SDK skips the smoke test."""
+        with patch.dict(os.environ):
+            os.environ.pop("AIFT_REQUIRE_MCP", None)
+            with self.assertRaises(unittest.SkipTest) as ctx:
+                self._report_missing_mcp_sdk(ImportError("No module named 'mcp'"))
+
+        self.assertIn("optional MCP Python SDK", str(ctx.exception))
+
+    def test_missing_sdk_fails_when_mcp_required(self) -> None:
+        """AIFT_REQUIRE_MCP=1 turns the missing-SDK skip into a failure."""
+        exc = AttributeError("module 'mcp' has no attribute 'ClientSession'")
+        with patch.dict(os.environ, {"AIFT_REQUIRE_MCP": "1"}):
+            with self.assertRaises(self.failureException) as ctx:
+                self._report_missing_mcp_sdk(exc)
+
+        self.assertIn("AIFT_REQUIRE_MCP", str(ctx.exception))
+        self.assertIn("ClientSession", str(ctx.exception))
+
+    def _report_missing_mcp_sdk(self, exc: Exception) -> None:
+        """Skip the smoke test, or fail it when the MCP SDK is required.
+
+        CI's MCP smoke job sets ``AIFT_REQUIRE_MCP=1`` so that a missing or
+        renamed MCP SDK fails the job loudly instead of silently skipping the
+        only protocol-level smoke check. Local runs without the optional SDK
+        still skip.
+
+        Args:
+            exc: The ``ImportError`` or ``AttributeError`` raised while
+                importing the optional MCP client APIs.
+
+        Raises:
+            unittest.SkipTest: When ``AIFT_REQUIRE_MCP`` is unset or empty.
+            AssertionError: When ``AIFT_REQUIRE_MCP`` is set to a non-empty
+                value, turning the skip into a hard test failure.
+        """
+        message = (
+            "optional MCP Python SDK client APIs are not available; "
+            "install/update with pip install -r requirements.txt "
+            f"({type(exc).__name__}: {exc})"
+        )
+        if os.environ.get("AIFT_REQUIRE_MCP"):
+            self.fail(f"AIFT_REQUIRE_MCP is set but the {message}")
+        self.skipTest(message)
 
     @staticmethod
     def _tool_payload(result: object) -> dict[str, object]:

@@ -52,6 +52,10 @@ jobs:
   mcp-smoke:
     name: MCP Smoke
     runs-on: ubuntu-latest
+    env:
+      # Turn the smoke test's missing-SDK skip into a hard failure so an MCP
+      # SDK rename or install breakage cannot silently pass this job.
+      AIFT_REQUIRE_MCP: '1'
 
     steps:
       - name: Checkout repository
