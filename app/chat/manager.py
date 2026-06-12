@@ -361,79 +361,38 @@ class ChatManager:
         self,
         question: str,
         parsed_dir: str | Path,
-        additional_parsed_dirs: list[str | Path] | None = None,
         csv_path_groups: list[tuple[str, list[Path]] | tuple[str, str, list[Path]]] | None = None,
     ) -> dict[str, Any]:
         """Best-effort retrieval of raw CSV rows for data-centric chat questions.
 
-        Delegates to :func:`~app.chat.csv_retrieval.retrieve_csv_data`.
-        For multi-image cases, also searches ``additional_parsed_dirs``
-        and merges the results.  When ``csv_path_groups`` is provided,
-        it is preferred because those groups preserve image ownership for
-        same-named artifacts across multiple images.
+        When ``csv_path_groups`` is provided, retrieval flows through
+        :meth:`_retrieve_grouped_csv_data`, which enforces one shared
+        row budget across all images and labels every output block with
+        its owning image so same-named artifacts from different images
+        cannot be confused.  Otherwise the single-directory
+        :func:`~app.chat.csv_retrieval.retrieve_csv_data` is used.
 
         Args:
             question: The user's chat question text.
-            parsed_dir: Path to the primary directory containing parsed
-                artifact CSV files.
-            additional_parsed_dirs: Optional list of additional parsed
-                directories (one per extra image) to search for CSV data.
+            parsed_dir: Path to the directory containing parsed artifact
+                CSV files for the single-directory case.
             csv_path_groups: Optional list of ``(image_label, csv_paths)``
                 or ``(image_id, image_label, csv_paths)`` tuples from the
                 canonical image-scoped CSV map.
 
         Returns:
             A dictionary with a ``retrieved`` boolean.  When *True*, also
-            includes ``artifacts`` (list of matched CSV filenames),
+            includes ``artifacts`` (list of matched CSV display names),
             ``data`` (formatted row text), and ``rows_returned`` (exact
             total number of CSV data rows included in ``data``, summed
-            across all searched directories or image groups).
+            across all image groups when grouped retrieval is used).
         """
         if csv_path_groups:
-            grouped_result = self._retrieve_grouped_csv_data(
+            return self._retrieve_grouped_csv_data(
                 question=question,
                 csv_path_groups=csv_path_groups,
             )
-            return grouped_result
-
-        primary = _retrieve_csv_data(question, parsed_dir)
-
-        if not additional_parsed_dirs:
-            return primary
-
-        all_artifacts: list[str] = list(primary.get("artifacts", []))
-        data_parts: list[str] = []
-        total_rows_returned = 0
-        if primary.get("retrieved"):
-            total_rows_returned += int(primary.get("rows_returned") or 0)
-            if str(primary.get("data", "")).strip():
-                data_parts.append(str(primary["data"]).strip())
-
-        for extra_dir in additional_parsed_dirs:
-            if not extra_dir:
-                continue
-            extra_path = Path(extra_dir)
-            if not extra_path.is_dir():
-                continue
-            extra_result = _retrieve_csv_data(question, extra_path)
-            if extra_result.get("retrieved"):
-                total_rows_returned += int(extra_result.get("rows_returned") or 0)
-                for artifact in extra_result.get("artifacts", []):
-                    if artifact and artifact not in all_artifacts:
-                        all_artifacts.append(artifact)
-                extra_data = str(extra_result.get("data", "")).strip()
-                if extra_data:
-                    data_parts.append(extra_data)
-
-        if not data_parts:
-            return primary
-
-        return {
-            "retrieved": True,
-            "artifacts": all_artifacts,
-            "data": "\n\n".join(data_parts),
-            "rows_returned": total_rows_returned,
-        }
+        return _retrieve_csv_data(question, parsed_dir)
 
     @staticmethod
     def _retrieve_grouped_csv_data(

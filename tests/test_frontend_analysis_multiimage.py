@@ -363,11 +363,20 @@ class TestMultiImageChatContext(unittest.TestCase):
         self.assertIn("Malicious entry found.", findings)
         self.assertIn("Failed logins detected.", findings)
 
-    def test_retrieve_csv_data_with_additional_dirs(self) -> None:
-        """retrieve_csv_data should accept additional_parsed_dirs parameter."""
+    def test_retrieve_csv_data_has_no_legacy_directory_merge_parameter(self) -> None:
+        """retrieve_csv_data accepts only question, parsed_dir, and csv_path_groups.
+
+        Pins the removal of the legacy per-directory merge fallback,
+        which gave every extra parsed directory its own fresh row budget
+        and emitted blocks without image attribution.  Multi-image
+        retrieval must flow through ``csv_path_groups`` exclusively.
+        """
         import inspect
         sig = inspect.signature(self.manager.retrieve_csv_data)
-        self.assertIn("additional_parsed_dirs", sig.parameters)
+        self.assertEqual(
+            list(sig.parameters),
+            ["question", "parsed_dir", "csv_path_groups"],
+        )
 
 
 class TestMultiImageTaskFunction(unittest.TestCase):
@@ -485,8 +494,8 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
         self.assertIn("PC01", context)
         self.assertNotIn("Cross-Image Correlation", context)
 
-    def test_retrieve_csv_data_with_no_additional_dirs_returns_primary(self) -> None:
-        """retrieve_csv_data with no additional dirs should return the primary result."""
+    def test_retrieve_csv_data_without_groups_returns_primary(self) -> None:
+        """retrieve_csv_data without csv_path_groups should search the primary dir."""
         primary_dir = Path(self.case_dir) / "parsed"
         primary_dir.mkdir(parents=True, exist_ok=True)
         # Create a dummy CSV to ensure the primary dir has content.
@@ -495,7 +504,6 @@ class TestMultiImageChatContextEdgeCases(unittest.TestCase):
         result = self.manager.retrieve_csv_data(
             question="test question",
             parsed_dir=str(primary_dir),
-            additional_parsed_dirs=None,
         )
         # Should return without error (may or may not match).
         self.assertIn("retrieved", result)

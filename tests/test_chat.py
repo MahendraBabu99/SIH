@@ -227,7 +227,6 @@ class ChatManagerTests(unittest.TestCase):
             result = manager.retrieve_csv_data(
                 question="Show PC01 runkeys rows",
                 parsed_dir=img2_dir,
-                additional_parsed_dirs=[img1_dir],
                 csv_path_groups=[
                     ("img1", "PC01", sorted(img1_dir.glob("*.csv"))),
                     ("img2", "PC02", [img2_dir / "runkeys.csv"]),
@@ -255,7 +254,6 @@ class ChatManagerTests(unittest.TestCase):
             result = manager.retrieve_csv_data(
                 question="Show amcache rows",
                 parsed_dir=flat_dir,
-                additional_parsed_dirs=[img1_dir],
                 csv_path_groups=[
                     ("img1", "PC01", sorted(img1_dir.glob("*.csv"))),
                 ],
@@ -291,36 +289,6 @@ class ChatManagerTests(unittest.TestCase):
         self.assertTrue(result["retrieved"])
         self.assertEqual(result["artifacts"], ["PC01/runkeys.csv"])
         self.assertEqual(result["rows_returned"], 3)
-
-    def test_retrieve_csv_data_merges_rows_returned_across_additional_dirs(self) -> None:
-        """The additional_parsed_dirs merge sums exact per-directory row counts."""
-        with TemporaryDirectory(prefix="aift-chat-merge-rows-test-") as temp_dir:
-            root = Path(temp_dir)
-            primary_dir = root / "primary"
-            extra_dir = root / "extra"
-            primary_dir.mkdir(parents=True, exist_ok=True)
-            extra_dir.mkdir(parents=True, exist_ok=True)
-            self._write_csv(
-                primary_dir / "runkeys.csv",
-                "name",
-                ["primary-1", "primary-2"],
-            )
-            self._write_csv(
-                extra_dir / "runkeys.csv",
-                "name",
-                ["extra-1", "extra-2", "extra-3"],
-            )
-
-            manager = ChatManager(temp_dir)
-            result = manager.retrieve_csv_data(
-                question="Show runkeys entries",
-                parsed_dir=primary_dir,
-                additional_parsed_dirs=[extra_dir],
-            )
-
-        self.assertTrue(result["retrieved"])
-        self.assertEqual(result["artifacts"], ["runkeys.csv"])
-        self.assertEqual(result["rows_returned"], 5)
 
     def test_grouped_retrieval_budget_exhaustion_notes_omitted_artifacts(self) -> None:
         """Same-named artifacts in later images are listed with an omission note.

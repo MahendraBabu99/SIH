@@ -408,10 +408,10 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
                     evidence_hashes=evidence_hashes,
                 )
 
-        # Collect additional parsed directories from multi-image state,
-        # excluding the primary parsed dir to avoid searching it twice.
+        # Build image-scoped CSV path groups from the canonical CSV map
+        # so multi-image retrieval shares one row budget and keeps image
+        # attribution; single-image cases search the primary parsed dir.
         primary_parsed_dir = resolve_case_parsed_dir(case_snapshot)
-        additional_parsed_dirs: list[str] = []
         csv_path_groups: list[tuple[str, str, list[Path]]] = []
         image_csv_paths = collect_case_image_csv_paths(case_snapshot)
         image_ids_with_csv = {image_id for image_id, _label, _path in image_csv_paths}
@@ -423,19 +423,10 @@ def run_chat(case_id: str, message: str, config_snapshot: dict[str, Any]) -> Non
                 (image_id, label, paths)
                 for (image_id, label), paths in grouped_paths.items()
             ]
-        image_states = case_snapshot.get("image_states", {})
-        if not csv_path_groups and isinstance(image_states, dict) and len(image_states) > 1:
-            primary_resolved = str(primary_parsed_dir.resolve())
-            for img_state in image_states.values():
-                if isinstance(img_state, dict):
-                    csv_dir = str(img_state.get("csv_output_dir", "")).strip()
-                    if csv_dir and str(Path(csv_dir).resolve()) != primary_resolved:
-                        additional_parsed_dirs.append(csv_dir)
 
         retrieved_payload = chat_manager.retrieve_csv_data(
             question=message,
             parsed_dir=primary_parsed_dir,
-            additional_parsed_dirs=additional_parsed_dirs if additional_parsed_dirs else None,
             csv_path_groups=csv_path_groups if csv_path_groups else None,
         )
         retrieved_artifacts: list[str] = []
