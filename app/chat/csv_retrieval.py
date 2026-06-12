@@ -16,12 +16,20 @@ Key responsibilities:
   Matched files whose rows cannot be included because the row budget was
   already consumed are reported with an explicit omission note instead of
   being silently dropped.
+* **Bounded row counting** -- The "Total rows" figure reported for each
+  matched CSV is counted with a hard scan cap so chat latency stays
+  bounded for multi-million-row artifacts (MFT, USN journal, EVTX);
+  files larger than the cap report a lower bound such as "50000+".
 
 Attributes:
     CSV_RETRIEVAL_KEYWORDS: Tuple of lowercase keyword phrases that
         indicate the user is requesting raw data.
     CSV_ROW_LIMIT: Maximum number of CSV rows to include in a single
         retrieval response.
+    CSV_ROW_COUNT_SCAN_CAP: Maximum number of data rows (sampled rows
+        plus counted remainder) scanned per CSV file when computing the
+        "Total rows" figure.  Files with more rows report the cap as a
+        lower bound instead of streaming the whole file.
     _HEADER_CACHE: Module-level dict caching CSV headers by parsed
         directory path to avoid redundant disk reads.
 """
@@ -81,6 +89,13 @@ CSV_RETRIEVAL_KEYWORDS = (
 )
 
 CSV_ROW_LIMIT = 500
+
+# Hard cap on the number of data rows scanned per CSV file (sampled rows
+# plus counted remainder) when computing the "Total rows" figure.  Without
+# a cap, every chat question matching a multi-million-row artifact CSV
+# (mft/usnjrnl/evtx) would stream the entire multi-GB file just to report
+# an exact count; beyond the cap the count is reported as a lower bound.
+CSV_ROW_COUNT_SCAN_CAP = 50_000
 
 
 def retrieve_csv_data(
@@ -191,7 +206,9 @@ def retrieve_csv_data_from_paths(
             # silently dropping it, so the AI knows data was withheld.
             formatted_blocks.append(_format_budget_omission_block(display_name))
             continue
-        headers, rows, total_row_count = _read_csv_rows(csv_path, limit=rows_remaining)
+        headers, rows, total_row_count, count_is_exact = _read_csv_rows(
+            csv_path, limit=rows_remaining
+        )
         if not headers and not rows:
             continue
 
@@ -203,6 +220,7 @@ def retrieve_csv_data_from_paths(
                 headers,
                 rows,
                 total_row_count,
+                count_is_exact,
             )
         )
 
@@ -374,31 +392,36 @@ def _read_csv_headers(csv_path: Path) -> list[str]:
 def _read_csv_rows(
     csv_path: Path,
     limit: int,
-) -> tuple[list[str], list[dict[str, str]], int]:
+) -> tuple[list[str], list[dict[str, str]], int, bool]:
     """Read up to *limit* data rows from a CSV file.
 
     Values are whitespace-collapsed and truncated to 240 characters
     to keep the resulting text compact for AI prompt injection.
 
     After reading the sampled rows, the remainder of the file is
-    consumed (without storing data) to obtain an accurate total row
-    count.
+    counted (without storing data) to obtain the total row count.
+    The counting pass stops once :data:`CSV_ROW_COUNT_SCAN_CAP` rows
+    have been scanned in total, so a chat question matching a
+    multi-million-row artifact CSV never streams the whole file just
+    to report an exact count.
 
     Args:
         csv_path: Path to the CSV file.
         limit: Maximum number of data rows to read.
 
     Returns:
-        A tuple of ``(headers, rows, total_row_count)`` where
-        *headers* is a list of column name strings, *rows* is a
+        A tuple of ``(headers, rows, total_row_count, count_is_exact)``
+        where *headers* is a list of column name strings, *rows* is a
         list of ordered dictionaries mapping column names to string
-        values, and *total_row_count* is the total number of data
-        rows in the file (including those beyond *limit*).  Returns
-        ``([], [], 0)`` on read failure or when *limit* is
-        non-positive.
+        values, *total_row_count* is the number of data rows counted in
+        the file (including those beyond *limit*), and *count_is_exact*
+        is *False* when counting stopped at the scan cap with at least
+        one more row unread, making *total_row_count* a lower bound.
+        Returns ``([], [], 0, True)`` on read failure or when *limit*
+        is non-positive.
     """
     if limit <= 0:
-        return [], [], 0
+        return [], [], 0, True
 
     try:
         with csv_path.open("r", encoding="utf-8-sig", newline="", errors="replace") as csv_stream:
@@ -424,17 +447,26 @@ def _read_csv_rows(
             # (avoids DictReader dict construction overhead).  We must
             # iterate through the reader rather than the raw file handle
             # because csv.reader may have buffered ahead of the file
-            # position.  Add 1 for the row consumed by the for-loop
-            # iteration that triggered the break.
-            remaining = sum(1 for _ in reader.reader)
-            if hit_limit:
+            # position.  Start at 1 for the row consumed by the for-loop
+            # iteration that triggered the break.  Counting stops at the
+            # scan cap: exactness is only lost when another row was
+            # actually pulled past the cap, so a file with exactly
+            # CSV_ROW_COUNT_SCAN_CAP rows still reports an exact total.
+            remaining = 1 if hit_limit else 0
+            count_is_exact = True
+            scan_budget = max(CSV_ROW_COUNT_SCAN_CAP - len(rows) - remaining, 0)
+            for _ in reader.reader:
+                if scan_budget <= 0:
+                    count_is_exact = False
+                    break
                 remaining += 1
+                scan_budget -= 1
             total_row_count = len(rows) + remaining
     except Exception:
         log.warning("Failed to read CSV rows from %s", csv_path, exc_info=True)
-        return [], [], 0
+        return [], [], 0, True
 
-    return headers, rows, total_row_count
+    return headers, rows, total_row_count, count_is_exact
 
 
 def _format_csv_block(
@@ -442,6 +474,7 @@ def _format_csv_block(
     headers: list[str],
     rows: list[dict[str, str]],
     total_row_count: int,
+    count_is_exact: bool,
 ) -> str:
     """Format CSV data as a readable text block for AI prompt injection.
 
@@ -449,15 +482,23 @@ def _format_csv_block(
         filename: The CSV filename for the block header.
         headers: Column name strings.
         rows: List of row dictionaries.
-        total_row_count: Total rows in the source file.
+        total_row_count: Total rows counted in the source file.  When
+            *count_is_exact* is *False* this is a lower bound produced
+            by the capped counting pass in :func:`_read_csv_rows`.
+        count_is_exact: Whether *total_row_count* is exact.  When
+            *False* the count is rendered with a ``+`` suffix (e.g.
+            ``Total rows: 50000+``) and the "showing first" note is
+            always included.
 
     Returns:
         A formatted multi-line text block.
     """
     block_lines = [f"Artifact: {filename}"]
+    count_text = f"{total_row_count}" if count_is_exact else f"{total_row_count}+"
+    truncated = len(rows) < total_row_count or not count_is_exact
     block_lines.append(
-        f"Total rows: {total_row_count}"
-        + (f" (showing first {len(rows)})" if len(rows) < total_row_count else "")
+        f"Total rows: {count_text}"
+        + (f" (showing first {len(rows)})" if truncated else "")
     )
     if headers:
         block_lines.append(f"Columns: {', '.join(headers)}")

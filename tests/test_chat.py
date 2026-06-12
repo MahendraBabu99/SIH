@@ -20,6 +20,7 @@ from app.chat.csv_retrieval import (
     _format_csv_block,
     _match_target_paths,
     CSV_RETRIEVAL_KEYWORDS,
+    CSV_ROW_COUNT_SCAN_CAP,
     CSV_ROW_LIMIT,
 )
 from app.reporter.normalization import normalize_per_artifact_findings
@@ -1422,10 +1423,11 @@ class ReadCsvRowsTests(unittest.TestCase):
         with TemporaryDirectory(prefix="aift-csv-") as tmp:
             csv_path = Path(tmp) / "test.csv"
             self._write_csv(csv_path, "name,value\nalpha,1\nbeta,2\ngamma,3\n")
-            headers, rows, total = _read_csv_rows(csv_path, limit=10)
+            headers, rows, total, exact = _read_csv_rows(csv_path, limit=10)
             self.assertEqual(headers, ["name", "value"])
             self.assertEqual(len(rows), 3)
             self.assertEqual(total, 3)
+            self.assertTrue(exact)
             self.assertEqual(rows[0]["name"], "alpha")
 
     def test_limit_restricts_returned_rows(self) -> None:
@@ -1433,29 +1435,31 @@ class ReadCsvRowsTests(unittest.TestCase):
             csv_path = Path(tmp) / "test.csv"
             lines = "idx\n" + "\n".join(str(i) for i in range(50))
             self._write_csv(csv_path, lines + "\n")
-            headers, rows, total = _read_csv_rows(csv_path, limit=5)
+            headers, rows, total, exact = _read_csv_rows(csv_path, limit=5)
             self.assertEqual(len(rows), 5)
             self.assertEqual(total, 50)
+            self.assertTrue(exact)
 
     def test_zero_limit_returns_empty(self) -> None:
         with TemporaryDirectory(prefix="aift-csv-") as tmp:
             csv_path = Path(tmp) / "test.csv"
             self._write_csv(csv_path, "a,b\n1,2\n")
-            headers, rows, total = _read_csv_rows(csv_path, limit=0)
+            headers, rows, total, exact = _read_csv_rows(csv_path, limit=0)
             self.assertEqual(headers, [])
             self.assertEqual(rows, [])
             self.assertEqual(total, 0)
+            self.assertTrue(exact)
 
     def test_negative_limit_returns_empty(self) -> None:
-        headers, rows, total = _read_csv_rows(Path("dummy.csv"), limit=-1)
-        self.assertEqual((headers, rows, total), ([], [], 0))
+        headers, rows, total, exact = _read_csv_rows(Path("dummy.csv"), limit=-1)
+        self.assertEqual((headers, rows, total, exact), ([], [], 0, True))
 
     def test_long_values_truncated(self) -> None:
         with TemporaryDirectory(prefix="aift-csv-") as tmp:
             csv_path = Path(tmp) / "test.csv"
             long_val = "x" * 300
             self._write_csv(csv_path, f"col\n{long_val}\n")
-            headers, rows, total = _read_csv_rows(csv_path, limit=10)
+            headers, rows, total, exact = _read_csv_rows(csv_path, limit=10)
             self.assertEqual(len(rows[0]["col"]), 240)
             self.assertTrue(rows[0]["col"].endswith("..."))
 
@@ -1463,12 +1467,53 @@ class ReadCsvRowsTests(unittest.TestCase):
         with TemporaryDirectory(prefix="aift-csv-") as tmp:
             csv_path = Path(tmp) / "test.csv"
             self._write_csv(csv_path, "col\nhello   world   test\n")
-            headers, rows, total = _read_csv_rows(csv_path, limit=10)
+            headers, rows, total, exact = _read_csv_rows(csv_path, limit=10)
             self.assertEqual(rows[0]["col"], "hello world test")
 
     def test_nonexistent_file_returns_empty(self) -> None:
-        headers, rows, total = _read_csv_rows(Path("/no/such/file.csv"), limit=10)
-        self.assertEqual((headers, rows, total), ([], [], 0))
+        headers, rows, total, exact = _read_csv_rows(Path("/no/such/file.csv"), limit=10)
+        self.assertEqual((headers, rows, total, exact), ([], [], 0, True))
+
+    def test_count_stops_at_scan_cap_and_reports_lower_bound(self) -> None:
+        """Counting stops at the scan cap instead of streaming the whole file."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            csv_path = Path(tmp) / "test.csv"
+            lines = "idx\n" + "\n".join(str(i) for i in range(25))
+            self._write_csv(csv_path, lines + "\n")
+            with patch("app.chat.csv_retrieval.CSV_ROW_COUNT_SCAN_CAP", 10):
+                headers, rows, total, exact = _read_csv_rows(csv_path, limit=3)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(total, 10)
+            self.assertFalse(exact)
+
+    def test_count_exact_when_file_ends_at_scan_cap(self) -> None:
+        """A file with exactly the cap's row count still reports an exact total."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            csv_path = Path(tmp) / "test.csv"
+            lines = "idx\n" + "\n".join(str(i) for i in range(10))
+            self._write_csv(csv_path, lines + "\n")
+            with patch("app.chat.csv_retrieval.CSV_ROW_COUNT_SCAN_CAP", 10):
+                headers, rows, total, exact = _read_csv_rows(csv_path, limit=3)
+            self.assertEqual(len(rows), 3)
+            self.assertEqual(total, 10)
+            self.assertTrue(exact)
+
+    def test_sample_larger_than_scan_cap_keeps_all_sampled_rows(self) -> None:
+        """A sampling limit above the cap still returns every sampled row."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            csv_path = Path(tmp) / "test.csv"
+            lines = "idx\n" + "\n".join(str(i) for i in range(20))
+            self._write_csv(csv_path, lines + "\n")
+            with patch("app.chat.csv_retrieval.CSV_ROW_COUNT_SCAN_CAP", 5):
+                headers, rows, total, exact = _read_csv_rows(csv_path, limit=15)
+            self.assertEqual(len(rows), 15)
+            # 15 sampled + 1 row consumed when the sampling loop broke.
+            self.assertEqual(total, 16)
+            self.assertFalse(exact)
+
+    def test_default_scan_cap_exceeds_default_row_limit(self) -> None:
+        """The scan cap must leave room for the full default sampling budget."""
+        self.assertGreater(CSV_ROW_COUNT_SCAN_CAP, CSV_ROW_LIMIT)
 
 
 class FormatCsvBlockTests(unittest.TestCase):
@@ -1480,6 +1525,7 @@ class FormatCsvBlockTests(unittest.TestCase):
             ["name", "value"],
             [{"name": "alpha", "value": "1"}],
             1,
+            True,
         )
         self.assertIn("Artifact: test.csv", block)
         self.assertIn("Total rows: 1", block)
@@ -1492,6 +1538,7 @@ class FormatCsvBlockTests(unittest.TestCase):
             ["col"],
             [{"col": "a"}, {"col": "b"}],
             100,
+            True,
         )
         self.assertIn("showing first 2", block)
 
@@ -1501,20 +1548,44 @@ class FormatCsvBlockTests(unittest.TestCase):
             ["col"],
             [{"col": "a"}],
             1,
+            True,
         )
         self.assertNotIn("showing first", block)
 
+    def test_inexact_count_rendered_as_lower_bound(self) -> None:
+        """A capped count is rendered with a '+' suffix and a truncation note."""
+        block = _format_csv_block(
+            "test.csv",
+            ["col"],
+            [{"col": "a"}, {"col": "b"}],
+            100,
+            False,
+        )
+        self.assertIn("Total rows: 100+", block)
+        self.assertIn("showing first 2", block)
+
+    def test_exact_count_has_no_plus_suffix(self) -> None:
+        block = _format_csv_block(
+            "test.csv",
+            ["col"],
+            [{"col": "a"}],
+            5,
+            True,
+        )
+        self.assertIn("Total rows: 5 ", block)
+        self.assertNotIn("Total rows: 5+", block)
+
     def test_no_rows_shows_none(self) -> None:
-        block = _format_csv_block("test.csv", ["col"], [], 0)
+        block = _format_csv_block("test.csv", ["col"], [], 0, True)
         self.assertIn("Rows: none", block)
 
     def test_no_headers_omits_columns_line(self) -> None:
-        block = _format_csv_block("test.csv", [], [], 0)
+        block = _format_csv_block("test.csv", [], [], 0, True)
         self.assertNotIn("Columns:", block)
 
     def test_multiple_rows_numbered(self) -> None:
         rows = [{"c": f"v{i}"} for i in range(3)]
-        block = _format_csv_block("test.csv", ["c"], rows, 3)
+        block = _format_csv_block("test.csv", ["c"], rows, 3, True)
         self.assertIn("1. c=v0", block)
         self.assertIn("2. c=v1", block)
         self.assertIn("3. c=v2", block)
@@ -1629,6 +1700,19 @@ class RetrieveCsvDataEdgeCasesTests(unittest.TestCase):
             self.assertTrue(result["retrieved"])
             self.assertIn("showing first 5", result["data"])
             self.assertIn("Total rows: 20", result["data"])
+
+    def test_row_count_capped_for_oversized_csv(self) -> None:
+        """Files above the scan cap report a bounded 'N+' total, not an exact count."""
+        with TemporaryDirectory(prefix="aift-csv-") as tmp:
+            csv_path = Path(tmp) / "shimcache.csv"
+            lines = "path\n" + "\n".join(f"file{i}.exe" for i in range(40))
+            csv_path.write_text(lines + "\n", encoding="utf-8")
+            with patch("app.chat.csv_retrieval.CSV_ROW_COUNT_SCAN_CAP", 12):
+                result = retrieve_csv_data("show me shimcache rows", tmp, row_limit=5)
+            self.assertTrue(result["retrieved"])
+            self.assertEqual(result["rows_returned"], 5)
+            self.assertIn("Total rows: 12+", result["data"])
+            self.assertIn("showing first 5", result["data"])
 
     def test_budget_exhaustion_within_matched_files_notes_omission(self) -> None:
         """A matched file left without budget gets an explicit omission note."""
