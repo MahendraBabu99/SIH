@@ -1440,6 +1440,42 @@ class ParseStartRollbackAliasingTests(unittest.TestCase):
                     routes_state.PARSE_PROGRESS[case_id]["status"], "completed"
                 )
 
+    def test_failed_thread_start_on_first_parse_removes_image_entry(self) -> None:
+        """A failed worker start on a first parse removes the fresh entry.
+
+        The first parse attempt for an image has no pre-existing
+        ``<case>::<image>`` progress entry, so the rollback must remove the
+        entry created for the failed attempt instead of leaving an idle
+        placeholder that would skew later aggregate parse outcomes.
+        """
+        with ExitStack() as stack:
+            for patcher in self._patches():
+                stack.enter_context(patcher)
+
+            case_id = self._create_case_and_intake()
+            progress_key = f"{case_id}::{first_case_image_id(case_id)}"
+
+            with patch.object(routes_images.threading, "Thread", _StartFailingThread):
+                failed = self._post_parse(case_id)
+            self.assertEqual(failed.status_code, 500)
+
+            with routes_state.STATE_LOCK:
+                self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
+                # Evidence intake pops the case-level aggregate entry seeded
+                # at case creation, so neither the per-image entry nor the
+                # case-level entry created by the failed attempt may remain.
+                self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
+            self.assertEqual(routes_state.active_operations_for_case(case_id), [])
+
+            # A follow-up parse is not blocked by a phantom operation.
+            with patch.object(routes_images.threading, "Thread", ImmediateThread):
+                retry = self._post_parse(case_id)
+            self.assertEqual(retry.status_code, 202)
+            with routes_state.STATE_LOCK:
+                self.assertEqual(
+                    routes_state.PARSE_PROGRESS[case_id]["status"], "completed"
+                )
+
 
 class _AutomationParser:
     """Automation parser fake with configurable parse behaviour.

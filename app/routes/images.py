@@ -1325,12 +1325,20 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
 def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
     """Start background parsing of selected artifacts for a specific image.
 
+    Requests rejected during validation (bad payload, unknown artifacts, or
+    409 conflicts with already-running operations) create no progress
+    entries: the composite ``<case>::<image>`` parse-progress entry is only
+    written once every validation gate has passed, so rejected requests
+    cannot leave stale idle entries that would skew later aggregate parse
+    outcomes.
+
     If the background worker fails to start, all mutated state is rolled
     back: the case dict is restored from a deep-copied snapshot, the
-    per-image progress entry is restored (or removed), and the case-level
-    aggregate progress entry has its pre-attempt ``status``/``error``
-    scalars restored in place so previously emitted SSE events survive and
-    the case is not left reported as actively parsing.
+    per-image progress entry is restored (or removed when this request
+    created it), and the case-level aggregate progress entry has its
+    pre-attempt ``status``/``error`` scalars restored in place so
+    previously emitted SSE events survive and the case is not left
+    reported as actively parsing.
 
     Args:
         case_id: UUID of the case.
@@ -1403,8 +1411,14 @@ def start_image_parse(case_id: str, image_id: str) -> tuple[Response, int]:
     parsed_dir.mkdir(parents=True, exist_ok=True)
 
     with STATE_LOCK:
-        parse_state = PARSE_PROGRESS.setdefault(progress_key, new_progress())
-        if parse_state.get("status") == "running":
+        # Read-only running check: the composite "<case>::<image>" progress
+        # entry is only created after every validation gate passes. A
+        # rejected request must not leave a permanent idle entry behind,
+        # because stale idle entries are counted as non-usable image
+        # outcomes and would downgrade a later fully successful parse
+        # aggregate to "partial_success".
+        parse_state = PARSE_PROGRESS.get(progress_key)
+        if parse_state is not None and parse_state.get("status") == "running":
             return error_response("Parsing is already running for this image.", 409)
         active = active_operations_for_case(case_id)
         has_active_image_parse = any(op.get("operation") == "parse" and op.get("image_id") for op in active)

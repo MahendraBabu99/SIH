@@ -250,6 +250,94 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertIn('"type":"complete"', reconnect_body)
         self.assertNotIn("Case not found", reconnect_body)
 
+    def test_rejected_parse_request_leaves_no_idle_progress_entry(self) -> None:
+        """A 409-rejected image parse creates no composite progress entry.
+
+        The running-state check used to create an idle ``<case>::<image>``
+        parse-progress entry before the conflict checks ran, so a rejected
+        request for image B left a permanent idle entry that later
+        downgraded a fully successful sibling parse aggregate from
+        ``full_success`` to ``partial_success``.
+        """
+        case_id = "rejected-parse"
+        image_a = "img-a"
+        image_b = "img-b"
+        case_dir = self._install_case(case_id, image_a)
+        case = routes_state.CASE_STATES[case_id]
+        image_b_dir = case_dir / "images" / image_b
+        (image_b_dir / "evidence").mkdir(parents=True, exist_ok=True)
+        evidence_b = image_b_dir / "evidence" / "old.E01"
+        evidence_b.write_bytes(b"old")
+        case["images"].append({"image_id": image_b, "label": "Image B"})
+        case["image_states"][image_b] = {
+            "evidence_path": str(evidence_b),
+            "available_artifacts": [
+                {"key": "runkeys", "name": "Run Keys", "available": True},
+            ],
+            "os_type": "windows",
+        }
+        # An active case-level analysis makes new parse requests conflict.
+        routes_state.ANALYSIS_PROGRESS[case_id] = routes_state.new_progress(
+            status="running",
+        )
+
+        with patch.object(routes_images, "CASES_ROOT", self.cases_root):
+            response = self.client.post(
+                f"/api/cases/{case_id}/images/{image_b}/parse",
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertNotIn(f"{case_id}::{image_b}", routes_state.PARSE_PROGRESS)
+
+        # Without a stale idle entry for image B, a successful parse of
+        # image A aggregates to full_success.
+        routes_state.ANALYSIS_PROGRESS.pop(case_id, None)
+        case["image_artifact_csv_paths"] = {image_a: {"runkeys": "runkeys.csv"}}
+        routes_state.PARSE_PROGRESS[f"{case_id}::{image_a}"] = (
+            routes_state.new_progress(status="running")
+        )
+        aggregate_policy = routes_images._finish_image_parse_progress(
+            case_id,
+            image_a,
+            "completed",
+            {"type": "parse_completed"},
+        )
+        self.assertIsNotNone(aggregate_policy)
+        assert aggregate_policy is not None
+        self.assertEqual(aggregate_policy["aggregate_outcome"], "full_success")
+
+    def test_running_parse_conflict_keeps_existing_progress_entry(self) -> None:
+        """An already-running image parse yields 409 and keeps its entry."""
+        case_id = "running-conflict"
+        image_id = "img-001"
+        progress_key = f"{case_id}::{image_id}"
+        self._install_case(case_id, image_id)
+        routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(
+            status="running",
+        )
+
+        with patch.object(routes_images, "CASES_ROOT", self.cases_root):
+            response = self.client.post(
+                f"/api/cases/{case_id}/images/{image_id}/parse",
+                json={
+                    "artifact_options": [
+                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("already running", response.get_json()["error"])
+        self.assertEqual(
+            routes_state.PARSE_PROGRESS[progress_key]["status"],
+            "running",
+        )
+
     def test_parse_is_blocked_while_image_evidence_is_replacing(self) -> None:
         """A parse request returns 409 while evidence replacement is in flight."""
         case_id = "replace-lock"
