@@ -803,6 +803,30 @@ def cleanup_case_entries(case_id: str) -> None:
     unregister_case_log_handler(case_id)
 
 
+def _case_has_active_progress_locked(case_id: str) -> bool:
+    """Check whether any progress entry for a case is still active.
+
+    Scans the parse, analysis, and chat progress stores for case-level keys
+    and composite ``"<case_id>::<image_id>"`` keys whose status is in
+    ``ACTIVE_PROGRESS_STATUSES``. Active entries must keep the case alive:
+    evicting a case mid-run would orphan its background thread and break
+    SSE streaming. Must be called while holding ``STATE_LOCK``.
+
+    Args:
+        case_id: UUID of the case to inspect.
+
+    Returns:
+        ``True`` if any matching progress entry is running or cancelling.
+    """
+    for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
+        for progress_key, entry in store.items():
+            if not _progress_key_matches_case(progress_key, case_id):
+                continue
+            if normalize_case_status(entry.get("status")) in ACTIVE_PROGRESS_STATUSES:
+                return True
+    return False
+
+
 def _is_case_expired(case_id: str, now: float) -> bool:
     """Check whether a case's progress entries have exceeded the TTL.
 
@@ -817,12 +841,12 @@ def _is_case_expired(case_id: str, now: float) -> bool:
     Returns:
         ``True`` if the case has exceeded the TTL and has no active work.
     """
+    if _case_has_active_progress_locked(case_id):
+        return False
     latest_created = 0.0
     for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
         for progress_key, entry in store.items():
             if _progress_key_matches_case(progress_key, case_id):
-                if normalize_case_status(entry.get("status")) in ACTIVE_PROGRESS_STATUSES:
-                    return False
                 latest_created = max(latest_created, entry.get("created_at", 0.0))
     if latest_created == 0.0:
         return False
@@ -853,7 +877,11 @@ def cleanup_terminal_cases(exclude_case_id: str | None = None) -> None:
     Terminal cases (completed, failed, error, cancelled) are evicted once
     ``_terminal_since`` exceeds ``CASE_TTL_SECONDS``, so post-analysis
     actions (chat, report, download) keep working. Non-terminal cases are
-    evicted on TTL expiry unless any progress entry is still active.
+    evicted on TTL expiry unless any progress entry is still active. A
+    terminal case with an active (running/cancelling) progress entry —
+    typically a chat response mid-stream — is likewise never evicted; the
+    already-expired TTL means a later cleanup call removes it once the
+    operation has finished.
 
     Only in-memory state is removed; case data on disk is never deleted.
 
@@ -868,6 +896,8 @@ def cleanup_terminal_cases(exclude_case_id: str | None = None) -> None:
                 continue
             is_terminal = normalize_case_status(case.get("status")) in TERMINAL_CASE_STATUSES
             if is_terminal:
+                if _case_has_active_progress_locked(case_id):
+                    continue
                 terminal_since = case.get("_terminal_since", 0.0)
                 if terminal_since and (now - terminal_since) > CASE_TTL_SECONDS:
                     evict_case_ids.append(case_id)
