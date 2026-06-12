@@ -37,8 +37,8 @@ from ..evidence.segments import (
     validate_segment_group_paths,
 )
 from ..evidence.archive_config import archive_limits_from_config
+from ..evidence.archive_resolver import resolve_archive_descriptor
 from ..evidence.constants import ARCHIVE_EVIDENCE_EXTENSIONS
-from .evidence_archive import extract_archive_descriptor
 from .state import safe_name
 
 LOGGER = logging.getLogger(__name__)
@@ -472,7 +472,7 @@ def resolve_evidence_payload(case_dir: Path) -> dict[str, Any]:
         if source_path.is_file() and suffix in ARCHIVE_EVIDENCE_EXTENSIONS:
             extract_dir = make_extract_dir(evidence_dir, source_path)
             created_paths.append(extract_dir)
-            descriptor = extract_archive_descriptor(
+            descriptor = resolve_archive_descriptor(
                 source_path,
                 extract_dir,
                 limits=archive_limits,

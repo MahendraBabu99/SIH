@@ -25,6 +25,7 @@ import pytest
 from app import create_app
 from app.ai_providers import AIProviderError
 from app.chat.manager import ChatManager
+from app.evidence.archive_resolver import resolve_archive_descriptor
 from app.logging.case_logging import case_log_context, unregister_all_case_log_handlers
 from app.parser.registry import get_all_artifact_registries, get_artifact_registry
 from app.utils.version import TOOL_VERSION
@@ -32,7 +33,6 @@ import app.routes.artifacts as routes_artifacts
 import app.routes.analysis as routes_analysis
 import app.routes.chat as routes_chat
 import app.routes.evidence as routes_evidence
-import app.routes.evidence_archive as routes_evidence_archive
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
 import app.routes.tasks as routes_tasks
@@ -2092,7 +2092,7 @@ class RoutesTests(unittest.TestCase):
             "app.evidence.archive_resolver.can_open_with_dissect",
             return_value=False,
         ):
-            descriptor = routes_evidence_archive.extract_archive_descriptor(
+            descriptor = resolve_archive_descriptor(
                 zip_path,
                 destination,
             )
@@ -2116,7 +2116,7 @@ class RoutesTests(unittest.TestCase):
             "app.evidence.archive_resolver.can_open_with_dissect",
             return_value=False,
         ):
-            descriptor = routes_evidence_archive.extract_archive_descriptor(
+            descriptor = resolve_archive_descriptor(
                 zip_path,
                 destination,
             )

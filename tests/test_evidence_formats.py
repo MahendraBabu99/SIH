@@ -32,7 +32,6 @@ import pytest
 from app import create_app
 from tests.conftest import FakeParser, FAKE_HASHES, require_symlink_support
 import app.routes.evidence as routes_evidence
-import app.routes.evidence_archive as routes_evidence_archive
 import app.routes.evidence_upload as routes_evidence_upload
 import app.routes.handlers as routes_handlers
 import app.routes.images as routes_images
@@ -48,7 +47,10 @@ from app.evidence.archives import (
     extract_zip_to_directory,
     validate_archive_member_target,
 )
-from app.evidence.archive_resolver import can_open_with_dissect
+from app.evidence.archive_resolver import (
+    can_open_with_dissect,
+    resolve_archive_descriptor,
+)
 from app.evidence.constants import (
     ARCHIVE_EVIDENCE_EXTENSIONS,
     EVIDENCE_UI_ACCEPT,
@@ -56,7 +58,6 @@ from app.evidence.constants import (
     NON_ARCHIVE_EVIDENCE_EXTENSIONS,
 )
 from app.evidence.descriptor import EvidenceDescriptor
-from app.routes.evidence_archive import extract_archive_descriptor
 
 
 def _install_minimal_canonical_analysis(case_id: str) -> None:
@@ -103,7 +104,7 @@ def _resolve_archive_fallback_descriptor(
         "app.evidence.archive_resolver.can_open_with_dissect",
         return_value=False,
     ):
-        return extract_archive_descriptor(archive_path, destination, **kwargs)
+        return resolve_archive_descriptor(archive_path, destination, **kwargs)
 
 
 def _assert_archive_descriptor(
@@ -564,7 +565,7 @@ class TestExtractZip(unittest.TestCase):
         dest.symlink_to(target, target_is_directory=True)
 
         with self.assertRaises(ValueError):
-            extract_archive_descriptor(zip_path, dest)
+            resolve_archive_descriptor(zip_path, dest)
 
         self.assertTrue(marker.exists())
 
@@ -751,7 +752,7 @@ class TestExtractTar(unittest.TestCase):
             "app.evidence.archive_resolver.can_open_with_dissect",
             return_value=True,
         ):
-            result = extract_archive_descriptor(tar_path, dest)
+            result = resolve_archive_descriptor(tar_path, dest)
 
         resolved_tar = tar_path.resolve()
         self.assertEqual(result.dissect_path, resolved_tar)
@@ -1582,19 +1583,14 @@ class TestEvidenceIntakeFormats(unittest.TestCase):
 class TestExtensionConstants(unittest.TestCase):
     """Verify that the extension sets are consistent."""
 
-    def test_evidence_file_extensions_subset_of_dissect_extensions(self) -> None:
+    def test_non_archive_extensions_subset_of_dissect_extensions(self) -> None:
         """Every extension we search for inside archives should also be in the
         main DISSECT_EVIDENCE_EXTENSIONS set."""
-        missing = routes_evidence_archive.EVIDENCE_FILE_EXTENSIONS - routes_state.DISSECT_EVIDENCE_EXTENSIONS
+        missing = NON_ARCHIVE_EVIDENCE_EXTENSIONS - routes_state.DISSECT_EVIDENCE_EXTENSIONS
         self.assertFalse(
             missing,
-            f"EVIDENCE_FILE_EXTENSIONS has entries not in DISSECT_EVIDENCE_EXTENSIONS: {missing}",
-        )
-
-    def test_archive_target_selection_uses_all_non_archive_extensions(self) -> None:
-        self.assertEqual(
-            routes_evidence_archive.EVIDENCE_FILE_EXTENSIONS,
-            NON_ARCHIVE_EVIDENCE_EXTENSIONS,
+            "NON_ARCHIVE_EVIDENCE_EXTENSIONS has entries not in "
+            f"DISSECT_EVIDENCE_EXTENSIONS: {missing}",
         )
 
 
