@@ -30,8 +30,9 @@ Attributes:
         plus counted remainder) scanned per CSV file when computing the
         "Total rows" figure.  Files with more rows report the cap as a
         lower bound instead of streaming the whole file.
-    _HEADER_CACHE: Module-level dict caching CSV headers by parsed
-        directory path to avoid redundant disk reads.
+    _HEADER_CACHE: Module-level dict caching CSV headers, keyed by each
+        CSV file's own parent directory path, to avoid redundant disk
+        reads while keeping per-directory invalidation precise.
 """
 
 from __future__ import annotations
@@ -55,9 +56,12 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 # Module-level cache for CSV headers keyed by parent directory path string.
-# Maps each parsed_dir to a dict of {csv_path: header_list}.  Avoids
-# re-reading headers from disk on every chat message when artifact-name
-# matching fails.
+# Maps each directory to a dict of {csv_path: header_list}, where every CSV
+# file is cached under its own parent directory (never a sibling's), so
+# invalidate_header_cache(parsed_dir) reliably evicts all headers for that
+# directory even when callers mix files from several directories in one
+# retrieval call.  Avoids re-reading headers from disk on every chat message
+# when artifact-name matching fails.
 _HEADER_CACHE: dict[str, dict[Path, list[str]]] = {}
 
 
@@ -282,23 +286,16 @@ def _match_target_paths(
         return artifact_matches
 
     # Only scan CSV headers when artifact-name matching didn't find anything,
-    # to avoid reading every CSV file on every chat message.
-    # Use a module-level cache keyed by the parent directory to avoid
-    # re-reading headers from disk on repeated calls.
-    cache_key = str(csv_paths[0].parent) if csv_paths else ""
-    cached = _HEADER_CACHE.get(cache_key)
-    if cached is not None:
-        headers_by_path = {}
-        for path in csv_paths:
-            if path in cached:
-                headers_by_path[path] = cached[path]
-            else:
-                headers = _read_csv_headers(path)
-                headers_by_path[path] = headers
-                cached[path] = headers  # Update cache with new entry
-    else:
-        headers_by_path = {path: _read_csv_headers(path) for path in csv_paths}
-        _HEADER_CACHE[cache_key] = dict(headers_by_path)
+    # to avoid reading every CSV file on every chat message.  Each header is
+    # cached under its own file's parent directory so that
+    # invalidate_header_cache(parsed_dir) evicts exactly the entries for that
+    # directory even when a caller passes a mixed-parent path list.
+    headers_by_path: dict[Path, list[str]] = {}
+    for path in csv_paths:
+        dir_cache = _HEADER_CACHE.setdefault(str(path.parent), {})
+        if path not in dir_cache:
+            dir_cache[path] = _read_csv_headers(path)
+        headers_by_path[path] = dir_cache[path]
     matched_columns = {
         header.lower()
         for headers in headers_by_path.values()

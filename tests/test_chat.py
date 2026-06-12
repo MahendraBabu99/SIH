@@ -13,8 +13,10 @@ from app.chat.csv_retrieval import (
     _stringify as csv_stringify,
     build_csv_aliases,
     contains_heuristic_term,
+    invalidate_header_cache,
     retrieve_csv_data,
     retrieve_csv_data_from_paths,
+    _HEADER_CACHE,
     _read_csv_headers,
     _read_csv_rows,
     _format_csv_block,
@@ -1645,6 +1647,101 @@ class MatchTargetPathsTests(unittest.TestCase):
                 paths.append(p)
             result = _match_target_paths(paths, "unrelated", True)
             self.assertIsNone(result)
+
+
+class HeaderCachePerDirectoryKeyingTests(unittest.TestCase):
+    """Tests pinning per-parent-directory keying of the CSV header cache.
+
+    The header cache must store each CSV's headers under that file's own
+    parent directory so that ``invalidate_header_cache(parsed_dir)`` evicts
+    exactly the entries for that directory, even when a single retrieval
+    call mixes CSV paths from several directories (as the public
+    ``retrieve_csv_data_from_paths`` helper permits).
+    """
+
+    def setUp(self) -> None:
+        """Clear the module-level header cache before each test."""
+        invalidate_header_cache()
+
+    def tearDown(self) -> None:
+        """Clear the module-level header cache after each test."""
+        invalidate_header_cache()
+
+    @staticmethod
+    def _write_csv(path: Path, content: str) -> None:
+        """Write *content* to *path* as UTF-8 text."""
+        path.write_text(content, encoding="utf-8")
+
+    def test_mixed_parent_paths_cached_under_own_directories(self) -> None:
+        """Each header entry lands under its own file's parent directory."""
+        with TemporaryDirectory(prefix="aift-csv-a-") as tmp_a, \
+                TemporaryDirectory(prefix="aift-csv-b-") as tmp_b:
+            csv_a = Path(tmp_a) / "alpha.csv"
+            csv_b = Path(tmp_b) / "beta.csv"
+            self._write_csv(csv_a, "first_col\nval\n")
+            self._write_csv(csv_b, "second_col\nval\n")
+
+            # No artifact-name match => header scan populates the cache.
+            result = _match_target_paths(
+                [csv_a, csv_b], "what about the second_col", False
+            )
+            self.assertEqual(result, [csv_b])
+
+            self.assertIn(str(csv_a.parent), _HEADER_CACHE)
+            self.assertIn(str(csv_b.parent), _HEADER_CACHE)
+            self.assertEqual(
+                set(_HEADER_CACHE[str(csv_a.parent)]), {csv_a}
+            )
+            self.assertEqual(
+                set(_HEADER_CACHE[str(csv_b.parent)]), {csv_b}
+            )
+
+    def test_invalidate_second_parent_evicts_its_headers(self) -> None:
+        """Invalidating a non-first parent directory takes effect.
+
+        With first-path keying, headers for directory B were stored under
+        directory A's key, so ``invalidate_header_cache(dir_b)`` could
+        never evict them and a reparse would serve stale headers.  After
+        invalidation, a rewritten CSV in directory B must match on its
+        new column name.
+        """
+        with TemporaryDirectory(prefix="aift-csv-a-") as tmp_a, \
+                TemporaryDirectory(prefix="aift-csv-b-") as tmp_b:
+            csv_a = Path(tmp_a) / "alpha.csv"
+            csv_b = Path(tmp_b) / "beta.csv"
+            self._write_csv(csv_a, "first_col\nval\n")
+            self._write_csv(csv_b, "old_col\nval\n")
+
+            # Prime the cache with a mixed-parent call (dir A path first).
+            _match_target_paths([csv_a, csv_b], "no column mentioned", False)
+
+            # Simulate a reparse of directory B: new headers on disk,
+            # followed by the targeted invalidation the routes perform.
+            self._write_csv(csv_b, "fresh_col\nval\n")
+            invalidate_header_cache(csv_b.parent)
+
+            result = _match_target_paths(
+                [csv_a, csv_b], "show the fresh_col values", False
+            )
+            self.assertEqual(result, [csv_b])
+
+    def test_unchanged_directory_headers_stay_cached(self) -> None:
+        """Invalidating one directory leaves the other's cache entry alone."""
+        with TemporaryDirectory(prefix="aift-csv-a-") as tmp_a, \
+                TemporaryDirectory(prefix="aift-csv-b-") as tmp_b:
+            csv_a = Path(tmp_a) / "alpha.csv"
+            csv_b = Path(tmp_b) / "beta.csv"
+            self._write_csv(csv_a, "first_col\nval\n")
+            self._write_csv(csv_b, "second_col\nval\n")
+
+            _match_target_paths([csv_a, csv_b], "no column mentioned", False)
+            invalidate_header_cache(csv_b.parent)
+
+            self.assertNotIn(str(csv_b.parent), _HEADER_CACHE)
+            self.assertIn(str(csv_a.parent), _HEADER_CACHE)
+            self.assertEqual(
+                _HEADER_CACHE[str(csv_a.parent)].get(csv_a), ["first_col"]
+            )
 
 
 class RetrieveCsvDataEdgeCasesTests(unittest.TestCase):
