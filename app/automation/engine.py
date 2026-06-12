@@ -27,6 +27,7 @@ from typing import Any
 from app.analyzer.cancellation import AnalysisCancelledError
 from app.analyzer.core import ForensicAnalyzer
 from app.logging.audit import AuditLogger
+from app.automation import AUTOMATION_UPLOAD_ROOT_NAME
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.logging.case_manager import CaseManager
@@ -784,7 +785,14 @@ def _cleanup_uncommitted_upload_staging(upload_staging_path: str | Path | None) 
     """Remove an uncommitted REST upload staging directory.
 
     The guard keeps this cleanup constrained to the REST pre-case upload
-    staging area, so ordinary path-mode evidence is never removed.
+    staging area (a per-run directory directly under the shared
+    ``AUTOMATION_UPLOAD_ROOT_NAME`` root), so ordinary path-mode evidence
+    is never removed.
+
+    Args:
+        upload_staging_path: Per-run staging directory recorded on the
+            automation request, or ``None`` when the run used path-mode
+            evidence and there is nothing to clean.
     """
     if upload_staging_path is None:
         return
@@ -797,9 +805,10 @@ def _cleanup_uncommitted_upload_staging(upload_staging_path: str | Path | None) 
         )
         return
 
-    if target.parent.name != "_automation_uploads":
+    if target.parent.name != AUTOMATION_UPLOAD_ROOT_NAME:
         LOGGER.warning(
-            "Refusing to clean upload staging path outside _automation_uploads: %s",
+            "Refusing to clean upload staging path outside %s: %s",
+            AUTOMATION_UPLOAD_ROOT_NAME,
             target,
         )
         return

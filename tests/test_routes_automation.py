@@ -760,6 +760,120 @@ class TestStartRunSuccess(AutomationRoutesTestBase):
         mock_run.assert_not_called()
 
 
+class TestStaleUploadStagingSweep(AutomationRoutesTestBase):
+    """Tests for the once-per-process sweep of orphaned upload staging dirs.
+
+    Upload staging cleanup is otherwise driven purely by in-memory run state,
+    so staging directories from a previous process (crash, Ctrl-C, restart)
+    would accumulate forever without the first-use sweep.
+    """
+
+    def _post_multipart_run(self, filename: str = "uploaded.E01") -> object:
+        """POST a minimal multipart automation run with one evidence file.
+
+        Args:
+            filename: Multipart filename for the uploaded evidence blob.
+
+        Returns:
+            Flask test response.
+        """
+        return self.client.post(
+            "/api/automation/run",
+            data={
+                "evidence_file": (BytesIO(b"evidence"), filename),
+                "prompt": "Investigate upload",
+            },
+            content_type="multipart/form-data",
+        )
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_first_multipart_run_sweeps_orphaned_staging(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """The first staged upload of a process removes prior-process orphans."""
+        mock_run.return_value = _make_successful_result()
+        orphan_dir = self.cases_root / "_automation_uploads" / "orphan-run"
+        orphan_dir.mkdir(parents=True)
+        (orphan_dir / "stale.E01").write_bytes(b"stale evidence copy")
+        orphan_file = self.cases_root / "_automation_uploads" / "stray.tmp"
+        orphan_file.write_bytes(b"stray")
+
+        with patch.object(automation_mod, "_STAGING_ROOT_SWEPT", False):
+            resp = self._post_multipart_run()
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertFalse(orphan_dir.exists())
+        self.assertFalse(orphan_file.exists())
+        staged_evidence = Path(mock_run.call_args.args[0].evidence_path)
+        self.assertTrue(staged_evidence.is_file())
+        self.assertEqual(staged_evidence.read_bytes(), b"evidence")
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_sweep_runs_once_per_process_and_preserves_live_staging(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """A later multipart POST never deletes an earlier run's staging dir."""
+        mock_run.return_value = _make_successful_result()
+
+        with patch.object(automation_mod, "_STAGING_ROOT_SWEPT", False):
+            first_resp = self._post_multipart_run("first.E01")
+            self.assertEqual(first_resp.status_code, 202)
+            first_evidence = Path(mock_run.call_args.args[0].evidence_path)
+            self.assertTrue(first_evidence.is_file())
+
+            # An entry appearing after the first sweep must also survive:
+            # the sweep runs exactly once per process.
+            late_entry = self.cases_root / "_automation_uploads" / "late-run"
+            late_entry.mkdir()
+
+            second_resp = self._post_multipart_run("second.E01")
+            self.assertEqual(second_resp.status_code, 202)
+
+        self.assertTrue(first_evidence.is_file())
+        self.assertTrue(late_entry.is_dir())
+        second_evidence = Path(mock_run.call_args.args[0].evidence_path)
+        self.assertTrue(second_evidence.is_file())
+        self.assertNotEqual(first_evidence, second_evidence)
+
+    @patch("app.routes.automation.run_automation")
+    @patch("app.routes.automation.threading.Thread", ImmediateThread)
+    def test_sweep_never_touches_paths_outside_staging_root(
+        self,
+        mock_run: MagicMock,
+    ) -> None:
+        """The sweep only removes entries directly under the staging root."""
+        mock_run.return_value = _make_successful_result()
+        orphan_dir = self.cases_root / "_automation_uploads" / "orphan-run"
+        orphan_dir.mkdir(parents=True)
+        sibling_case_file = self.cases_root / "existing-case" / "audit.jsonl"
+        sibling_case_file.parent.mkdir(parents=True)
+        sibling_case_file.write_text("{}\n", encoding="utf-8")
+        loose_file = self.cases_root / "notes.txt"
+        loose_file.write_text("keep me", encoding="utf-8")
+
+        with patch.object(automation_mod, "_STAGING_ROOT_SWEPT", False):
+            resp = self._post_multipart_run()
+
+        self.assertEqual(resp.status_code, 202)
+        self.assertFalse(orphan_dir.exists())
+        self.assertTrue(sibling_case_file.is_file())
+        self.assertEqual(sibling_case_file.read_text(encoding="utf-8"), "{}\n")
+        self.assertTrue(loose_file.is_file())
+        self.assertTrue((self.cases_root / "_automation_uploads").is_dir())
+
+    def test_sweep_tolerates_missing_staging_root(self) -> None:
+        """The sweep returns silently when the staging root does not exist."""
+        self.assertFalse((self.cases_root / "_automation_uploads").exists())
+        with patch.object(automation_mod, "_STAGING_ROOT_SWEPT", False):
+            automation_mod._sweep_stale_upload_staging()
+            self.assertTrue(automation_mod._STAGING_ROOT_SWEPT)
+        self.assertFalse((self.cases_root / "_automation_uploads").exists())
+
+
 class TestConcurrentRuns(AutomationRoutesTestBase):
     """Tests that multiple concurrent runs are allowed."""
 

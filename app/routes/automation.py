@@ -15,6 +15,11 @@ Attributes:
     RUNS_LOCK: Alias of the manager lock protecting :data:`AUTOMATION_RUNS`.
     RUN_TTL_SECONDS: Default/fallback finished-run retention TTL in seconds.
     automation_bp: Flask Blueprint registered under ``/api/automation``.
+    _STAGING_ROOT_SWEPT: Once-per-process flag recording that stale upload
+        staging entries left by a previous process have been swept.
+    _STAGING_SWEEP_LOCK: Lock serialising the first-use staging sweep so the
+        sweep always completes before this process creates a staging
+        directory.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from flask import (
 from werkzeug.datastructures import FileStorage
 
 from app.utils.artifact_profiles import validate_analysis_date_range
+from app.automation import AUTOMATION_UPLOAD_ROOT_NAME
 from app.automation.engine import AutomationRequest, run_automation
 from app.automation.run_manager import (
     DEFAULT_RUN_TTL_SECONDS,
@@ -55,8 +61,9 @@ LOGGER = logging.getLogger(__name__)
 automation_bp = Blueprint("automation", __name__)
 
 RUN_TTL_SECONDS = DEFAULT_RUN_TTL_SECONDS
-AUTOMATION_UPLOAD_ROOT_NAME = "_automation_uploads"
 INVALID_UPLOAD_PATH_CHARS = frozenset('<>:"|?*\x00')
+_STAGING_SWEEP_LOCK = threading.Lock()
+_STAGING_ROOT_SWEPT = False
 ROUTE_RUN_MANAGER = AutomationRunManager(
     run_automation_func=lambda *args, **kwargs: run_automation(*args, **kwargs),
     ttl_seconds=RUN_TTL_SECONDS,
@@ -176,6 +183,55 @@ def _cleanup_upload_dir(upload_dir: Any) -> None:
     shutil.rmtree(target, ignore_errors=True)
 
 
+def _sweep_stale_upload_staging() -> None:
+    """Remove upload staging entries left behind by a previous process.
+
+    REST upload staging state is tracked only in memory, so any entry already
+    present under ``cases/_automation_uploads`` when this process stages its
+    first upload was created by a previous process (for example one that
+    crashed or was stopped mid-run) and can never be reclaimed by the normal
+    run lifecycle.  AIFT is a single-process, single-user tool, so those
+    leftovers are swept exactly once per process — always before this process
+    creates its first staging directory, which guarantees staging directories
+    created by this process (including concurrent runs) are never removed.
+    This mirrors the prune-before-use behaviour of the managed discovery
+    workspaces (``cases/_managed_discovery`` and ``cases/_mcp_discovery``).
+
+    The sweep is best-effort and never fails the request: it only touches
+    entries directly under the staging root (never the root itself, its
+    parent, or anything outside it), tolerates a missing root, and swallows
+    individual removal errors.
+    """
+    global _STAGING_ROOT_SWEPT
+    with _STAGING_SWEEP_LOCK:
+        if _STAGING_ROOT_SWEPT:
+            return
+        _STAGING_ROOT_SWEPT = True
+        try:
+            root = _automation_upload_root()
+            stale_entries = list(root.iterdir()) if root.is_dir() else []
+        except Exception:
+            LOGGER.debug(
+                "Unable to inspect the automation upload staging root.",
+                exc_info=True,
+            )
+            return
+        for entry in stale_entries:
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.debug("Could not remove stale staging entry: %s", entry)
+        if stale_entries:
+            LOGGER.info(
+                "Swept %d stale automation upload staging entries from %s.",
+                len(stale_entries),
+                root,
+            )
+
+
 def _uploaded_filename_parts(filename: str, fallback: str) -> tuple[str, ...]:
     """Return safe relative path parts for a multipart upload filename.
 
@@ -225,12 +281,31 @@ def _stage_uploaded_evidence(run_id: str) -> tuple[Path | None, Path | None]:
 
     A single uploaded file is passed to the engine directly.  Multiple files
     are passed as their staging directory, which lets discovery handle split
-    images and folder-shaped uploads.
+    images and folder-shaped uploads.  Before this process creates its first
+    staging directory, stale staging entries orphaned by a previous process
+    are swept from the staging root.
+
+    Args:
+        run_id: Automation run UUID used as the staging directory name.
+
+    Returns:
+        Tuple of ``(evidence_path, upload_dir)``.  Both are ``None`` when the
+        request carried no usable file uploads; otherwise ``evidence_path``
+        is the path handed to the engine (the single staged file, or the
+        staging directory for multi-file uploads) and ``upload_dir`` is the
+        per-run staging directory.
+
+    Raises:
+        OSError: If a staged file cannot be written to disk.
+        ValueError: If an upload filename is unsafe, the cumulative upload
+            size exceeds the configured limit, or no usable evidence files
+            were provided.
     """
     uploaded_files = _collect_uploaded_files()
     if not uploaded_files:
         return None, None
 
+    _sweep_stale_upload_staging()
     root = _automation_upload_root()
     upload_dir = (root / run_id).resolve()
     upload_dir.mkdir(parents=True, exist_ok=False)

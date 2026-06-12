@@ -4,6 +4,10 @@ Provides evidence discovery, JSON report export, and an orchestration engine
 that runs the complete AIFT workflow without Flask or a browser.
 
 Attributes:
+    AUTOMATION_UPLOAD_ROOT_NAME: Name of the directory under ``cases/`` that
+        holds per-run REST multipart upload staging directories.  Shared by
+        the route-side staging/sweep code and the engine-side cleanup guard
+        so the two can never drift apart.
     AutomationRequest: Dataclass describing automation run parameters.
     AutomationResult: Dataclass describing automation run outcomes.
     run_automation: Main entry point for headless pipeline execution.
@@ -17,6 +21,8 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+AUTOMATION_UPLOAD_ROOT_NAME = "_automation_uploads"
+
 _EXPORTS = {
     "AutomationRequest": ("app.automation.engine", "AutomationRequest"),
     "AutomationResult": ("app.automation.engine", "AutomationResult"),
@@ -28,6 +34,7 @@ _EXPORTS = {
 }
 
 __all__ = [
+    "AUTOMATION_UPLOAD_ROOT_NAME",
     "AutomationRequest",
     "AutomationResult",
     "run_automation",
