@@ -1,18 +1,39 @@
 """Tests for the aift.py application entry point.
 
 Covers the ``main()`` function, the ``_open_browser`` inner closure, and the
-``if __name__ == "__main__"`` guard that translates version errors into a
-clean exit.
+``if __name__ == "__main__"`` guards of the three root entry-point scripts
+(``aift.py``, ``aift_cli.py``, and ``aift_mcp.py``) that translate Python
+version errors into a clean exit.
+
+The guard tests execute the real scripts via ``runpy.run_path`` with
+``run_name="__main__"`` so they fail if a guard block is removed or its
+error handling regresses, rather than asserting on a re-implemented copy.
+
+Attributes:
+    _REPO_ROOT: Absolute path to the repository root containing the
+        entry-point scripts.
+    _VERSION_ERROR_MESSAGE: Canonical unsupported-version message used to
+        simulate a failing runtime check in the guard tests.
 """
 
 from __future__ import annotations
 
-import sys
+import contextlib
+import io
+import runpy
 import unittest
-from unittest.mock import MagicMock, call, patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import aift
 from runtime_compat import UnsupportedPythonVersionError
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+_VERSION_ERROR_MESSAGE = (
+    "Unsupported Python version detected: 3.14.3. "
+    "AIFT currently supports Python 3.10-3.13."
+)
 
 
 class TestMainUnsupportedPython(unittest.TestCase):
@@ -210,55 +231,115 @@ class TestOpenBrowserCallback(unittest.TestCase):
             callback()
 
 
+def _run_script_with_version_error(
+    test: unittest.TestCase, script_name: str
+) -> tuple[int | str | None, str]:
+    """Execute a repo-root script as ``__main__`` with a failing version check.
+
+    Patches ``runtime_compat.assert_supported_python_version`` to raise
+    ``UnsupportedPythonVersionError`` and then runs the real script file via
+    ``runpy.run_path`` under ``run_name="__main__"``, so the script's actual
+    module-level guard handles the error. The test fails if no ``SystemExit``
+    is raised (e.g. if the guard block were deleted).
+
+    Args:
+        test: The calling test case, used for the ``assertRaises`` context.
+        script_name: File name of the entry-point script at the repository
+            root (e.g. ``"aift.py"``).
+
+    Returns:
+        A tuple of (the ``SystemExit`` code, the captured stderr text).
+    """
+    stderr_capture = io.StringIO()
+    with (
+        patch(
+            "runtime_compat.assert_supported_python_version",
+            side_effect=UnsupportedPythonVersionError(_VERSION_ERROR_MESSAGE),
+        ),
+        contextlib.redirect_stderr(stderr_capture),
+        test.assertRaises(SystemExit) as ctx,
+    ):
+        runpy.run_path(str(_REPO_ROOT / script_name), run_name="__main__")
+    return ctx.exception.code, stderr_capture.getvalue()
+
+
 class TestIfNameMain(unittest.TestCase):
-    """Tests for the ``if __name__ == '__main__'`` guard block."""
+    """Tests for the real ``if __name__ == '__main__'`` guard in aift.py."""
 
-    def test_successful_main_invocation(self) -> None:
-        """When main() succeeds, no error is printed and no SystemExit occurs."""
-        with patch.object(aift, "main") as mock_main:
-            mock_main.return_value = None
-            # Simulate running the module guard
-            try:
-                aift.main()
-            except SystemExit:
-                self.fail("SystemExit raised unexpectedly")
+    def test_version_error_exits_with_code_one(self) -> None:
+        """Running aift.py as __main__ with a bad version must exit(1)."""
+        exit_code, _ = _run_script_with_version_error(self, "aift.py")
+        self.assertEqual(exit_code, 1)
 
-    def test_version_error_prints_to_stderr_and_exits(self) -> None:
-        """UnsupportedPythonVersionError should print to stderr and exit(1)."""
-        error_msg = (
-            "Unsupported Python version detected: 3.14.3. "
-            "AIFT currently supports Python 3.10-3.13."
-        )
-        error = UnsupportedPythonVersionError(error_msg)
+    def test_version_error_prints_message_to_stderr(self) -> None:
+        """The guard must print the version error message to stderr."""
+        _, stderr_text = _run_script_with_version_error(self, "aift.py")
+        self.assertIn(_VERSION_ERROR_MESSAGE, stderr_text)
 
-        with (
-            patch.object(aift, "main", side_effect=error),
-            patch("builtins.print") as mock_print,
+    def test_guard_does_not_invoke_main_on_import(self) -> None:
+        """Executing aift.py under a non-main name must not call main()."""
+        with patch(
+            "runtime_compat.assert_supported_python_version",
+            side_effect=UnsupportedPythonVersionError(_VERSION_ERROR_MESSAGE),
         ):
-            # Replicate the if __name__ == "__main__" block
-            with self.assertRaises(SystemExit) as ctx:
-                try:
-                    aift.main()
-                except UnsupportedPythonVersionError as exc:
-                    print(str(exc), file=sys.stderr)
-                    raise SystemExit(1) from None
+            # If the guard fired, the patched version check would raise.
+            namespace = runpy.run_path(
+                str(_REPO_ROOT / "aift.py"), run_name="aift_guard_test"
+            )
+        self.assertIn("main", namespace)
 
-            self.assertEqual(ctx.exception.code, 1)
-            mock_print.assert_called_once_with(error_msg, file=sys.stderr)
 
-    def test_version_error_exit_code_is_one(self) -> None:
-        """The exit code must be exactly 1 for version errors."""
-        error = UnsupportedPythonVersionError("bad version")
+class TestAiftCliIfNameMain(unittest.TestCase):
+    """Tests for the real ``if __name__ == '__main__'`` guard in aift_cli.py."""
 
-        with patch.object(aift, "main", side_effect=error):
-            with self.assertRaises(SystemExit) as ctx:
-                try:
-                    aift.main()
-                except UnsupportedPythonVersionError as exc:
-                    print(str(exc), file=sys.stderr)
-                    raise SystemExit(1) from None
+    def test_version_error_exits_with_code_one(self) -> None:
+        """Running aift_cli.py as __main__ with a bad version must exit(1)."""
+        exit_code, _ = _run_script_with_version_error(self, "aift_cli.py")
+        self.assertEqual(exit_code, 1)
 
-            self.assertEqual(ctx.exception.code, 1)
+    def test_version_error_prints_message_to_stderr(self) -> None:
+        """The CLI guard must print the version error message to stderr."""
+        _, stderr_text = _run_script_with_version_error(self, "aift_cli.py")
+        self.assertIn(_VERSION_ERROR_MESSAGE, stderr_text)
+
+    def test_guard_does_not_invoke_main_on_import(self) -> None:
+        """Executing aift_cli.py under a non-main name must not call main()."""
+        with patch(
+            "runtime_compat.assert_supported_python_version",
+            side_effect=UnsupportedPythonVersionError(_VERSION_ERROR_MESSAGE),
+        ):
+            # If the guard fired, the patched version check would raise.
+            namespace = runpy.run_path(
+                str(_REPO_ROOT / "aift_cli.py"), run_name="aift_cli_guard_test"
+            )
+        self.assertIn("main", namespace)
+
+
+class TestAiftMcpIfNameMain(unittest.TestCase):
+    """Tests for the real ``if __name__ == '__main__'`` guard in aift_mcp.py."""
+
+    def test_version_error_exits_with_code_one(self) -> None:
+        """Running aift_mcp.py as __main__ with a bad version must exit(1)."""
+        exit_code, _ = _run_script_with_version_error(self, "aift_mcp.py")
+        self.assertEqual(exit_code, 1)
+
+    def test_version_error_prints_message_to_stderr(self) -> None:
+        """The MCP guard must print the version error message to stderr."""
+        _, stderr_text = _run_script_with_version_error(self, "aift_mcp.py")
+        self.assertIn(_VERSION_ERROR_MESSAGE, stderr_text)
+
+    def test_guard_does_not_invoke_main_on_import(self) -> None:
+        """Executing aift_mcp.py under a non-main name must not call main()."""
+        with patch(
+            "runtime_compat.assert_supported_python_version",
+            side_effect=UnsupportedPythonVersionError(_VERSION_ERROR_MESSAGE),
+        ):
+            # If the guard fired, main() would return 1 and the guard's
+            # SystemExit would propagate out of run_path.
+            namespace = runpy.run_path(
+                str(_REPO_ROOT / "aift_mcp.py"), run_name="aift_mcp_guard_test"
+            )
+        self.assertIn("main", namespace)
 
 
 class TestMainCallsAssertVersion(unittest.TestCase):
