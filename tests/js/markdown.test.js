@@ -249,6 +249,43 @@ describe("inline formatting", () => {
   });
 });
 
+// ── Python renderer parity guards ───────────────────────────────────────────
+
+describe("python renderer parity guards", () => {
+  test("does not pair a stray star with double-star markers", () => {
+    const c = renderMd("a * b ** c");
+    expect(c.querySelector("em")).toBeNull();
+    expect(c.textContent).toContain("a * b ** c");
+  });
+
+  test("stray star after bold stays literal", () => {
+    const c = renderMd("**bold** * stray");
+    expect(c.querySelector("strong")).not.toBeNull();
+    expect(c.querySelector("em")).toBeNull();
+    expect(c.textContent).toContain("* stray");
+  });
+
+  test("italic still renders around embedded bold", () => {
+    const c = renderMd("*a **b** c*");
+    const em = c.querySelector("em");
+    expect(em).not.toBeNull();
+    expect(em.querySelector("strong")).not.toBeNull();
+  });
+
+  test("a lone backtick stays literal text", () => {
+    const c = renderMd("`");
+    expect(c.querySelector("code")).toBeNull();
+    expect(c.textContent).toContain("`");
+  });
+
+  test("an empty code span still renders as code", () => {
+    const c = renderMd("a `` b");
+    const code = c.querySelector("code");
+    expect(code).not.toBeNull();
+    expect(code.textContent).toBe("");
+  });
+});
+
 // ── Confidence tokens ───────────────────────────────────────────────────────
 
 describe("confidence token highlighting", () => {

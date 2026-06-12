@@ -37,7 +37,6 @@ from .state import (
     CASES_ROOT,
     CHAT_PROGRESS,
     PARSE_PROGRESS,
-    PROJECT_ROOT,
     SAFE_NAME_RE,
     STATE_LOCK,
     error_response,
@@ -53,8 +52,6 @@ from .evidence_utils import (
 
 __all__ = [
     "evidence_bp",
-    "resolve_hash_verification_path",
-    "resolve_case_csv_output_dir",
     "collect_case_csv_paths",
     "collect_case_image_csv_paths",
     "build_csv_map",
@@ -70,51 +67,6 @@ LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Hash / CSV / audit helpers
 # ---------------------------------------------------------------------------
-
-def resolve_hash_verification_path(case: dict[str, Any]) -> Path | None:
-    """Resolve the file path for evidence hash verification.
-
-    Args:
-        case: The in-memory case state dictionary.
-
-    Returns:
-        Path to the evidence file, or ``None``.
-    """
-    source_path = str(case.get("source_path", "")).strip()
-    if source_path:
-        return Path(source_path)
-    evidence_path = str(case.get("evidence_path", "")).strip()
-    if evidence_path:
-        return Path(evidence_path)
-    return None
-
-
-def resolve_case_csv_output_dir(case: dict[str, Any], config_snapshot: dict[str, Any]) -> Path:
-    """Resolve the output directory for parsed CSV files.
-
-    Args:
-        case: The in-memory case state dictionary.
-        config_snapshot: Application configuration snapshot.
-
-    Returns:
-        Absolute ``Path`` to the CSV output directory.
-    """
-    config = config_snapshot if isinstance(config_snapshot, dict) else {}
-    evidence_config = config.get("evidence", {}) if isinstance(config, dict) else {}
-    configured = str(evidence_config.get("csv_output_dir", "")).strip() if isinstance(evidence_config, dict) else ""
-    case_dir = Path(case["case_dir"])
-    case_id = str(case.get("case_id", "")).strip()
-
-    if not configured:
-        return case_dir / "parsed"
-
-    output_root = Path(configured).expanduser()
-    if not output_root.is_absolute():
-        output_root = (PROJECT_ROOT / output_root).resolve()
-    if case_id:
-        return output_root / case_id / "parsed"
-    return output_root / "parsed"
-
 
 def collect_case_csv_paths(case: dict[str, Any]) -> list[Path]:
     """Collect all parsed CSV file paths for a case.

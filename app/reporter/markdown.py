@@ -48,6 +48,8 @@ __all__ = [
     "render_inline_markdown",
 ]
 
+# Canonical confidence-label regex. A JavaScript copy exists as
+# CONFIDENCE_TOKEN_PATTERN in static/js/utils.js; keep both in sync.
 CONFIDENCE_PATTERN = re.compile(
     r"\bconfidence\b(?:\s+level)?\s*(?::|=|-|\bis\b)?\s*"
     r"(?:\*\*|__|\*|_|`|<strong>|<em>|<code>)*"

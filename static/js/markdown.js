@@ -258,6 +258,10 @@
    *
    * Code spans are extracted first so their content is not processed for
    * bold/italic, then the remaining text is HTML-escaped and formatted.
+   * The guards mirror the Python renderer (app/reporter/markdown.py): a
+   * code span needs both delimiting backticks (a lone backtick stays
+   * literal), and star italics use lookarounds so stray `*` characters next
+   * to `**` are not treated as emphasis markers.
    *
    * @param {string} text - Inline Markdown source.
    * @returns {string} HTML string with inline formatting applied.
@@ -268,13 +272,13 @@
     const parts = source.split(/(`[^`\n]*`)/g);
     return parts
       .map((part) => {
-        if (part.startsWith("`") && part.endsWith("`")) {
+        if (part.length >= 2 && part.startsWith("`") && part.endsWith("`")) {
           return `<code>${A.escapeHtml(part.slice(1, -1))}</code>`;
         }
         let out = A.escapeHtml(part);
         out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
         out = out.replace(/(^|\s)__([^\s_](?:.*?[^\s_])?)__(?=$|\s|[.,;!?:)])/g, "$1<strong>$2</strong>");
-        out = out.replace(/\*(.+?)\*/g, "<em>$1</em>");
+        out = out.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<em>$1</em>");
         out = out.replace(/(^|\s)_([^\s_](?:.*?[^\s_])?)_(?=$|\s|[.,;!?:)])/g, "$1<em>$2</em>");
         out = highlightConfidenceTokens(out);
         return out;

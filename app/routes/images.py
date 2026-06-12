@@ -1615,19 +1615,6 @@ def stream_image_parse_progress(case_id: str, image_id: str) -> Response | tuple
 # ---------------------------------------------------------------------------
 
 
-def _discovery_label_for_path(path: Path) -> str:
-    """Return a friendly default image label for a discovered evidence path.
-
-    Args:
-        path: Discovered evidence file or directory path.
-
-    Returns:
-        Human-readable label derived from the path.
-    """
-    label = path.stem if path.is_file() else path.name
-    return str(label or path.name or "Image").strip() or "Image"
-
-
 def _resolve_evidence_for_image(image_dir: Path) -> dict[str, Any]:
     """Resolve evidence payload using the image directory for storage.
 

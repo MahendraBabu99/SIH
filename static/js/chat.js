@@ -573,7 +573,6 @@
         },
       },
     );
-    st.chat.abort = new AbortController();
   }
 
   /** Dispatch a single chat SSE event to the UI. */

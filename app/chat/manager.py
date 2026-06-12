@@ -740,7 +740,6 @@ class ChatManager:
                     analysis,
                     metadata_map,
                     hashes_map,
-                    default_label=_stringify(analysis.get("case_name"), "Evidence Image"),
                 )
                 images_data = normalized_inputs.images_data
                 image_records_by_id = {

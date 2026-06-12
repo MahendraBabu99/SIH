@@ -151,8 +151,8 @@ class TestAutomationRunManager(unittest.TestCase):
             str(Path("/cases/case-ok/reports/report.html")),
         )
         self.assertEqual(
-            manager.get_output_path(run_id, "analysis_results"),
-            Path("/cases/case-ok/analysis_results.json"),
+            paths["analysis_results_path"],
+            str(Path("/cases/case-ok/analysis_results.json")),
         )
 
     def test_evidence_files_processed_counts_successful_images(self) -> None:

@@ -12,7 +12,6 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -328,40 +327,6 @@ class AutomationRunManager:
                 ),
                 "analysis_results_path": result.get("analysis_results_path"),
             }
-
-    def get_output_path(self, run_id: str, output_name: str) -> Path | None:
-        """Return one generated output path by name, or ``None``.
-
-        Args:
-            run_id: Automation run ID.
-            output_name: One of ``html_report``, ``json_report``, or
-                ``analysis_results``. The ``*_path`` variants are accepted too.
-        """
-        key_by_name = {
-            "html": "html_report_path",
-            "html_report": "html_report_path",
-            "html_report_path": "html_report_path",
-            "case_local_html": "case_local_html_report_path",
-            "case_local_html_report": "case_local_html_report_path",
-            "case_local_html_report_path": "case_local_html_report_path",
-            "json": "json_report_path",
-            "json_report": "json_report_path",
-            "json_report_path": "json_report_path",
-            "case_local_json": "case_local_json_report_path",
-            "case_local_json_report": "case_local_json_report_path",
-            "case_local_json_report_path": "case_local_json_report_path",
-            "analysis": "analysis_results_path",
-            "analysis_results": "analysis_results_path",
-            "analysis_results_path": "analysis_results_path",
-        }
-        key = key_by_name.get(output_name)
-        if key is None:
-            return None
-        paths_payload = self.get_report_paths(run_id)
-        if not paths_payload.get("success"):
-            return None
-        value = paths_payload.get(key)
-        return Path(value) if value else None
 
     def _run_thread(
         self,

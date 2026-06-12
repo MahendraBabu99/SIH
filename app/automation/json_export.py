@@ -176,7 +176,6 @@ def export_json_report(
         analysis_input,
         image_metadata,
         evidence_hashes,
-        default_label=stringify(analysis_input.get("case_name"), "Evidence Image"),
     )
     for warning in normalized_inputs.warnings:
         LOGGER.warning("Report input normalization warning: %s", warning)

@@ -166,7 +166,6 @@ class ReportGenerator:
             analysis,
             image_metadata,
             evidence_hashes,
-            default_label=self._resolve_case_name(analysis),
         )
         for warning in normalized_inputs.warnings:
             LOGGER.warning("Report input normalization warning: %s", warning)

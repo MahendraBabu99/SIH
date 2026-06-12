@@ -456,39 +456,6 @@ class EvidenceHelperTests(unittest.TestCase):
         self.assertEqual(result[0]["action"], "test")
         self.assertEqual(result[1]["action"], "test2")
 
-    def test_resolve_hash_verification_path_source(self) -> None:
-        case = {"source_path": "/evidence/disk.E01", "evidence_path": "/case/extracted/disk.E01"}
-        result = routes_evidence.resolve_hash_verification_path(case)
-        self.assertEqual(result, Path("/evidence/disk.E01"))
-
-    def test_resolve_hash_verification_path_evidence_fallback(self) -> None:
-        case = {"source_path": "", "evidence_path": "/case/extracted/disk.E01"}
-        result = routes_evidence.resolve_hash_verification_path(case)
-        self.assertEqual(result, Path("/case/extracted/disk.E01"))
-
-    def test_resolve_hash_verification_path_none(self) -> None:
-        case = {"source_path": "", "evidence_path": ""}
-        result = routes_evidence.resolve_hash_verification_path(case)
-        self.assertIsNone(result)
-
-    def test_resolve_case_csv_output_dir_default(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            case_dir = Path(tmpdir) / "case1"
-            case_dir.mkdir()
-            case = {"case_dir": case_dir, "case_id": "case1"}
-            result = routes_evidence.resolve_case_csv_output_dir(case, {})
-        self.assertEqual(result, case_dir / "parsed")
-
-    def test_resolve_case_csv_output_dir_configured(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            case_dir = Path(tmpdir) / "case1"
-            case_dir.mkdir()
-            output_root = Path(tmpdir) / "custom_output"
-            case = {"case_dir": case_dir, "case_id": "case1"}
-            config = {"evidence": {"csv_output_dir": str(output_root)}}
-            result = routes_evidence.resolve_case_csv_output_dir(case, config)
-        self.assertEqual(result, output_root / "case1" / "parsed")
-
     def test_collect_case_csv_paths_from_image_artifact_csv_paths(self) -> None:
         with TemporaryDirectory() as tmpdir:
             case_dir = Path(tmpdir)

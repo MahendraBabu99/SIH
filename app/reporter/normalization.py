@@ -10,19 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-import re
 from typing import Any
 
 from ..utils import stringify as _stringify_impl
-from .markdown import CONFIDENCE_CLASS_MAP
+from .markdown import CONFIDENCE_CLASS_MAP, CONFIDENCE_PATTERN
 
-CONFIDENCE_LABEL_PATTERN = re.compile(
-    r"\bconfidence\b(?:\s+level)?\s*(?::|=|-|\bis\b)?\s*"
-    r"(?:\*\*|__|\*|_|`|<strong>|<em>|<code>)*"
-    r"(CRITICAL|HIGH|MEDIUM|LOW)(?![A-Za-z0-9])"
-    r"(?:\*\*|__|\*|_|`|</strong>|</em>|</code>)*",
-    re.IGNORECASE,
-)
 UNKNOWN_IP_VALUES = {
     "",
     "unknown",
@@ -728,7 +720,6 @@ def normalize_report_inputs(
     image_metadata: Any,
     evidence_hashes: Any,
     *,
-    default_label: str,
     processing_warnings: Sequence[Any] | None = None,
 ) -> NormalizedReportInputs:
     """Normalize analysis, metadata, hashes, and processing notes.
@@ -743,7 +734,6 @@ def normalize_report_inputs(
             ``image_id``.
         evidence_hashes: Hash records keyed by image ID or carrying
             ``image_id``.
-        default_label: Fallback label for current image records.
         processing_warnings: Optional caller-supplied warnings.
 
     Returns:
@@ -1547,7 +1537,7 @@ def resolve_confidence(explicit_value: str, analysis_text: str) -> tuple[str, st
             return label, CONFIDENCE_CLASS_MAP[label]
 
     text = analysis_text or ""
-    match = CONFIDENCE_LABEL_PATTERN.search(text)
+    match = CONFIDENCE_PATTERN.search(text)
     if match:
         label = match.group(1).upper()
         return label, CONFIDENCE_CLASS_MAP[label]
