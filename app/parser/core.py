@@ -17,6 +17,9 @@ Key responsibilities:
 * **Schema evolution** -- When a Dissect plugin yields records with
   varying schemas, CSV headers are expanded dynamically and the file is
   rewritten once to ensure a consistent header row.
+* **Upstream patching** -- Importing this module applies the runtime
+  patches in :mod:`app.parser.dissect_patches` for known Dissect bugs
+  whose upstream fixes are not yet released.
 
 Attributes:
     logger: Module-level logger for parser diagnostics.
@@ -48,11 +51,14 @@ from dissect.target.plugins.os.windows.thumbcache import (
 )
 from dissect.thumbcache import Error as ThumbcacheError, Thumbcache
 
+from .dissect_patches import apply_dissect_patches
 from .registry import get_artifact_registry
 
 __all__ = ["ForensicParser", "ParserCancelledError"]
 
 logger = logging.getLogger(__name__)
+
+apply_dissect_patches()
 
 UNKNOWN_VALUE = "Unknown"
 EVTX_MAX_RECORDS_PER_FILE = 500_000
