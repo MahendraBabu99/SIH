@@ -122,8 +122,13 @@ class AutomationResult:
         duration_seconds: Total wall-clock time of the run in seconds.
         successful_images: Number of discovered evidence images that were
             processed successfully (opened, hashed, and parsed with usable
-            artifact output). Images that failed or were skipped are counted
-            in warnings instead.
+            artifact output). This count includes images that parsed
+            successfully but were excluded from AI analysis because none
+            of their parsed artifacts were AI-enabled; those exclusions
+            are reported via warnings and the analysis results'
+            skipped-image entries. Images that failed to open, hash, or
+            produce any usable parse output are not counted here and are
+            reported via warnings (and skipped-image entries) instead.
     """
 
     success: bool
@@ -1117,6 +1122,11 @@ def run_automation(
 
     - If evidence discovery finds 0 files: return failure immediately.
     - If a single image fails to open/parse: log warning, continue.
+    - If an image parses but none of its AI-enabled artifacts produced
+      usable output: still count it as successful, record it as a
+      skipped image excluded from AI analysis (warning plus a
+      ``skipped_images`` entry in the analysis results), and continue
+      without sending it to the analyzer.
     - If ALL images fail: return failure.
     - If analysis fails: return failure with partial results.
     - If report generation fails: return failure but include
@@ -1586,15 +1596,32 @@ def run_automation(
                     result.warnings.append(msg)
 
                 result.successful_images += 1
+
+                analyzable_artifact_keys = [
+                    artifact_key
+                    for artifact_key in image_analysis
+                    if artifact_key in csv_paths
+                ]
+                if not analyzable_artifact_keys:
+                    msg = (
+                        f"No AI-enabled artifacts produced parsed output "
+                        f"for {img_label}; parsed CSVs were generated but "
+                        "the image was excluded from AI analysis."
+                    )
+                    LOGGER.warning(msg)
+                    result.warnings.append(msg)
+                    skipped_images.append({
+                        "image_id": image_id,
+                        "label": img_label,
+                        "reason": msg,
+                    })
+                    continue
+
                 image_descriptors.append({
                     "image_id": image_id,
                     "label": img_label,
                     "metadata": metadata,
-                    "artifact_keys": [
-                        artifact_key
-                        for artifact_key in image_analysis
-                        if artifact_key in csv_paths
-                    ],
+                    "artifact_keys": analyzable_artifact_keys,
                     "parsed_dir": str(parsed_dir),
                     "os_type": os_type,
                     "csv_paths": csv_paths,

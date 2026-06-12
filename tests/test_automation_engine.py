@@ -40,10 +40,21 @@ from tests.conftest import (
 
 
 class _EngineTestAnalyzer(FakeAnalyzer):
-    """Analyzer stub that also supports multi-image analysis."""
+    """Analyzer stub that also supports multi-image analysis.
+
+    Attributes:
+        last_full_metadata: Metadata dict captured from the most recent
+            single-image analysis call (or single-descriptor multi-image
+            call), or None.
+        last_multi_date_range: Analysis date range captured from the most
+            recent multi-image call, or None.
+        last_multi_images: Image descriptor list captured from the most
+            recent multi-image call, or None when no call was made.
+    """
 
     last_full_metadata: dict[str, object] | None = None
     last_multi_date_range: tuple[str, str] | None = None
+    last_multi_images: list[dict[str, Any]] | None = None
 
     def run_full_analysis(
         self,
@@ -86,6 +97,7 @@ class _EngineTestAnalyzer(FakeAnalyzer):
             Multi-image analysis result dict.
         """
         _EngineTestAnalyzer.last_multi_date_range = analysis_date_range
+        _EngineTestAnalyzer.last_multi_images = [dict(desc) for desc in images]
         if len(images) == 1:
             metadata = dict(images[0].get("metadata", {}))
             if analysis_date_range is not None:
@@ -597,6 +609,7 @@ class TestRunAutomation(unittest.TestCase):
             self.mocks[p.attribute] = p.start()
         _EngineTestAnalyzer.last_full_metadata = None
         _EngineTestAnalyzer.last_multi_date_range = None
+        _EngineTestAnalyzer.last_multi_images = None
 
     def _add_patch(self, target: str, **kwargs: Any) -> None:
         """Register a patch to be started in setUp.
@@ -1156,9 +1169,125 @@ class TestRunAutomation(unittest.TestCase):
         self.assertTrue(
             any("No analyzable AI artifacts were available" in e for e in result.errors)
         )
+        # The lone image still parsed usable output, so it is counted as
+        # successfully processed and reported as excluded from AI analysis.
+        self.assertEqual(result.successful_images, 1)
+        self.assertTrue(
+            any(
+                "excluded from AI analysis" in warning
+                for warning in result.warnings
+            )
+        )
         self.mocks["ForensicAnalyzer"].assert_not_called()
         self.mocks["ReportGenerator"].assert_not_called()
         self.mocks["export_json_report"].assert_not_called()
+
+    def test_image_without_ai_artifacts_is_skipped_not_analyzed(self) -> None:
+        """An image with only parse-only output never reaches the analyzer.
+
+        Two evidence files run under a profile with one AI-enabled key
+        (``runkeys``) and one parse-only key (``evtx``).  The second image
+        exposes only the parse-only artifact, so it must be recorded under
+        ``skipped_images`` (with a warning) instead of receiving a
+        model-generated per-image summary.
+        """
+        ev2 = self.root / "disk2.vmdk"
+        ev2.write_bytes(b"\x00" * 16)
+        self.mocks["discover_evidence"].return_value = [
+            self.evidence_file, ev2,
+        ]
+        self.mock_cm.add_image.side_effect = ["img-001", "img-002"]
+        img_dir2 = self.cases_dir / "case-001" / "images" / "img-002"
+        img_dir2.mkdir(parents=True, exist_ok=True)
+        self.mock_cm.get_image_dir.side_effect = [
+            self.cases_dir / "case-001" / "images" / "img-001",
+            img_dir2,
+        ]
+
+        self.mocks["artifact_options_to_lists"].side_effect = (
+            lambda _options: (["runkeys", "evtx"], ["runkeys"])
+        )
+
+        available_by_name: dict[str, list[dict[str, object]]] = {
+            self.evidence_file.name: [
+                {"key": "runkeys", "name": "Run/RunOnce Keys",
+                 "available": True},
+                {"key": "evtx", "name": "Event Logs", "available": True},
+            ],
+            ev2.name: [
+                {"key": "evtx", "name": "Event Logs", "available": True},
+            ],
+        }
+
+        class PerImageArtifactParser(FakeParser):
+            """Parser whose available artifacts depend on the evidence file.
+
+            Attributes:
+                evidence_path: Evidence file this parser instance opened.
+            """
+
+            def __init__(self, **kwargs: Any) -> None:
+                """Record the evidence path before normal fake setup.
+
+                Args:
+                    **kwargs: Constructor arguments forwarded to FakeParser.
+                """
+                self.evidence_path = Path(kwargs["evidence_path"])
+                super().__init__(**kwargs)
+
+            def get_available_artifacts(self) -> list[dict[str, object]]:
+                """Return the artifact list configured for this evidence file.
+
+                Returns:
+                    Copies of the artifact dicts mapped to this parser's
+                    evidence file name.
+                """
+                return [
+                    dict(entry)
+                    for entry in available_by_name[self.evidence_path.name]
+                ]
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: PerImageArtifactParser(**kwargs)
+        )
+
+        result = run_automation(self._make_request())
+
+        # (d) Run completes; both images counted as processed.
+        self.assertTrue(result.success)
+        self.assertEqual(result.successful_images, 2)
+
+        # (a) The analyzer received only the first image's descriptor.
+        self.assertIsNotNone(_EngineTestAnalyzer.last_multi_images)
+        analyzed = _EngineTestAnalyzer.last_multi_images or []
+        self.assertEqual(
+            [desc["image_id"] for desc in analyzed], ["img-001"],
+        )
+
+        # (c) The skip is surfaced as a run warning.
+        skip_warnings = [
+            warning for warning in result.warnings
+            if "excluded from AI analysis" in warning
+        ]
+        self.assertEqual(len(skip_warnings), 1)
+        self.assertIn("No AI-enabled artifacts produced parsed output",
+                      skip_warnings[0])
+
+        # (b) Persisted analysis results list img-002 only under
+        # skipped_images, with the skip reason.
+        results_path = self.cases_dir / "case-001" / "analysis_results.json"
+        analysis_results = json.loads(results_path.read_text(encoding="utf-8"))
+        self.assertIn("img-001", analysis_results["images"])
+        self.assertNotIn("img-002", analysis_results["images"])
+        skipped = analysis_results.get("skipped_images", [])
+        self.assertEqual(
+            [entry["image_id"] for entry in skipped], ["img-002"],
+        )
+        self.assertIn(
+            "No AI-enabled artifacts produced parsed output",
+            skipped[0]["reason"],
+        )
+        self.assertIn("excluded from AI analysis", skipped[0]["reason"])
 
     def test_partial_failure_returns_warnings(self) -> None:
         """If one image fails to open but others succeed, result has warnings."""
