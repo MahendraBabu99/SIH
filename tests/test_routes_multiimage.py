@@ -265,6 +265,29 @@ class MultiImageRoutesTests(unittest.TestCase):
         self.assertEqual(len(data["warnings"]), 1)
         self.assertIn("corrupt.zip", data["warnings"][0])
 
+    def test_discover_evidence_skips_empty_file_with_warning(self) -> None:
+        """A 0-byte evidence file in a scanned directory is skipped."""
+        evidence_dir = Path(self.temp_dir.name) / "evidence"
+        evidence_dir.mkdir()
+        (evidence_dir / "pc01.E01").write_bytes(b"evidence-1")
+        (evidence_dir / "empty.vmdk").write_bytes(b"")
+
+        with self._patch_context():
+            with patch("app.automation.discovery.Target.open", side_effect=Exception("not loadable")):
+                resp = self.client.post(
+                    "/api/evidence/discover",
+                    json={"path": str(evidence_dir)},
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(Path(data["evidence"][0]["path"]).name, "pc01.E01")
+        self.assertEqual(len(data["warnings"]), 1)
+        self.assertIn("empty.vmdk", data["warnings"][0])
+        self.assertIn("0 bytes", data["warnings"][0])
+
     def test_discover_evidence_selected_corrupt_archive_fails(self) -> None:
         """A corrupt archive selected as the scan path itself returns 400."""
         evidence_dir = Path(self.temp_dir.name) / "evidence"

@@ -771,12 +771,15 @@ class TestDiscoveryIntegration(unittest.TestCase):
         """Clean up."""
         self.temp_dir.cleanup()
 
-    def _touch(self, *parts: str, content: bytes = b"") -> Path:
-        """Create a file with optional content.
+    def _touch(self, *parts: str, content: bytes = b"\x00") -> Path:
+        """Create a small non-empty stub file with optional content.
+
+        Stubs default to one byte of content because discovery skips empty
+        (0-byte) evidence files.
 
         Args:
             *parts: Path components relative to root.
-            content: File content bytes.
+            content: File content bytes; defaults to a single byte.
 
         Returns:
             Resolved path to the file.

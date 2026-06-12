@@ -738,9 +738,10 @@ def discover_evidence_paths() -> tuple[Response, int]:
 
     Corrupt or unreadable archives found while scanning a directory are
     skipped rather than failing the whole scan; each skip is reported in
-    the response's ``warnings`` list. The scan still fails when the
-    selected path itself is a bad archive, and ``"Archive rejected:"``
-    safety errors always abort.
+    the response's ``warnings`` list. Empty (0-byte) evidence files are
+    likewise skipped with a warning instead of being returned as targets.
+    The scan still fails when the selected path itself is a bad archive,
+    and ``"Archive rejected:"`` safety errors always abort.
 
     Returns:
         ``(Response, 200)`` with discovered evidence entries and non-fatal

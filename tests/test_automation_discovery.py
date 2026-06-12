@@ -109,18 +109,23 @@ class TestDiscoverEvidence(unittest.TestCase):
         """Clean up temporary directory."""
         self.temp_dir.cleanup()
 
-    def _touch(self, *parts: str) -> Path:
-        """Create an empty file within the temp directory.
+    def _touch(self, *parts: str, content: bytes = b"\x00") -> Path:
+        """Create a small non-empty stub file within the temp directory.
+
+        Stubs default to one byte of content because discovery skips empty
+        (0-byte) evidence files; tests exercising that skip pass
+        ``content=b""`` explicitly.
 
         Args:
             *parts: Path components relative to the temp root.
+            content: File content bytes; defaults to a single byte.
 
         Returns:
             Resolved Path to the created file.
         """
         p = self.root.joinpath(*parts)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"")
+        p.write_bytes(content)
         return p.resolve()
 
     def _discover_with_dissect_fail(
@@ -611,6 +616,77 @@ class TestDiscoverEvidence(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("locked.zip", warnings[0])
         self.assertIn("locked by another process", warnings[0])
+
+    def test_empty_selected_file_skipped_with_warning(self) -> None:
+        """An explicitly selected 0-byte evidence file is skipped."""
+        empty = self._touch("empty.E01", content=b"")
+
+        warnings: list[str] = []
+        result = discover_evidence(empty, warnings=warnings)
+
+        self.assertEqual(result, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("empty.E01", warnings[0])
+        self.assertIn("0 bytes", warnings[0])
+
+    def test_empty_file_skip_without_accumulator_does_not_fail(self) -> None:
+        """Skipping an empty file works when no warnings list is supplied."""
+        empty = self._touch("empty.vmdk", content=b"")
+        self.assertEqual(discover_evidence(empty), [])
+
+    def test_empty_file_in_directory_skipped_with_warning(self) -> None:
+        """A 0-byte file found while scanning a directory is skipped."""
+        good = self._touch("disk.E01")
+        self._touch("empty.vmdk", content=b"")
+
+        warnings: list[str] = []
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = discover_evidence(self.root, warnings=warnings)
+
+        names = [descriptor.dissect_path.name for descriptor in result]
+        self.assertEqual(names, ["disk.E01"])
+        self._assert_direct_descriptor(result[0], good)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("empty.vmdk", warnings[0])
+        self.assertIn("0 bytes", warnings[0])
+
+    def test_empty_segment_anchor_skips_whole_group_with_warning(self) -> None:
+        """A split group whose anchor segment is empty is skipped whole."""
+        self._touch("image.E01", content=b"")
+        self._touch("image.E02")
+
+        warnings: list[str] = []
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = discover_evidence(self.root, warnings=warnings)
+
+        self.assertEqual(result, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("image.E01", warnings[0])
+        self.assertIn("0 bytes", warnings[0])
+
+    def test_empty_archive_in_directory_gets_empty_file_warning(self) -> None:
+        """A 0-byte archive is skipped with the empty-file warning."""
+        self._touch("disk.E01")
+        self._touch("hollow.zip", content=b"")
+
+        warnings: list[str] = []
+        with patch(
+            "app.automation.discovery.Target.open",
+            side_effect=RuntimeError("not directly loadable"),
+        ):
+            result = discover_evidence(self.root, warnings=warnings)
+
+        names = [descriptor.dissect_path.name for descriptor in result]
+        self.assertEqual(names, ["disk.E01"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("hollow.zip", warnings[0])
+        self.assertIn("0 bytes", warnings[0])
 
     @pytest.mark.requires_symlink(target_is_directory=True)
     def test_directory_symlink_to_outside_tree_is_skipped(self) -> None:

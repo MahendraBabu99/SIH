@@ -1322,8 +1322,9 @@ def _execute_automation(
     # --- 5. Discover evidence ---
     # Archive fallback extraction during discovery honors the configured
     # evidence.archive_max_* limits, matching GUI evidence intake behavior.
-    # Corrupt archives skipped during directory recursion are recorded
-    # directly into the run warnings so they surface in result payloads.
+    # Corrupt archives and empty (0-byte) evidence files skipped during
+    # discovery are recorded directly into the run warnings so they
+    # surface in result payloads.
     _notify(progress_callback, "discovery", "Scanning for evidence files...", 0.0)
     try:
         discovered_evidence = discover_evidence(
@@ -1419,7 +1420,8 @@ def _execute_automation(
         if cancelled is not None:
             return cancelled
 
-        # Edge case: reject 0-byte evidence files with a clear message.
+        # Defensive re-check: discovery already skips 0-byte evidence with
+        # a warning, so this only fires for files truncated after discovery.
         if ev_file.is_file() and ev_file.stat().st_size == 0:
             msg = (
                 f"Evidence file is empty (0 bytes): {img_label}. "

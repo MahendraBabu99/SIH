@@ -3,6 +3,9 @@
 Discovers the highest-level forensic evidence targets that Dissect can open,
 with recursive fallback for folders and archives that are not directly
 loadable. Split-image segments are deduplicated within each sibling set.
+Empty (0-byte) evidence files are skipped with a clear warning recorded on
+the run's warnings list so every discovery consumer (GUI Scan Directory,
+automation/CLI runs, and the MCP discovery tool) surfaces the skip.
 """
 
 from __future__ import annotations
@@ -57,7 +60,8 @@ class _DiscoveryContext:
             fallback extraction (outer and nested) in this run.
         warnings: Non-fatal warning messages recorded while scanning, such
             as corrupt or unreadable archives skipped during directory
-            recursion.
+            recursion and empty (0-byte) evidence files skipped anywhere
+            in the scan.
     """
 
     source_root: Path | None = None
@@ -159,6 +163,39 @@ def _is_archive(path: Path) -> bool:
     return path.suffix.lower() in ARCHIVE_EXTENSIONS
 
 
+def _skip_empty_file(path: Path, context: _DiscoveryContext) -> bool:
+    """Skip an empty (0-byte) evidence file, recording a clear warning.
+
+    Dissect cannot open empty files, so discovery excludes them up front
+    and surfaces the skip through the context's warnings list. This backs
+    every discovery consumer (GUI Scan Directory, automation/CLI runs, and
+    the MCP discovery tool) with the same warning message.
+
+    Args:
+        path: Candidate evidence file path to check.
+        context: Shared discovery state whose warnings list receives the
+            skip message.
+
+    Returns:
+        True when *path* is an existing regular file of zero size and was
+        therefore skipped; False when the file has content or its size
+        cannot be read (unreadable files are left for later pipeline
+        stages to report).
+    """
+    try:
+        if not path.is_file() or path.stat().st_size > 0:
+            return False
+    except OSError:
+        return False
+    message = (
+        f"Skipped empty evidence file '{path.name}' (0 bytes): "
+        "Dissect cannot process empty files."
+    )
+    LOGGER.warning(message)
+    context.warnings.append(message)
+    return True
+
+
 def _safe_component(value: str) -> str:
     """Return a filesystem-safe name component."""
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._-")
@@ -244,6 +281,11 @@ def _discover_file(
     workspace while recursing so nested archive outputs remain contained by
     the parent extraction tree selected later.
 
+    Empty (0-byte) files — including empty archives and empty split-image
+    anchor segments — are skipped with a warning recorded on the context,
+    regardless of whether the file was explicitly selected or reached
+    through recursion, because Dissect cannot process them.
+
     ``strict_extension`` is True only when *path* is the explicitly selected
     evidence path. For explicitly selected archives every validation or read
     failure propagates so the caller fails loudly. During directory
@@ -274,6 +316,9 @@ def _discover_file(
                 f"Unsupported evidence file extension '{path.suffix}': "
                 f"{path.name}"
             )
+        return []
+
+    if _skip_empty_file(path, context):
         return []
 
     if not _is_archive(path):
@@ -315,7 +360,26 @@ def _discover_file(
 
 
 def _discover_directory(path: Path, context: _DiscoveryContext) -> list[EvidenceDescriptor]:
-    """Discover evidence targets in a directory."""
+    """Discover evidence targets in a directory.
+
+    Directly loadable directories are returned as a single target; other
+    directories are scanned recursively. File candidates whose target path
+    is an empty (0-byte) file — including split-image groups whose anchor
+    segment is empty — are skipped with a warning recorded on the context.
+
+    Args:
+        path: Directory to scan.
+        context: Shared discovery state for this run.
+
+    Returns:
+        Descriptors discovered under *path*, sorted by target path string;
+        empty when the directory is unreadable, already visited, or outside
+        the allowed roots.
+
+    Raises:
+        ValueError: If a sibling split-image segment set is incomplete or
+            ambiguous, or a nested archive is rejected for safety reasons.
+    """
     directory = _resolve_discovery_path(path)
     if directory is None:
         return []
@@ -353,10 +417,14 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
             else:
                 file_candidates.append(child_path)
 
-    result = _deduplicate_segments(
-        file_candidates,
-        source_mode=context.source_mode,
-    )
+    result = [
+        descriptor
+        for descriptor in _deduplicate_segments(
+            file_candidates,
+            source_mode=context.source_mode,
+        )
+        if not _skip_empty_file(descriptor.dissect_path, context)
+    ]
     for child_path in recursive_candidates:
         result.extend(_discover_path(child_path, context, strict_extension=False))
 
@@ -405,6 +473,12 @@ def discover_evidence(
     ``"Archive rejected:"`` safety errors (hostile or limit-violating
     content) always abort the whole discovery.
 
+    Empty (0-byte) evidence files are never returned as targets: whether
+    explicitly selected or found during a scan, each one is skipped with a
+    clear warning recorded on the supplied warnings list, because Dissect
+    cannot process empty files. A split-image group whose anchor segment
+    is empty is skipped as a whole.
+
     Args:
         source_path: Path to a single evidence file or a directory to scan.
         workspace_dir: Optional root directory for archive fallback extraction.
@@ -418,7 +492,8 @@ def discover_evidence(
             not as an aggregate bound across the whole run.
         warnings: Optional caller-supplied list that receives non-fatal
             warning messages (one per archive skipped during directory
-            recursion). When omitted, skip warnings are only logged.
+            recursion and one per empty evidence file skipped). When
+            omitted, skip warnings are only logged.
 
     Returns:
         Sorted list of unique evidence descriptors, each pointing to a viable

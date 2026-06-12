@@ -153,8 +153,10 @@ def _discover_evidence_payload(
     extracted archive, not as an aggregate bound across the whole call.
     Corrupt or unreadable archives found while scanning a directory are
     skipped and reported in the payload's ``warnings`` list instead of
-    failing the call; the call still fails when ``evidence_path`` itself is
-    a bad archive, and ``"Archive rejected:"`` safety errors always abort.
+    failing the call; empty (0-byte) evidence files are likewise skipped
+    with a warning instead of being returned as targets. The call still
+    fails when ``evidence_path`` itself is a bad archive, and
+    ``"Archive rejected:"`` safety errors always abort.
 
     Default workspace retention: when the caller does not supply
     ``workspace_dir``, the extraction workspace is created under the managed
