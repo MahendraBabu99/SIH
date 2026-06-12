@@ -131,8 +131,9 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
         delegation the generic branch would intercept context-length 400s
         and the user would see a raw API error instead of the actionable
         context-length guidance. ``NotFoundError`` (404) is not a
-        ``BadRequestError`` subclass, so the missing-``/v1`` base-URL
-        guidance is unaffected.
+        ``BadRequestError`` subclass, so it reaches ``_make_api_error``,
+        which distinguishes a missing model from a base URL missing
+        ``/v1``.
 
         Args:
             error: The raw SDK or network exception.
@@ -276,7 +277,23 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
         )
 
     def _make_api_error(self, error: Exception) -> AIProviderError:
-        """Map APIError to AIProviderError with 404 detection.
+        """Map APIError to AIProviderError with 404 and missing-model detection.
+
+        Distinguishes two 404 causes so the user is pointed at the right
+        configuration knob:
+
+        * Missing/unknown model: the server text contains ``model``
+          together with ``not found`` (Ollama phrases this as
+          ``model 'NAME' not found, try pulling it first``), or contains
+          ``try pulling it first`` or ``model_not_found``. The message
+          names the configured model and advises fixing ``ai.local.model``
+          in config/config.yaml (or pulling the model when using Ollama).
+        * Other 404/not-found responses: keeps the existing guidance about
+          a base URL missing ``/v1``.
+
+        Both branches append the underlying server error text for
+        diagnosability. Any other API error falls through to a generic
+        local-provider message.
 
         Args:
             error: The API error to map.
@@ -285,11 +302,23 @@ class LocalProvider(OpenAICompatibleChatMixin, AIProvider):
             An ``AIProviderError`` with an appropriate message.
         """
         error_text = str(error).lower()
+        model_missing = (
+            ("model" in error_text and "not found" in error_text)
+            or "try pulling it first" in error_text
+            or "model_not_found" in error_text
+        )
+        if model_missing:
+            return AIProviderError(
+                "The local AI endpoint does not have the configured model "
+                f"`{self.model}`. Check `ai.local.model` in config/config.yaml, "
+                "and when using Ollama pull the model first "
+                f"(e.g. `ollama pull {self.model}`). Server error: {error}"
+            )
         if "404" in error_text or "not found" in error_text:
             return AIProviderError(
                 "Local AI endpoint returned 404 (not found). "
                 "This is often caused by a base URL missing `/v1`. "
-                f"Current base URL: {self.base_url}"
+                f"Current base URL: {self.base_url}. Server error: {error}"
             )
         return AIProviderError(f"Local provider API error: {error}")
 

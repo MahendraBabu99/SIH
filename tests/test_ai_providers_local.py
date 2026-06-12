@@ -284,7 +284,11 @@ class TestLocalProvider(unittest.TestCase):
 
     @patch("openai.OpenAI")
     def test_api_error_404(self, mock_openai_cls: MagicMock) -> None:
-        """Verify the behavior described by this test name."""
+        """A bare 404 without model detail keeps the base-URL guidance.
+
+        The server's original error text must now also be included so the
+        true cause stays diagnosable.
+        """
         class _FakeAPIError(Exception):
             """Grouped tests for _FakeAPIError behavior."""
             pass
@@ -300,8 +304,78 @@ class TestLocalProvider(unittest.TestCase):
             mock_client.chat.completions.create.side_effect = _FakeAPIError("404 not found")
             with self.assertRaises(AIProviderError) as ctx:
                 provider.analyze("system", "user")
-            self.assertIn("404", str(ctx.exception))
-            self.assertIn("base URL", str(ctx.exception))
+            message = str(ctx.exception)
+            self.assertIn("404", message)
+            self.assertIn("base URL", message)
+            self.assertIn("/v1", message)
+            self.assertIn("Server error: 404 not found", message)
+
+    @patch("openai.OpenAI")
+    def test_api_error_model_not_found_names_configured_model(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """An Ollama un-pulled-model 404 is reported as a model problem.
+
+        Pins the fix for the misdiagnosis where Ollama's
+        "model 'NAME' not found, try pulling it first" response was blamed
+        on a base URL missing `/v1` and the server's detail was dropped.
+        """
+        class _FakeAPIError(Exception):
+            """Grouped tests for _FakeAPIError behavior."""
+            pass
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        server_text = "model 'qwen3:8b' not found, try pulling it first"
+        with patch("openai.APIError", _FakeAPIError):
+            provider = LocalProvider(
+                base_url="http://localhost:11434/v1",
+                model="qwen3:8b",
+            )
+            mock_client.chat.completions.create.side_effect = _FakeAPIError(server_text)
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze("system", "user")
+        message = str(ctx.exception)
+        self.assertIn("qwen3:8b", message)
+        self.assertIn("ai.local.model", message)
+        self.assertIn("ollama pull qwen3:8b", message)
+        self.assertIn(server_text, message)
+        self.assertNotIn("/v1", message)
+        self.assertNotIn("base URL", message)
+
+    @patch("openai.OpenAI")
+    def test_api_error_model_not_found_token_maps_to_model_guidance(
+        self,
+        mock_openai_cls: MagicMock,
+    ) -> None:
+        """A 404 carrying a `model_not_found` code is reported as a model problem.
+
+        Covers OpenAI-compatible servers (for example LM Studio) that return
+        an error code token instead of Ollama's prose message.
+        """
+        class _FakeAPIError(Exception):
+            """Grouped tests for _FakeAPIError behavior."""
+            pass
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+
+        server_text = "404 error: model_not_found"
+        with patch("openai.APIError", _FakeAPIError):
+            provider = LocalProvider(
+                base_url="http://localhost:1234/v1",
+                model="qwen3:8b",
+            )
+            mock_client.chat.completions.create.side_effect = _FakeAPIError(server_text)
+            with self.assertRaises(AIProviderError) as ctx:
+                provider.analyze("system", "user")
+        message = str(ctx.exception)
+        self.assertIn("qwen3:8b", message)
+        self.assertIn("ai.local.model", message)
+        self.assertIn(server_text, message)
+        self.assertNotIn("base URL", message)
 
     @patch("openai.OpenAI")
     def test_api_error_generic(self, mock_openai_cls: MagicMock) -> None:
