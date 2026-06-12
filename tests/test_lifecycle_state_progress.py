@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import shutil
 import threading
 import time
 import unittest
@@ -640,6 +641,7 @@ class LifecycleStateProgressTests(unittest.TestCase):
                 "parsed_outputs_invalidated": True,
                 "cleanup_completed": False,
                 "stale_outputs_may_remain_on_disk": True,
+                "evidence_restore_failed": False,
                 "error": "cleanup failed",
             },
         )
@@ -740,6 +742,149 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotIn(image_id, restored_case.get("image_artifact_csv_paths", {}))
         self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
         self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
+        self.assertFalse((image_dir / ".replacement_staging").exists())
+
+    def test_failed_restore_preserves_backup_and_later_intake_recovers_it(self) -> None:
+        """A failed rollback restore keeps the evidence backup for later recovery.
+
+        Phase 1 fails the post-swap commit follow-up AND the backup-restore
+        move, asserting the previous evidence survives in an untouched
+        ``.evidence_backup_*`` sibling and the error response does not claim
+        the evidence was restored.  Phase 2 runs another intake attempt that
+        fails inside the commit block and asserts the orphaned backup is
+        recovered back into the image's active evidence directory.
+        """
+        case_id = "replace-restore-failure"
+        image_id = "img-001"
+        case_dir = self._install_case(case_id, image_id)
+        image_dir = case_dir / "images" / image_id
+        metadata_path = image_dir / "metadata.json"
+        original_metadata = '{"label":"Image","hostname":"old-host"}\n'
+        metadata_path.write_text(original_metadata, encoding="utf-8")
+        image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
+        original_evidence_path = image_state["evidence_path"]
+
+        new_source = Path(self.temp_dir.name) / "restore-failure-new.E01"
+        new_source.write_bytes(b"new")
+        evidence_payload = {
+            "mode": "path",
+            "source_mode": "path",
+            "source_path": str(new_source),
+            "dissect_path": str(new_source),
+            "stored_path": str(new_source),
+            "uploaded_files": [],
+            "files_to_hash": [str(new_source)],
+        }
+
+        real_move = shutil.move
+
+        def fail_backup_restore_move(src: Any, dst: Any, **kwargs: Any) -> Any:
+            """Raise only for the backup-restore move; delegate otherwise."""
+            if ".evidence_backup_" in str(src):
+                raise OSError("simulated transient file lock")
+            return real_move(src, dst, **kwargs)
+
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "_resolve_evidence_for_image", return_value=evidence_payload),
+            patch.object(routes_images, "_should_skip_hashing", return_value=False),
+            patch.object(
+                routes_images,
+                "_compute_evidence_hashes",
+                return_value=({"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3}, []),
+            ),
+            patch.object(
+                routes_images,
+                "_open_dissect_target",
+                return_value=(
+                    {"hostname": "new-host"},
+                    [{"key": "runkeys", "name": "Run Keys", "available": True}],
+                    "windows",
+                ),
+            ),
+            patch.object(
+                routes_images,
+                "_update_image_metadata",
+                side_effect=RuntimeError("metadata write failed"),
+            ),
+            patch("app.routes.images.shutil.move", new=fail_backup_restore_move),
+        ):
+            with self.app.test_request_context(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                method="POST",
+                json={"path": str(new_source)},
+            ):
+                response, status = routes_images.intake_image_evidence(
+                    case_id, image_id,
+                )
+
+        self.assertEqual(status, 500)
+        backups = sorted(image_dir.glob(".evidence_backup_*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual((backups[0] / "old.E01").read_bytes(), b"old")
+        self.assertFalse((image_dir / "evidence").exists())
+        error_message = response.get_json()["error"]
+        self.assertIn("Evidence intake failed", error_message)
+        self.assertIn("could not be put back", error_message)
+        self.assertNotIn("Previous evidence was restored", error_message)
+        self.assertEqual(metadata_path.read_text(encoding="utf-8"), original_metadata)
+        restored_image_state = routes_state.CASE_STATES[case_id]["image_states"][image_id]
+        self.assertEqual(restored_image_state["evidence_path"], original_evidence_path)
+        self.assertFalse((image_dir / ".replacement_staging").exists())
+        routes_state.CASE_STATES[case_id]["audit"].log.assert_any_call(
+            "evidence_replacement_failed",
+            {
+                "image_id": image_id,
+                "stage": "after_cleanup_started",
+                "retained_partial_evidence": False,
+                "parsed_outputs_invalidated": True,
+                "cleanup_completed": True,
+                "stale_outputs_may_remain_on_disk": False,
+                "evidence_restore_failed": True,
+                "error": "metadata write failed",
+            },
+        )
+
+        # Phase 2: a later intake attempt that fails inside the commit block
+        # recovers the orphaned backup into the active evidence directory.
+        with (
+            patch.object(routes_images, "CASES_ROOT", self.cases_root),
+            patch.object(routes_images, "_resolve_evidence_for_image", return_value=evidence_payload),
+            patch.object(routes_images, "_should_skip_hashing", return_value=False),
+            patch.object(
+                routes_images,
+                "_compute_evidence_hashes",
+                return_value=({"sha256": "a" * 64, "md5": "b" * 32, "size_bytes": 3}, []),
+            ),
+            patch.object(
+                routes_images,
+                "_open_dissect_target",
+                return_value=(
+                    {"hostname": "new-host"},
+                    [{"key": "runkeys", "name": "Run Keys", "available": True}],
+                    "windows",
+                ),
+            ),
+            patch.object(
+                routes_images,
+                "_commit_staged_evidence",
+                side_effect=RuntimeError("commit move failed"),
+            ),
+        ):
+            with self.app.test_request_context(
+                f"/api/cases/{case_id}/images/{image_id}/evidence",
+                method="POST",
+                json={"path": str(new_source)},
+            ):
+                response, status = routes_images.intake_image_evidence(
+                    case_id, image_id,
+                )
+
+        self.assertEqual(status, 500)
+        self.assertEqual(
+            (image_dir / "evidence" / "old.E01").read_bytes(), b"old",
+        )
+        self.assertEqual(list(image_dir.glob(".evidence_backup_*")), [])
         self.assertFalse((image_dir / ".replacement_staging").exists())
 
     def test_failed_replacement_before_commit_preserves_active_evidence(self) -> None:

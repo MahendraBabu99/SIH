@@ -239,8 +239,8 @@ def _commit_staged_evidence(staged_evidence_dir: Path, active_evidence_dir: Path
     return backup_dir
 
 
-def _restore_evidence_backup(active_evidence_dir: Path, backup_dir: Path | None) -> None:
-    """Best-effort restore of an evidence directory backup after commit failure.
+def _restore_evidence_backup(active_evidence_dir: Path, backup_dir: Path | None) -> bool:
+    """Best-effort, non-raising restore of an evidence backup after commit failure.
 
     Must only be called after :func:`_commit_staged_evidence` succeeded: it
     removes the newly committed active evidence directory and moves the
@@ -252,26 +252,71 @@ def _restore_evidence_backup(active_evidence_dir: Path, backup_dir: Path | None)
     directory still holds the previous, valid evidence and deleting it would
     destroy the case's only stored copy.
 
+    This function never raises: filesystem failures are logged and reported
+    through the return value so callers can keep rolling back other state.
+    The backup directory may be the only remaining copy of the image's
+    previous evidence, so on any failure it is left untouched at its
+    ``.evidence_backup_*`` sibling path, and the move back into place is only
+    attempted when the active directory no longer exists (never into an
+    existing directory).  A preserved backup can be recovered by
+    :func:`_recover_orphaned_evidence_backup` on a later intake attempt.
+
     Args:
         active_evidence_dir: The image's active evidence directory.
         backup_dir: Backup directory returned by a successful
             :func:`_commit_staged_evidence` call, or ``None`` when no
             pre-existing evidence directory was backed up.
+
+    Returns:
+        ``True`` when the pre-commit state was verifiably restored (the
+        backup was moved back into place, or there was no backup and the
+        newly committed directory is gone); ``False`` when the restore could
+        not complete and any existing backup was preserved at its sibling
+        path.
     """
-    if active_evidence_dir.exists():
-        shutil.rmtree(active_evidence_dir, ignore_errors=True)
-    if backup_dir is not None and backup_dir.exists():
+    try:
+        if active_evidence_dir.exists():
+            shutil.rmtree(active_evidence_dir, ignore_errors=True)
+        if backup_dir is None:
+            return not active_evidence_dir.exists()
+        if active_evidence_dir.exists():
+            LOGGER.warning(
+                "Could not remove the newly committed evidence directory %s; "
+                "the previous-evidence backup was left at %s for later recovery.",
+                active_evidence_dir,
+                backup_dir,
+            )
+            return False
+        if not backup_dir.exists():
+            LOGGER.warning(
+                "Previous-evidence backup %s is missing; cannot restore %s.",
+                backup_dir,
+                active_evidence_dir,
+            )
+            return False
         shutil.move(str(backup_dir), str(active_evidence_dir))
+        return True
+    except (OSError, shutil.Error):
+        LOGGER.warning(
+            "Failed to restore the previous-evidence backup %s into %s; the "
+            "backup directory was left in place for later recovery.",
+            backup_dir,
+            active_evidence_dir,
+            exc_info=True,
+        )
+        return False
 
 
 def _recover_orphaned_evidence_backup(active_evidence_dir: Path) -> None:
     """Best-effort recovery of an orphaned evidence backup directory.
 
-    Covers the rare commit failure where the active evidence directory was
-    moved to a ``.evidence_backup_*`` sibling but the swap could not complete
-    and the in-place restore inside :func:`_commit_staged_evidence` also
-    failed (realistic on Windows when another process briefly holds a handle
-    inside the evidence tree).  When the active directory is missing and an
+    Covers the rare failures where the active evidence directory was moved
+    to a ``.evidence_backup_*`` sibling but could not be moved back: either
+    the swap inside :func:`_commit_staged_evidence` failed along with its
+    in-place restore, or follow-up commit work failed and the rollback in
+    :func:`_restore_evidence_backup` could not complete (realistic on
+    Windows when another process briefly holds a handle inside the evidence
+    tree).  When the active directory is missing and an
     orphaned backup sibling exists, the backup is moved back into place so
     the image keeps its stored evidence copy.  All errors are swallowed --
     this is a best-effort safety net on an error path.
@@ -359,6 +404,7 @@ def _handle_replacement_failure(
     replacement_committed: bool,
     replacement_cleanup_started: bool,
     replacement_cleanup_completed: bool,
+    evidence_restore_failed: bool,
     staging_dir: Path,
     image_dir: Path,
     base_message: str,
@@ -374,7 +420,10 @@ def _handle_replacement_failure(
     message with the rollback consequences.  The on-disk evidence directory
     itself is never touched here -- evidence restoration is handled at the
     commit site, which only rolls back the active evidence directory after a
-    successful swap.
+    successful swap.  When that rollback could not put the previous evidence
+    back (``evidence_restore_failed``), the message and audit entry report
+    that the preserved backup will be recovered on a later intake attempt
+    instead of claiming the evidence was restored.
 
     Args:
         case_id: UUID of the case.
@@ -390,6 +439,9 @@ def _handle_replacement_failure(
             output cleanup had started before the failure.
         replacement_cleanup_completed: ``True`` when that cleanup finished
             before the failure.
+        evidence_restore_failed: ``True`` when the post-commit rollback could
+            not verifiably restore the previous evidence directory and a
+            ``.evidence_backup_*`` sibling was preserved for later recovery.
         staging_dir: Replacement staging directory to remove.
         image_dir: The image directory owning the staging area.
         base_message: User-facing message describing the failure.
@@ -419,17 +471,27 @@ def _handle_replacement_failure(
                     replacement_cleanup_started
                     and not replacement_cleanup_completed
                 ),
+                "evidence_restore_failed": evidence_restore_failed,
                 "error": str(error),
             },
         )
         _cleanup_replacement_staging(staging_dir, image_dir)
     message = base_message
     if replacement_cleanup_started:
-        message = (
-            f"{message} Previous evidence was restored, but parsed and "
-            "analysis outputs were invalidated because replacement cleanup "
-            "had already started."
-        )
+        if evidence_restore_failed:
+            message = (
+                f"{message} The previous evidence could not be put back "
+                "automatically; a backup copy of it was kept inside the "
+                "image directory so a later evidence intake attempt can "
+                "recover it. Parsed and analysis outputs were invalidated "
+                "because replacement cleanup had already started."
+            )
+        else:
+            message = (
+                f"{message} Previous evidence was restored, but parsed and "
+                "analysis outputs were invalidated because replacement "
+                "cleanup had already started."
+            )
         if not replacement_cleanup_completed:
             message = (
                 f"{message} Some stale output files may remain on disk, "
@@ -941,6 +1003,7 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
     replacement_committed = False
     replacement_cleanup_started = False
     replacement_cleanup_completed = False
+    evidence_restore_failed = False
     with STATE_LOCK:
         if active_operations_for_case(case_id):
             return error_response(
@@ -1173,7 +1236,11 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
                 # The swap succeeded, so the active directory now holds the
                 # new evidence: remove it and restore the pre-commit backup
                 # (or nothing, for a first-time intake without a backup).
-                _restore_evidence_backup(evidence_dir, backup_dir)
+                # When the restore cannot complete, the backup survives as a
+                # sibling directory for recovery on a later intake attempt.
+                evidence_restore_failed = not _restore_evidence_backup(
+                    evidence_dir, backup_dir,
+                )
             else:
                 # The failure happened before (or during) the swap: the
                 # active directory still holds the previous, valid evidence
@@ -1185,9 +1252,13 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             elif not metadata_existed:
                 metadata_path.unlink(missing_ok=True)
             raise
-        finally:
-            if backup_dir is not None and backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
+        # The follow-up commit work (metadata + audit) succeeded, so the
+        # previous-evidence backup is no longer the only copy and may be
+        # discarded. On the exception path above the backup either moved
+        # back into place or is deliberately preserved when the restore
+        # could not verifiably complete.
+        if backup_dir is not None and backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
 
         with STATE_LOCK:
             image_states = case.setdefault("image_states", {})
@@ -1264,6 +1335,7 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             replacement_committed=replacement_committed,
             replacement_cleanup_started=replacement_cleanup_started,
             replacement_cleanup_completed=replacement_cleanup_completed,
+            evidence_restore_failed=evidence_restore_failed,
             staging_dir=staging_dir,
             image_dir=image_dir,
             base_message=str(error),
@@ -1281,6 +1353,7 @@ def intake_image_evidence(case_id: str, image_id: str) -> Response | tuple[Respo
             replacement_committed=replacement_committed,
             replacement_cleanup_started=replacement_cleanup_started,
             replacement_cleanup_completed=replacement_cleanup_completed,
+            evidence_restore_failed=evidence_restore_failed,
             staging_dir=staging_dir,
             image_dir=image_dir,
             base_message=(
