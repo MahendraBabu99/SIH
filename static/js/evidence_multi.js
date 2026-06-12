@@ -308,6 +308,11 @@
   /**
    * Submit evidence to the backend: create a case, then for each image form
    * call the multi-image endpoints sequentially.
+   *
+   * Any parse or analysis still running for the previous case is cancelled
+   * before the new case is created, and the previous case's wizard state is
+   * retired as soon as the new case ID is committed — not only after the
+   * whole intake finishes — so stale results cannot be acted on mid-intake.
    */
   async function submitEvidence() {
     A.clearMsg(el.evidenceMsg);
@@ -346,6 +351,20 @@
       }
     }
 
+    /* Cancel any prior-case parse/analysis while the previous case is still
+       the active case, so the cancel requests target the case that owns the
+       running work. Both cancel helpers post to the active case ID. */
+    if (st.parse.run) {
+      A.cancelParse();
+      await st.parse.cancelPending;
+      A.clearMsg(el.parseErr);
+    }
+    if (st.analysis.run) {
+      A.cancelAnalysis();
+      await st.analysis.cancelPending;
+      A.clearMsg(el.analysisMsg);
+    }
+
     const token = A.beginEvidenceOperation("submit");
     setEvidenceBusy(true);
     const intakeProgress = createIntakeProgressTracker();
@@ -362,6 +381,12 @@
       if (!caseId) throw new Error("Case ID missing from create response.");
       intakeProgress.setPhase("case-created");
       A.setCaseId(caseId);
+
+      /* The new case is now the active case: retire the previous case's
+         parse/analysis/results/chat state and stale Step-2 UI immediately,
+         instead of waiting for the whole intake to finish. The evidence
+         forms, intake progress bar, and intake status message stay live. */
+      clearStaleCaseUiState();
 
       const intakeTimeoutMs = A.num(A.obj(A.obj(st.settings).evidence).intake_timeout_seconds, 7200) * 1000;
       const skipHashing = !A.boolSetting(A.obj(A.obj(st.settings).evidence).compute_hashes, true);
@@ -479,23 +504,21 @@
   }
 
   /**
-   * Clear state that is only valid after applyEvidence() has consumed a full
-   * intake response. This preserves the user's evidence forms and failure
-   * message while making the incomplete case unusable from later steps.
+   * Clear wizard state and Step-2+ UI that belongs to a previous case.
    *
-   * @param {string} failedCaseId - Case ID allocated for the failed intake.
-   * @returns {boolean} True when this failed intake still owns the UI.
+   * Shared by the post-case-creation reset in submitEvidence() and by
+   * clearFailedEvidenceIntakeState() so the two cleanup paths cannot drift.
+   * Resets parse/analysis/chat state, artifact selections, the evidence
+   * summary cards, and the multi-image artifact tabs. Deliberately leaves
+   * the evidence intake forms, intake progress bar, in-progress intake
+   * status message, active case ID, and current wizard step untouched —
+   * callers decide those.
    */
-  function clearFailedEvidenceIntakeState(failedCaseId) {
-    const currentCaseId = A.activeCaseId();
-    if (failedCaseId && currentCaseId && currentCaseId !== failedCaseId) return false;
-    if (!failedCaseId || currentCaseId === failedCaseId) A.setCaseId("");
-    st.caseName = "";
+  function clearStaleCaseUiState() {
     st.artifacts = [];
     st.artifactNames = {};
     st.selected = [];
     st.selectedAi = [];
-    st.images = [];
     st.detectedOs = "";
 
     A.resetParseState();
@@ -533,17 +556,6 @@
     const summariesList = q("evidence-summaries-list");
     if (summariesList) summariesList.innerHTML = "";
 
-    A.getImageForms().forEach((card) => {
-      const metaCard = card.querySelector(".image-metadata-card");
-      if (metaCard) metaCard.hidden = true;
-      const statusMsg = card.querySelector(".image-status-msg");
-      if (statusMsg) {
-        statusMsg.hidden = true;
-        statusMsg.textContent = "";
-        delete statusMsg.dataset.status;
-      }
-    });
-
     if (typeof A.clearDynamicArtifacts === "function") A.clearDynamicArtifacts();
     A.artifactBoxes().forEach((cb) => {
       cb.checked = false;
@@ -559,6 +571,36 @@
       }
     });
     if (el.parseBtn) el.parseBtn.disabled = true;
+    A.updateNav();
+  }
+
+  /**
+   * Clear state that is only valid after applyEvidence() has consumed a full
+   * intake response. This preserves the user's evidence forms and failure
+   * message while making the incomplete case unusable from later steps.
+   *
+   * @param {string} failedCaseId - Case ID allocated for the failed intake.
+   * @returns {boolean} True when this failed intake still owns the UI.
+   */
+  function clearFailedEvidenceIntakeState(failedCaseId) {
+    const currentCaseId = A.activeCaseId();
+    if (failedCaseId && currentCaseId && currentCaseId !== failedCaseId) return false;
+    if (!failedCaseId || currentCaseId === failedCaseId) A.setCaseId("");
+    st.caseName = "";
+    st.images = [];
+
+    clearStaleCaseUiState();
+
+    A.getImageForms().forEach((card) => {
+      const metaCard = card.querySelector(".image-metadata-card");
+      if (metaCard) metaCard.hidden = true;
+      const statusMsg = card.querySelector(".image-status-msg");
+      if (statusMsg) {
+        statusMsg.hidden = true;
+        statusMsg.textContent = "";
+        delete statusMsg.dataset.status;
+      }
+    });
 
     if (typeof A.showStep === "function") A.showStep(1);
     else A.updateNav();

@@ -4,6 +4,7 @@
  *
  * Covers:
  *  - addImageForm / removeImageForm card management
+ *  - submitEvidence prior-case state retirement and parse/analysis cancel
  *  - renderImageSummaries display for single and multiple images
  *  - buildMultiImageArtifactTabs with single and multiple images
  *  - OS-aware fieldset cloning (Windows-only, Linux-only, mixed)
@@ -21,7 +22,7 @@
 
 "use strict";
 
-const { setupAift, mustGet, mustQuery } = require("./harness");
+const { setupAift, mustGet, mustQuery, flushMicrotasks } = require("./harness");
 
 let A;
 
@@ -701,6 +702,136 @@ describe("submitEvidence stale operation handling", () => {
     expect(A.st.chat.allMessages).toEqual([{ role: "user", content: "current question" }]);
     expect(document.getElementById("artifact-image-tabs").hidden).toBe(false);
     expect(document.getElementById("artifact-image-panels").children.length).toBeGreaterThan(0);
+  });
+
+  test("retires the prior case's parse/analysis/chat state as soon as the new case is committed", async () => {
+    /* Seed a fully completed prior case whose results are still on screen. */
+    A.setCaseId("old-case");
+    A.st.images = [{ image_id: "img-old", label: "Old", os_type: "windows", available_artifacts: [] }];
+    A.st.selected = ["runkeys"];
+    A.st.selectedAi = ["runkeys"];
+    A.st.parse.done = true;
+    A.st.analysis.done = true;
+    A.st.parsedSelections = {
+      caseId: "old-case",
+      runId: "old-parse",
+      mode: "single",
+      artifactOptions: [{ artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI }],
+      artifacts: ["runkeys"],
+      aiArtifacts: ["runkeys"],
+      images: {},
+    };
+    A.st.chat.allMessages = [{ role: "user", content: "old question" }];
+    const staleResult = document.createElement("li");
+    staleResult.textContent = "Old case finding";
+    document.getElementById("analysis-results-list").appendChild(staleResult);
+    A.updateNav();
+    const step4Btn = document.querySelector(".wizard-nav button[data-next-step='4']");
+    expect(step4Btn.disabled).toBe(false);
+
+    configurePathImageForms(["E:\\evidence\\new.E01"]);
+    const evidenceRequest = deferred();
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/cases") {
+        return jsonResponse({ success: true, case_id: "case-new", case_name: "New" }, 201);
+      }
+      if (url === "/api/cases/case-new/images") {
+        return jsonResponse({ success: true, image_id: "img-1", label: "Image 1" }, 201);
+      }
+      if (url === "/api/cases/case-new/images/img-1/evidence") {
+        return evidenceRequest.promise;
+      }
+      return jsonResponse({ success: true });
+    });
+
+    const submitPromise = A.submitEvidence();
+    await flushMicrotasks(50);
+
+    /* The intake is still mid-flight: the case is committed but the first
+       image's evidence request has not resolved. The prior case's state
+       must already be retired. */
+    expect(A.activeCaseId()).toBe("case-new");
+    expect(A.st.parse.done).toBe(false);
+    expect(A.st.selected).toEqual([]);
+    expect(A.st.selectedAi).toEqual([]);
+    expect(A.st.analysis.done).toBe(false);
+    expect(A.st.parsedSelections).toMatchObject({ caseId: "", runId: "", mode: "" });
+    expect(A.st.chat.allMessages).toEqual([]);
+    expect(step4Btn.disabled).toBe(true);
+    expect(document.getElementById("analysis-results-list").textContent).not.toContain("Old case finding");
+    /* The in-progress intake UI must stay live for the user. */
+    expect(A.el.evidenceProgWrap.hidden).toBe(false);
+
+    evidenceRequest.resolve({
+      ok: true,
+      status: 200,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        success: true,
+        metadata: { hostname: "NEW-PC", os_version: "Windows 11" },
+        hashes: {},
+        os_type: "windows",
+        available_artifacts: [],
+      }),
+      text: async () => "{}",
+    });
+    await submitPromise;
+
+    expect(A.activeCaseId()).toBe("case-new");
+    expect(A.st.images.map((img) => img.image_id)).toEqual(["img-1"]);
+  });
+
+  test("cancels a running prior-case parse against the old case id and closes its stream", async () => {
+    /* Seed a parse that is still running for the previous case, with an
+       open progress EventSource. */
+    A.setCaseId("old-case");
+    A.st.images = [{ image_id: "img-old", label: "Old", os_type: "windows", available_artifacts: [] }];
+    A.st.selected = ["evtx"];
+    A.st.parse.owner = A.newRunOwner("old-case", "parse");
+    A.st.parse.imageId = "img-old";
+    A.st.parse.run = true;
+    A.openSseStream("/api/cases/old-case/images/img-old/parse/progress", A.st.parse, { onEvent: () => {} });
+    const oldParseEs = A.st.parse.es;
+    expect(oldParseEs).toBeTruthy();
+
+    configurePathImageForms(["E:\\evidence\\new.E01"]);
+    global.fetch = jest.fn((url) => {
+      if (url === "/api/cases/old-case/parse/cancel") {
+        return jsonResponse({ success: true });
+      }
+      if (url === "/api/cases") {
+        return jsonResponse({ success: true, case_id: "case-new", case_name: "New" }, 201);
+      }
+      if (url === "/api/cases/case-new/images") {
+        return jsonResponse({ success: true, image_id: "img-1", label: "Image 1" }, 201);
+      }
+      if (url === "/api/cases/case-new/images/img-1/evidence") {
+        return jsonResponse({
+          success: true,
+          metadata: { hostname: "NEW-PC", os_version: "Windows 11" },
+          hashes: {},
+          os_type: "windows",
+          available_artifacts: [],
+        });
+      }
+      return jsonResponse({ success: true });
+    });
+
+    await A.submitEvidence();
+
+    const urls = global.fetch.mock.calls.map((call) => String(call[0]));
+    const cancelIndex = urls.indexOf("/api/cases/old-case/parse/cancel");
+    const createIndex = urls.indexOf("/api/cases");
+    /* The cancel must target the OLD case and precede case creation. */
+    expect(cancelIndex).toBeGreaterThanOrEqual(0);
+    expect(global.fetch.mock.calls[cancelIndex][1].method).toBe("POST");
+    expect(createIndex).toBeGreaterThan(cancelIndex);
+    expect(oldParseEs.close).toHaveBeenCalled();
+    expect(A.st.parse.es).toBeNull();
+    expect(A.st.parse.run).toBe(false);
+    expect(A.activeCaseId()).toBe("case-new");
+    /* The stale "Parsing cancelled." message must not linger. */
+    expect(A.el.parseErr.hidden).toBe(true);
   });
 });
 
