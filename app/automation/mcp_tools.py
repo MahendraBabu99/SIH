@@ -11,6 +11,11 @@ Flask, the parsing pipeline, or the optional MCP SDK.
 
 Attributes:
     LOGGER: Module logger for unexpected tool failures.
+    RUN_STATUS_RESOURCE_TEMPLATE: MCP resource URI template returned as the
+        ``status_url`` of started triage runs. MCP runs live in the MCP
+        server's own run manager, so the REST polling URL produced by the
+        run manager would never resolve for them; the resource URI is the
+        truthful, MCP-resolvable status location.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ from app.automation.mcp_payloads import (
 from app.utils.version import TOOL_VERSION
 
 LOGGER = logging.getLogger(__name__)
+
+RUN_STATUS_RESOURCE_TEMPLATE = "aift://runs/{run_id}/status"
 
 
 def _server_module() -> Any:
@@ -205,7 +212,11 @@ def _start_triage_payload(
         date_range: Optional analysis date-range object.
 
     Returns:
-        Stable MCP tool payload describing the started or rejected run.
+        Stable MCP tool payload describing the started or rejected run. On
+        success, ``status_url`` is the ``aift://runs/{run_id}/status`` MCP
+        resource URI for the run rather than the run manager's REST polling
+        URL, which only resolves for runs started through the REST
+        automation API.
     """
     server = _server_module()
     try:
@@ -232,11 +243,16 @@ def _start_triage_payload(
             date_range=validated_date_range,
         )
         started = run_manager.start_run(request)
+        started_run_id = _public_text(started.get("run_id"))
         return _ok({
-            "run_id": _public_text(started.get("run_id")),
+            "run_id": started_run_id,
             "case_id": _public_text(started.get("case_id")),
             "status": _public_text(started.get("status"), "started"),
-            "status_url": _public_text(started.get("status_url")),
+            "status_url": (
+                RUN_STATUS_RESOURCE_TEMPLATE.format(run_id=started_run_id)
+                if started_run_id
+                else ""
+            ),
             "phase": "initializing",
             "message": _public_text(
                 started.get("message"),

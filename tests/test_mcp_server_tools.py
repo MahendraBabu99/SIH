@@ -240,6 +240,7 @@ class TestMCPTools(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["run_id"], "run-1")
+        self.assertEqual(result["status_url"], "aift://runs/run-1/status")
         self.assertEqual(result["phase"], "initializing")
         self.assertEqual(len(manager.started_requests), 1)
         request = manager.started_requests[0]
@@ -284,6 +285,42 @@ class TestMCPTools(unittest.TestCase):
         self.assertEqual(len(manager.started_requests), 1)
         request = manager.started_requests[0]
         self.assertEqual(request.profile_name, str(profile_path))
+
+    def test_start_triage_status_url_is_mcp_resource_uri(self) -> None:
+        """status_url is the MCP status resource URI, not the REST URL.
+
+        MCP runs are tracked by the MCP server's run manager, so the
+        REST-shaped polling URL in the manager's start payload would never
+        resolve for them; the tool must return the resolvable
+        ``aift://runs/{run_id}/status`` resource URI instead.
+        """
+        manager = FakeRunManager()
+        evidence_path = Path("D:/Cases/acme/WIN-WS01.E01")
+        with (
+            patch.dict(sys.modules, fake_mcp_modules()),
+            patch.object(
+                mcp_server,
+                "validate_evidence_path",
+                return_value=evidence_path,
+            ),
+            patch.object(
+                mcp_server,
+                "make_automation_request",
+                side_effect=lambda **kwargs: SimpleNamespace(**kwargs),
+            ),
+        ):
+            server = mcp_server.build_mcp_server(run_manager=manager)
+            result = get_tool(server, "aift_start_triage")(
+                evidence_path=str(evidence_path),
+                prompt="Investigate persistence.",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            manager.start_payload["status_url"],
+            "/api/automation/run/run-1/status",
+        )
+        self.assertEqual(result["status_url"], "aift://runs/run-1/status")
 
     def test_start_triage_omitted_skip_hashing_stays_none(self) -> None:
         """Omitted skip_hashing stays None so config decides hashing.

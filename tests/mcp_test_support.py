@@ -106,14 +106,19 @@ class FakeRunManager:
     """
 
     def __init__(self) -> None:
-        """Initialise canned payloads describing one completed run."""
+        """Initialise canned payloads describing one completed run.
+
+        The ``start_payload`` mirrors the real run manager's REST-shaped
+        ``status_url`` so tests can prove the MCP tool layer replaces it
+        with the MCP resource URI instead of echoing it.
+        """
         self.started_requests: list[object] = []
         self.start_payload: dict[str, object] = {
             "success": True,
             "run_id": "run-1",
             "case_id": "",
             "status": "started",
-            "status_url": "/mcp/runs/run-1/status",
+            "status_url": "/api/automation/run/run-1/status",
             "message": "Automation run started",
         }
         self.status_payload: dict[str, object] | None = {
