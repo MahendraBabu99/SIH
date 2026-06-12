@@ -40,8 +40,10 @@ from app.utils.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
 from app.evidence.archive_config import archive_limits_from_config
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
 from app.utils.hasher import (
+    HASH_DIRECTORY_PLACEHOLDER,
+    HASH_SKIPPED_PLACEHOLDER,
     apply_hash_verification_result,
-    compute_hashes,
+    hash_evidence_files,
     summarize_hash_verification_results,
     verify_hash,
     verify_hashes_for_report,
@@ -787,8 +789,10 @@ def _log_evidence_intake(
     Every evidence descriptor processed by automation receives exactly one
     ``evidence_intake`` record, mirroring GUI intake behavior so headless
     runs keep audit parity across entry points.
-    Placeholder hash values such as ``"N/A (skipped)"`` and
-    ``"N/A (directory)"`` are audited verbatim when nothing was hashed.
+    The shared placeholder hash values
+    (:data:`~app.utils.hasher.HASH_SKIPPED_PLACEHOLDER` and
+    :data:`~app.utils.hasher.HASH_DIRECTORY_PLACEHOLDER`) are audited
+    verbatim when nothing was hashed.
     For evidence extracted from an archive, the ``extracted_from`` and
     ``extraction_root`` provenance fields are included so the audit trail
     records which archive the analyzed target originated from, matching
@@ -826,9 +830,14 @@ def _hash_evidence_descriptor(
 
     Logs one ``evidence_intake`` audit entry on every return path —
     including the skip-hashing and directory-evidence paths, where the
-    audited hashes are the ``"N/A (skipped)"`` / ``"N/A (directory)"``
-    placeholders — plus one ``evidence_intake_file_hashed`` entry per
-    actually hashed file.
+    audited hashes are the shared
+    :data:`~app.utils.hasher.HASH_SKIPPED_PLACEHOLDER` /
+    :data:`~app.utils.hasher.HASH_DIRECTORY_PLACEHOLDER` placeholders —
+    plus one ``evidence_intake_file_hashed`` entry per actually hashed
+    file.  Hashing and aggregate-record construction follow the shared
+    intake convention implemented by
+    :func:`~app.utils.hasher.hash_evidence_files` (first file's digests
+    plus summed size), matching GUI intake.
 
     Args:
         descriptor: Evidence descriptor to hash.
@@ -847,8 +856,8 @@ def _hash_evidence_descriptor(
         "dissect_path": str(descriptor.dissect_path),
         "source_mode": descriptor.source_mode,
         "label": descriptor.label,
-        "sha256": "N/A (skipped)" if skip_hashing else "",
-        "md5": "N/A (skipped)" if skip_hashing else "",
+        "sha256": HASH_SKIPPED_PLACEHOLDER if skip_hashing else "",
+        "md5": HASH_SKIPPED_PLACEHOLDER if skip_hashing else "",
         "size_bytes": 0,
         "verification_status": "SKIPPED" if skip_hashing else "UNAVAILABLE",
     }
@@ -861,8 +870,8 @@ def _hash_evidence_descriptor(
         apply_hash_verification_result(
             base_entry,
             status="SKIPPED",
-            expected_sha256="N/A (skipped)",
-            computed_sha256="N/A (skipped)",
+            expected_sha256=HASH_SKIPPED_PLACEHOLDER,
+            computed_sha256=HASH_SKIPPED_PLACEHOLDER,
             detail=(
                 "Hash computation was skipped at user request "
                 "during evidence intake."
@@ -875,40 +884,30 @@ def _hash_evidence_descriptor(
     files_to_hash = list(descriptor.files_to_hash)
     if not files_to_hash:
         base_entry.update({
-            "sha256": "N/A (directory)",
-            "md5": "N/A (directory)",
+            "sha256": HASH_DIRECTORY_PLACEHOLDER,
+            "md5": HASH_DIRECTORY_PLACEHOLDER,
         })
         apply_hash_verification_result(
             base_entry,
             status="UNAVAILABLE",
-            expected_sha256="N/A (directory)",
+            expected_sha256=HASH_DIRECTORY_PLACEHOLDER,
             detail="Hash verification is unavailable for directory evidence.",
         )
         base_entry["evidence_file_hashes"] = []
         _log_evidence_intake(audit_logger, descriptor, base_entry)
         return base_entry, []
 
-    file_hashes: list[dict[str, Any]] = []
-    for file_path in files_to_hash:
-        h = dict(compute_hashes(file_path))
-        entry = {
-            "path": str(file_path),
-            "filename": file_path.name,
-            "sha256": h["sha256"],
-            "md5": h["md5"],
-            "size_bytes": h["size_bytes"],
-        }
-        file_hashes.append(entry)
+    def _audit_file_hashed(entry: dict[str, Any]) -> None:
+        """Write the per-file ``evidence_intake_file_hashed`` audit entry."""
         audit_logger.log("evidence_intake_file_hashed", entry)
 
-    first = file_hashes[0]
-    base_entry.update({
-        "sha256": first["sha256"],
-        "md5": first["md5"],
-        "size_bytes": sum(int(item["size_bytes"]) for item in file_hashes),
-        "verification_status": "UNAVAILABLE",
-        "evidence_file_hashes": file_hashes,
-    })
+    summary, file_hashes = hash_evidence_files(
+        files_to_hash,
+        on_file_hashed=_audit_file_hashed,
+    )
+    base_entry.update(summary)
+    base_entry["verification_status"] = "UNAVAILABLE"
+    base_entry["evidence_file_hashes"] = file_hashes
     _log_evidence_intake(audit_logger, descriptor, base_entry)
     return base_entry, file_hashes
 

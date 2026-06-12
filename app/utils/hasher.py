@@ -11,6 +11,16 @@ callback is supported for UI feedback during long-running hash operations.
 
 Attributes:
     CHUNK_SIZE: Number of bytes read per iteration (4 MiB).
+    HASH_SKIPPED_PLACEHOLDER: Placeholder recorded instead of real digests
+        when the user opted to skip hashing at evidence intake.  Report
+        verification maps an intake hash equal to this string to SKIPPED
+        status.
+    HASH_DIRECTORY_PLACEHOLDER: Placeholder recorded when evidence has no
+        hashable files (for example bare directory evidence).  Report
+        verification maps it to UNAVAILABLE status.
+    HASH_PLACEHOLDER_PREFIX: Common prefix shared by every intake-hash
+        placeholder string; any intake hash starting with it is treated as
+        not re-verifiable.
 """
 
 from __future__ import annotations
@@ -20,8 +30,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, MutableMapping, Protocol, Sequence, TypedDict
 
 __all__ = [
+    "HASH_DIRECTORY_PLACEHOLDER",
+    "HASH_PLACEHOLDER_PREFIX",
+    "HASH_SKIPPED_PLACEHOLDER",
     "compute_hashes",
     "compute_hashes_multi",
+    "hash_evidence_files",
     "apply_hash_verification_result",
     "verify_hash",
     "verify_hashes_for_report",
@@ -30,6 +44,10 @@ __all__ = [
 ]
 
 CHUNK_SIZE = 4 * 1024 * 1024
+
+HASH_SKIPPED_PLACEHOLDER = "N/A (skipped)"
+HASH_DIRECTORY_PLACEHOLDER = "N/A (directory)"
+HASH_PLACEHOLDER_PREFIX = "N/A"
 
 
 class HashResult(TypedDict):
@@ -126,6 +144,65 @@ def compute_sha256(filepath: str | Path) -> str:
     """
     digests, _ = _compute_digests(filepath, {"sha256": sha256()})
     return digests["sha256"]
+
+
+def hash_evidence_files(
+    files_to_hash: Sequence[str | Path],
+    on_file_hashed: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Hash evidence files and build the shared intake summary record.
+
+    Implements the intake-hash convention shared by GUI and headless
+    evidence intake: every file gets an individual SHA-256/MD5 record,
+    while the aggregate summary record carries the first file's digests
+    (for example the first segment of a split E01) together with
+    ``size_bytes`` summed across all hashed files.  Centralizing the
+    convention here keeps report hash verification — which compares these
+    records against recomputed digests — consistent across entry points.
+
+    Args:
+        files_to_hash: Evidence file paths to hash, in evidence order.
+            Must not be empty; callers handle the skipped-hashing and
+            directory-evidence placeholder cases themselves.
+        on_file_hashed: Optional callback invoked with each per-file hash
+            record immediately after that file has been hashed (for
+            example to write a per-file audit entry).
+
+    Returns:
+        A ``(summary, file_hashes)`` tuple.  *summary* is a dict with
+        ``sha256``, ``md5``, and ``size_bytes`` keys following the
+        first-file-digest / summed-size convention.  *file_hashes*
+        contains one dict per input file with ``path``, ``filename``,
+        ``sha256``, ``md5``, and ``size_bytes`` keys, preserving input
+        order.  Path values are recorded exactly as supplied.
+
+    Raises:
+        ValueError: If *files_to_hash* is empty.
+        OSError: If any file cannot be read (propagated from hashing).
+    """
+    if not files_to_hash:
+        raise ValueError("files_to_hash must contain at least one path.")
+
+    file_hashes: list[dict[str, Any]] = []
+    for file_path in files_to_hash:
+        digests = compute_hashes(file_path)
+        entry: dict[str, Any] = {
+            "path": str(file_path),
+            "filename": Path(file_path).name,
+            "sha256": digests["sha256"],
+            "md5": digests["md5"],
+            "size_bytes": digests["size_bytes"],
+        }
+        if on_file_hashed is not None:
+            on_file_hashed(entry)
+        file_hashes.append(entry)
+
+    summary: dict[str, Any] = {
+        "sha256": file_hashes[0]["sha256"],
+        "md5": file_hashes[0]["md5"],
+        "size_bytes": sum(int(entry["size_bytes"]) for entry in file_hashes),
+    }
+    return summary, file_hashes
 
 
 def verify_hash(
@@ -298,11 +375,31 @@ def verify_hashes_for_report(
     mutates *hashes* with ``verification_status``, ``hash_verified``,
     ``expected_sha256`` and recomputed SHA fields, and returns an audit
     summary for the caller to log as ``hash_verification``.
+
+    Intake hashes equal to :data:`HASH_SKIPPED_PLACEHOLDER` resolve to
+    SKIPPED status, and any other intake hash starting with
+    :data:`HASH_PLACEHOLDER_PREFIX` (such as
+    :data:`HASH_DIRECTORY_PLACEHOLDER`) resolves to UNAVAILABLE status;
+    neither triggers re-hashing.
+
+    Args:
+        hashes: Intake hash record to annotate in place.
+        file_hash_entries: Optional per-file intake hash records (each
+            providing ``path`` and ``sha256`` keys), verified individually
+            when present.
+        fallback_path: Evidence path verified against the summary hash
+            when no per-file entries exist.
+        verifier: Hash verification callable, injectable for testing.
+
+    Returns:
+        Audit summary dict with ``status``, ``expected_sha256``,
+        ``computed_sha256``, ``match``, ``skipped``, and
+        ``verified_files`` keys.
     """
     intake_sha256 = str(hashes.get("sha256", "")).strip()
     entries = list(file_hash_entries or [])
 
-    if intake_sha256 == "N/A (skipped)":
+    if intake_sha256 == HASH_SKIPPED_PLACEHOLDER:
         details = [{
             "path": str(hashes.get("_source_path") or hashes.get("path") or ""),
             "filename": str(hashes.get("filename") or ""),
@@ -312,7 +409,7 @@ def verify_hashes_for_report(
             "match": None,
             "skipped": True,
         }]
-    elif intake_sha256.startswith("N/A"):
+    elif intake_sha256.startswith(HASH_PLACEHOLDER_PREFIX):
         details = [{
             "path": str(hashes.get("_source_path") or hashes.get("path") or ""),
             "filename": str(hashes.get("filename") or ""),

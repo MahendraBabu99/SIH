@@ -547,7 +547,9 @@ class TestRunAutomation(unittest.TestCase):
                         side_effect=_fake_profiles)
         self._add_patch(f"{_ENGINE}.artifact_options_to_lists",
                         side_effect=_fake_artifact_options_to_lists)
-        self._add_patch(f"{_ENGINE}.compute_hashes",
+        # The engine hashes evidence through the shared intake helper in
+        # app.utils.hasher, so per-file digests are faked at that module.
+        self._add_patch("app.utils.hasher.compute_hashes",
                         return_value=dict(FAKE_HASHES))
         self._add_patch(
             f"{_ENGINE}.verify_hash",

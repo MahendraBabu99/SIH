@@ -61,7 +61,13 @@ class TestComputeEvidenceHashes(unittest.TestCase):
 
     @patch("app.utils.hasher.compute_hashes")
     def test_single_file_hashes(self, mock_compute: MagicMock) -> None:
-        """Single file returns its hash directly (not wrapped in summary)."""
+        """Single file produces a summary with that file's digests.
+
+        The summary record follows the shared intake convention (first
+        file's digests plus summed size); the per-file ``path`` lives only
+        in the per-file records, while the summary carries
+        ``_source_path``.
+        """
         mock_compute.return_value = {
             "sha256": "a" * 64,
             "md5": "b" * 32,
@@ -76,6 +82,8 @@ class TestComputeEvidenceHashes(unittest.TestCase):
         self.assertEqual(hashes["md5"], "b" * 32)
         self.assertEqual(hashes["size_bytes"], 1024)
         self.assertEqual(hashes["filename"], "file.E01")
+        self.assertEqual(hashes["_source_path"], "file.E01")
+        self.assertNotIn("path", hashes)
         self.assertEqual(len(file_hashes), 1)
         self.assertEqual(file_hashes[0]["path"], "/path/to/file.E01")
 

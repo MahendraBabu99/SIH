@@ -29,6 +29,11 @@ from flask import request
 
 from ..analyzer.constants import DEDUPLICATED_PARSED_DIRNAME
 from ..chat.csv_retrieval import invalidate_header_cache
+from ..utils.hasher import (
+    HASH_DIRECTORY_PLACEHOLDER,
+    HASH_SKIPPED_PLACEHOLDER,
+    hash_evidence_files,
+)
 from .state import STATE_LOCK, get_case
 
 LOGGER = logging.getLogger(__name__)
@@ -387,9 +392,14 @@ def compute_evidence_hashes(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Compute SHA-256/MD5 hashes for evidence files.
 
-    When *skip_hashing* is ``True``, placeholder values are returned.
-    When *files_to_hash* is empty (e.g. a bare directory), ``N/A (directory)``
-    placeholders are used.
+    When *skip_hashing* is ``True``,
+    :data:`~app.utils.hasher.HASH_SKIPPED_PLACEHOLDER` values are returned.
+    When *files_to_hash* is empty (e.g. a bare directory),
+    :data:`~app.utils.hasher.HASH_DIRECTORY_PLACEHOLDER` values are used.
+    Otherwise hashing and summary-record construction follow the shared
+    intake convention implemented by
+    :func:`~app.utils.hasher.hash_evidence_files` (first file's digests
+    plus summed size), matching headless automation intake.
 
     Args:
         files_to_hash: List of filesystem paths to hash.
@@ -398,51 +408,29 @@ def compute_evidence_hashes(
 
     Returns:
         A ``(hashes_summary, file_hashes_list)`` tuple.  *hashes_summary* is
-        a dict with ``sha256``, ``md5``, ``size_bytes``, and ``filename``
-        keys.  *file_hashes_list* contains per-file hash dicts.
+        a dict with ``sha256``, ``md5``, ``size_bytes``, ``filename``, and
+        ``_source_path`` keys.  *file_hashes_list* contains per-file hash
+        dicts and is empty on the placeholder paths.
     """
+    file_hashes: list[dict[str, Any]] = []
     if skip_hashing:
         hashes: dict[str, Any] = {
-            "sha256": "N/A (skipped)",
-            "md5": "N/A (skipped)",
+            "sha256": HASH_SKIPPED_PLACEHOLDER,
+            "md5": HASH_SKIPPED_PLACEHOLDER,
             "size_bytes": 0,
         }
-        hashes["filename"] = source_path.name
-        hashes["_source_path"] = str(source_path)
-        return hashes, []
+    elif files_to_hash:
+        hashes, file_hashes = hash_evidence_files(files_to_hash)
+    else:
+        hashes = {
+            "sha256": HASH_DIRECTORY_PLACEHOLDER,
+            "md5": HASH_DIRECTORY_PLACEHOLDER,
+            "size_bytes": 0,
+        }
 
-    if files_to_hash:
-        from ..utils.hasher import compute_hashes as _compute_hashes
-
-        file_hashes: list[dict[str, Any]] = []
-        for fpath in files_to_hash:
-            h = dict(_compute_hashes(fpath))
-            h["path"] = str(fpath)
-            h["filename"] = Path(fpath).name
-            file_hashes.append(h)
-
-        if len(file_hashes) == 1:
-            hashes = dict(file_hashes[0])
-        else:
-            # Summary entry for backward compat -- individual hashes
-            # are persisted separately in evidence_file_hashes.
-            hashes = {
-                "sha256": file_hashes[0]["sha256"],
-                "md5": file_hashes[0]["md5"],
-                "size_bytes": sum(h["size_bytes"] for h in file_hashes),
-            }
-        hashes["filename"] = source_path.name
-        hashes["_source_path"] = str(source_path)
-        return hashes, file_hashes
-
-    hashes = {
-        "sha256": "N/A (directory)",
-        "md5": "N/A (directory)",
-        "size_bytes": 0,
-    }
     hashes["filename"] = source_path.name
     hashes["_source_path"] = str(source_path)
-    return hashes, []
+    return hashes, file_hashes
 
 
 def persist_hash_verification_annotations(

@@ -1621,7 +1621,9 @@ class AutomationParseCancellationTests(unittest.TestCase):
             patch(f"{_ENGINE}.CaseManager", return_value=self.mock_case_manager),
             patch(f"{_ENGINE}.ForensicParser", side_effect=lambda **kwargs: _AutomationParser(**kwargs)),
             patch(f"{_ENGINE}.ForensicAnalyzer", side_effect=lambda **kwargs: FakeAnalyzer(**kwargs)),
-            patch(f"{_ENGINE}.compute_hashes", return_value=dict(FAKE_HASHES)),
+            # The engine hashes evidence through the shared intake helper in
+            # app.utils.hasher, so per-file digests are faked at that module.
+            patch("app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)),
             patch(f"{_ENGINE}.verify_hash", return_value=(True, FAKE_HASHES["sha256"])),
             patch(f"{_ENGINE}.AuditLogger", return_value=FakeAuditLogger()),
             patch(f"{_ENGINE}.ReportGenerator"),

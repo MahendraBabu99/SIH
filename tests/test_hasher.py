@@ -1,7 +1,8 @@
 """Tests for forensic hashing and evidence verification helpers.
 
-Exercises single-file digest calculation, report re-verification summaries,
-and multi-file verification error reporting.
+Exercises single-file digest calculation, the shared intake-hash summary
+helper and placeholder constants, report re-verification summaries, and
+multi-file verification error reporting.
 
 Attributes:
     (No module-level attributes.)
@@ -17,9 +18,13 @@ import unittest
 
 from app.utils.hasher import (
     CHUNK_SIZE,
+    HASH_DIRECTORY_PLACEHOLDER,
+    HASH_PLACEHOLDER_PREFIX,
+    HASH_SKIPPED_PLACEHOLDER,
     _compute_digests,
     compute_hashes,
     compute_sha256,
+    hash_evidence_files,
     verify_hash,
     verify_hashes_for_report,
     verify_hashes_multi,
@@ -322,6 +327,116 @@ class ComputeSha256Tests(unittest.TestCase):
             missing = Path(temp_dir) / "gone.bin"
             with self.assertRaises(FileNotFoundError):
                 compute_sha256(missing)
+
+
+class IntakePlaceholderTests(unittest.TestCase):
+    """Pin the shared intake-hash placeholder contract.
+
+    GUI intake, automation intake, and report verification all rely on
+    these exact strings; a silent change to any of them would corrupt the
+    PASS/FAIL/SKIPPED verification status shown in reports.
+    """
+
+    def test_placeholder_values_are_stable(self) -> None:
+        """Placeholders keep the exact strings report verification matches."""
+        self.assertEqual(HASH_SKIPPED_PLACEHOLDER, "N/A (skipped)")
+        self.assertEqual(HASH_DIRECTORY_PLACEHOLDER, "N/A (directory)")
+        self.assertEqual(HASH_PLACEHOLDER_PREFIX, "N/A")
+        self.assertTrue(
+            HASH_SKIPPED_PLACEHOLDER.startswith(HASH_PLACEHOLDER_PREFIX)
+        )
+        self.assertTrue(
+            HASH_DIRECTORY_PLACEHOLDER.startswith(HASH_PLACEHOLDER_PREFIX)
+        )
+
+    def test_skipped_placeholder_maps_to_skipped_status(self) -> None:
+        """An intake hash equal to the skip placeholder verifies as SKIPPED."""
+        hashes: dict[str, object] = {
+            "sha256": HASH_SKIPPED_PLACEHOLDER,
+            "md5": HASH_SKIPPED_PLACEHOLDER,
+            "filename": "image.E01",
+        }
+
+        summary = verify_hashes_for_report(hashes)
+
+        self.assertEqual(summary["status"], "SKIPPED")
+        self.assertTrue(summary["skipped"])
+        self.assertTrue(summary["match"])
+        self.assertEqual(hashes["verification_status"], "SKIPPED")
+
+    def test_directory_placeholder_maps_to_unavailable_status(self) -> None:
+        """An intake hash with the directory placeholder verifies UNAVAILABLE."""
+        hashes: dict[str, object] = {
+            "sha256": HASH_DIRECTORY_PLACEHOLDER,
+            "md5": HASH_DIRECTORY_PLACEHOLDER,
+            "filename": "triage_folder",
+        }
+
+        summary = verify_hashes_for_report(hashes)
+
+        self.assertEqual(summary["status"], "UNAVAILABLE")
+        self.assertFalse(summary["skipped"])
+        self.assertFalse(summary["match"])
+        self.assertEqual(hashes["verification_status"], "UNAVAILABLE")
+
+
+class HashEvidenceFilesTests(unittest.TestCase):
+    """Tests for the shared intake hashing and summary-record helper."""
+
+    def test_summary_uses_first_file_digests_and_summed_size(self) -> None:
+        """Summary carries the first file's digests plus total size."""
+        content_a = b"segment-a-data"
+        content_b = b"segment-b"
+        with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
+            segment_a = Path(temp_dir) / "split.E01"
+            segment_b = Path(temp_dir) / "split.E02"
+            segment_a.write_bytes(content_a)
+            segment_b.write_bytes(content_b)
+
+            summary, file_hashes = hash_evidence_files([segment_a, segment_b])
+
+        self.assertEqual(summary["sha256"], hashlib.sha256(content_a).hexdigest())
+        self.assertEqual(summary["md5"], hashlib.md5(content_a).hexdigest())
+        self.assertEqual(summary["size_bytes"], len(content_a) + len(content_b))
+        self.assertEqual(len(file_hashes), 2)
+        self.assertEqual(file_hashes[0]["filename"], "split.E01")
+        self.assertEqual(file_hashes[1]["filename"], "split.E02")
+        self.assertEqual(file_hashes[1]["path"], str(segment_b))
+        self.assertEqual(
+            file_hashes[1]["sha256"], hashlib.sha256(content_b).hexdigest()
+        )
+
+    def test_per_file_callback_receives_each_record_in_order(self) -> None:
+        """The on_file_hashed callback sees every per-file record."""
+        with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
+            file_a = Path(temp_dir) / "a.bin"
+            file_b = Path(temp_dir) / "b.bin"
+            file_a.write_bytes(b"alpha")
+            file_b.write_bytes(b"bravo")
+
+            seen: list[dict[str, object]] = []
+            _summary, file_hashes = hash_evidence_files(
+                [file_a, file_b], on_file_hashed=seen.append
+            )
+
+        self.assertEqual(seen, file_hashes)
+
+    def test_string_paths_are_recorded_verbatim(self) -> None:
+        """String inputs keep their exact form in the per-file path field."""
+        with TemporaryDirectory(prefix="aift-hasher-test-") as temp_dir:
+            test_file = Path(temp_dir) / "verbatim.bin"
+            test_file.write_bytes(b"path check")
+            raw_path = str(test_file)
+
+            _summary, file_hashes = hash_evidence_files([raw_path])
+
+        self.assertEqual(file_hashes[0]["path"], raw_path)
+        self.assertEqual(file_hashes[0]["filename"], "verbatim.bin")
+
+    def test_empty_input_raises_value_error(self) -> None:
+        """Reject empty input — placeholder cases belong to the callers."""
+        with self.assertRaises(ValueError):
+            hash_evidence_files([])
 
 
 class VerifyHashTests(unittest.TestCase):

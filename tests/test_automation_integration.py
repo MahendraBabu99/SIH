@@ -281,8 +281,10 @@ class _IntegrationTestBase(unittest.TestCase):
             f"{_ENGINE}.artifact_options_to_lists",
             side_effect=_fake_artifact_options_to_lists,
         )
+        # The engine hashes evidence through the shared intake helper in
+        # app.utils.hasher, so per-file digests are faked at that module.
         self._add_patch(
-            f"{_ENGINE}.compute_hashes", return_value=dict(FAKE_HASHES)
+            "app.utils.hasher.compute_hashes", return_value=dict(FAKE_HASHES)
         )
 
         # CaseManager mock.
