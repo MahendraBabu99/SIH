@@ -441,9 +441,45 @@
     return r.text;
   }
 
+  /**
+   * Capture the open/closed state of keyed `<details>` elements inside a
+   * container before a re-render replaces them.
+   *
+   * Streaming SSE events rebuild the analysis and findings lists from
+   * scratch, which would otherwise reset every `<details>` the user has
+   * toggled (e.g. an opened reasoning panel snapping shut mid-stream).
+   *
+   * @param {HTMLElement} container - Root element to scan.
+   * @returns {Map<string, boolean>} Mapping of data-state-key to open state.
+   */
+  function snapshotDetailsState(container) {
+    const state = new Map();
+    if (!container) return state;
+    container.querySelectorAll("details[data-state-key]").forEach((d) => {
+      state.set(d.dataset.stateKey, d.open);
+    });
+    return state;
+  }
+
+  /**
+   * Re-apply a captured open/closed snapshot to freshly rebuilt `<details>`
+   * elements so user toggles survive re-renders. Elements whose key is not
+   * in the snapshot (newly appeared) keep their default state.
+   *
+   * @param {HTMLElement} container - Root element holding the new elements.
+   * @param {Map<string, boolean>} state - Snapshot from snapshotDetailsState.
+   */
+  function restoreDetailsState(container, state) {
+    if (!container || !state.size) return;
+    container.querySelectorAll("details[data-state-key]").forEach((d) => {
+      if (state.has(d.dataset.stateKey)) d.open = state.get(d.dataset.stateKey);
+    });
+  }
+
   /** Render all per-artifact analysis cards into the analysis results list. */
   function renderAnalysis() {
     if (!el.analysisList) return;
+    const openState = snapshotDetailsState(el.analysisList);
     el.analysisList.innerHTML = "";
     if (!st.analysis.order.length) {
       const p = document.createElement("p");
@@ -455,14 +491,14 @@
     // In multi-image mode, group artifacts by image.
     if (st.analysis.multiImage) {
       renderMultiImageAnalysis();
-      return;
+    } else {
+      st.analysis.order.forEach((k) => {
+        const r = st.analysis.byKey[k];
+        if (!r) return;
+        el.analysisList.appendChild(buildAnalysisCard(r));
+      });
     }
-
-    st.analysis.order.forEach((k) => {
-      const r = st.analysis.byKey[k];
-      if (!r) return;
-      el.analysisList.appendChild(buildAnalysisCard(r));
-    });
+    restoreDetailsState(el.analysisList, openState);
   }
 
   /**
@@ -512,6 +548,9 @@
   /**
    * Build a single analysis card DOM element.
    *
+   * The embedded reasoning panel is tagged with a stable data-state-key so
+   * its open/closed state survives streaming re-renders.
+   *
    * @param {Object} r - Analysis entry from st.analysis.byKey.
    * @returns {HTMLElement} The article element.
    */
@@ -521,13 +560,16 @@
     if (r.imageLabel) metaParts.push("image: " + r.imageLabel);
     const displayText = resolveAnalysisText(r);
     const emptyLabel = r.isThinking ? "Model is thinking..." : "(No analysis text returned.)";
-    return A.createAnalysisResultCard({
+    const card = A.createAnalysisResultCard({
       title: r.name,
       metaText: metaParts.join(" | "),
       text: displayText,
       emptyText: emptyLabel,
       reasoningText: r.thinkingText,
     });
+    const reasoning = card.querySelector("details.analysis-reasoning-panel");
+    if (reasoning) reasoning.dataset.stateKey = "card-reasoning:" + r.key;
+    return card;
   }
 
   /** Render the executive summary markdown into the results page. */
@@ -602,6 +644,7 @@
   /** Render collapsible per-artifact findings `<details>` elements. */
   function renderFindings() {
     if (!el.findings) return;
+    const openState = snapshotDetailsState(el.findings);
     Array.from(el.findings.children).forEach((c) => {
       if (c.id !== "artifact-findings-title") c.remove();
     });
@@ -615,14 +658,14 @@
     // Multi-image: group findings by image.
     if (st.analysis.multiImage) {
       renderMultiImageFindings();
-      return;
+    } else {
+      st.analysis.order.forEach((k, i) => {
+        const r = st.analysis.byKey[k];
+        if (!r) return;
+        el.findings.appendChild(buildFindingsDetails(r, i === 0));
+      });
     }
-
-    st.analysis.order.forEach((k, i) => {
-      const r = st.analysis.byKey[k];
-      if (!r) return;
-      el.findings.appendChild(buildFindingsDetails(r, i === 0));
-    });
+    restoreDetailsState(el.findings, openState);
   }
 
   /**
@@ -653,6 +696,7 @@
       const imageSection = document.createElement("details");
       imageSection.className = "findings-image-group";
       imageSection.open = gi === 0;
+      imageSection.dataset.stateKey = "findings-image-group:" + imgId;
       // For single-group __single__ fallback, render as a plain div
       // instead of a collapsible details to avoid showing the label.
       if (groupOrder.length === 1 && imgId === "__single__") {
@@ -677,6 +721,9 @@
   /**
    * Build a collapsible findings details element.
    *
+   * The outer details and embedded reasoning panel are tagged with stable
+   * data-state-keys so their open/closed state survives streaming re-renders.
+   *
    * @param {Object} r - Analysis entry.
    * @param {boolean} isOpen - Whether to start open.
    * @returns {HTMLDetailsElement}
@@ -684,13 +731,17 @@
   function buildFindingsDetails(r, isOpen) {
     const displayText = resolveAnalysisText(r);
     const emptyLabel = r.isThinking ? "Model is thinking..." : "(No analysis text returned.)";
-    return A.createFindingsDetails({
+    const details = A.createFindingsDetails({
       title: r.name,
       text: displayText,
       emptyText: emptyLabel,
       reasoningText: r.thinkingText,
       open: isOpen,
     });
+    details.dataset.stateKey = "finding:" + r.key;
+    const reasoning = details.querySelector("details.analysis-reasoning-panel");
+    if (reasoning) reasoning.dataset.stateKey = "finding-reasoning:" + r.key;
+    return details;
   }
 
   /** Update the provider name display in the analysis step header. */

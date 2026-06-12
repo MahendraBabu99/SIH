@@ -203,6 +203,41 @@ describe("renderAnalysis", () => {
     expect(panel.open).toBe(false);
     expect(reasoning.textContent).toBe("hidden model reasoning");
   });
+
+  test("keeps a user-opened reasoning panel open across streaming re-renders", () => {
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 1, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", model: "m" },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_thinking",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", thinking_text: "reasoning chunk one" },
+      sequence: 2,
+    });
+
+    // User opens the reasoning panel while the model is still streaming.
+    mustQuery(A.el.analysisList, ".analysis-reasoning-panel").open = true;
+
+    A._onAnalysisEvent({
+      type: "artifact_analysis_thinking",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", thinking_text: "reasoning chunk one two" },
+      sequence: 3,
+    });
+
+    const panel = mustQuery(A.el.analysisList, ".analysis-reasoning-panel");
+    expect(panel.open).toBe(true);
+    expect(mustQuery(panel, ".analysis-reasoning-text").textContent).toBe("reasoning chunk one two");
+
+    // The panel also stays open when the artifact completes.
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", analysis: "Final answer." },
+      sequence: 4,
+    });
+    expect(mustQuery(A.el.analysisList, ".analysis-reasoning-panel").open).toBe(true);
+  });
 });
 
 // ── renderExecSummary ───────────────────────────────────────────────────────
@@ -276,6 +311,41 @@ describe("renderFindings", () => {
       expect(details[0].open).toBe(true);
       expect(details[1].open).toBe(false);
     }
+  });
+
+  test("preserves user toggles on findings cards across streaming re-renders", () => {
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 2, sequence: 0 });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs" },
+      sequence: 1,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_completed",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", analysis: "Events finding." },
+      sequence: 2,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "mft", artifact_name: "MFT" },
+      sequence: 3,
+    });
+
+    // User closes the default-open first finding and opens the second.
+    let details = A.el.findings.querySelectorAll("details[data-state-key^='finding:']");
+    expect(details).toHaveLength(2);
+    details[0].open = false;
+    details[1].open = true;
+
+    A._onAnalysisEvent({
+      type: "artifact_analysis_thinking",
+      result: { artifact_key: "mft", artifact_name: "MFT", thinking_text: "thinking about MFT" },
+      sequence: 4,
+    });
+
+    details = A.el.findings.querySelectorAll("details[data-state-key^='finding:']");
+    expect(details[0].open).toBe(false);
+    expect(details[1].open).toBe(true);
   });
 });
 

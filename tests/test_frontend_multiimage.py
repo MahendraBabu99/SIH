@@ -251,12 +251,20 @@ class TestMultiImageCss(unittest.TestCase):
         self.assertIn("#evidence-summaries-list", self.css_content)
 
     def test_apply_recommended_all_styled(self) -> None:
-        """The #apply-recommended-all button should be styled."""
-        self.assertIn("#apply-recommended-all", self.css_content)
+        """The apply-to-all buttons use the styled shared button class."""
+        self.assertIn(".btn-secondary", self.css_content)
+        html = (
+            Path(__file__).resolve().parent.parent / "templates" / "index.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('id="apply-recommended-all" class="btn-secondary"', html)
 
     def test_apply_selection_all_styled(self) -> None:
-        """The #apply-selection-all button should be styled."""
-        self.assertIn("#apply-selection-all", self.css_content)
+        """The apply-selection button uses the styled shared button class."""
+        self.assertIn(".btn-secondary", self.css_content)
+        html = (
+            Path(__file__).resolve().parent.parent / "templates" / "index.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn('id="apply-selection-all" class="btn-secondary"', html)
 
 
 if __name__ == "__main__":
