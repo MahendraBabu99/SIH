@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, Response, current_app, request
+from flask import Blueprint, Response, request
 
 from ..utils.artifact_profiles import (
     BUILTIN_ALL_PROFILE,
@@ -217,8 +217,7 @@ def list_artifact_profiles() -> Response:
     Returns:
         JSON response with the ``profiles`` list.
     """
-    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config/config.yaml")))
-    profiles_root = resolve_profiles_root(config_path)
+    profiles_root = resolve_profiles_root()
     return success_response({"profiles": compose_profile_response(profiles_root)})
 
 
@@ -245,8 +244,7 @@ def save_artifact_profile() -> Response | tuple[Response, int]:
     if not artifact_options:
         return error_response("Profile must include at least one artifact option.", 400)
 
-    config_path = Path(str(current_app.config.get("AIFT_CONFIG_PATH", "config/config.yaml")))
-    profiles_root = resolve_profiles_root(config_path)
+    profiles_root = resolve_profiles_root()
 
     try:
         profiles = load_profiles_from_directory(profiles_root)

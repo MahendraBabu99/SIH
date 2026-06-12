@@ -43,10 +43,6 @@ d88P     888 8888888 888            888
 ├─┤│   ├╴ │ │├┬╯├╴ │╰┤╰─╮││      │ ├┬╯│├─┤│╶╮├╴
 ╵ ╵╵   ╵  ╰─╯╵╰╴╰─╴╵ ╵╰─╯╵╰─╴    ╵ ╵╰╴╵╵ ╵╰─╯╰─╴"""
 
-# Project root: aift_cli.py lives at the repository root.
-_PROJECT_ROOT = Path(__file__).resolve().parent
-_DEFAULT_CONFIG_RELATIVE_PATH = Path("config") / "config.yaml"
-
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build and return the argument parser for the AIFT CLI.
@@ -319,23 +315,6 @@ def _resolve_date_range(
     return (validated["start_date"], validated["end_date"])
 
 
-def _early_config_path(argv: list[str]) -> str | None:
-    """Return a config path from early-exit command arguments.
-
-    Args:
-        argv: Command-line arguments excluding the executable name.
-
-    Returns:
-        The value passed to ``--config``/``-c``, or ``None`` when absent.
-    """
-    for index, arg in enumerate(argv):
-        if arg in {"--config", "-c"} and index + 1 < len(argv):
-            return argv[index + 1]
-        if arg.startswith("--config="):
-            return arg.split("=", 1)[1]
-    return None
-
-
 def _print_summary(result: Any) -> None:
     """Print the final summary block after automation completes.
 
@@ -398,24 +377,18 @@ def _print_summary(result: Any) -> None:
     print(separator)
 
 
-def _list_profiles(config_path: str | Path | None = None) -> None:
+def _list_profiles() -> None:
     """Load and print all available artifact profiles, then exit.
 
-    Args:
-        config_path: Optional config path accepted for API compatibility.
-            Profiles are listed from the repository ``profile`` directory.
+    Profiles are always listed from the repository ``profile`` directory;
+    the ``--config`` option does not influence profile resolution.
 
     Raises:
         SystemExit: Always exits with code 0 after printing.
     """
     from app.utils.artifact_profiles import compose_profile_summaries, resolve_profiles_root
 
-    resolved_config_path = (
-        Path(config_path).expanduser().resolve()
-        if config_path is not None
-        else _PROJECT_ROOT / _DEFAULT_CONFIG_RELATIVE_PATH
-    )
-    profiles_root = resolve_profiles_root(resolved_config_path)
+    profiles_root = resolve_profiles_root()
     profiles = compose_profile_summaries(profiles_root)
 
     if not profiles:
@@ -486,7 +459,7 @@ def main() -> None:
         _show_version()
     if "--list-profiles" in sys.argv[1:]:
         _configure_logging("--verbose" in sys.argv[1:])
-        _list_profiles(_early_config_path(sys.argv[1:]))
+        _list_profiles()
 
     parser = _build_parser()
     args = parser.parse_args()

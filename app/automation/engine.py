@@ -7,7 +7,7 @@ shared core used by both the REST API endpoint and the CLI tool.
 Attributes:
     LOGGER: Module-level logger for automation diagnostics.
     DEFAULT_PROFILE_NAME: Fallback profile when none specified.
-    _PROJECT_ROOT: Resolved project root used for case and profile paths.
+    _PROJECT_ROOT: Resolved project root used for case paths.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from app.automation import AUTOMATION_UPLOAD_ROOT_NAME
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
 from app.logging.case_manager import CaseManager
-from app.utils.config import DEFAULT_CONFIG_RELATIVE_PATH, load_config
+from app.utils.config import load_config
 from app.evidence.archive_config import archive_limits_from_config
 from app.evidence.descriptor import EvidenceDescriptor, descriptor_for_path
 from app.utils.hasher import (
@@ -375,23 +375,6 @@ def _load_config_safe(config_path: str | Path | None) -> tuple[dict[str, Any], l
     return load_config(None), warnings
 
 
-def _effective_profile_config_path(config_path: str | Path | None) -> Path:
-    """Return the config path passed through profile-root resolution.
-
-    Args:
-        config_path: Optional requested config path.
-
-    Returns:
-        Existing custom config path, or the repository default config path
-        when no usable custom config was supplied.
-    """
-    if config_path is not None:
-        resolved = Path(config_path).resolve()
-        if resolved.is_file():
-            return resolved
-    return _PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
-
-
 def _resolve_skip_hashing(
     requested_skip_hashing: bool | None,
     config: dict[str, Any],
@@ -425,13 +408,16 @@ def _resolve_skip_hashing(
 
 def _load_profile(
     profile_name: str | None,
-    config_path: str | Path | None = None,
 ) -> tuple[list[str], list[str], list[str]]:
     """Load artifact profile and split into parse/analysis lists.
 
+    Profiles are always loaded from the repository ``profile`` directory
+    (or directly from an explicit profile JSON file path); the active
+    config file location never influences profile resolution.
+
     Args:
-        profile_name: Requested profile name, or None for default.
-        config_path: Active config path retained for API compatibility.
+        profile_name: Requested profile name, explicit profile JSON file
+            path, or None for the default profile.
 
     Returns:
         Tuple of ``(parse_artifacts, analysis_artifacts, warnings)``.
@@ -455,12 +441,7 @@ def _load_profile(
                 )
                 return parse_artifacts, analysis_artifacts, warnings
 
-    active_config_path = (
-        Path(config_path).resolve()
-        if config_path is not None
-        else _PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
-    )
-    profiles_root = resolve_profiles_root(active_config_path)
+    profiles_root = resolve_profiles_root()
     profiles = load_profiles_from_directory(profiles_root)
 
     target_name = profile_text.lower() or DEFAULT_PROFILE_NAME
@@ -1225,7 +1206,6 @@ def _execute_automation(
     # --- 3. Load profile ---
     parse_artifacts, analysis_artifacts, profile_warnings = _load_profile(
         request.profile_name,
-        _effective_profile_config_path(request.config_path),
     )
     result.warnings.extend(profile_warnings)
     profile_errors = _validate_profile_artifact_keys(

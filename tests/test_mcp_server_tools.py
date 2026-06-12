@@ -23,22 +23,10 @@ from mcp_test_support import FakeRunManager, fake_mcp_modules, get_tool
 class TestMCPTools(unittest.TestCase):
     """Focused MCP tool tests with fake dependencies."""
 
-    def test_profile_config_path_accepts_custom_config_filename(self) -> None:
-        """MCP profile resolution accepts YAML config files with arbitrary names."""
-        with TemporaryDirectory(prefix="aift-mcp-config-name-") as temp_dir:
-            config_path = Path(temp_dir) / "acme-analysis-settings.yml"
-            config_path.write_text("ai:\n  provider: local\n", encoding="utf-8")
-
-            resolved = mcp_server._profile_config_path(str(config_path))
-
-        self.assertEqual(resolved, config_path.resolve())
-
     def test_list_profiles_uses_profile_helpers(self) -> None:
         """Profile listing returns stable name/builtin/count entries."""
-        config_path = Path("E:/AIFT-Public2/AIFT/acme-analysis-settings.yml")
         with (
             patch.dict(sys.modules, fake_mcp_modules()),
-            patch.object(mcp_server, "_profile_config_path", return_value=config_path),
             patch.object(
                 mcp_server,
                 "resolve_profiles_root",
@@ -54,12 +42,10 @@ class TestMCPTools(unittest.TestCase):
             ) as compose_summaries,
         ):
             server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
-            result = get_tool(server, "aift_list_profiles")(
-                "acme-analysis-settings.yml"
-            )
+            result = get_tool(server, "aift_list_profiles")()
 
         self.assertTrue(result["success"])
-        resolve_profiles_root.assert_called_once_with(config_path)
+        resolve_profiles_root.assert_called_once_with()
         compose_summaries.assert_called_once_with(Path("E:/AIFT-Public2/AIFT/profile"))
         self.assertEqual(
             result["profiles"],
@@ -71,40 +57,20 @@ class TestMCPTools(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["warnings"], [])
 
-    def test_list_profiles_accepts_custom_config_filename(self) -> None:
-        """MCP list-profiles accepts existing config files with custom names."""
-        with TemporaryDirectory(prefix="aift-mcp-profile-config-") as temp_dir:
-            root = Path(temp_dir)
-            config_path = root / "tenant-a-settings.yml"
-            config_path.write_text("ai:\n  provider: local\n", encoding="utf-8")
-            profiles_root = root / "profile"
-
-            with (
-                patch.dict(sys.modules, fake_mcp_modules()),
-                patch.object(mcp_server, "_PROJECT_ROOT", root),
+    def test_list_profiles_tool_takes_no_config_path(self) -> None:
+        """The aift_list_profiles tool no longer accepts a config_path argument."""
+        with (
+            patch.dict(sys.modules, fake_mcp_modules()),
             patch.object(
                 mcp_server,
                 "resolve_profiles_root",
-                return_value=profiles_root,
-            ) as resolve_profiles_root,
-            patch.object(
-                mcp_server,
-                "compose_profile_summaries",
-                return_value=[
-                    {"name": "tenant-a", "builtin": False, "artifact_count": 1},
-                ],
-            ) as compose_summaries,
+                return_value=Path("E:/AIFT-Public2/AIFT/profile"),
+            ),
+            patch.object(mcp_server, "compose_profile_summaries", return_value=[]),
         ):
-                server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
-                result = get_tool(server, "aift_list_profiles")(str(config_path))
-
-        self.assertTrue(result["success"])
-        resolve_profiles_root.assert_called_once_with(config_path.resolve())
-        compose_summaries.assert_called_once_with(profiles_root)
-        self.assertEqual(
-            result["profiles"],
-            [{"name": "tenant-a", "builtin": False, "artifact_count": 1}],
-        )
+            server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
+            with self.assertRaises(TypeError):
+                get_tool(server, "aift_list_profiles")("custom-settings.yml")
 
     def test_list_profiles_does_not_merge_project_profile_fallback(self) -> None:
         """MCP profile listing only uses the resolved canonical profile root."""
@@ -127,11 +93,6 @@ class TestMCPTools(unittest.TestCase):
                 patch.object(mcp_server, "_PROJECT_ROOT", project_root),
                 patch.object(
                     mcp_server,
-                    "_profile_config_path",
-                    return_value=root / "config.yaml",
-                ),
-                patch.object(
-                    mcp_server,
                     "resolve_profiles_root",
                     return_value=resolved_root,
                 ),
@@ -144,7 +105,7 @@ class TestMCPTools(unittest.TestCase):
                 ) as compose_summaries,
             ):
                 server = mcp_server.build_mcp_server(run_manager=FakeRunManager())
-                result = get_tool(server, "aift_list_profiles")(None)
+                result = get_tool(server, "aift_list_profiles")()
 
         self.assertTrue(result["success"])
         compose_summaries.assert_called_once_with(resolved_root)

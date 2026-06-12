@@ -30,7 +30,6 @@ Attributes:
     MCP_DISCLAIMER_STANCE: Disclaimer sentence embedded in rendered prompts
         (re-exported from ``mcp_prompts``).
     _PROJECT_ROOT: Repository root resolved from this file's location.
-    _DEFAULT_CONFIG_PATH: Default AIFT YAML config path.
     _DEFAULT_DISCOVERY_ROOT: Managed root for default discovery workspaces.
     _DEFAULT_CASES_ROOT: Default AIFT cases root directory.
 """
@@ -69,7 +68,6 @@ MCP_PROMPT_NAMES = [
 MCP_RESOURCE_MAX_BYTES = 200_000
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config" / "config.yaml"
 _DEFAULT_DISCOVERY_ROOT = _PROJECT_ROOT / "cases" / "_mcp_discovery"
 _DEFAULT_CASES_ROOT = _PROJECT_ROOT / "cases"
 
@@ -128,7 +126,6 @@ from app.automation.mcp_tools import (  # noqa: E402
     _load_profiles_payload,
     _normalize_date_range,
     _package_version,
-    _profile_config_path,
     _report_paths_payload,
     _start_triage_payload,
     _status_payload,
@@ -142,11 +139,11 @@ def compose_profile_summaries(profiles_root: Path) -> list[dict[str, Any]]:
     return _summaries(profiles_root)
 
 
-def resolve_profiles_root(config_path: str | Path) -> Path:
-    """Lazy proxy for profile root resolution."""
+def resolve_profiles_root() -> Path:
+    """Lazy proxy for repository-wide profile root resolution."""
     from app.utils.artifact_profiles import resolve_profiles_root as _resolve
 
-    return _resolve(config_path)
+    return _resolve()
 
 
 def validate_analysis_date_range(payload: Any) -> dict[str, str] | None:

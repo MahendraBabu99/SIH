@@ -4,8 +4,8 @@ Implements the bodies of the MCP tools (server info, profile listing,
 triage start, and run lifecycle wrappers) as plain functions over an
 injected run manager; the evidence discovery tool lives in the sibling
 ``mcp_discovery`` module. Patchable collaborators - the lazy pipeline
-proxies, default path constants, and config helpers - are resolved through
-the ``app.automation.mcp_server`` facade at call time so tests that patch
+proxies and capability constants - are resolved through the
+``app.automation.mcp_server`` facade at call time so tests that patch
 attributes on that module keep working. Importing this module never loads
 Flask, the parsing pipeline, or the optional MCP SDK.
 
@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 from importlib import metadata
-from pathlib import Path
 from typing import Any
 
 from app.automation.mcp_payloads import (
@@ -45,10 +44,10 @@ RUN_STATUS_RESOURCE_TEMPLATE = "aift://runs/{run_id}/status"
 def _server_module() -> Any:
     """Return the ``app.automation.mcp_server`` facade module.
 
-    Patchable collaborators (lazy proxies, default paths, config helpers,
-    and MCP capability constants) live on the facade; resolving them through
-    this helper at call time keeps ``unittest.mock.patch.object`` patches on
-    that module effective for the tool implementations here.
+    Patchable collaborators (lazy proxies and MCP capability constants)
+    live on the facade; resolving them through this helper at call time
+    keeps ``unittest.mock.patch.object`` patches on that module effective
+    for the tool implementations here.
 
     Returns:
         The imported ``app.automation.mcp_server`` module object.
@@ -131,41 +130,18 @@ def _normalize_date_range(date_range: Any) -> tuple[str, str] | None:
     return (validated["start_date"], validated["end_date"])
 
 
-def _profile_config_path(config_path: str | None) -> Path:
-    """Resolve the config path used to locate profile files.
-
-    Args:
-        config_path: Optional explicit config file path.
-
-    Returns:
-        Existing config file path, defaulting to AIFT's bundled config.
-
-    Raises:
-        FileNotFoundError: If an explicit config path does not exist.
-    """
-    if config_path is None:
-        return _server_module()._DEFAULT_CONFIG_PATH
-    resolved = Path(config_path).expanduser().resolve()
-    if not resolved.is_file():
-        raise FileNotFoundError(f"config path does not exist: {resolved}")
-    return resolved
-
-
-def _load_profiles_payload(config_path: str | None = None) -> dict[str, Any]:
+def _load_profiles_payload() -> dict[str, Any]:
     """Return available artifact profiles for the MCP list tool.
 
-    Args:
-        config_path: Optional explicit config file path.
+    Profiles are always listed from the repository ``profile`` directory;
+    no config file influences profile resolution.
 
     Returns:
         Stable MCP tool payload with profile summaries.
     """
     server = _server_module()
     try:
-        active_config_path = server._profile_config_path(
-            _optional_text(config_path, "config_path")
-        )
-        profiles_root = server.resolve_profiles_root(active_config_path)
+        profiles_root = server.resolve_profiles_root()
         profiles = server.compose_profile_summaries(profiles_root)
 
         return _ok({

@@ -263,17 +263,15 @@ def _recommended_profile_excluded_artifacts() -> set[str]:
 RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS = _recommended_profile_excluded_artifacts()
 
 
-def resolve_profiles_root(config_path: str | Path) -> Path:
+def resolve_profiles_root() -> Path:
     """Resolve the directory where artifact profiles are stored.
 
-    Args:
-        config_path: Path to the active YAML config file. Accepted by the
-            shared helper signature; profile storage is repository-wide.
+    Profile storage is repository-wide and independent of the active config
+    file location: custom config paths never relocate profile storage.
 
     Returns:
         The repository ``profile`` directory used by the GUI, CLI, API, and MCP.
     """
-    del config_path
     return PROJECT_ROOT / PROFILE_DIRNAME
 
 

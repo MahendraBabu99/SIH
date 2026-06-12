@@ -311,15 +311,12 @@ class TestResolveSkipHashing(unittest.TestCase):
 class TestAutomationProfileRoots(unittest.TestCase):
     """Tests for repository-wide automation profile loading."""
 
-    def test_load_profile_uses_repository_profile_root_with_custom_config(self) -> None:
-        """Automation loads profiles from repository profile/ for custom configs."""
+    def test_load_profile_uses_repository_profile_root(self) -> None:
+        """Automation loads named profiles from the repository profile/ root."""
         with TemporaryDirectory(prefix="aift-profile-root-") as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "settings" / "case-settings.yml"
             profile_root = root / "profile"
             profile_root.mkdir(parents=True)
-            config_path.parent.mkdir(parents=True)
-            config_path.write_text("ai_provider: fake\n", encoding="utf-8")
             (profile_root / "custom.json").write_text(
                 json.dumps({
                     "name": "custom",
@@ -334,14 +331,16 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 patch.object(engine_module, "_PROJECT_ROOT", root),
                 patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
             ):
-                parse, analysis, warnings = engine_module._load_profile(
-                    "custom",
-                    config_path,
-                )
+                parse, analysis, warnings = engine_module._load_profile("custom")
 
         self.assertEqual(parse, ["runkeys"])
         self.assertEqual(analysis, [])
         self.assertEqual(warnings, [])
+
+    def test_load_profile_accepts_only_profile_name(self) -> None:
+        """Profile loading takes no config path; profile roots are repository-wide."""
+        with self.assertRaises(TypeError):
+            engine_module._load_profile("custom", "settings/case-settings.yml")  # type: ignore[call-arg]
 
     def test_load_profile_accepts_explicit_profile_file_path(self) -> None:
         """CLI/MCP profile arguments may point directly to a profile JSON file."""
@@ -363,7 +362,6 @@ class TestAutomationProfileRoots(unittest.TestCase):
             with patch("app.utils.artifact_profiles.PROJECT_ROOT", root):
                 parse, analysis, warnings = engine_module._load_profile(
                     str(profile_path),
-                    root / "settings" / "case-settings.yml",
                 )
 
         self.assertEqual(parse, ["runkeys", "mft"])
@@ -388,7 +386,6 @@ class TestAutomationProfileRoots(unittest.TestCase):
 
             parse, analysis, warnings = engine_module._load_profile(
                 str(profile_path),
-                root / "settings" / "case-settings.yml",
             )
 
         self.assertEqual(parse, ["runkeys"])
@@ -419,73 +416,23 @@ class TestAutomationProfileRoots(unittest.TestCase):
             with patch("app.utils.artifact_profiles.PROJECT_ROOT", root):
                 parse, analysis, warnings = engine_module._load_profile(
                     str(profile_path),
-                    root / "settings" / "case-settings.yml",
                 )
 
         self.assertEqual(parse, ["runkeys"])
         self.assertEqual(analysis, [])
         self.assertEqual(warnings, [])
 
-    def test_load_profile_ignores_config_sibling_profile_root(self) -> None:
-        """Automation ignores config-adjacent profiles and reads repository profile/."""
-        with TemporaryDirectory(prefix="aift-profile-canonical-") as temp_dir:
-            root = Path(temp_dir)
-            config_path = root / "settings" / "config.yaml"
-            config_path.parent.mkdir(parents=True)
-            config_path.write_text("ai_provider: fake\n", encoding="utf-8")
-            settings_profile_root = config_path.parent / "profile"
-            settings_profile_root.mkdir()
-            (settings_profile_root / "recommended.json").write_text(
-                json.dumps({
-                    "name": "recommended",
-                    "artifact_options": [
-                        {"artifact_key": "mft", "mode": "parse_and_ai"},
-                    ],
-                }),
-                encoding="utf-8",
-            )
-            profile_root = root / "profile"
-            profile_root.mkdir()
-            (profile_root / "custom.json").write_text(
-                json.dumps({
-                    "name": "custom",
-                    "artifact_options": [
-                        {"artifact_key": "runkeys", "mode": "parse_and_ai"},
-                    ],
-                }),
-                encoding="utf-8",
-            )
-
-            with (
-                patch.object(engine_module, "_PROJECT_ROOT", root),
-                patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
-            ):
-                parse, analysis, warnings = engine_module._load_profile(
-                    "custom",
-                    config_path,
-                )
-
-        self.assertEqual(parse, ["runkeys"])
-        self.assertEqual(parse, analysis)
-        self.assertEqual(warnings, [])
-
     def test_load_profile_creates_repository_profile_root_when_missing(self) -> None:
         """Built-in recommended fallback is created in repository profile/builtin/."""
         with TemporaryDirectory(prefix="aift-profile-builtins-") as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "settings" / "config.yaml"
-            config_path.parent.mkdir(parents=True)
-            config_path.write_text("ai_provider: fake\n", encoding="utf-8")
             profile_root = root / "profile"
 
             with (
                 patch.object(engine_module, "_PROJECT_ROOT", root),
                 patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
             ):
-                parse, analysis, warnings = engine_module._load_profile(
-                    "missing",
-                    config_path,
-                )
+                parse, analysis, warnings = engine_module._load_profile("missing")
                 builtin_root = profile_root / artifact_profiles.BUILTIN_PROFILE_DIRNAME
                 self.assertTrue((builtin_root / "recommended.json").exists())
                 self.assertTrue((builtin_root / "all.json").exists())

@@ -123,9 +123,9 @@ def build_mcp_server(
         description="Return available AIFT artifact profiles.",
         structured_output=True,
     )
-    def aift_list_profiles(config_path: str | None = None) -> dict[str, Any]:
+    def aift_list_profiles() -> dict[str, Any]:
         """Return artifact profile names and counts."""
-        return _load_profiles_payload(config_path)
+        return _load_profiles_payload()
 
     @mcp.tool(
         name="aift_discover_evidence",

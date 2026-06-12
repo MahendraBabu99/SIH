@@ -385,15 +385,15 @@ class TestCLIVersionAndProfiles(unittest.TestCase):
             patch("sys.stdout", stdout),
         ):
             with self.assertRaises(SystemExit) as ctx:
-                _list_profiles("tenant-settings.yml")
+                _list_profiles()
 
         self.assertEqual(ctx.exception.code, EXIT_SUCCESS)
-        resolve_profiles_root.assert_called_once()
+        resolve_profiles_root.assert_called_once_with()
         compose_summaries.assert_called_once_with(resolved_root)
         self.assertIn("recommended", stdout.getvalue())
 
     def test_list_profiles_does_not_merge_project_profile_fallback(self) -> None:
-        """A custom config path must not create a second profile source."""
+        """Profile listing must use only the resolved canonical profile root."""
         with TemporaryDirectory(prefix="aift-cli-profile-single-root-") as temp_dir:
             root = Path(temp_dir)
             resolved_root = root / "resolved-profile-root"
@@ -407,7 +407,6 @@ class TestCLIVersionAndProfiles(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             with (
-                patch("aift_cli._PROJECT_ROOT", root),
                 patch(
                     "app.utils.artifact_profiles.resolve_profiles_root",
                     return_value=resolved_root,
@@ -422,7 +421,7 @@ class TestCLIVersionAndProfiles(unittest.TestCase):
                 patch("sys.stderr", stderr),
             ):
                 with self.assertRaises(SystemExit) as ctx:
-                    _list_profiles(root / "settings" / "config.yaml")
+                    _list_profiles()
 
         self.assertEqual(ctx.exception.code, EXIT_SUCCESS)
         compose_summaries.assert_called_once_with(resolved_root)

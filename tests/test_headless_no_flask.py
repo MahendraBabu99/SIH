@@ -113,7 +113,6 @@ class TestHeadlessNoFlask(unittest.TestCase):
 
             with tempfile.TemporaryDirectory(prefix="aift-headless-profiles-") as td:
                 root = Path(td)
-                aift_cli._PROJECT_ROOT = root
                 engine._PROJECT_ROOT = root
                 artifact_profiles.PROJECT_ROOT = root
                 config_path = root / "custom" / "config.yaml"
@@ -147,7 +146,7 @@ class TestHeadlessNoFlask(unittest.TestCase):
                     raise AssertionError("recommended profile analysis artifacts must be parse artifacts")
                 if "firewall.logs" in analysis_artifacts:
                     raise AssertionError("parse-only recommended artifact unexpectedly selected for AI")
-                parse_artifacts, analysis_artifacts, warnings = engine._load_profile("custom", config_path)
+                parse_artifacts, analysis_artifacts, warnings = engine._load_profile("custom")
                 if parse_artifacts != ["runkeys"] or analysis_artifacts != ["runkeys"]:
                     raise AssertionError("repository custom profile did not load")
                 if warnings:
@@ -215,7 +214,7 @@ class TestHeadlessNoFlask(unittest.TestCase):
             sys.meta_path.insert(0, ImportBlocker())
 
             import app.utils.artifact_profiles as artifact_profiles
-            root = artifact_profiles.resolve_profiles_root("config/config.yaml")
+            root = artifact_profiles.resolve_profiles_root()
             summaries = artifact_profiles.compose_profile_summaries(root)
             if not summaries:
                 raise AssertionError("expected at least the recommended profile")

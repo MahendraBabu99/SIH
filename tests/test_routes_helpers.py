@@ -683,18 +683,18 @@ class ArtifactHelperTests(unittest.TestCase):
             artifact_profiles.normalize_profile_name("!@#$%")
 
     def test_resolve_profiles_root_always_uses_repository_profile_folder(self) -> None:
+        """Profile root resolution returns the repository profile directory."""
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             with patch.object(artifact_profiles, "PROJECT_ROOT", root):
-                default_profiles_root = artifact_profiles.resolve_profiles_root(
-                    root / "config" / "config.yaml"
-                )
-                custom_profiles_root = artifact_profiles.resolve_profiles_root(
-                    root / "settings" / "case-settings.yml"
-                )
+                profiles_root = artifact_profiles.resolve_profiles_root()
 
-        self.assertEqual(default_profiles_root, root / "profile")
-        self.assertEqual(custom_profiles_root, root / "profile")
+        self.assertEqual(profiles_root, root / "profile")
+
+    def test_resolve_profiles_root_takes_no_config_path(self) -> None:
+        """Profile root resolution accepts no config path argument."""
+        with self.assertRaises(TypeError):
+            artifact_profiles.resolve_profiles_root("config/config.yaml")  # type: ignore[call-arg]
 
     def test_profile_path_for_new_name(self) -> None:
         with TemporaryDirectory() as tmpdir:
