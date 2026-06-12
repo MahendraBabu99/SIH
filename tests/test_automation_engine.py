@@ -30,6 +30,12 @@ from app.automation.engine import AutomationRequest, AutomationResult, run_autom
 from app.evidence.archives import ArchiveExtractionLimits, DEFAULT_ARCHIVE_LIMITS
 from app.evidence.descriptor import descriptor_for_path
 from app.logging.audit import AuditLogger as RealAuditLogger
+from app.logging.case_logging import (
+    _ACTIVE_CASE_ID,
+    _CASE_HANDLERS,
+    pop_case_log_context,
+    push_case_log_context,
+)
 from tests.conftest import (
     FAKE_HASHES,
     FakeAnalyzer,
@@ -701,6 +707,62 @@ class TestRunAutomation(unittest.TestCase):
         self.assertIsInstance(analysis_results["images"], dict)
         self.assertEqual(len(analysis_results["images"]), 1)
         self.assertNotIn("per_artifact", analysis_results)
+
+    def test_case_application_log_created(self) -> None:
+        """Headless runs create logs/application.log inside the case dir."""
+        result = run_automation(self._make_request())
+        self.assertTrue(result.success)
+        log_path = self.cases_dir / "case-001" / "logs" / "application.log"
+        self.assertTrue(log_path.is_file())
+        self.assertIn(
+            "Initialized case logging at",
+            log_path.read_text(encoding="utf-8"),
+        )
+
+    def test_case_application_log_created_when_run_fails(self) -> None:
+        """A run that fails after case creation still has an application log."""
+
+        class FailingParser(FakeParser):
+            """Parser stub whose every artifact parse raises."""
+
+            def parse_artifact(
+                self,
+                artifact_key: str,
+                progress_callback: object | None = None,
+            ) -> dict[str, object]:
+                """Raise unconditionally to fail the image.
+
+                Args:
+                    artifact_key: Ignored artifact key.
+                    progress_callback: Ignored progress callback.
+
+                Returns:
+                    Never returns.
+
+                Raises:
+                    RuntimeError: Always.
+                """
+                raise RuntimeError("parse boom")
+
+        self.mocks["ForensicParser"].side_effect = (
+            lambda **kwargs: FailingParser(**kwargs)
+        )
+
+        result = run_automation(self._make_request())
+        self.assertFalse(result.success)
+        log_path = self.cases_dir / "case-001" / "logs" / "application.log"
+        self.assertTrue(log_path.is_file())
+
+    def test_case_log_handler_and_context_restored_after_run(self) -> None:
+        """The run unregisters its log handler and restores the log context."""
+        token = push_case_log_context("pre-existing-context")
+        try:
+            result = run_automation(self._make_request())
+            self.assertTrue(result.success)
+            self.assertNotIn("case-001", _CASE_HANDLERS)
+            self.assertEqual(_ACTIVE_CASE_ID.get(), "pre-existing-context")
+        finally:
+            pop_case_log_context(token)
 
     def test_report_generation_failure_keeps_analysis_results_path(self) -> None:
         """Report errors fail the run but keep the persisted analysis path."""

@@ -27,6 +27,12 @@ from typing import Any
 from app.analyzer.cancellation import AnalysisCancelledError
 from app.analyzer.core import ForensicAnalyzer
 from app.logging.audit import AuditLogger
+from app.logging.case_logging import (
+    pop_case_log_context,
+    push_case_log_context,
+    register_case_log_handler,
+    unregister_case_log_handler,
+)
 from app.automation import AUTOMATION_UPLOAD_ROOT_NAME
 from app.automation.discovery import discover_evidence, validate_evidence_path
 from app.automation.json_export import export_json_report
@@ -1094,7 +1100,8 @@ def run_automation(
     2. Load configuration from *config_path* (fallback to default).
     3. Load artifact profile (fallback to ``"recommended"``).
     4. Discover evidence files (folder scanning if directory given).
-    5. Create a case via :class:`~app.logging.case_manager.CaseManager`.
+    5. Create a case via :class:`~app.logging.case_manager.CaseManager`
+       and register the per-case application log.
     6. For each evidence file: open Dissect target, extract metadata,
        compute hashes, intersect artifacts with profile, parse to CSV.
     7. Run AI analysis across all images.
@@ -1139,6 +1146,48 @@ def run_automation(
     ``audit.jsonl``.  Failures before case
     creation (input validation, config/profile errors, explicit output
     directory errors) have no case directory and write no audit entry.
+
+    Case application logging mirrors the GUI: the per-case log handler is
+    registered immediately after case creation (creating
+    ``<case_dir>/logs/application.log``) and the run thread is bound to the
+    case log context for the remainder of the run, so headless cases
+    receive the same developer diagnostic log as GUI cases.  When the run
+    finishes, the handler is unregistered and the previous log context is
+    restored.  A filesystem error while initializing the case log is
+    recorded as a run warning and does not abort the run.
+
+    Args:
+        request: Automation parameters dataclass.
+        progress_callback: Optional callback for progress updates.
+        cancel_check: Optional cancellation callback or event-like object.
+
+    Returns:
+        AutomationResult with success status and output paths.
+    """
+    context_token = push_case_log_context(None)
+    result: AutomationResult | None = None
+    try:
+        result = _execute_automation(request, progress_callback, cancel_check)
+        return result
+    finally:
+        pop_case_log_context(context_token)
+        if result is not None and result.case_id:
+            unregister_case_log_handler(result.case_id)
+
+
+def _execute_automation(
+    request: AutomationRequest,
+    progress_callback: Callable[[str, str, float], None] | None = None,
+    cancel_check: object | None = None,
+) -> AutomationResult:
+    """Run the automation pipeline body on behalf of :func:`run_automation`.
+
+    Implements the full pipeline (validation, configuration, discovery,
+    case creation, parsing, analysis, reporting) documented on
+    :func:`run_automation`.  After case creation this function registers
+    the per-case application log handler and pushes the case log context
+    without popping it; :func:`run_automation` restores the caller's
+    context and unregisters the handler once the run finishes.
 
     Args:
         request: Automation parameters dataclass.
@@ -1267,6 +1316,18 @@ def run_automation(
     case_id = case_manager.create_case(case_name=case_name)
     result.case_id = case_id
     case_dir = cases_dir / case_id
+    # Mirror GUI case creation: every case gets logs/application.log.  The
+    # context pushed here stays bound for the rest of the run thread;
+    # run_automation() restores it and unregisters the handler afterwards.
+    try:
+        case_log_path = register_case_log_handler(case_id=case_id, case_dir=case_dir)
+    except OSError as exc:
+        result.warnings.append(
+            f"Case application log could not be initialized: {exc}"
+        )
+    else:
+        push_case_log_context(case_id)
+        LOGGER.info("Initialized case logging at %s", case_log_path)
     # Construct the case audit logger immediately after case creation so
     # every later failure or cancellation is recorded in the case audit
     # trail — including the early-return paths between case creation and

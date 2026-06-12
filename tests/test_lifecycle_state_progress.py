@@ -144,6 +144,64 @@ class LifecycleStateProgressTests(unittest.TestCase):
         self.assertNotIn(case_id, routes_state.PARSE_PROGRESS)
         self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
 
+    def test_terminal_cleanup_keeps_case_with_running_chat(self) -> None:
+        """An expired terminal case survives eviction while chat is running.
+
+        Chat is the normal active operation on a completed case; evicting
+        the case mid-response would orphan the chat thread and break SSE
+        streaming. Once the chat finishes, the already-expired TTL lets the
+        next cleanup call evict the case.
+        """
+        case_id = "terminal-active-chat"
+        self._install_case(case_id)
+        routes_state.CASE_STATES[case_id]["status"] = "completed"
+        routes_state.CASE_STATES[case_id]["_terminal_since"] = (
+            time.monotonic() - routes_state.CASE_TTL_SECONDS - 10
+        )
+        routes_state.CHAT_PROGRESS[case_id] = routes_state.new_progress(status="running")
+
+        routes_state.cleanup_terminal_cases()
+
+        self.assertIn(case_id, routes_state.CASE_STATES)
+        self.assertIn(case_id, routes_state.CHAT_PROGRESS)
+
+        routes_state.CHAT_PROGRESS[case_id]["status"] = "completed"
+        routes_state.cleanup_terminal_cases()
+
+        self.assertNotIn(case_id, routes_state.CASE_STATES)
+        self.assertNotIn(case_id, routes_state.CHAT_PROGRESS)
+
+    def test_terminal_cleanup_keeps_case_with_cancelling_image_parse(self) -> None:
+        """An expired terminal case survives while a per-image parse cancels.
+
+        A composite ``<case_id>::<image_id>`` progress key with status
+        ``cancelling`` must protect the owning case from TTL eviction just
+        like a case-level entry; once the entry reaches a terminal status,
+        the next cleanup call evicts the case and all of its progress keys.
+        """
+        case_id = "terminal-cancelling-parse"
+        image_id = "img-001"
+        progress_key = f"{case_id}::{image_id}"
+        self._install_case(case_id, image_id)
+        routes_state.CASE_STATES[case_id]["status"] = "completed"
+        routes_state.CASE_STATES[case_id]["_terminal_since"] = (
+            time.monotonic() - routes_state.CASE_TTL_SECONDS - 10
+        )
+        routes_state.PARSE_PROGRESS[progress_key] = routes_state.new_progress(
+            status="cancelling",
+        )
+
+        routes_state.cleanup_terminal_cases()
+
+        self.assertIn(case_id, routes_state.CASE_STATES)
+        self.assertIn(progress_key, routes_state.PARSE_PROGRESS)
+
+        routes_state.PARSE_PROGRESS[progress_key]["status"] = "completed"
+        routes_state.cleanup_terminal_cases()
+
+        self.assertNotIn(case_id, routes_state.CASE_STATES)
+        self.assertNotIn(progress_key, routes_state.PARSE_PROGRESS)
+
     def test_ttl_cleanup_keeps_case_with_active_progress(self) -> None:
         """TTL cleanup never evicts a case while an operation is still active.
 
