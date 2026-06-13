@@ -290,6 +290,41 @@ class ParserTests(unittest.TestCase):
         returned_keys = {a["key"] for a in artifacts}
         self.assertEqual(returned_keys, set(get_artifact_registry("windows").keys()))
 
+    def test_get_available_artifacts_tags_descriptors_with_windows_os(self) -> None:
+        """Descriptors from the Windows registry should carry os='windows'."""
+        class WindowsTarget:
+            os = "windows"
+
+            def has_function(self, function_name: str) -> bool:
+                return False
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(WindowsTarget(), Path(temp_dir), audit)
+            artifacts = parser.get_available_artifacts()
+
+        self.assertTrue(artifacts)
+        self.assertEqual({a["os"] for a in artifacts}, {"windows"})
+
+    def test_get_available_artifacts_tags_unknown_os_descriptors_as_windows(self) -> None:
+        """Unknown-OS targets fall back to the Windows registry and OS tag."""
+        class BrokenOsTarget:
+            @property
+            def os(self) -> str:
+                raise RuntimeError("cannot detect OS")
+
+            def has_function(self, function_name: str) -> bool:
+                return False
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(BrokenOsTarget(), Path(temp_dir), audit)
+            artifacts = parser.get_available_artifacts()
+
+        self.assertEqual(parser.os_type, "unknown")
+        self.assertTrue(artifacts)
+        self.assertEqual({a["os"] for a in artifacts}, {"windows"})
+
     def test_registry_artifact_guidance_comes_from_prompt_files(self) -> None:
         runkeys_prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "artifact_instructions" / "runkeys.md"
         _, expected_prompt = parse_artifact_prompt_text(runkeys_prompt_path.read_text(encoding="utf-8"))
@@ -1887,6 +1922,22 @@ class LinuxParserTests(unittest.TestCase):
 
         returned_keys = {a["key"] for a in artifacts}
         self.assertEqual(returned_keys, set(get_artifact_registry("linux").keys()))
+
+    def test_get_available_artifacts_tags_descriptors_with_linux_os(self) -> None:
+        """Descriptors from the Linux registry should carry os='linux'."""
+        class LinuxTarget:
+            os = "linux"
+
+            def has_function(self, function_name: str) -> bool:
+                return False
+
+        audit = FakeAuditLogger()
+        with TemporaryDirectory(prefix="aift-parser-test-") as temp_dir:
+            parser = self._create_parser(LinuxTarget(), Path(temp_dir), audit)
+            artifacts = parser.get_available_artifacts()
+
+        self.assertTrue(artifacts)
+        self.assertEqual({a["os"] for a in artifacts}, {"linux"})
 
     def test_parse_artifact_resolves_linux_key(self) -> None:
         """Parsing a Linux-only artifact key should work on a Linux target."""

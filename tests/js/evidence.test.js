@@ -510,6 +510,68 @@ describe("dynamic advanced artifacts", () => {
       advanced.querySelector("fieldset[data-category='database'] input[data-artifact-key='mssql.errorlog']")
     ).not.toBeNull();
   });
+
+  test("tags dynamic fieldsets with the descriptor OS and filters them by detected OS", () => {
+    A.applyEvidence({
+      os_type: "linux",
+      metadata: { os_version: "Ubuntu 22.04" },
+      hashes: {},
+      available_artifacts: [
+        { key: "cronjobs", name: "Cron Jobs", available: true },
+        { key: "container_logs", name: "Container Logs", category: "Containers", os: "linux", available: true },
+        { key: "iis_logs", name: "IIS Logs", category: "Web Servers", os: "windows", available: true },
+      ],
+    });
+
+    const advanced = mustGet("dynamic-artifact-category");
+    expect(advanced.hidden).toBe(false);
+
+    /* Linux dynamic artifacts stay selectable on a Linux image. */
+    const linuxFs = mustQuery(advanced, "fieldset[data-category='containers']");
+    expect(linuxFs.dataset.os).toBe("linux");
+    expect(linuxFs.hidden).toBe(false);
+    expect(mustQuery(linuxFs, "input[data-artifact-key='container_logs']").disabled).toBe(false);
+
+    /* Windows dynamic artifacts are hidden and force-disabled on Linux. */
+    const windowsFs = mustQuery(advanced, "fieldset[data-category='web-servers']");
+    expect(windowsFs.dataset.os).toBe("windows");
+    expect(windowsFs.hidden).toBe(true);
+    expect(mustQuery(windowsFs, "input[data-artifact-key='iis_logs']").disabled).toBe(true);
+  });
+
+  test("dynamic Windows fieldsets carry an explicit data-os tag and stay visible on Windows", () => {
+    A.applyEvidence({
+      os_type: "windows",
+      metadata: { os_version: "Windows 11" },
+      hashes: {},
+      available_artifacts: [
+        { key: "runkeys", name: "Run/RunOnce Keys", available: true },
+        { key: "certlog", name: "AD CS Certificate Logs", category: "PKI", os: "windows", available: true },
+      ],
+    });
+
+    const fs = mustQuery(mustGet("dynamic-artifact-category"), "fieldset[data-category='pki']");
+    expect(fs.dataset.os).toBe("windows");
+    expect(fs.hidden).toBe(false);
+    expect(mustQuery(fs, "input[data-artifact-key='certlog']").disabled).toBe(false);
+  });
+
+  test("dynamic fieldsets fall back to the detected OS when the descriptor has no os field", () => {
+    A.applyEvidence({
+      os_type: "linux",
+      metadata: { os_version: "Ubuntu 22.04" },
+      hashes: {},
+      available_artifacts: [
+        { key: "cronjobs", name: "Cron Jobs", available: true },
+        { key: "container_logs", name: "Container Logs", category: "Containers", available: true },
+      ],
+    });
+
+    const fs = mustQuery(mustGet("dynamic-artifact-category"), "fieldset[data-category='containers']");
+    expect(fs.dataset.os).toBe("linux");
+    expect(fs.hidden).toBe(false);
+    expect(mustQuery(fs, "input[data-artifact-key='container_logs']").disabled).toBe(false);
+  });
 });
 
 // ── Multi-image: getImageForms ──────────────────────────────────────────────

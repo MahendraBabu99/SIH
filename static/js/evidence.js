@@ -272,7 +272,9 @@
   /**
    * Show/hide OS-specific artifact fieldsets based on the detected OS.
    *
-   * Windows fieldsets (no data-os attribute) are shown for Windows images.
+   * Windows fieldsets are shown for Windows images: static Windows
+   * fieldsets carry no data-os attribute, while dynamically created
+   * Advanced fieldsets are tagged data-os="windows" explicitly.
    * Linux fieldsets (data-os="linux") are shown for Linux images.
    *
    * @param {string} osType - Detected OS type ("windows", "linux", etc.).
@@ -286,8 +288,9 @@
       let hide;
       if (fsOs === "linux") {
         hide = !isLinux;
-      } else if (!fsOs) {
-        /* Windows fieldsets have no data-os attribute */
+      } else if (!fsOs || fsOs === "windows") {
+        /* Static Windows fieldsets have no data-os attribute; dynamic
+           Advanced fieldsets carry an explicit data-os="windows". */
         hide = isLinux;
       } else {
         return;
@@ -489,6 +492,22 @@
     return category || "Other";
   }
 
+  /**
+   * Return the OS tag ("windows" or "linux") for a dynamic artifact descriptor.
+   *
+   * Prefers the descriptor's own `os` field (set by the backend from the
+   * OS-specific registry that produced it) and falls back to the detected
+   * OS of the current intake when the field is missing.
+   *
+   * @param {Object} rawArtifact - Artifact availability descriptor.
+   * @returns {string} "windows" or "linux".
+   */
+  function artifactDescriptorOs(rawArtifact) {
+    const os = rawArtifact && rawArtifact.os ? String(rawArtifact.os).trim().toLowerCase() : "";
+    if (os === "windows" || os === "linux") return os;
+    return st.detectedOs === "linux" ? "linux" : "windows";
+  }
+
   /** Create one artifact checkbox row from an availability descriptor. */
   function createArtifactListItem(rawArtifact) {
     const key = String(rawArtifact.key || "");
@@ -527,8 +546,12 @@
    *
    * Updates existing checkboxes (enabling available ones) and creates a
    * foldable Advanced section for artifacts not present in the static HTML.
+   * Dynamic Advanced fieldsets are grouped per (OS, category) and tagged
+   * with a data-os attribute so the OS-visibility filters treat them like
+   * their static counterparts.
    *
-   * @param {Object[]} list - Array of artifact descriptors with key, name, available.
+   * @param {Object[]} list - Array of artifact descriptors with key, name,
+   *     available, and optional category/os fields.
    */
   function populateArtifacts(list) {
     clearDynamicArtifacts();
@@ -573,15 +596,24 @@
       extra.forEach((a) => {
         const categoryLabel = artifactDescriptorCategory(a);
         const categoryKey = artifactCategorySlug(categoryLabel);
-        if (!grouped.has(categoryKey)) grouped.set(categoryKey, { label: categoryLabel, artifacts: [] });
-        grouped.get(categoryKey).artifacts.push(a);
+        const os = artifactDescriptorOs(a);
+        /* Group per (OS, category) so every dynamic fieldset can carry a
+           single data-os tag for the OS-visibility filters. */
+        const groupKey = `${os}::${categoryKey}`;
+        if (!grouped.has(groupKey)) grouped.set(groupKey, { label: categoryLabel, categoryKey, os, artifacts: [] });
+        grouped.get(groupKey).artifacts.push(a);
       });
 
-      grouped.forEach((group, categoryKey) => {
+      grouped.forEach((group) => {
         const fs = document.createElement("fieldset");
         fs.className = "artifact-category artifact-category-advanced";
-        fs.dataset.category = categoryKey;
+        fs.dataset.category = group.categoryKey;
         fs.dataset.advancedCategory = "true";
+        /* Tag the fieldset with the artifacts' OS so single-image
+           visibility (showOsArtifactFieldsets) and multi-image panel
+           cloning (fieldsetMatchesImage) include or exclude it like the
+           static OS-specific fieldsets. */
+        fs.dataset.os = group.os;
         const lg = document.createElement("legend");
         lg.textContent = group.label;
         fs.appendChild(lg);

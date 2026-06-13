@@ -860,9 +860,11 @@
           const fsOs = String(fs.dataset.os || "").trim().toLowerCase();
           /* Include fieldsets that match this image's OS:
              - Linux fieldsets (data-os="linux") only for Linux images
-             - Windows fieldsets (no data-os) only for non-Linux images */
+             - Windows fieldsets (data-os="windows" on dynamic Advanced
+               fieldsets, or no data-os in the static markup) only for
+               non-Linux images */
           if (fsOs === "linux" && !imgIsLinux) return false;
-          if (!fsOs && imgIsLinux) return false;
+          if ((!fsOs || fsOs === "windows") && imgIsLinux) return false;
           return true;
         };
 

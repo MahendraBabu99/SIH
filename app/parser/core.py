@@ -55,6 +55,7 @@ from dissect.thumbcache import Error as ThumbcacheError, Thumbcache
 
 from .dissect_patches import apply_dissect_patches
 from .registry import get_artifact_registry
+from ..utils.os_utils import normalize_os_type
 
 __all__ = ["ForensicParser", "ParserCancelledError"]
 
@@ -217,11 +218,18 @@ class ForensicParser:
         Dissect target for each registered artifact and sets an
         ``available`` boolean on the returned metadata dictionaries.
 
+        Each descriptor also carries an ``os`` field naming the registry
+        it came from (``"windows"`` or ``"linux"``), so downstream
+        consumers -- in particular the GUI's dynamically created artifact
+        fieldsets -- can apply OS-specific visibility without guessing
+        from context.
+
         Returns:
-            List of artifact metadata dicts, each augmented with ``key``
-            and ``available`` fields.
+            List of artifact metadata dicts, each augmented with ``key``,
+            ``available``, and ``os`` fields.
         """
         registry = get_artifact_registry(self.os_type)
+        registry_os = "linux" if normalize_os_type(self.os_type) == "linux" else "windows"
         available_artifacts: list[dict[str, Any]] = []
         for artifact_key, artifact_details in registry.items():
             function_names = self._artifact_function_names(
@@ -244,6 +252,7 @@ class ForensicParser:
             available_artifact = dict(artifact_details)
             available_artifact["key"] = artifact_key
             available_artifact["available"] = available
+            available_artifact["os"] = registry_os
             available_artifacts.append(available_artifact)
 
         return available_artifacts

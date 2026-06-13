@@ -1201,6 +1201,47 @@ describe("OS-aware fieldset cloning", () => {
       expect(cron.dataset.imageId).toBe("img-linux");
     }
   });
+
+  test("dynamic OS-tagged fieldsets are cloned only into matching OS panels", () => {
+    const images = makeWindowsLinuxImages();
+    images[0].available_artifacts.push(
+      { key: "iis_logs", name: "IIS Logs", category: "Web Servers", os: "windows", available: true },
+    );
+    images[1].available_artifacts.push(
+      { key: "container_logs", name: "Container Logs", category: "Containers", os: "linux", available: true },
+    );
+
+    /* Mirror submitEvidence(): record the per-image entries, then apply
+       the merged intake response, which builds the dynamic Advanced
+       section in the main form and clones it into the per-image panels. */
+    A.st.images = images;
+    const merged = [];
+    for (const img of images) {
+      for (const a of img.available_artifacts) {
+        if (!merged.find((x) => x.key === a.key)) merged.push(Object.assign({}, a));
+      }
+    }
+    A.applyEvidence({
+      os_type: images[0].os_type,
+      metadata: { os_version: "Windows 10" },
+      hashes: {},
+      available_artifacts: merged,
+    });
+
+    const winPanel = mustQuery(document, ".artifact-image-panel[data-image-id='img-win']");
+    const linuxPanel = mustQuery(document, ".artifact-image-panel[data-image-id='img-linux']");
+
+    /* Windows panel gets the dynamic Windows artifact, not the Linux one. */
+    expect(winPanel.querySelector("input[data-artifact-key='iis_logs']")).not.toBeNull();
+    expect(winPanel.querySelector("input[data-artifact-key='container_logs']")).toBeNull();
+
+    /* Linux panel gets the dynamic Linux artifact, visible and enabled. */
+    const linuxCb = linuxPanel.querySelector("input[data-artifact-key='container_logs']");
+    expect(linuxCb).not.toBeNull();
+    expect(linuxCb.disabled).toBe(false);
+    expect(linuxCb.closest("fieldset").hidden).toBe(false);
+    expect(linuxPanel.querySelector("input[data-artifact-key='iis_logs']")).toBeNull();
+  });
 });
 
 // ── switchArtifactTab ───────────────────────────────────────────────────────
