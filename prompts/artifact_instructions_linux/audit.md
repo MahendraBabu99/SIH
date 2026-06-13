@@ -5,7 +5,7 @@ category: Logs
 function: audit
 description: Parsed Linux auditd records from /var/log/audit/audit.log and configured audit paths.
 order: 282
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

@@ -6,7 +6,7 @@ function: mru.run
 description: Per-user Run dialog history from Explorer registry keys, showing recently entered
   commands.
 order: 1010
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

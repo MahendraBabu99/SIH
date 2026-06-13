@@ -6,7 +6,7 @@ function: commandhistory
 description: Dissect UNIX command history parser covering bash, zsh, fish, Python,
   database shell, and other per-user history files.
 order: 118
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

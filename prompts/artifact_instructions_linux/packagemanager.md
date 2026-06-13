@@ -6,7 +6,7 @@ function: packagemanager
 description: Package installation, removal, and update history from apt, yum, dnf, or other
   package managers. Shows software changes over time.
 order: 250
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

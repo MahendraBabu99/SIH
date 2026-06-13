@@ -5,7 +5,7 @@ category: Security
 function: defender.mpcmdrun
 description: Microsoft Defender MpCmdRun command log entries from system and user temp locations.
 order: 1130
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

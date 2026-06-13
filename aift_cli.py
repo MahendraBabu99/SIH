@@ -374,6 +374,13 @@ def _print_summary(result: Any) -> None:
             print(f"    - {warn}")
         print()
 
+    notices = getattr(result, "notices", None) or []
+    if notices:
+        print(f"  Notes: {len(notices)}")
+        for note in notices:
+            print(f"    - {note}")
+        print()
+
     print(separator)
 
 
@@ -402,6 +409,9 @@ def _list_profiles() -> None:
         artifact_count = profile.get("artifact_count", 0)
         tag = " (built-in)" if builtin else ""
         print(f"  {name}{tag} — {artifact_count} artifacts")
+        notice = str(profile.get("notice", "") or "").strip()
+        if notice:
+            print(f"      Note: {notice}")
 
     print()
     raise SystemExit(EXIT_SUCCESS)

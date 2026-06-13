@@ -139,18 +139,22 @@ class TestHeadlessNoFlask(unittest.TestCase):
                     if exc.code != 0:
                         raise AssertionError(f"CLI custom --list-profiles exited {exc.code!r}")
 
-                parse_artifacts, analysis_artifacts, warnings = engine._load_profile("recommended")
+                parse_artifacts, analysis_artifacts, warnings, notices = engine._load_profile("recommended")
                 if not parse_artifacts:
                     raise AssertionError("recommended profile did not load parse artifacts")
                 if not set(analysis_artifacts).issubset(set(parse_artifacts)):
                     raise AssertionError("recommended profile analysis artifacts must be parse artifacts")
-                if "firewall.logs" in analysis_artifacts:
+                if "passwords" in analysis_artifacts:
                     raise AssertionError("parse-only recommended artifact unexpectedly selected for AI")
-                parse_artifacts, analysis_artifacts, warnings = engine._load_profile("custom")
+                if not notices:
+                    raise AssertionError("recommended profile must surface a coverage advisory notice")
+                parse_artifacts, analysis_artifacts, warnings, notices = engine._load_profile("custom")
                 if parse_artifacts != ["runkeys"] or analysis_artifacts != ["runkeys"]:
                     raise AssertionError("repository custom profile did not load")
                 if warnings:
                     raise AssertionError(f"unexpected warnings: {warnings!r}")
+                if notices:
+                    raise AssertionError(f"custom profile must not surface notices: {notices!r}")
 
             assert_flask_not_loaded()
             assert_routes_not_loaded()

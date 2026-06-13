@@ -348,6 +348,7 @@ class TestMCPTools(unittest.TestCase):
         )
         manager.status_payload["percentage"] = 47.5
         manager.status_payload["result"]["provider_reasoning"] = "hidden"
+        manager.status_payload["result"]["notices"] = ["select artifacts for your investigation"]
         manager.list_payload["runs"][0]["thread"] = object()
         manager.list_payload["runs"][0]["api_key"] = "hidden"
         with patch.dict(sys.modules, fake_mcp_modules()):
@@ -365,6 +366,12 @@ class TestMCPTools(unittest.TestCase):
         self.assertEqual(status["warnings"], ["partial parse"])
         self.assertEqual(status["errors"], [])
         self.assertEqual(status["result"]["html_report_path"], "report.html")
+        # Recommended-profile advisory notices surface at both the result and
+        # the top-level status, mirroring how warnings are exposed.
+        self.assertEqual(
+            status["result"]["notices"], ["select artifacts for your investigation"]
+        )
+        self.assertEqual(status["notices"], ["select artifacts for your investigation"])
         self.assertNotIn("cancel_event", status)
         self.assertNotIn("_private_state", status)
         self.assertNotIn("provider_reasoning", status["result"])

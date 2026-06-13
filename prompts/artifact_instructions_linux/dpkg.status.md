@@ -5,7 +5,7 @@ category: Package Management
 function: dpkg.status
 description: Debian/Ubuntu dpkg status database package inventory.
 order: 333
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

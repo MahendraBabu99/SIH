@@ -5,7 +5,7 @@ category: Logs
 function: atop
 description: Parsed atop performance/process accounting snapshots from Linux systems.
 order: 283
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

@@ -6,7 +6,7 @@ function: auditpol
 description: Windows audit policy configuration from registry, showing which event categories
   are enabled or disabled.
 order: 1220
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

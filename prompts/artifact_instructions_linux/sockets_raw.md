@@ -5,7 +5,7 @@ category: Network
 function: sockets.raw
 description: Volatile /proc raw socket records with process linkage where available.
 order: 323
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

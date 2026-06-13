@@ -6,7 +6,7 @@ function: cim
 description: WMI repository data such as event filters, consumers, and bindings used for event-driven
   execution. This is a common stealth persistence mechanism in fileless intrusions.
 order: 130
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

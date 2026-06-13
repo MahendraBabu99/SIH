@@ -1452,6 +1452,44 @@ describe("applyRecommendedToAllImages", () => {
     expect(mftMode.value).toBe(A.MODE_PARSE_AND_AI);
   });
 
+  test("apply-to-all recommended preset surfaces the coverage advisory", () => {
+    A.st.profiles = [
+      {
+        name: "recommended",
+        builtin: true,
+        artifact_options: [{ artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI }],
+        notice: "Select artifacts based on your own investigative needs.",
+      },
+    ];
+    setImagesAndBuildTabs(makeWindowsLinuxImages());
+    A.clearMsg(A.el.profileMsg);
+
+    A.applyRecommendedToAllImages();
+
+    expect(A.el.profileMsg.textContent).toContain("investigative needs");
+    expect(A.el.profileMsg.dataset.status).toBe("warning");
+  });
+
+  test("loading the recommended profile from the dropdown shows the advisory", () => {
+    setImagesAndBuildTabs(makeWindowsLinuxImages());
+    A.st.profiles = [
+      {
+        name: "recommended",
+        builtin: true,
+        artifact_options: [{ artifact_key: "runkeys", mode: A.MODE_PARSE_AND_AI }],
+        notice: "Select artifacts based on your own investigative needs.",
+      },
+    ];
+    A.el.profileSelect.innerHTML = '<option value="recommended">recommended</option>';
+    A.el.profileSelect.value = "recommended";
+    A.clearMsg(A.el.profileMsg);
+
+    A.el.profileLoadBtn.dispatchEvent(new Event("click"));
+
+    expect(A.el.profileMsg.textContent).toContain("investigative needs");
+    expect(A.el.profileMsg.dataset.status).toBe("warning");
+  });
+
   test("fallback recommended excludes EVTX and MFT", () => {
     const images = makeWindowsLinuxImages();
     images[0].available_artifacts.push({ key: "defender.evtx", name: "Defender Logs", available: true });

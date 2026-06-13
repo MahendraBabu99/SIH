@@ -5,7 +5,7 @@ category: User Activity
 function: mru.networkdrive
 description: Per-user MRU entries for mapped network drive paths.
 order: 1060
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

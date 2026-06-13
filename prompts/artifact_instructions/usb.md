@@ -7,7 +7,7 @@ description: Registry evidence of connected USB devices, including identifiers a
   history metadata. Useful for tracking removable media usage and potential data transfer
   vectors.
 order: 330
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

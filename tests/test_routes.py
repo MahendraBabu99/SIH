@@ -958,11 +958,17 @@ class RoutesTests(unittest.TestCase):
         self.assertNotIn("usnjrnl", option_keys)
         self.assertNotIn("mft", option_keys)
         self.assertNotIn("evtx", option_keys)
-        self.assertEqual(option_modes.get("defender.evtx"), "parse_and_ai")
+        # Reduced 2026-06-13: the verbose Defender logs and firewall.logs are no
+        # longer recommended; only defender.quarantine is kept for AI analysis.
+        self.assertNotIn("defender.evtx", option_keys)
+        self.assertNotIn("firewall.logs", option_keys)
+        self.assertEqual(option_modes.get("defender.quarantine"), "parse_and_ai")
         # Linux artifacts should now be present.
         self.assertIn("bash_history", option_keys)
         self.assertIn("syslog", option_keys)
-        self.assertEqual(option_modes.get("firewall.logs"), "parse_only")
+        self.assertEqual(option_modes.get("passwords"), "parse_only")
+        # The recommended profile carries the coverage advisory notice.
+        self.assertIn("investigative needs", str(recommended.get("notice", "")))
 
     def test_windows_recommended_artifacts_are_in_normal_artifact_picker(self) -> None:
         html = Path("templates/index.html").read_text(encoding="utf-8")
@@ -1022,6 +1028,8 @@ class RoutesTests(unittest.TestCase):
         self.assertIn("evtx", option_keys)
         self.assertIn("defender.evtx", option_keys)
         self.assertIn("bash_history", option_keys)
+        # The coverage advisory is specific to the recommended profile.
+        self.assertEqual(str(all_profile.get("notice", "")), "")
 
     def test_settings_update_ignores_retired_csv_output_dir(self) -> None:
         """The retired evidence.csv_output_dir settings key is ignored silently.

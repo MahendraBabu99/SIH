@@ -6,7 +6,7 @@ function: journal
 description: Structured journal entries from systemd-journald, covering services, kernel,
   and user-session events with rich metadata.
 order: 240
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

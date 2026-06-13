@@ -6,7 +6,7 @@ function: defender.mplog
 description: Microsoft Defender support MpLog telemetry, including detections, actions, exclusions,
   process images, scans, and RTP state where available.
 order: 1120
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

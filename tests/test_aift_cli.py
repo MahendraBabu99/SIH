@@ -198,6 +198,32 @@ class TestPrintSummary(unittest.TestCase):
         self.assertIn(str(html_path), output)
         self.assertIn(str(json_path), output)
 
+    def test_summary_prints_notices_separately_from_warnings(self) -> None:
+        """Recommended-profile notices print under 'Notes:', never as warnings.
+
+        The CLI keys its partial-success exit code on ``result.warnings``; a
+        notice routed through warnings would wrongly flip the exit code, so a
+        notice-only run must produce a ``Notes:`` section and no ``Warnings:``.
+        """
+        result = AutomationResult(
+            success=True,
+            case_id="case-cli-notice",
+            evidence_files=[Path("/fake/evidence.E01")],
+            notices=[
+                "The recommended profile deliberately omits some valuable artifacts."
+            ],
+            duration_seconds=1.0,
+        )
+
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            _print_summary(result)
+
+        output = stdout.getvalue()
+        self.assertIn("Notes:", output)
+        self.assertIn("deliberately omits some valuable artifacts", output)
+        self.assertNotIn("Warnings:", output)
+
     def test_evidence_line_reports_successful_image_count(self) -> None:
         """The evidence line shows successes out of discovered images."""
         result = AutomationResult(

@@ -6,7 +6,7 @@ function: muicache
 description: Cache of executable display strings written when programs are launched via the
   shell. Can provide residual execution clues for binaries no longer present.
 order: 340
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

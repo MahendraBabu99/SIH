@@ -6,7 +6,7 @@ function: mru.opensave
 description: Per-user common dialog OpenSave/OpenSavePidlMRU entries for recently opened or
   saved files.
 order: 1030
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

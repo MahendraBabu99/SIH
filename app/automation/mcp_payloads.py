@@ -176,6 +176,7 @@ def _public_result_payload(value: Any) -> dict[str, Any] | None:
             value.get("evidence_files_processed")
         ),
         "warnings": _public_text_list(value.get("warnings")),
+        "notices": _public_text_list(value.get("notices")),
     }
 
 
@@ -192,6 +193,9 @@ def _public_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
     warnings = _public_text_list(payload.get("warnings"))
     if not warnings and result_payload is not None:
         warnings = _public_text_list(result_payload.get("warnings"))
+    notices = _public_text_list(payload.get("notices"))
+    if not notices and result_payload is not None:
+        notices = _public_text_list(result_payload.get("notices"))
 
     result: dict[str, Any] = {
         "run_id": _public_text(payload.get("run_id")),
@@ -205,6 +209,7 @@ def _public_status_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "result": result_payload,
         "errors": _public_text_list(payload.get("errors")),
         "warnings": warnings,
+        "notices": notices,
     }
     completed_at = _public_text(payload.get("completed_at"))
     if completed_at:

@@ -6,7 +6,7 @@ function: mru.recentdocs
 description: Per-user Explorer RecentDocs registry history for recently accessed documents
   and files.
 order: 1020
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

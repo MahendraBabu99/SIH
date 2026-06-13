@@ -6,7 +6,7 @@ function: lnk
 description: Windows LNK files from ProgramData, user profiles, and Windows folders,
   including linked targets, arguments, network paths, and timestamps.
 order: 1000
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

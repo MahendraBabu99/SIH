@@ -5,7 +5,7 @@ category: User Activity
 function: mru.msoffice
 description: Per-user Microsoft Office recent document registry entries.
 order: 1080
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

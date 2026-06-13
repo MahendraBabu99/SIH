@@ -331,11 +331,12 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 patch.object(engine_module, "_PROJECT_ROOT", root),
                 patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
             ):
-                parse, analysis, warnings = engine_module._load_profile("custom")
+                parse, analysis, warnings, notices = engine_module._load_profile("custom")
 
         self.assertEqual(parse, ["runkeys"])
         self.assertEqual(analysis, [])
         self.assertEqual(warnings, [])
+        self.assertEqual(notices, [])
 
     def test_load_profile_accepts_only_profile_name(self) -> None:
         """Profile loading takes no config path; profile roots are repository-wide."""
@@ -360,13 +361,14 @@ class TestAutomationProfileRoots(unittest.TestCase):
             )
 
             with patch("app.utils.artifact_profiles.PROJECT_ROOT", root):
-                parse, analysis, warnings = engine_module._load_profile(
+                parse, analysis, warnings, notices = engine_module._load_profile(
                     str(profile_path),
                 )
 
         self.assertEqual(parse, ["runkeys", "mft"])
         self.assertEqual(analysis, ["runkeys"])
         self.assertEqual(warnings, [])
+        self.assertEqual(notices, [])
 
     def test_explicit_profile_file_named_recommended_keeps_file_contents(self) -> None:
         """Explicit profile paths must not be replaced by built-in recommended."""
@@ -384,13 +386,16 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            parse, analysis, warnings = engine_module._load_profile(
+            parse, analysis, warnings, notices = engine_module._load_profile(
                 str(profile_path),
             )
 
         self.assertEqual(parse, ["runkeys"])
         self.assertEqual(analysis, ["runkeys"])
         self.assertEqual(warnings, [])
+        # Explicit file paths are user-supplied even when named "recommended",
+        # so the built-in coverage advisory must not be emitted.
+        self.assertEqual(notices, [])
 
     def test_explicit_canonical_all_profile_file_loads_path_contents(self) -> None:
         """Explicit JSON profile paths are loaded directly from disk."""
@@ -414,13 +419,14 @@ class TestAutomationProfileRoots(unittest.TestCase):
             )
 
             with patch("app.utils.artifact_profiles.PROJECT_ROOT", root):
-                parse, analysis, warnings = engine_module._load_profile(
+                parse, analysis, warnings, notices = engine_module._load_profile(
                     str(profile_path),
                 )
 
         self.assertEqual(parse, ["runkeys"])
         self.assertEqual(analysis, [])
         self.assertEqual(warnings, [])
+        self.assertEqual(notices, [])
 
     def test_load_profile_creates_repository_profile_root_when_missing(self) -> None:
         """Built-in recommended fallback is created in repository profile/builtin/."""
@@ -432,16 +438,18 @@ class TestAutomationProfileRoots(unittest.TestCase):
                 patch.object(engine_module, "_PROJECT_ROOT", root),
                 patch("app.utils.artifact_profiles.PROJECT_ROOT", root),
             ):
-                parse, analysis, warnings = engine_module._load_profile("missing")
+                parse, analysis, warnings, notices = engine_module._load_profile("missing")
                 builtin_root = profile_root / artifact_profiles.BUILTIN_PROFILE_DIRNAME
                 self.assertTrue((builtin_root / "recommended.json").exists())
                 self.assertTrue((builtin_root / "all.json").exists())
 
         self.assertTrue(parse)
         self.assertTrue(set(analysis).issubset(set(parse)))
-        self.assertIn("firewall.logs", parse)
-        self.assertNotIn("firewall.logs", analysis)
+        self.assertIn("passwords", parse)
+        self.assertNotIn("passwords", analysis)
         self.assertTrue(any("Profile 'missing' not found" in warning for warning in warnings))
+        # Falling back to the built-in recommended profile surfaces the advisory.
+        self.assertEqual(notices, [artifact_profiles.RECOMMENDED_PROFILE_NOTICE])
 
 
 class TestRunAutomation(unittest.TestCase):

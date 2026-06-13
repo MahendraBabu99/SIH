@@ -74,6 +74,7 @@ def _result_payload(result: AutomationResult) -> dict[str, Any]:
         ),
         "evidence_files_processed": result.successful_images,
         "warnings": list(result.warnings),
+        "notices": list(result.notices),
     }
 
 

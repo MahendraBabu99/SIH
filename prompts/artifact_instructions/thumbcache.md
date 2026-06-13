@@ -8,7 +8,7 @@ function:
 description: Combined per-user Windows thumbnail and icon cache metadata for viewed
   files, shell items, applications, and cached previews.
 order: 1180
-recommended: true
+recommended: false
 default_mode: parse_only
 ---
 

@@ -6,7 +6,7 @@ function: recentfilecache
 description: RecentFileCache.bcf AppCompat entries containing paths to recently observed executable
   files on supported Windows versions.
 order: 1140
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

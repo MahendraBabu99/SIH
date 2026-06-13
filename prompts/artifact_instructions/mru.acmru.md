@@ -5,7 +5,7 @@ category: User Activity
 function: mru.acmru
 description: Per-user Windows Search and Explorer search history registry entries.
 order: 1050
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

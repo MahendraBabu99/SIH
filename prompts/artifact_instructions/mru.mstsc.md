@@ -5,7 +5,7 @@ category: User Activity
 function: mru.mstsc
 description: Per-user Remote Desktop client MRU entries for recently contacted hosts.
 order: 1070
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

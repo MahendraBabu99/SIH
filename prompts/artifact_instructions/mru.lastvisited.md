@@ -6,7 +6,7 @@ function: mru.lastvisited
 description: Per-user common dialog LastVisited entries linking applications to recently used
   directories.
 order: 1040
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

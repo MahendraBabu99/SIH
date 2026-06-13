@@ -6,7 +6,7 @@ function: trusteddocs
 description: Microsoft Office Trusted Documents registry records showing files where editing
   or macros were trusted.
 order: 1210
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

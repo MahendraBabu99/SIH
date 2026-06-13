@@ -6,7 +6,7 @@ function: defender.exclusions
 description: Microsoft Defender exclusion registry entries for paths, processes, extensions,
   or other exclusion types.
 order: 1110
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

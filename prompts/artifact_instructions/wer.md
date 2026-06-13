@@ -6,7 +6,7 @@ function: wer
 description: Windows Error Reporting files describing application crashes, including app paths,
   names, report metadata, and sometimes hashes.
 order: 1160
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

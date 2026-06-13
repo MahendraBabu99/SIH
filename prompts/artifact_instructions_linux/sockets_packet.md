@@ -5,7 +5,7 @@ category: Network
 function: sockets.packet
 description: Volatile /proc packet socket records, often associated with packet capture or low-level network access.
 order: 324
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

@@ -6,7 +6,7 @@ function: wua_history
 description: Windows Update Agent history records from the update datastore, including update
   titles, classifications, results, and timestamps.
 order: 1170
-recommended: true
+recommended: false
 default_mode: parse_only
 ---
 

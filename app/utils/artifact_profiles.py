@@ -27,6 +27,8 @@ __all__ = [
     "BUILTIN_PROFILE_DIRNAME",
     "PROFILE_FILE_SUFFIX",
     "RECOMMENDED_PROFILE_EXCLUDED_ARTIFACTS",
+    "RECOMMENDED_PROFILE_NOTICE",
+    "recommended_profile_notice",
     "normalize_artifact_mode",
     "normalize_artifact_options",
     "artifact_options_to_lists",
@@ -57,6 +59,12 @@ BUILTIN_PROFILE_DIRNAME = "builtin"
 PROFILE_FILE_SUFFIX = ".json"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _BUILTIN_PROFILE_NAMES = {BUILTIN_RECOMMENDED_PROFILE, BUILTIN_ALL_PROFILE}
+
+RECOMMENDED_PROFILE_NOTICE = (
+    "The recommended profile deliberately omits some valuable artifacts to keep "
+    "parsing and AI analysis faster and less expensive. Always select artifacts "
+    "based on your own investigative needs."
+)
 
 
 def normalize_artifact_mode(value: Any, default_mode: str = MODE_PARSE_AND_AI) -> str:
@@ -467,25 +475,45 @@ def normalize_profile_name(value: Any) -> str:
     return name
 
 
+def recommended_profile_notice(profile_name: Any) -> str:
+    """Return the recommended-profile advisory for a profile name.
+
+    Args:
+        profile_name: Profile name to test (compared case-insensitively).
+
+    Returns:
+        The :data:`RECOMMENDED_PROFILE_NOTICE` advisory string when
+        ``profile_name`` resolves to the built-in ``recommended`` profile,
+        otherwise an empty string.
+    """
+    if str(profile_name or "").strip().lower() == BUILTIN_RECOMMENDED_PROFILE:
+        return RECOMMENDED_PROFILE_NOTICE
+    return ""
+
+
 def compose_profile_response(profiles_root: Path) -> list[dict[str, Any]]:
     """Build the API response payload for all artifact profiles."""
-    return [
-        {
-            "name": str(profile.get("name", "")).strip(),
+    response: list[dict[str, Any]] = []
+    for profile in load_profiles_from_directory(profiles_root):
+        name = str(profile.get("name", "")).strip()
+        response.append({
+            "name": name,
             "builtin": bool(profile.get("builtin", False)),
             "artifact_options": list(profile.get("artifact_options", [])),
-        }
-        for profile in load_profiles_from_directory(profiles_root)
-    ]
+            "notice": recommended_profile_notice(name),
+        })
+    return response
 
 
 def compose_profile_summaries(profiles_root: Path) -> list[dict[str, Any]]:
     """Build a lightweight name/builtin/artifact-count profile list."""
-    return [
-        {
-            "name": str(profile.get("name", "")).strip(),
+    summaries: list[dict[str, Any]] = []
+    for profile in load_profiles_from_directory(profiles_root):
+        name = str(profile.get("name", "")).strip()
+        summaries.append({
+            "name": name,
             "builtin": bool(profile.get("builtin", False)),
             "artifact_count": len(profile.get("artifact_options", [])),
-        }
-        for profile in load_profiles_from_directory(profiles_root)
-    ]
+            "notice": recommended_profile_notice(name),
+        })
+    return summaries

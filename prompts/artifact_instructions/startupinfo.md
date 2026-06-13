@@ -6,7 +6,7 @@ function: startupinfo
 description: Windows StartupInfo log files describing process execution during the first period
   after user logon.
 order: 1150
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

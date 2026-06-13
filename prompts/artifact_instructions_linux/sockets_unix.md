@@ -5,7 +5,7 @@ category: Network
 function: sockets.unix
 description: Volatile Unix domain socket records from /proc/net/unix.
 order: 325
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

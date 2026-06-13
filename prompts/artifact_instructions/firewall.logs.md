@@ -6,7 +6,7 @@ function: firewall.logs
 description: Windows Firewall pfirewall log records with allowed or dropped network traffic
   when logging is enabled.
 order: 1100
-recommended: true
+recommended: false
 default_mode: parse_only
 ---
 

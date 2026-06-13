@@ -6,7 +6,7 @@ function: activitiescache
 description: Windows Timeline activity records reflecting user interactions with apps, documents,
   and URLs. Provides broader behavioral context across applications and time.
 order: 270
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

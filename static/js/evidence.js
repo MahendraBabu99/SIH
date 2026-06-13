@@ -814,6 +814,11 @@
     });
     A.markParsedSelectionStale();
     updateParseButton();
+    if (mode === "recommended") {
+      const recommendedProfile = findProfileByName(A.RECOMMENDED_PROFILE);
+      const notice = recommendedProfile ? String(recommendedProfile.notice || "").trim() : "";
+      if (notice) A.setMsg(el.profileMsg || el.artifactsMsg, notice, "warning");
+    }
   }
 
   // ── Date range ─────────────────────────────────────────────────────────────
@@ -857,7 +862,12 @@
         mode: artifactModeValue(option.mode),
       }))
       .filter((option) => option.artifact_key);
-    return { name, builtin: !!rawProfile.builtin, artifact_options: artifactOptions };
+    return {
+      name,
+      builtin: !!rawProfile.builtin,
+      artifact_options: artifactOptions,
+      notice: String(rawProfile.notice || "").trim(),
+    };
   }
 
   /** Find a profile in st.profiles by case-insensitive name match. */
@@ -899,7 +909,7 @@
     const profilesRaw = Array.isArray(response && response.profiles) ? response.profiles : [];
     st.profiles = profilesRaw.map((profile) => normalizeArtifactProfile(profile)).filter(Boolean);
     if (!st.profiles.length) {
-      st.profiles = [{ name: A.RECOMMENDED_PROFILE, builtin: true, artifact_options: [] }];
+      st.profiles = [{ name: A.RECOMMENDED_PROFILE, builtin: true, artifact_options: [], notice: "" }];
     }
     renderArtifactProfileOptions(preferredName);
   }
@@ -918,7 +928,14 @@
     const silent = !!opts.silent;
     const options = Array.isArray(profile.artifact_options) ? profile.artifact_options : [];
     applyArtifactSelectionMap(options, opts.scope || "active");
-    if (!silent) A.setMsg(el.profileMsg || el.artifactsMsg, `Loaded profile: ${profile.name}`, "success");
+    if (!silent) {
+      const notice = String(profile.notice || "").trim();
+      if (notice) {
+        A.setMsg(el.profileMsg || el.artifactsMsg, `Loaded profile: ${profile.name}. ${notice}`, "warning");
+      } else {
+        A.setMsg(el.profileMsg || el.artifactsMsg, `Loaded profile: ${profile.name}`, "success");
+      }
+    }
     return true;
   }
 

@@ -57,6 +57,8 @@ from app.parser.result_checks import (
 )
 from app.reporter.generator import ReportGenerator
 from app.utils.artifact_profiles import (
+    BUILTIN_RECOMMENDED_PROFILE,
+    RECOMMENDED_PROFILE_NOTICE,
     artifact_options_to_lists,
     load_profile_from_file,
     load_profiles_from_directory,
@@ -131,6 +133,10 @@ class AutomationResult:
             fail later (see ``successful_images``).
         errors: List of error message strings for any fatal failures.
         warnings: List of non-fatal warning message strings.
+        notices: List of informational advisory messages surfaced to the
+            user (for example, the recommended-profile coverage advisory).
+            Unlike warnings, notices never indicate a problem and must not
+            affect run success or CLI exit codes.
         duration_seconds: Total wall-clock time of the run in seconds.
         successful_images: Number of discovered evidence images that were
             processed successfully (opened, hashed, and parsed with usable
@@ -152,6 +158,7 @@ class AutomationResult:
     evidence_files: list[Path] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
     analysis_results_path: Path | None = None
     successful_images: int = 0
@@ -406,9 +413,25 @@ def _resolve_skip_hashing(
     return not compute_hashes_setting
 
 
+def _profile_notices(profile: dict[str, Any] | None) -> list[str]:
+    """Return informational notices for a resolved artifact profile.
+
+    Args:
+        profile: The resolved profile dict, or ``None``.
+
+    Returns:
+        A list containing the recommended-profile advisory when ``profile``
+        is the built-in ``recommended`` profile, otherwise an empty list.
+    """
+    name = str((profile or {}).get("name", "")).strip().lower()
+    if name == BUILTIN_RECOMMENDED_PROFILE:
+        return [RECOMMENDED_PROFILE_NOTICE]
+    return []
+
+
 def _load_profile(
     profile_name: str | None,
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str]]:
     """Load artifact profile and split into parse/analysis lists.
 
     Profiles are always loaded from the repository ``profile`` directory
@@ -420,7 +443,9 @@ def _load_profile(
             path, or None for the default profile.
 
     Returns:
-        Tuple of ``(parse_artifacts, analysis_artifacts, warnings)``.
+        Tuple of ``(parse_artifacts, analysis_artifacts, warnings, notices)``,
+        where ``notices`` carries the recommended-profile advisory when the
+        resolved profile is the built-in ``recommended`` profile.
     """
     warnings: list[str] = []
 
@@ -439,7 +464,10 @@ def _load_profile(
                 parse_artifacts, analysis_artifacts = artifact_options_to_lists(
                     artifact_options
                 )
-                return parse_artifacts, analysis_artifacts, warnings
+                # An explicit file path is a user-supplied profile, even when it
+                # is named "recommended"; the built-in coverage advisory only
+                # applies to the generated built-in recommended profile.
+                return parse_artifacts, analysis_artifacts, warnings, []
 
     profiles_root = resolve_profiles_root()
     profiles = load_profiles_from_directory(profiles_root)
@@ -470,11 +498,11 @@ def _load_profile(
                 f"Using '{matched.get('name', 'unknown')}'."
             )
         else:
-            return [], [], warnings + ["No artifact profiles found."]
+            return [], [], warnings + ["No artifact profiles found."], []
 
     artifact_options = matched.get("artifact_options", [])
     parse_artifacts, analysis_artifacts = artifact_options_to_lists(artifact_options)
-    return parse_artifacts, analysis_artifacts, warnings
+    return parse_artifacts, analysis_artifacts, warnings, _profile_notices(matched)
 
 
 def _available_artifact_keys(available_artifacts: list[dict[str, Any]]) -> set[str]:
@@ -1204,10 +1232,11 @@ def _execute_automation(
         return cancelled
 
     # --- 3. Load profile ---
-    parse_artifacts, analysis_artifacts, profile_warnings = _load_profile(
-        request.profile_name,
+    parse_artifacts, analysis_artifacts, profile_warnings, profile_notices = (
+        _load_profile(request.profile_name)
     )
     result.warnings.extend(profile_warnings)
+    result.notices.extend(profile_notices)
     profile_errors = _validate_profile_artifact_keys(
         parse_artifacts,
         analysis_artifacts,
