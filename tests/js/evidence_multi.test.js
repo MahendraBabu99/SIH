@@ -251,7 +251,7 @@ describe("scanEvidenceDirectory", () => {
 
   test("populates one local-path form per backend-discovered evidence target", async () => {
     const pathInput = document.getElementById("scan-directory-path");
-    pathInput.value = "E:\\AIFT-Public2\\AIFT\\test_data\\Small_evidence_folder";
+    pathInput.value = "E:\\evidence\\Small_evidence_folder";
     mockJsonFetch({
       success: true,
       evidence: [
@@ -265,7 +265,7 @@ describe("scanEvidenceDirectory", () => {
     expect(global.fetch).toHaveBeenCalled();
     expect(global.fetch.mock.calls[0][0]).toBe("/api/evidence/discover");
     const body = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(body.path).toBe("E:\\AIFT-Public2\\AIFT\\test_data\\Small_evidence_folder");
+    expect(body.path).toBe("E:\\evidence\\Small_evidence_folder");
 
     const forms = A.getImageForms();
     expect(forms.length).toBe(2);

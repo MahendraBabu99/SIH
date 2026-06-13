@@ -369,7 +369,7 @@ class TestCLIVersionAndProfiles(unittest.TestCase):
 
     def test_list_profiles_uses_canonical_profile_summary_helper_once(self) -> None:
         """CLI profile listing should not append legacy profile roots."""
-        resolved_root = Path("E:/AIFT-Public2/AIFT/profile")
+        resolved_root = Path("some/profiles/root")
         stdout = io.StringIO()
         with (
             patch(

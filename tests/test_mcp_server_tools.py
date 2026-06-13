@@ -30,7 +30,7 @@ class TestMCPTools(unittest.TestCase):
             patch.object(
                 mcp_server,
                 "resolve_profiles_root",
-                return_value=Path("E:/AIFT-Public2/AIFT/profile"),
+                return_value=Path("some/profiles/root"),
             ) as resolve_profiles_root,
             patch.object(
                 mcp_server,
@@ -46,7 +46,7 @@ class TestMCPTools(unittest.TestCase):
 
         self.assertTrue(result["success"])
         resolve_profiles_root.assert_called_once_with()
-        compose_summaries.assert_called_once_with(Path("E:/AIFT-Public2/AIFT/profile"))
+        compose_summaries.assert_called_once_with(Path("some/profiles/root"))
         self.assertEqual(
             result["profiles"],
             [
@@ -64,7 +64,7 @@ class TestMCPTools(unittest.TestCase):
             patch.object(
                 mcp_server,
                 "resolve_profiles_root",
-                return_value=Path("E:/AIFT-Public2/AIFT/profile"),
+                return_value=Path("some/profiles/root"),
             ),
             patch.object(mcp_server, "compose_profile_summaries", return_value=[]),
         ):
@@ -190,7 +190,7 @@ class TestMCPTools(unittest.TestCase):
                 prompt="Investigate lateral movement.",
                 output_dir="D:/Cases/acme/reports",
                 profile_name="recommended",
-                config_path="E:/AIFT-Public2/AIFT/acme-analysis-settings.yml",
+                config_path="D:/Cases/acme/acme-analysis-settings.yml",
                 case_name="ACME",
                 skip_hashing=True,
                 date_range={
@@ -211,7 +211,7 @@ class TestMCPTools(unittest.TestCase):
         self.assertEqual(request.profile_name, "recommended")
         self.assertEqual(
             request.config_path,
-            "E:/AIFT-Public2/AIFT/acme-analysis-settings.yml",
+            "D:/Cases/acme/acme-analysis-settings.yml",
         )
         self.assertEqual(request.case_name, "ACME")
         self.assertTrue(request.skip_hashing)
