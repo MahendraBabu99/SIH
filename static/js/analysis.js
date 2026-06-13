@@ -155,6 +155,32 @@
     );
   }
 
+  /**
+   * Compute the expected number of AI prompts for the status banner total.
+   *
+   * When more than one image is analysed, the backend forwards per-image
+   * summary prompts (artifact_key "summary_<image_id>") and one
+   * cross-image correlation prompt as artifact-style events. Those events
+   * are tracked in st.analysis.order alongside real artifact prompts, so
+   * the banner total must include them or the "Analysing (i/total)" index
+   * overshoots the artifact-only total during the summary phase.
+   *
+   * The gate is the backend-reported image count (summary events and the
+   * cross-image prompt are streamed only when image_count > 1), NOT the
+   * frontend multiImage flag: submitAnalysis pre-sets that flag for any
+   * multi-image case, and it stays stale when the backend then treats the
+   * run as single-image (e.g. only one image had AI-enabled artifacts),
+   * which would inflate the total and make the banner undershoot.
+   *
+   * @returns {number} Expected prompt count, or 0 when not yet known.
+   */
+  function expectedAnalysisPromptCount() {
+    const artifacts = st.analysis.totalArtifacts || 0;
+    const images = st.analysis.imageCount || 0;
+    if (!artifacts || images <= 1) return artifacts;
+    return artifacts + images + 1;
+  }
+
   /** Dispatch a single analysis SSE event to the appropriate UI handler. */
   function onAnalysisEvent(p, owner = null) {
     if (!A.isRunOwnerCurrent(st.analysis, owner)) return;
@@ -162,6 +188,7 @@
     if (t === "analysis_started") {
       A.clearMsg(el.analysisMsg);
       st.analysis.totalArtifacts = Number(p.analysis_artifact_count) || 0;
+      st.analysis.imageCount = Number(p.image_count) || 0;
       if (p.multi_image) st.analysis.multiImage = true;
       setAnalysisStatus("Preparing analysis\u2026");
       renderAnalysis();
@@ -177,7 +204,7 @@
       upsertAnalysisStarted(r);
       const name = String(r.artifact_name || A.artifactName(String(r.artifact_key || "")));
       const idx = st.analysis.order.length;
-      const total = st.analysis.totalArtifacts || idx;
+      const total = expectedAnalysisPromptCount() || idx;
       const imageLabel = String(r.image_label || "");
       const statusPrefix = imageLabel ? `[${imageLabel}] ` : "";
       setAnalysisStatus(`${statusPrefix}Analysing (${idx}/${total}): ${name}`);
@@ -938,6 +965,7 @@
     st.analysis.order = [];
     st.analysis.byKey = {};
     st.analysis.totalArtifacts = 0;
+    st.analysis.imageCount = 0;
     st.analysis.summary = "";
     st.analysis.model = {};
     st.analysis.multiImage = false;

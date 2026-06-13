@@ -443,6 +443,119 @@ describe("analysis status banner", () => {
     expect(A.el.analysisStatusText.textContent).toContain("2/3");
   });
 
+  test("multi-image banner total includes summary and cross-image prompts without overshooting", () => {
+    // The backend streams per-image summary prompts (artifact_key
+    // "summary_<image_id>") and a cross-image correlation prompt as
+    // artifact-style events; the banner total must include them so the
+    // index never overshoots (e.g. "Analysing (3/2)").
+    A._onAnalysisEvent({
+      type: "analysis_started",
+      analysis_artifact_count: 2,
+      multi_image: true,
+      image_count: 2,
+      sequence: 0,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      artifact_key: "evtx",
+      image_id: "img1",
+      image_label: "Workstation",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", image_id: "img1", image_label: "Workstation" },
+      sequence: 1,
+    });
+    // 2 artifacts + 2 per-image summaries + 1 cross-image prompt = 5.
+    expect(A.el.analysisStatusText.textContent).toContain("1/5");
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      artifact_key: "evtx",
+      image_id: "img2",
+      image_label: "Server",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", image_id: "img2", image_label: "Server" },
+      sequence: 2,
+    });
+    expect(A.el.analysisStatusText.textContent).toContain("2/5");
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      artifact_key: "summary_img1",
+      image_id: "img1",
+      image_label: "Workstation",
+      result: { artifact_key: "summary_img1", artifact_name: "Summary: Workstation", image_id: "img1", image_label: "Workstation" },
+      sequence: 3,
+    });
+    expect(A.el.analysisStatusText.textContent).toContain("3/5");
+    expect(A.el.analysisStatusText.textContent).toContain("Summary: Workstation");
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      artifact_key: "summary_img2",
+      image_id: "img2",
+      image_label: "Server",
+      result: { artifact_key: "summary_img2", artifact_name: "Summary: Server", image_id: "img2", image_label: "Server" },
+      sequence: 4,
+    });
+    expect(A.el.analysisStatusText.textContent).toContain("4/5");
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      artifact_key: "cross_image_correlation",
+      result: { artifact_key: "cross_image_correlation", artifact_name: "Cross-Image Correlation" },
+      sequence: 5,
+    });
+    expect(A.el.analysisStatusText.textContent).toContain("5/5");
+    expect(A.el.analysisStatusText.textContent).toContain("Cross-Image Correlation");
+  });
+
+  test("single-image banner total stays artifact-only even when image_count is present", () => {
+    A._onAnalysisEvent({
+      type: "analysis_started",
+      analysis_artifact_count: 3,
+      multi_image: false,
+      image_count: 1,
+      sequence: 0,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", model: "claude-3" },
+      sequence: 1,
+    });
+    expect(A.el.analysisStatusText.textContent).toContain("1/3");
+  });
+
+  test("stale multiImage flag from submission does not inflate a single-image banner total", () => {
+    // submitAnalysis pre-sets st.analysis.multiImage = true for any
+    // multi-image case before the backend replies. When only one image
+    // actually has AI-enabled selections, the backend answers with
+    // multi_image: false / image_count: 1 and streams artifact-only
+    // events (per-image summary prompts suppressed, no cross-image
+    // prompt), so the banner total must stay artifact-only; otherwise
+    // it undershoots for the whole run (e.g. "3/4" never reaching 4/4).
+    A.st.analysis.multiImage = true;
+    A._onAnalysisEvent({
+      type: "analysis_started",
+      analysis_artifact_count: 3,
+      multi_image: false,
+      image_count: 1,
+      sequence: 0,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "evtx", artifact_name: "Event Logs", model: "m" },
+      sequence: 1,
+    });
+    expect(A.el.analysisStatusText.textContent).toContain("1/3");
+    expect(A.el.analysisStatusText.textContent).not.toContain("1/4");
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "mft", artifact_name: "MFT", model: "m" },
+      sequence: 2,
+    });
+    A._onAnalysisEvent({
+      type: "artifact_analysis_started",
+      result: { artifact_key: "prefetch", artifact_name: "Prefetch", model: "m" },
+      sequence: 3,
+    });
+    // The final artifact reaches the exact artifact-only total.
+    expect(A.el.analysisStatusText.textContent).toContain("3/3");
+  });
+
   test("artifact_analysis_started falls back to artifactName lookup when artifact_name missing", () => {
     A.st.artifactNames["shimcache"] = "Shimcache";
     A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 2, sequence: 0 });
@@ -488,13 +601,15 @@ describe("analysis status banner", () => {
   });
 
   test("resetAnalysisState hides the banner and clears totalArtifacts", () => {
-    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 3, sequence: 0 });
+    A._onAnalysisEvent({ type: "analysis_started", analysis_artifact_count: 3, image_count: 2, sequence: 0 });
     expect(A.el.analysisStatusBanner.hidden).toBe(false);
     expect(A.st.analysis.totalArtifacts).toBe(3);
+    expect(A.st.analysis.imageCount).toBe(2);
 
     A.resetAnalysisState();
     expect(A.el.analysisStatusBanner.hidden).toBe(true);
     expect(A.st.analysis.totalArtifacts).toBe(0);
+    expect(A.st.analysis.imageCount).toBe(0);
   });
 
   test("cancelAnalysis hides the banner", () => {
