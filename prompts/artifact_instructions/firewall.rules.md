@@ -6,7 +6,7 @@ function: firewall.rules
 description: Windows Firewall rules from registry policy locations, including action, direction,
   protocol, ports, application, service, and profile fields.
 order: 1090
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

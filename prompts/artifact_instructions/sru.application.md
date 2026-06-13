@@ -6,7 +6,7 @@ function: sru.application
 description: SRUM application resource usage records that provide process-level activity context
   across time slices. Helpful for spotting persistence or background abuse patterns.
 order: 310
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

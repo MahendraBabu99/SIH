@@ -27,10 +27,6 @@
       "mode": "parse_and_ai"
     },
     {
-      "artifact_key": "prefetch",
-      "mode": "parse_and_ai"
-    },
-    {
       "artifact_key": "bam",
       "mode": "parse_and_ai"
     },
@@ -68,14 +64,6 @@
     },
     {
       "artifact_key": "jumplist.custom_destination",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "sru.network_data",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "sru.application",
       "mode": "parse_and_ai"
     },
     {
@@ -135,10 +123,6 @@
       "mode": "parse_and_ai"
     },
     {
-      "artifact_key": "firewall.rules",
-      "mode": "parse_and_ai"
-    },
-    {
       "artifact_key": "firewall.logs",
       "mode": "parse_only"
     },
@@ -184,10 +168,6 @@
     },
     {
       "artifact_key": "auditpol",
-      "mode": "parse_and_ai"
-    },
-    {
-      "artifact_key": "ual",
       "mode": "parse_and_ai"
     },
     {

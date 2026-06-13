@@ -6,7 +6,7 @@ function: sru.network_data
 description: System Resource Usage Monitor network telemetry with per-application usage over
   time. Shows which apps consumed network bandwidth and when.
 order: 300
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

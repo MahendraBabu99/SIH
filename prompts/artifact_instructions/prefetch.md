@@ -7,7 +7,7 @@ description: Windows Prefetch artifacts recording executable run metadata such a
   last run times, and referenced files. They are high-value evidence for userland execution
   on supported systems.
 order: 160
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 

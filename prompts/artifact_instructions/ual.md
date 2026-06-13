@@ -6,7 +6,7 @@ function: ual
 description: Combined Windows Server User Access Logging records for client access,
   role access, and domains seen.
 order: 1310
-recommended: true
+recommended: false
 default_mode: parse_and_ai
 ---
 
