@@ -834,6 +834,12 @@ def _is_case_expired(case_id: str, now: float) -> bool:
     alive: evicting a long-running parse or analysis mid-run would orphan
     its thread and break SSE. Must be called while holding ``STATE_LOCK``.
 
+    ``created_at`` is a ``time.monotonic()`` reading, which starts near zero
+    shortly after host boot and can legitimately be small (or, for back-dated
+    test fixtures, negative). The presence of a usable timestamp is therefore
+    tracked with a ``None`` sentinel rather than ``0.0`` so that a real entry
+    with a near-zero age is never misread as "no progress entry found".
+
     Args:
         case_id: UUID of the case.
         now: Current monotonic timestamp.
@@ -843,12 +849,19 @@ def _is_case_expired(case_id: str, now: float) -> bool:
     """
     if _case_has_active_progress_locked(case_id):
         return False
-    latest_created = 0.0
+    latest_created: float | None = None
     for store in (PARSE_PROGRESS, ANALYSIS_PROGRESS, CHAT_PROGRESS):
         for progress_key, entry in store.items():
-            if _progress_key_matches_case(progress_key, case_id):
-                latest_created = max(latest_created, entry.get("created_at", 0.0))
-    if latest_created == 0.0:
+            if not _progress_key_matches_case(progress_key, case_id):
+                continue
+            created_at = entry.get("created_at")
+            if not isinstance(created_at, (int, float)):
+                continue
+            latest_created = (
+                created_at if latest_created is None
+                else max(latest_created, created_at)
+            )
+    if latest_created is None:
         return False
     return (now - latest_created) > CASE_TTL_SECONDS
 

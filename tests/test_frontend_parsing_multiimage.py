@@ -20,6 +20,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app import create_app
+from tests.conftest import require_jest_jsdom
 
 
 NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
@@ -167,6 +168,7 @@ class TestMultiImageParsingJsBehavior(unittest.TestCase):
     """Verify parsing and artifact-tab behavior through the real jsdom suite."""
 
     def run_jest(self, target: str) -> None:
+        require_jest_jsdom(self)
         result = subprocess.run(
             [NPX, "jest", target, "--runInBand"],
             cwd=Path(__file__).resolve().parents[1],

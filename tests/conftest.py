@@ -191,6 +191,43 @@ def require_symlink_support(
     pytest.skip("Symlinks are not available in this environment.")
 
 
+def jest_jsdom_capability() -> bool:
+    """Return whether the local Jest + jsdom toolchain is installed.
+
+    The Python frontend wrappers shell out to ``npx jest`` purely as a
+    local-developer convenience; the dedicated JavaScript CI job runs the
+    full Jest suite against the same ``tests/js/`` files. When the Node
+    toolchain — ``jest-environment-jsdom`` in particular — is not installed,
+    as in the Python-only CI job, those wrappers are skipped instead of
+    failing with a "jest-environment-jsdom cannot be found" error.
+
+    Returns:
+        ``True`` when ``node_modules/jest-environment-jsdom`` is present
+        under the project root.
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    return (project_root / "node_modules" / "jest-environment-jsdom").is_dir()
+
+
+def require_jest_jsdom(testcase: object) -> None:
+    """Skip a unittest-style test when the Jest/jsdom toolchain is absent.
+
+    Args:
+        testcase: Test case instance exposing ``skipTest``.
+    """
+    if jest_jsdom_capability():
+        return
+    reason = (
+        "Jest/jsdom toolchain not installed; the JavaScript CI job runs the "
+        "full Jest suite."
+    )
+    skip = getattr(testcase, "skipTest", None)
+    if callable(skip):
+        skip(reason)
+        return
+    pytest.skip(reason)
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],

@@ -552,7 +552,13 @@ class TestExtractZip(unittest.TestCase):
 
     @pytest.mark.requires_symlink(target_is_directory=True)
     def test_archive_descriptor_symlink_destination_does_not_delete_target(self) -> None:
-        """Refuse symlink extraction destinations without deleting targets."""
+        """Refuse symlink extraction destinations without deleting targets.
+
+        The destination is only consulted on the fallback extraction path.
+        Whether Dissect can open a tiny ``.E01``-bearing ZIP directly is
+        environment-dependent, so force the fallback to deterministically
+        exercise the symlink-destination guard through the public resolver.
+        """
         require_symlink_support(self, target_is_directory=True)
         zip_path = self.root / "evidence.zip"
         with ZipFile(zip_path, "w") as zf:
@@ -564,7 +570,10 @@ class TestExtractZip(unittest.TestCase):
         dest = self.root / "descriptor-extracted-link"
         dest.symlink_to(target, target_is_directory=True)
 
-        with self.assertRaises(ValueError):
+        with patch(
+            "app.evidence.archive_resolver.can_open_with_dissect",
+            return_value=False,
+        ), self.assertRaises(ValueError):
             resolve_archive_descriptor(zip_path, dest)
 
         self.assertTrue(marker.exists())

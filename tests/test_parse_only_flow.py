@@ -11,6 +11,8 @@ import shutil
 import unittest
 from pathlib import Path
 
+from tests.conftest import require_jest_jsdom
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
@@ -21,6 +23,7 @@ class TestParseOnlyFrontendBehavior(unittest.TestCase):
 
     def test_parse_only_and_parse_and_ai_completion_behavior(self) -> None:
         """Parse completion behavior is verified through the real JS modules."""
+        require_jest_jsdom(self)
         result = subprocess.run(
             [
                 NPX,

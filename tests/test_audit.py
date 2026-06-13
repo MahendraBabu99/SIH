@@ -47,7 +47,10 @@ class AuditLoggerTests(unittest.TestCase):
         self.assertEqual(details["timestamp_value"], "2026-01-15T12:30:45")
         self.assertEqual(details["date_value"], "2026-01-15")
         self.assertEqual(details["time_value"], "12:30:45")
-        self.assertEqual(details["path_value"], "C:\\Evidence\\SUSPECT.E01")
+        # Path serializes via str(); the separator is platform-dependent
+        # (backslash on Windows, forward slash on POSIX), so compare against
+        # the platform's own rendering rather than a hard-coded separator.
+        self.assertEqual(details["path_value"], str(Path("C:/Evidence/SUSPECT.E01")))
         self.assertEqual(details["bytes_value"], "deadbeef")
 
     def test_log_accepts_every_supported_action_type(self) -> None:

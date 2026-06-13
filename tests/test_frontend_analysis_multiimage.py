@@ -25,7 +25,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 from app import create_app
-from tests.conftest import ImmediateThread
+from tests.conftest import ImmediateThread, require_jest_jsdom
 
 
 NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
@@ -93,6 +93,7 @@ class TestMultiImageAnalysisJSBehavior(unittest.TestCase):
         """The real frontend renderer and parsed-selection payload behavior are covered."""
         import subprocess
 
+        require_jest_jsdom(self)
         result = subprocess.run(
             [
                 NPX,

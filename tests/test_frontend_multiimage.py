@@ -19,6 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app import create_app
+from tests.conftest import require_jest_jsdom
 
 
 NPX = shutil.which("npx.cmd") or shutil.which("npx") or "npx"
@@ -194,6 +195,7 @@ class TestMultiImageJsBehavior(unittest.TestCase):
     """Verify multi-image JS behavior through the real jsdom suite."""
 
     def run_jest(self) -> None:
+        require_jest_jsdom(self)
         result = subprocess.run(
             [NPX, "jest", "tests/js/evidence_multi.test.js", "--runInBand"],
             cwd=Path(__file__).resolve().parents[1],

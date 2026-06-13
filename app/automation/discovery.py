@@ -367,6 +367,11 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
     is an empty (0-byte) file — including split-image groups whose anchor
     segment is empty — are skipped with a warning recorded on the context.
 
+    Children are deduplicated by their resolved path: a symlink and the
+    sibling it points to (or two links to one file) collapse to a single
+    candidate, so split-image segment validation never sees the same file
+    twice as a spurious duplicate segment.
+
     Args:
         path: Directory to scan.
         context: Shared discovery state for this run.
@@ -395,6 +400,7 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
 
     file_candidates: list[Path] = []
     recursive_candidates: list[Path] = []
+    seen_targets: set[Path] = set()
 
     for child in sorted(directory.iterdir(), key=lambda item: str(item)):
         if _is_hidden_or_skipped(child):
@@ -409,6 +415,12 @@ def _discover_directory(path: Path, context: _DiscoveryContext) -> list[Evidence
                 child_path,
             )
             continue
+        if child_path in seen_targets:
+            # A symlink and its target (or two links to one file) resolve to
+            # the same path; keep only the first so segment validation does
+            # not reject the set as having a duplicate segment.
+            continue
+        seen_targets.add(child_path)
         if child_path.is_dir():
             recursive_candidates.append(child_path)
         elif child_path.is_file() and _has_supported_extension(child_path):
