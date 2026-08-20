@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AIFT Report | Flip Forensics - {{ case_id }}</title>
+  <title>Cyber Triage AI Report - {{ case_id }}</title>
   <style>
 
     :root {
@@ -577,11 +577,11 @@
     <header class="panel header-panel">
       <div class="report-brand">
         {% if logo_data_uri %}
-          <img class="report-logo" src="{{ logo_data_uri }}" alt="AIFT logo">
+          <img class="report-logo" src="{{ logo_data_uri }}" alt="Cyber Triage AI logo">
         {% endif %}
         <div class="report-heading">
           <h1>{{ case_name }}</h1>
-          <p class="report-subtitle">AIFT Forensic Report | Flip Forensics</p>
+          <p class="report-subtitle">Cyber Triage AI | AI-Assisted Digital Forensic Investigation</p>
         </div>
       </div>
       <div class="meta-grid">
@@ -737,7 +737,7 @@
           {% endif %}
 
           <div class="panel">
-            <h2>Per-Artifact Findings</h2>
+            <h2>Suspicious Findings</h2>
             {% if section.per_artifact_findings %}
               <div class="artifact-list">
                 {% for finding in section.per_artifact_findings %}
@@ -795,12 +795,12 @@
       {% endfor %}
     {% else %}
     <section class="panel">
-      <h2>Executive Summary</h2>
+      <h2>AI-Generated Summary</h2>
       <div class="content-block markdown-output">{{ executive_summary | format_markdown_block }}</div>
     </section>
 
     <section class="panel">
-      <h2>Per-Artifact Findings</h2>
+      <h2>Suspicious Findings</h2>
       {% if per_artifact_findings %}
         <div class="artifact-list">
           {% for finding in per_artifact_findings %}

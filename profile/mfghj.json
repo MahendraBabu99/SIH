@@ -1,0 +1,174 @@
+{
+  "name": "mfghj",
+  "builtin": false,
+  "artifact_options": [
+    {
+      "artifact_key": "runkeys",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "tasks",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "services",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "shimcache",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "prefetch",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "userassist",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "evtx",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.evtx",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mft",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "usnjrnl",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "recyclebin",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "browser.history",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "browser.downloads",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "jumplist.automatic_destination",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "jumplist.custom_destination",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "lnk",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.run",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.recentdocs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.opensave",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.lastvisited",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.acmru",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.networkdrive",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.mstsc",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "mru.msoffice",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "thumbcache",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "firewall.rules",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "firewall.logs",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "network_history",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "shellbags",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "usb",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "muicache",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "sam",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.quarantine",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.exclusions",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.mplog",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defender.mpcmdrun",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "auditpol",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "lsa.secrets",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "defaultpassword.defaultpassword",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "winlogon.winlogon",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "credhist.credhist",
+      "mode": "parse_and_ai"
+    },
+    {
+      "artifact_key": "dpapi.keyprovider",
+      "mode": "parse_and_ai"
+    }
+  ]
+}

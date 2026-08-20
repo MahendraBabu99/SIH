@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AIFT</title>
+  <title>Cyber Triage AI</title>
   {% if favicon_filename %}
     <link rel="icon" type="image/png" href="{{ url_for('routes.image_asset', filename=favicon_filename) }}">
     <link rel="apple-touch-icon" href="{{ url_for('routes.image_asset', filename=favicon_filename) }}">
@@ -22,20 +22,25 @@
 <body data-evidence-accept="{{ evidence_ui_accept }}" data-evidence-help="{{ evidence_ui_help }}">
   <noscript>
     <p style="padding:2em;color:#e57870;font-size:1.2em;text-align:center;">
-      JavaScript is required to use AIFT. Please enable JavaScript in your browser settings and reload the page.
+      JavaScript is required to use Cyber Triage AI. Please enable JavaScript and reload the page.
     </p>
   </noscript>
+  <!-- Step 1: Main Application Header -->
   <header class="app-header">
+
     <div class="header-bar">
       <div class="brand-lockup">
         {% if logo_filename %}
           <img
             class="app-logo"
             src="{{ url_for('routes.image_asset', filename=logo_filename) }}"
-            alt="AIFT logo"
+            alt="Cyber Triage AI logo"
           >
         {% endif %}
-        <h1 class="app-title sr-only">AIFT by Flip Forensics</h1>
+        <div class="brand-copy">
+          <h1 class="app-title">Cyber Triage AI</h1>
+          <p>AI-Assisted Digital Forensic Investigation</p>
+        </div>
       </div>
       <button
         id="settings-button"
@@ -65,18 +70,29 @@
     </div>
     <nav aria-label="Wizard steps">
       <ol class="step-indicator" role="tablist">
-        <li id="indicator-evidence" class="is-active" data-step-target="step-evidence" aria-current="step" tabindex="0" role="tab">Evidence</li>
-        <li id="indicator-artifacts" data-step-target="step-artifacts" tabindex="0" role="tab">Parseable Artifacts</li>
-        <li id="indicator-parsing" data-step-target="step-parsing" tabindex="0" role="tab">Parsing</li>
-        <li id="indicator-analysis" data-step-target="step-analysis" tabindex="0" role="tab">Analysis</li>
-        <li id="indicator-results" data-step-target="step-results" tabindex="0" role="tab">Results</li>
+        <li id="indicator-evidence" class="is-active" data-step-target="step-evidence" aria-current="step" tabindex="0" role="tab">Dashboard</li>
+        <li id="indicator-artifacts" data-step-target="step-artifacts" tabindex="0" role="tab">Upload Evidence</li>
+        <li id="indicator-parsing" data-step-target="step-parsing" tabindex="0" role="tab">Analysis Results</li>
+        <li id="indicator-analysis" data-step-target="step-analysis" tabindex="0" role="tab">AI Summary</li>
+        <li id="indicator-results" data-step-target="step-results" tabindex="0" role="tab">Reports</li>
       </ol>
     </nav>
   </header>
 
   <main id="wizard">
     <section id="step-evidence" class="wizard-step is-active" data-step="1" aria-labelledby="step-evidence-title">
-      <h2 id="step-evidence-title">Step 1: Evidence</h2>
+      <div class="page-intro">
+        <div>
+          <p class="eyebrow">Investigation dashboard</p>
+          <h2 id="step-evidence-title">Upload evidence and start triage</h2>
+          <p>Choose a disk image or local evidence folder. Cyber Triage AI will identify the available evidence before analysis begins.</p>
+        </div>
+        <article class="risk-score-card" aria-label="Risk score">
+          <span>Risk Score</span>
+          <strong id="risk-score-value">--</strong>
+          <small id="risk-score-label">Available after AI analysis</small>
+        </article>
+      </div>
 
       <div id="update-banner" class="update-banner" hidden>
         <p id="update-banner-text"></p>
@@ -95,12 +111,12 @@
 
         <section id="scan-directory-panel" class="scan-directory-panel" aria-labelledby="scan-directory-title">
           <div class="scan-directory-header">
-            <h3 id="scan-directory-title">Scan Directory</h3>
+            <h3 id="scan-directory-title">Find Evidence in a Folder</h3>
             <button
               type="button"
               class="setting-help-icon evidence-scan-help"
               aria-label="Scan Directory help"
-              data-tooltip="Enter an absolute local directory path. AIFT scans it with the same Dissect-aware discovery used by automation mode, then creates one image card per discovered target."
+              data-tooltip="Enter an absolute folder path to find supported evidence files."
             >?</button>
           </div>
           <div class="scan-directory-controls">
@@ -186,10 +202,10 @@
 
         <button id="add-image-btn" type="button">+ Add Image</button>
 
-        <button id="submit-evidence" class="btn-primary" type="submit">Submit</button>
+        <button id="submit-evidence" class="btn-primary" type="submit">Upload Evidence</button>
 
         <div id="evidence-intake-progress" hidden>
-          <label for="evidence-progress">Intake progress</label>
+          <label for="evidence-progress">Upload progress</label>
           <progress id="evidence-progress" max="100" value="0">0%</progress>
           <p id="evidence-intake-status" hidden></p>
         </div>
@@ -198,7 +214,7 @@
     </section>
 
     <section id="step-artifacts" class="wizard-step" data-step="2" aria-labelledby="step-artifacts-title" hidden>
-      <h2 id="step-artifacts-title">Step 2: Parseable Artifacts</h2>
+      <h2 id="step-artifacts-title">Detected Evidence</h2>
 
       <div id="unsupported-evidence-error" class="unsupported-evidence-error" hidden>
         <h3>Unsupported Evidence</h3>
@@ -212,12 +228,12 @@
       </div>
 
       <div id="evidence-summaries-container" hidden>
-        <h3>Evidence Intake Summary</h3>
+        <h3>Uploaded Evidence</h3>
         <div id="evidence-summaries-list"></div>
       </div>
 
       <article id="evidence-summary-card" class="summary-card" aria-live="polite" hidden>
-        <h3>Evidence Intake Summary</h3>
+        <h3>Uploaded Evidence</h3>
         <dl>
           <dt>Hostname</dt>
           <dd id="summary-hostname">-</dd>
@@ -250,7 +266,9 @@
         <button id="apply-selection-all" class="btn-secondary" type="button" hidden>Apply Current Selection to All</button>
       </div>
 
-      <section id="artifact-profiles" aria-labelledby="artifact-profiles-title">
+      <details class="advanced-options">
+        <summary>Advanced evidence options</summary>
+        <section id="artifact-profiles" aria-labelledby="artifact-profiles-title">
         <h3 id="artifact-profiles-title">Profiles</h3>
         <div class="artifact-profile-grid">
           <div class="form-row">
@@ -279,9 +297,9 @@
           </div>
           <p id="artifact-profile-message" class="profile-message" role="status" aria-live="polite" hidden></p>
         </div>
-      </section>
+        </section>
 
-      <section id="analysis-date-range" aria-labelledby="analysis-date-range-title">
+        <section id="analysis-date-range" aria-labelledby="analysis-date-range-title">
         <h3 id="analysis-date-range-title">AI Date Filter (Optional)</h3>
         <p>
           Optionally select a date range for AI analysis. The filter applies to every artifact selected for AI, with a 7-day buffer on both sides; rows without parseable timestamps are kept. Parsing still runs on full artifacts. Leave both dates empty to use no time filter.
@@ -296,7 +314,8 @@
             <input id="analysis-date-end" name="analysis_date_end" type="date">
           </div>
         </div>
-      </section>
+        </section>
+      </details>
 
       <form id="artifacts-form">
         <fieldset class="artifact-category" data-category="persistence">
@@ -722,7 +741,7 @@
         </fieldset>
 
       </form>
-        <button id="parse-selected" class="btn-primary" type="button" disabled>Parse Selected</button>
+        <button id="parse-selected" class="btn-primary" type="button" disabled>Analyze Selected Evidence</button>
       </div><!-- /artifact-selection-content -->
     </section>
 
@@ -734,8 +753,8 @@
       aria-labelledby="step-parsing-title"
       hidden
     >
-      <h2 id="step-parsing-title">Step 3: Parsing</h2>
-      <p>Selected artifacts are parsed in sequence. This screen auto-advances when parsing is complete.</p>
+      <h2 id="step-parsing-title">Analysis Results</h2>
+      <p>Cyber Triage AI is reading the selected evidence. Results appear here as each item is processed.</p>
       <p>
         Parsing is performed by
         <a href="https://github.com/fox-it/dissect" target="_blank" rel="noopener noreferrer">Dissect</a>
@@ -771,10 +790,10 @@
     </section>
 
     <section id="step-analysis" class="wizard-step" data-step="4" aria-labelledby="step-analysis-title" hidden>
-      <h2 id="step-analysis-title">Step 4: Analysis</h2>
+      <h2 id="step-analysis-title">AI Summary</h2>
 
       <form id="analysis-form">
-        <label for="investigation-context">Investigation context</label>
+        <label for="investigation-context">What should the AI look for?</label>
         <textarea
           id="investigation-context"
           name="investigation_context"
@@ -793,7 +812,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
           <a href="#settings-panel" id="provider-settings-link">Settings</a>
         </p>
 
-        <button id="run-analysis" class="btn-primary" type="submit">Run Analysis</button>
+        <button id="run-analysis" class="btn-primary" type="submit">Generate AI Summary</button>
         <button id="cancel-analysis" type="button" hidden>Cancel Analysis</button>
       </form>
 
@@ -803,7 +822,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
       </div>
 
       <section id="analysis-stream" aria-live="polite" aria-labelledby="analysis-stream-title">
-        <h3 id="analysis-stream-title">Live Analysis Results</h3>
+        <h3 id="analysis-stream-title">Analysis notes</h3>
         <div id="analysis-results-list" aria-live="polite">
           <p>No analysis output yet.</p>
         </div>
@@ -811,7 +830,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
     </section>
 
     <section id="step-results" class="wizard-step" data-step="5" aria-labelledby="step-results-title" hidden>
-      <h2 id="step-results-title">Step 5: Results</h2>
+      <h2 id="step-results-title">Reports</h2>
 
       <section id="cross-system-analysis" class="cross-system-analysis" hidden>
         <h3>Cross-System Analysis</h3>
@@ -821,16 +840,17 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
       </section>
 
       <article id="executive-summary-card">
-        <h3>Executive Summary</h3>
+        <h3>AI-Generated Summary</h3>
         <div id="executive-summary-content">Summary is generated after analysis completes.</div>
       </article>
 
       <section id="artifact-findings" aria-labelledby="artifact-findings-title">
-        <h3 id="artifact-findings-title">Per-Artifact Findings</h3>
+        <h3 id="artifact-findings-title">Suspicious Findings</h3>
+        <p class="section-hint">Open a finding to view the supporting evidence and technical details.</p>
       </section>
 
       <div class="result-actions">
-        <button id="download-report" class="btn-primary" type="button">Download Report (HTML)</button>
+        <button id="download-report" class="btn-primary" type="button">Download Report</button>
         <button id="download-csvs" class="btn-secondary" type="button">Download CSVs (ZIP)</button>
         <button id="new-analysis" class="btn-secondary" type="button">New Analysis</button>
       </div>
@@ -873,7 +893,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
   </main>
 
   <footer class="app-footer">
-    <div class="app-footer-inner">©Flip Forensics <span class="mono">v{{ tool_version }}</span></div>
+    <div class="app-footer-inner">Cyber Triage AI <span class="mono">v{{ tool_version }}</span></div>
   </footer>
 
   <div id="setting-tooltip" role="tooltip"></div>
@@ -997,7 +1017,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
           </div>
           <div class="form-row">
             <label for="setting-intake-timeout-seconds">
-              Evidence Intake Timeout (seconds)
+              Evidence Upload Timeout (seconds)
               <span class="setting-help-icon" data-tooltip="How long to wait for evidence hashing and validation. Large images (100 GB+) may need 30+ minutes. Default: 7200 (2 hours).">?</span>
             </label>
             <input id="setting-intake-timeout-seconds" name="intake_timeout_seconds" type="number" min="60" value="7200">
@@ -1025,7 +1045,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
           <div class="form-row">
             <label for="setting-compute-hashes">
               Compute Evidence Hashes
-              <span class="setting-help-icon" data-tooltip="Compute SHA-256 and MD5 hashes during evidence intake for integrity verification. Disabling this speeds up intake for large images but skips hash verification in the report.">?</span>
+              <span class="setting-help-icon" data-tooltip="Compute SHA-256 and MD5 hashes while evidence is uploaded. Disabling this speeds up uploads for large images but skips hash verification in the report.">?</span>
             </label>
             <input
               id="setting-compute-hashes"
@@ -1096,5 +1116,7 @@ Data exfiltration investigation. Look for large file transfers, USB device conne
       </div>
     </form>
   </div>
+
 </body>
+
 </html>

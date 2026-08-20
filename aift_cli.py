@@ -531,6 +531,7 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except UnsupportedPythonVersionError as error:
-        print(str(error), file=sys.stderr)
-        raise SystemExit(EXIT_FAILURE) from None
+    except Exception as error:
+        print("ERROR:", error)
+        sys.exit(EXIT_FAILURE)
+

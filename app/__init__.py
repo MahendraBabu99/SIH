@@ -41,10 +41,7 @@ def _default_config_path() -> Path:
     return PROJECT_ROOT / DEFAULT_CONFIG_RELATIVE_PATH
 
 
-def create_app(
-    config_path: str | None = None,
-    config: dict | None = None,
-) -> Flask:
+def create_app(config_path=None, config=None):
     """Create and configure the Flask application instance.
 
     Loads AIFT configuration (merging defaults, YAML, and environment

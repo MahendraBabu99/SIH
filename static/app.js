@@ -116,6 +116,8 @@
 
     el.summaryOut = q("executive-summary-content");
     el.findings = q("artifact-findings");
+    el.riskScoreValue = q("risk-score-value");
+    el.riskScoreLabel = q("risk-score-label");
     el.downloadReport = q("download-report");
     el.downloadCsvs = q("download-csvs");
     el.newAnalysis = q("new-analysis");

@@ -719,6 +719,19 @@
     }
 
     A.renderMarkdownInto(el.summaryOut, st.analysis.summary, "Summary is generated after analysis completes.");
+    updateRiskScore(st.analysis.summary);
+  }
+
+  /** Display a risk score when the model includes a score in its summary. */
+  function updateRiskScore(summary) {
+    if (!el.riskScoreValue || !el.riskScoreLabel) return;
+    const text = String(summary || "");
+    const match = text.match(/risk\s*(?:score|level)?\s*[:=-]?\s*(\d{1,3})\s*(?:\/\s*100|%|out of 100)?/i);
+    if (!match) return;
+    const score = Math.min(100, Number(match[1]));
+    if (!Number.isFinite(score)) return;
+    el.riskScoreValue.textContent = `${score}/100`;
+    el.riskScoreLabel.textContent = score >= 70 ? "High risk" : score >= 40 ? "Moderate risk" : "Low risk";
   }
 
   /**
@@ -745,6 +758,7 @@
 
     // Overall summary.
     A.renderMarkdownInto(el.summaryOut, st.analysis.summary, "Summary is generated after analysis completes.");
+    updateRiskScore(st.analysis.summary);
 
     // Per-image summaries below the main summary.
     const imageResults = st.analysis.imageResults || {};

@@ -1,5 +1,6 @@
 /* ==========================================================================
-   AIFT Design Tokens
+   AIFT - AI Forensic Triage System
+   Student Project CSS Stylesheet (Final Project UI)
    ========================================================================== */
 :root {
   /* Mid-dark graphite slate: surfaces sit at 15-22% lightness (dark but
@@ -2007,6 +2008,129 @@ details > :not(summary) {
   .chat-input-bar {
     grid-template-columns: 1fr;
   }
+}
+
+/* ==========================================================================
+   Cyber Triage AI — focused student-project UI
+   ========================================================================== */
+:root {
+  --bg-primary: #09120f;
+  --bg-secondary: #101d18;
+  --bg-card: #162820;
+  --text-primary: #ecfff3;
+  --text-secondary: #a8c4b3;
+  --accent: #31d68a;
+  --accent-text: #79f0b2;
+  --success: #31d68a;
+  --warning: #ff9d3d;
+  --danger: #ff6b57;
+  --border: #2d5140;
+}
+
+body {
+  font-size: 16px;
+  background: #0b1020;
+}
+
+h1 { font-size: clamp(1.55rem, 3vw, 2.1rem); }
+h2 { font-size: clamp(1.55rem, 3vw, 2.35rem); }
+h3 { font-size: 1.1rem; }
+
+.app-header { background: #101d18; }
+.header-bar { padding: 1rem 0; }
+.app-logo { max-height: 40px; max-width: 140px; }
+.brand-copy { min-width: 0; }
+.brand-copy .app-title { margin: 0; font-weight: 750; letter-spacing: -0.03em; }
+.brand-copy p { margin: 0.15rem 0 0; font-size: 0.85rem; }
+
+.step-indicator {
+  border: 0;
+  gap: 0.2rem;
+  background: transparent;
+}
+.step-indicator li {
+  border: 0;
+  border-radius: 0.45rem 0.45rem 0 0;
+  padding: 0.75rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.9rem;
+}
+.step-indicator li::before { display: none; }
+.step-indicator li.is-active,
+.step-indicator li[aria-current="step"] { border-bottom: 3px solid var(--accent); }
+
+.wizard-step {
+  border-radius: 0.7rem;
+  padding: clamp(1.25rem, 3vw, 2rem);
+  box-shadow: none;
+}
+.wizard-step.is-active { box-shadow: none; border-color: #3f7c5f; }
+
+.page-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 1.25rem;
+  align-items: stretch;
+  margin-bottom: 1.5rem;
+}
+.page-intro h2 { margin-bottom: 0.5rem; }
+.eyebrow { color: var(--accent-text); font-size: 0.76rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.risk-score-card {
+  padding: 1.15rem 1.25rem;
+  background: linear-gradient(135deg, #2b2517, #1d2118);
+  border: 1px solid #a76b2b;
+  border-radius: 0.65rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.risk-score-card span { color: var(--text-secondary); font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.risk-score-card strong { color: var(--warning); font-size: 2.8rem; line-height: 1; margin: 0.35rem 0; }
+.risk-score-card small { color: var(--text-secondary); }
+
+.advanced-options {
+  margin: 1.25rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: #0d1914;
+}
+.advanced-options summary { cursor: pointer; padding: 0.85rem 1rem; font-weight: 650; color: var(--text-primary); }
+.advanced-options > section { padding: 0 1rem 1rem; }
+
+#executive-summary-card,
+#artifact-findings,
+#analysis-stream,
+.cross-system-analysis {
+  border-radius: 0.65rem;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  padding: 1.25rem;
+}
+#executive-summary-card { border-left: 4px solid var(--accent); }
+#artifact-findings { border-left: 4px solid var(--warning); }
+.section-hint { font-size: 0.9rem; }
+
+.analysis-result-card,
+.artifact-findings details,
+.findings-image-group,
+.artifact-card {
+  border-radius: 0.45rem !important;
+  box-shadow: none !important;
+}
+
+details summary { cursor: pointer; }
+button, input, select, textarea { border-radius: 0.4rem; }
+.btn-primary { border-color: #1da96a; }
+
+@media (max-width: 700px) {
+  .page-intro { grid-template-columns: 1fr; }
+  .step-indicator { grid-template-columns: 1fr 1fr; }
+  .step-indicator li { border-radius: 0.35rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
 
 /* ==========================================================================
